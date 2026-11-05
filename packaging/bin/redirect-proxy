@@ -1,0 +1,49 @@
+#!/bin/sh
+# Launcher for redirect-proxy release bundles.
+#
+# Layout:  <prefix>/bin/redirect-proxy   (this script)
+#          <prefix>/lib/<app>/ebin       (compiled application and dependencies)
+#          <prefix>/erts/                (optional bundled Erlang runtime)
+#
+# Without a bundled runtime the `erl` found in PATH is used (OTP 27+).
+# Extra VM flags can be passed through the ERL_FLAGS environment variable.
+set -eu
+
+self=$0
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+prefix=$(cd "$(dirname "$self")/.." && pwd -P)
+
+if [ -d "$prefix/erts" ]; then
+  for dir in "$prefix"/erts/erts-*; do erts_dir=$dir; done
+  ROOTDIR="$prefix/erts"
+  BINDIR="$erts_dir/bin"
+  EMU=beam
+  PROGNAME=erl
+  export ROOTDIR BINDIR EMU PROGNAME
+  erl="$BINDIR/erlexec"
+else
+  erl=erl
+fi
+
+# Plain log lines when not attached to a terminal (journald, docker logs...)
+if [ ! -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  NO_COLOR=1
+  export NO_COLOR
+fi
+
+# +sbwt none: do not busy-wait schedulers (lower idle CPU usage)
+# +K true: kernel poll (default on modern OTP, kept explicit)
+# -noshell / no distribution: the node never opens an Erlang distribution port
+exec "$erl" \
+  +sbwt none +sbwtdcpu none +sbwtdio none \
+  +K true \
+  -noshell \
+  -pa "$prefix"/lib/*/ebin \
+  -eval "redirect_proxy@@main:run(redirect_proxy)" \
+  -extra "$@"

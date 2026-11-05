@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "redirect-proxy",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "gleam.toml",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "generic",
+          "path": "src/redirect_proxy.gleam"
+        }
+      ],
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance" },
+        { "type": "security", "section": "Security" },
+        { "type": "deps", "section": "Dependencies" },
+        { "type": "docs", "section": "Documentation" },
+        { "type": "refactor", "section": "Refactoring", "hidden": true },
+        { "type": "test", "section": "Tests", "hidden": true },
+        { "type": "build", "section": "Build", "hidden": true },
+        { "type": "ci", "section": "CI", "hidden": true },
+        { "type": "chore", "section": "Miscellaneous", "hidden": true }
+      ]
+    }
+  }
+}

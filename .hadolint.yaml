@@ -1,0 +1,3 @@
+ignored:
+  # apk packages are pinned through the Alpine base image version
+  - DL3018

@@ -1,0 +1,49 @@
+[Unit]
+Description=redirect-proxy HTTP redirect server
+Documentation=https://github.com/janalis/redirect-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=redirect-proxy
+Group=redirect-proxy
+Environment=RP_CONFIG=/etc/redirect-proxy/config.toml
+Environment=HOME=/var/lib/redirect-proxy
+EnvironmentFile=-/etc/default/redirect-proxy
+ExecStart=/usr/bin/redirect-proxy serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+LimitNOFILE=1048576
+
+# Allow binding privileged ports (80/443) without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/redirect-proxy
+StateDirectory=redirect-proxy
+StateDirectoryMode=0750
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

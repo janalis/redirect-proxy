@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+  # useradd/groupadd (package "passwd") are always present, unlike adduser
+  if ! getent group redirect-proxy >/dev/null; then
+    groupadd --system redirect-proxy
+  fi
+  if ! getent passwd redirect-proxy >/dev/null; then
+    useradd --system --gid redirect-proxy --home-dir /var/lib/redirect-proxy \
+      --no-create-home --shell /usr/sbin/nologin \
+      --comment "redirect-proxy" redirect-proxy
+  fi
+  install -d -o redirect-proxy -g redirect-proxy -m 0750 /var/lib/redirect-proxy
+  chown root:redirect-proxy /etc/redirect-proxy/config.toml
+  chmod 0640 /etc/redirect-proxy/config.toml
+
+  if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl is-enabled --quiet redirect-proxy 2>/dev/null; then
+      systemctl try-restart redirect-proxy >/dev/null 2>&1 || true
+    else
+      systemctl enable redirect-proxy >/dev/null 2>&1 || true
+      echo "redirect-proxy installed. Create an administrator, then start the service:"
+      echo "  sudo -u redirect-proxy RP_CONFIG=/etc/redirect-proxy/config.toml redirect-proxy user add admin"
+      echo "  sudo systemctl start redirect-proxy"
+    fi
+  fi
+fi
+
+exit 0

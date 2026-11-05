@@ -1,0 +1,411 @@
+//// OpenID Connect single sign-on: authorization code flow with PKCE (S256),
+//// `state` and `nonce`, ID token signature verification against the
+//// provider JWKS (erlang-jose) and claim based authorisation.
+
+import gleam/bit_array
+import gleam/bool
+import gleam/crypto
+import gleam/dynamic/decode
+import gleam/http
+import gleam/http/request
+import gleam/httpc
+import gleam/json
+import gleam/list
+import gleam/result
+import gleam/string
+import gleam/uri
+import redirect_proxy/config.{type OidcConfig}
+import redirect_proxy/ffi
+import redirect_proxy/id
+
+const table = "redirect_proxy_oidc"
+
+const flow_ttl = 600
+
+const cache_ttl = 3600
+
+pub type Provider {
+  Provider(
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    jwks_uri: String,
+  )
+}
+
+pub type Identity {
+  Identity(
+    subject: String,
+    username: String,
+    email: String,
+    groups: List(String),
+  )
+}
+
+pub fn init() -> Nil {
+  ffi.ets_new(table)
+}
+
+pub fn redirect_uri(public_url: String) -> String {
+  trim_trailing_slash(public_url) <> "/auth/oidc/callback"
+}
+
+/// Builds the authorization URL and remembers the PKCE verifier and nonce
+/// associated with the generated `state`.
+pub fn begin(cfg: OidcConfig, public_url: String) -> Result(String, String) {
+  use provider <- result.try(discover(cfg))
+  let state = id.token(24)
+  let verifier = id.token(48)
+  let nonce = id.token(24)
+  let challenge =
+    crypto.hash(crypto.Sha256, <<verifier:utf8>>)
+    |> bit_array.base64_url_encode(False)
+  ffi.ets_put(table, "flow:" <> state, #(
+    ffi.now_seconds() + flow_ttl,
+    #(verifier, nonce),
+  ))
+  let query =
+    uri.query_to_string([
+      #("response_type", "code"),
+      #("client_id", cfg.client_id),
+      #("redirect_uri", redirect_uri(public_url)),
+      #("scope", string.join(cfg.scopes, " ")),
+      #("state", state),
+      #("nonce", nonce),
+      #("code_challenge", challenge),
+      #("code_challenge_method", "S256"),
+    ])
+  let separator = case string.contains(provider.authorization_endpoint, "?") {
+    True -> "&"
+    False -> "?"
+  }
+  Ok(provider.authorization_endpoint <> separator <> query)
+}
+
+/// Completes the flow: validates `state`, exchanges the code, verifies the ID
+/// token and checks that the user is allowed in.
+pub fn complete(
+  cfg: OidcConfig,
+  public_url: String,
+  query: List(#(String, String)),
+) -> Result(Identity, String) {
+  use <- bool.guard(
+    list.key_find(query, "error") |> result.is_ok,
+    Error(
+      "identity provider returned an error: "
+      <> {
+        list.key_find(query, "error_description")
+        |> result.lazy_or(fn() { list.key_find(query, "error") })
+        |> result.unwrap("")
+      },
+    ),
+  )
+  use state <- result.try(
+    list.key_find(query, "state") |> result.replace_error("missing state"),
+  )
+  use code <- result.try(
+    list.key_find(query, "code") |> result.replace_error("missing code"),
+  )
+  use #(verifier, nonce) <- result.try(take_flow(state))
+  use provider <- result.try(discover(cfg))
+  use id_token <- result.try(exchange(
+    cfg,
+    provider,
+    code,
+    verifier,
+    redirect_uri(public_url),
+  ))
+  use claims <- result.try(verify(cfg, provider, id_token))
+  use identity <- result.try(check_claims(cfg, provider, claims, nonce))
+  use Nil <- result.try(authorise(cfg, identity))
+  Ok(identity)
+}
+
+fn take_flow(state: String) -> Result(#(String, String), String) {
+  let key = "flow:" <> state
+  case ffi.ets_get(table, key) {
+    Ok(#(expires_at, flow)) -> {
+      // single use
+      ffi.ets_delete(table, key)
+      case expires_at > ffi.now_seconds() {
+        True -> Ok(flow)
+        False -> Error("login attempt expired, please try again")
+      }
+    }
+    Error(Nil) -> Error("unknown or already used login state")
+  }
+}
+
+// --- discovery and JWKS -----------------------------------------------------
+
+pub fn discover(cfg: OidcConfig) -> Result(Provider, String) {
+  case ffi.ets_get(table, "provider:" <> cfg.issuer) {
+    Ok(#(expires_at, provider)) ->
+      case expires_at > ffi.now_seconds() {
+        True -> Ok(provider)
+        False -> fetch_provider(cfg)
+      }
+    Error(Nil) -> fetch_provider(cfg)
+  }
+}
+
+fn fetch_provider(cfg: OidcConfig) -> Result(Provider, String) {
+  let url =
+    trim_trailing_slash(cfg.issuer) <> "/.well-known/openid-configuration"
+  use body <- result.try(http_get(url))
+  let decoder = {
+    use issuer <- decode.field("issuer", decode.string)
+    use authorization_endpoint <- decode.field(
+      "authorization_endpoint",
+      decode.string,
+    )
+    use token_endpoint <- decode.field("token_endpoint", decode.string)
+    use jwks_uri <- decode.field("jwks_uri", decode.string)
+    decode.success(Provider(
+      issuer:,
+      authorization_endpoint:,
+      token_endpoint:,
+      jwks_uri:,
+    ))
+  }
+  use provider <- result.try(
+    json.parse(body, decoder)
+    |> result.replace_error("invalid OpenID discovery document at " <> url),
+  )
+  use <- bool.guard(
+    trim_trailing_slash(provider.issuer) != trim_trailing_slash(cfg.issuer),
+    Error(
+      "discovery issuer "
+      <> provider.issuer
+      <> " does not match configured issuer "
+      <> cfg.issuer,
+    ),
+  )
+  ffi.ets_put(table, "provider:" <> cfg.issuer, #(
+    ffi.now_seconds() + cache_ttl,
+    provider,
+  ))
+  Ok(provider)
+}
+
+fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
+  let cached = case refresh {
+    True -> Error(Nil)
+    False ->
+      case ffi.ets_get(table, "jwks:" <> provider.jwks_uri) {
+        Ok(#(expires_at, body)) if expires_at > 0 ->
+          case expires_at > ffi.now_seconds() {
+            True -> Ok(body)
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+  }
+  case cached {
+    Ok(body) -> Ok(body)
+    Error(Nil) -> {
+      use body <- result.try(http_get(provider.jwks_uri))
+      ffi.ets_put(table, "jwks:" <> provider.jwks_uri, #(
+        ffi.now_seconds() + cache_ttl,
+        body,
+      ))
+      Ok(body)
+    }
+  }
+}
+
+// --- token exchange and verification ----------------------------------------
+
+fn exchange(
+  cfg: OidcConfig,
+  provider: Provider,
+  code: String,
+  verifier: String,
+  redirect: String,
+) -> Result(String, String) {
+  let body =
+    uri.query_to_string([
+      #("grant_type", "authorization_code"),
+      #("code", code),
+      #("redirect_uri", redirect),
+      #("client_id", cfg.client_id),
+      #("client_secret", cfg.client_secret),
+      #("code_verifier", verifier),
+    ])
+  use req <- result.try(
+    request.to(provider.token_endpoint)
+    |> result.replace_error("invalid token endpoint URL"),
+  )
+  let req =
+    req
+    |> request.set_method(http.Post)
+    |> request.set_header("content-type", "application/x-www-form-urlencoded")
+    |> request.set_header("accept", "application/json")
+    |> request.set_body(body)
+  use resp <- result.try(
+    httpc.configure()
+    |> httpc.timeout(10_000)
+    |> httpc.dispatch(req)
+    |> result.map_error(fn(e) { "token request failed: " <> string.inspect(e) }),
+  )
+  use <- bool.guard(
+    resp.status != 200,
+    Error("token endpoint answered HTTP " <> string.inspect(resp.status)),
+  )
+  json.parse(resp.body, decode.at(["id_token"], decode.string))
+  |> result.replace_error("token response does not contain an id_token")
+}
+
+fn verify(
+  _cfg: OidcConfig,
+  provider: Provider,
+  id_token: String,
+) -> Result(String, String) {
+  use keys <- result.try(jwks(provider, False))
+  case ffi.jwt_verify(keys, id_token) {
+    Ok(claims) -> Ok(claims)
+    Error(_) -> {
+      // Keys may have been rotated: refresh once.
+      use keys <- result.try(jwks(provider, True))
+      ffi.jwt_verify(keys, id_token)
+    }
+  }
+}
+
+/// Validates registered claims (iss, aud, exp, nonce) and extracts the
+/// identity. Exposed for tests.
+pub fn check_claims(
+  cfg: OidcConfig,
+  provider: Provider,
+  claims_json: String,
+  expected_nonce: String,
+) -> Result(Identity, String) {
+  let audience =
+    decode.one_of(decode.list(decode.string), [
+      decode.string |> decode.map(fn(a) { [a] }),
+    ])
+  let groups_decoder =
+    decode.one_of(decode.list(decode.string), [
+      decode.string |> decode.map(fn(g) { [g] }),
+    ])
+  let decoder = {
+    use iss <- decode.field("iss", decode.string)
+    use sub <- decode.field("sub", decode.string)
+    use aud <- decode.field("aud", audience)
+    use exp <- decode.field("exp", decode.int)
+    use nonce <- decode.optional_field("nonce", "", decode.string)
+    use email <- decode.optional_field("email", "", decode.string)
+    use email_verified <- decode.optional_field(
+      "email_verified",
+      True,
+      decode.one_of(decode.bool, [
+        decode.string |> decode.map(fn(s) { s == "true" }),
+      ]),
+    )
+    use preferred <- decode.optional_field(
+      "preferred_username",
+      "",
+      decode.string,
+    )
+    use groups <- decode.optional_field(cfg.groups_claim, [], groups_decoder)
+    decode.success(#(
+      iss,
+      sub,
+      aud,
+      exp,
+      nonce,
+      email,
+      email_verified,
+      preferred,
+      groups,
+    ))
+  }
+  use #(iss, sub, aud, exp, nonce, email, email_verified, preferred, groups) <- result.try(
+    json.parse(claims_json, decoder)
+    |> result.replace_error("ID token is missing required claims"),
+  )
+  use <- bool.guard(
+    trim_trailing_slash(iss) != trim_trailing_slash(provider.issuer),
+    Error("ID token issuer mismatch"),
+  )
+  use <- bool.guard(
+    !list.contains(aud, cfg.client_id),
+    Error("ID token audience mismatch"),
+  )
+  use <- bool.guard(exp + 60 < ffi.now_seconds(), Error("ID token expired"))
+  use <- bool.guard(
+    !ffi.secure_compare(<<nonce:utf8>>, <<expected_nonce:utf8>>),
+    Error("ID token nonce mismatch"),
+  )
+  let email = case email_verified {
+    True -> string.lowercase(email)
+    False -> ""
+  }
+  let username = case preferred, email {
+    "", "" -> sub
+    "", e -> e
+    p, _ -> p
+  }
+  Ok(Identity(subject: sub, username:, email:, groups:))
+}
+
+/// Authorisation: with no allow-list configured every authenticated user is
+/// accepted; otherwise the user must match one of the lists.
+pub fn authorise(cfg: OidcConfig, identity: Identity) -> Result(Nil, String) {
+  let no_lists =
+    cfg.allowed_emails == []
+    && cfg.allowed_domains == []
+    && cfg.allowed_groups == []
+  let email_ok =
+    identity.email != ""
+    && list.contains(
+      list.map(cfg.allowed_emails, string.lowercase),
+      identity.email,
+    )
+  let domain_ok = case string.split_once(identity.email, "@") {
+    Ok(#(_, domain)) ->
+      list.contains(list.map(cfg.allowed_domains, string.lowercase), domain)
+    Error(Nil) -> False
+  }
+  let group_ok = list.any(identity.groups, list.contains(cfg.allowed_groups, _))
+  case no_lists || email_ok || domain_ok || group_ok {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "your account ("
+        <> identity.username
+        <> ") is not allowed to access this administration",
+      )
+  }
+}
+
+// --- helpers ----------------------------------------------------------------
+
+fn http_get(url: String) -> Result(String, String) {
+  use req <- result.try(
+    request.to(url) |> result.replace_error("invalid URL " <> url),
+  )
+  use resp <- result.try(
+    httpc.configure()
+    |> httpc.timeout(10_000)
+    |> httpc.dispatch(request.set_header(req, "accept", "application/json"))
+    |> result.map_error(fn(e) {
+      "request to " <> url <> " failed: " <> string.inspect(e)
+    }),
+  )
+  case resp.status {
+    200 -> Ok(resp.body)
+    status -> Error(url <> " answered HTTP " <> string.inspect(status))
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  case string.ends_with(value, "/") {
+    True -> string.drop_end(value, 1)
+    False -> value
+  }
+}
+
+pub fn purge_expired() -> Int {
+  ffi.ets_delete_older(table, ffi.now_seconds())
+}

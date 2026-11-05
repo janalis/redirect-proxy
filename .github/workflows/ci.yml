@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GLEAM_VERSION: "1.19.2"
+  OTP_VERSION: "29.1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: make fmt-check build lint-erlang lint-shell
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+      - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          globs: |
+            *.md
+            .github/**/*.md
+
+  commitlint:
+    name: Conventional commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6.2.1
+        with:
+          configFile: commitlint.config.mjs
+
+  test:
+    name: Test (OTP ${{ matrix.otp }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27.3", "28.1", "29.1"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ matrix.otp }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: gleam test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: make coverage
+      - run: cat coverage/summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  bundle:
+    name: Bundle smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: make bundle TARGET=linux-amd64
+      - name: Run the bundle without Erlang in PATH
+        run: |
+          bundle="$PWD/dist/redirect-proxy-$(sed -n 's/^version = "\(.*\)"/\1/p' gleam.toml)-linux-amd64"
+          data=$(mktemp -d)
+          echo '[{"source": "/smoke", "target": "/ok"}]' > "$data/redirects.json"
+          env -i PATH=/usr/bin:/bin HOME="$HOME" "$bundle/bin/redirect-proxy" version
+          env -i PATH=/usr/bin:/bin HOME="$HOME" RP_STORAGE_DATA_DIR="$data" RP_SERVER_PORT=18080 \
+            "$bundle/bin/redirect-proxy" serve &
+          for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.2; done
+          test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:18080/smoke)" = "301 http://127.0.0.1:18080/ok"
+          curl -fsS http://127.0.0.1:8081/healthz
+
+  docker:
+    name: Container image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: redirect-proxy:ci
+          build-args: VERSION=ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          docker run -d --name rp -p 18080:8080 redirect-proxy:ci
+          for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.2; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/missing)" = "404"
+          docker logs rp
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: redirect-proxy:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

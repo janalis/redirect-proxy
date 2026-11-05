@@ -1,0 +1,50 @@
+# Debian/Ubuntu package definition (https://nfpm.goreleaser.com).
+# Template rendered by scripts/package-deb.sh (@VERSION@, @ARCH@,
+# @MAINTAINER@); the bundle embedding the Erlang runtime is staged in
+# dist/deb-root.
+name: redirect-proxy
+version: "@VERSION@"
+arch: "@ARCH@"
+platform: linux
+section: web
+priority: optional
+maintainer: "@MAINTAINER@"
+description: |
+  High performance HTTP redirect server.
+  Exact, prefix and regular expression redirections persisted to JSON files,
+  with an administration backend (local accounts, OpenID Connect SSO or
+  trusted proxy headers).
+vendor: Janalis
+homepage: https://github.com/janalis/redirect-proxy
+license: MIT
+depends:
+  - libc6
+  - libssl3 | libssl3t64
+  - zlib1g
+  - libtinfo6 | libncurses6
+contents:
+  - src: dist/deb-root/
+    dst: /usr/lib/redirect-proxy/
+    type: tree
+  - src: /usr/lib/redirect-proxy/bin/redirect-proxy
+    dst: /usr/bin/redirect-proxy
+    type: symlink
+  - src: packaging/systemd/redirect-proxy.service
+    dst: /lib/systemd/system/redirect-proxy.service
+  - src: packaging/deb/config.toml
+    dst: /etc/redirect-proxy/config.toml
+    type: config|noreplace
+    file_info:
+      mode: 0640
+  - src: config.example.toml
+    dst: /usr/share/doc/redirect-proxy/config.example.toml
+  - src: LICENSE
+    dst: /usr/share/doc/redirect-proxy/copyright
+  - dst: /var/lib/redirect-proxy
+    type: dir
+    file_info:
+      mode: 0750
+scripts:
+  postinstall: packaging/deb/postinst
+  preremove: packaging/deb/prerm
+  postremove: packaging/deb/postrm

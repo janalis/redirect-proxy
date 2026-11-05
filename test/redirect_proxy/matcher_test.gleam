@@ -1,0 +1,182 @@
+import gleam/list
+import redirect_proxy/matcher
+import redirect_proxy/rule.{Rule}
+
+fn r(
+  id: String,
+  host: String,
+  kind: rule.MatchKind,
+  source: String,
+  target: String,
+) {
+  Rule(..rule.blank(), id:, host:, kind:, source:, target:)
+}
+
+fn location(
+  m: matcher.Matcher,
+  host: String,
+  path: String,
+) -> Result(String, Nil) {
+  case matcher.lookup(m, host, path) {
+    Ok(found) -> Ok(found.location)
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+fn matched_id(m: matcher.Matcher, host: String, path: String) -> String {
+  let assert Ok(found) = matcher.lookup(m, host, path)
+  found.rule.id
+}
+
+pub fn exact_match_test() {
+  let m = matcher.build([r("1", "*", rule.Exact, "/a", "/b")])
+  assert location(m, "x.test", "/a") == Ok("/b")
+  assert location(m, "x.test", "/a/") == Error(Nil)
+  assert location(m, "x.test", "/A") == Error(Nil)
+}
+
+pub fn case_insensitive_exact_test() {
+  let m =
+    matcher.build([
+      Rule(..r("1", "*", rule.Exact, "/About", "/b"), case_insensitive: True),
+    ])
+  assert location(m, "x", "/about") == Ok("/b")
+  assert location(m, "x", "/ABOUT") == Ok("/b")
+}
+
+pub fn host_specific_rules_win_over_wildcard_test() {
+  let m =
+    matcher.build([
+      r("wild", "*", rule.Exact, "/a", "/wild"),
+      r("host", "example.com", rule.Regex, "^/a$", "/host"),
+    ])
+  // a regex on the specific host beats an exact rule on the wildcard
+  assert matched_id(m, "example.com", "/a") == "host"
+  assert matched_id(m, "other.com", "/a") == "wild"
+}
+
+pub fn host_is_normalised_test() {
+  let m = matcher.build([r("1", "example.com", rule.Exact, "/a", "/b")])
+  assert location(m, "EXAMPLE.com:8080", "/a") == Ok("/b")
+  assert matcher.normalise_request_host("[::1]:8080") == "[::1]"
+  assert matcher.normalise_request_host("Example.com") == "example.com"
+}
+
+pub fn precedence_exact_prefix_regex_test() {
+  let m =
+    matcher.build([
+      r("regex", "*", rule.Regex, "^/docs/.*$", "/regex"),
+      r("prefix", "*", rule.Prefix, "/docs/", "/prefix/$1"),
+      r("exact", "*", rule.Exact, "/docs/index", "/exact"),
+    ])
+  assert matched_id(m, "h", "/docs/index") == "exact"
+  assert matched_id(m, "h", "/docs/other") == "prefix"
+}
+
+pub fn longest_prefix_wins_test() {
+  let m =
+    matcher.build([
+      r("short", "*", rule.Prefix, "/a/", "/short/$1"),
+      r("long", "*", rule.Prefix, "/a/b/", "/long/$1"),
+    ])
+  assert location(m, "h", "/a/b/c") == Ok("/long/c")
+  assert location(m, "h", "/a/x") == Ok("/short/x")
+}
+
+pub fn prefix_priority_breaks_ties_test() {
+  let m =
+    matcher.build([
+      Rule(..r("low", "*", rule.Prefix, "/a", "/low"), priority: 50),
+      Rule(..r("high", "*", rule.Prefix, "/b", "/high"), priority: 10),
+      Rule(..r("first", "*", rule.Prefix, "/a", "/first"), priority: 1),
+    ])
+  assert matched_id(m, "h", "/a/x") == "first"
+}
+
+pub fn regex_priority_then_order_test() {
+  let m =
+    matcher.build([
+      Rule(..r("late", "*", rule.Regex, "^/x", "/late"), priority: 200),
+      Rule(..r("a", "*", rule.Regex, "^/x", "/a"), priority: 100),
+      Rule(..r("b", "*", rule.Regex, "^/x", "/b"), priority: 100),
+    ])
+  assert matched_id(m, "h", "/x") == "a"
+}
+
+pub fn regex_captures_test() {
+  let m =
+    matcher.build([
+      r(
+        "1",
+        "*",
+        rule.Regex,
+        "^/blog/(\\d+)/([a-z-]+)$",
+        "https://n.test/p/$1?slug=$2",
+      ),
+    ])
+  assert location(m, "h", "/blog/42/hello-world")
+    == Ok("https://n.test/p/42?slug=hello-world")
+  assert location(m, "h", "/blog/x/y") == Error(Nil)
+}
+
+pub fn case_insensitive_regex_test() {
+  let m =
+    matcher.build([
+      Rule(..r("1", "*", rule.Regex, "^/old$", "/new"), case_insensitive: True),
+    ])
+  assert location(m, "h", "/OLD") == Ok("/new")
+}
+
+pub fn disabled_rules_are_ignored_test() {
+  let m =
+    matcher.build([Rule(..r("1", "*", rule.Exact, "/a", "/b"), enabled: False)])
+  assert location(m, "h", "/a") == Error(Nil)
+  assert matcher.size(m) == 0
+}
+
+pub fn query_string_handling_test() {
+  let keep =
+    matcher.build([
+      Rule(..r("1", "*", rule.Exact, "/a", "/b"), preserve_query: True),
+      Rule(..r("2", "*", rule.Exact, "/c", "/d?x=1"), preserve_query: True),
+      r("3", "*", rule.Exact, "/e", "/f"),
+    ])
+  let loc = fn(path, query) {
+    let assert Ok(found) = matcher.lookup(keep, "h", path)
+    matcher.location(found, query)
+  }
+  assert loc("/a", Ok("q=1")) == "/b?q=1"
+  assert loc("/a", Error(Nil)) == "/b"
+  assert loc("/a", Ok("")) == "/b"
+  assert loc("/c", Ok("q=1")) == "/d?x=1&q=1"
+  assert loc("/e", Ok("q=1")) == "/f"
+}
+
+pub fn location_strips_crlf_test() {
+  let m = matcher.build([r("1", "*", rule.Prefix, "/p/", "/x/$1")])
+  let assert Ok(found) = matcher.lookup(m, "h", "/p/a\r\nb")
+  assert matcher.location(found, Error(Nil)) == "/x/ab"
+}
+
+pub fn empty_matcher_test() {
+  assert location(matcher.empty(), "h", "/") == Error(Nil)
+  assert matcher.size(matcher.empty()) == 0
+}
+
+pub fn large_rule_set_test() {
+  let rules =
+    list.repeat(Nil, 5000)
+    |> list.index_map(fn(_, i) {
+      let n = int_to_string(i)
+      r(n, "*", rule.Exact, "/page/" <> n, "/new/" <> n)
+    })
+  let m = matcher.build(rules)
+  assert matcher.size(m) == 5000
+  assert location(m, "h", "/page/4999") == Ok("/new/4999")
+}
+
+import gleam/int
+
+fn int_to_string(i: Int) -> String {
+  int.to_string(i)
+}

@@ -1,0 +1,10 @@
+.git
+.github
+build
+dist
+coverage
+data
+erl_crash.dump
+*.beam
+Dockerfile
+.dockerignore

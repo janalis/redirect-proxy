@@ -1,0 +1,31 @@
+/* Small additions on top of Bootstrap 6 */
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1 0 auto;
+}
+
+code {
+  word-break: break-word;
+}
+
+form {
+  margin: 0;
+}
+
+button.badge {
+  cursor: pointer;
+}
+
+details > summary {
+  cursor: pointer;
+}
+
+details pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

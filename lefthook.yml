@@ -1,0 +1,26 @@
+# Git hooks: install lefthook (https://lefthook.dev) then run `lefthook install`.
+pre-commit:
+  parallel: true
+  commands:
+    gleam-format:
+      glob: "*.gleam"
+      run: gleam format --check {staged_files}
+    gleam-build:
+      glob: "*.{gleam,erl}"
+      run: gleam build --warnings-as-errors
+    shellcheck:
+      glob: "{scripts/*.sh,packaging/bin/*,packaging/deb/post*,packaging/deb/prerm}"
+      run: command -v shellcheck >/dev/null && shellcheck {staged_files} || true
+    actionlint:
+      glob: ".github/workflows/*.yml"
+      run: command -v actionlint >/dev/null && actionlint || true
+
+pre-push:
+  commands:
+    test:
+      run: gleam test
+
+commit-msg:
+  commands:
+    commitlint:
+      run: npx --yes --package @commitlint/cli --package @commitlint/config-conventional commitlint --edit {1}

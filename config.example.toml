@@ -1,0 +1,65 @@
+# redirect-proxy configuration.
+#
+# Every setting can be overridden by an environment variable named
+# RP_<SECTION>_<KEY> in upper case, e.g. RP_SERVER_PORT=80 or
+# RP_AUTH_OIDC_CLIENT_SECRET=... (lists are comma separated).
+
+[server]
+# Public redirect listener.
+listen = "0.0.0.0"
+port = 8080
+# Cache-Control max-age (seconds) sent with permanent redirects (301 / 308).
+# Temporary redirects (302 / 303 / 307) are always sent with no-store.
+cache_max_age = 3600
+# When set, unmatched requests are redirected (302) here instead of a 404.
+fallback_url = ""
+not_found_body = "Not Found"
+
+[admin]
+enabled = true
+# Keep the administration on a private interface (or behind a reverse proxy).
+listen = "127.0.0.1"
+port = 8081
+# Externally visible URL of the admin, used to build the OIDC redirect URI.
+public_url = "http://localhost:8081"
+# Secret used to sign session cookies (at least 64 characters). When empty a
+# random secret is generated and stored in <data_dir>/secret_key_base.
+secret_key_base = ""
+# Session lifetime in seconds.
+session_ttl = 28800
+
+[storage]
+# Holds redirects.json, users.json, audit.jsonl, backups/ and the cookie secret.
+data_dir = "./data"
+# Number of previous redirects.json versions kept in data_dir/backups.
+backups = 10
+
+[auth.local]
+# Username / password accounts stored in users.json.
+enabled = true
+
+[auth.oidc]
+# OpenID Connect single sign-on (Keycloak, Entra ID, Google, Okta, Authentik...).
+# Register <public_url>/auth/oidc/callback as redirect URI at the provider.
+enabled = false
+issuer = "https://idp.example.com/realms/main"
+client_id = "redirect-proxy"
+client_secret = ""
+scopes = ["openid", "email", "profile"]
+# Who may sign in. With all three lists empty every user of the provider is
+# accepted. Otherwise a user must match at least one entry.
+allowed_emails = []
+allowed_domains = []
+allowed_groups = []
+groups_claim = "groups"
+button_label = "Sign in with SSO"
+
+[auth.header]
+# Trust an identity header set by an authenticating reverse proxy
+# (oauth2-proxy, Authelia, Pomerium...). Only requests whose TCP peer address
+# is in trusted_proxies are trusted: never expose the admin port directly
+# when this is enabled.
+enabled = false
+user_header = "X-Forwarded-User"
+email_header = "X-Forwarded-Email"
+trusted_proxies = ["127.0.0.1/32", "::1/128"]

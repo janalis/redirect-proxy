@@ -1,0 +1,51 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please do **not** report
+        security vulnerabilities here, see the security policy instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal configuration, rules (redact private data) and requests.
+      placeholder: |
+        1. Rule: {"source": "/old", "target": "/new"}
+        2. curl -sI http://localhost:8080/old
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `redirect-proxy version`
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - Container image
+        - Debian/Ubuntu package
+        - Homebrew
+        - Release tarball
+        - From source
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: text

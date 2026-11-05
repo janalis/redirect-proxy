@@ -1,0 +1,274 @@
+name: Release
+
+# release-please maintains a release PR from Conventional Commits. Merging it
+# tags vX.Y.Z and creates the GitHub release; the jobs below then build and
+# attach the artefacts (in the same workflow: events created with
+# GITHUB_TOKEN cannot trigger other workflows).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build artefacts for, e.g. v1.2.3
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GLEAM_VERSION: "1.19.2"
+  OTP_VERSION: "29.1"
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  release-please:
+    name: Release PR
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  meta:
+    name: Release metadata
+    needs: release-please
+    if: always() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - id: meta
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux ${{ matrix.arch }} bundle and .deb
+    needs: meta
+    if: always() && needs.meta.result == 'success'
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - name: Bundle with the Erlang runtime
+        run: scripts/bundle.sh "${{ needs.meta.outputs.version }}" "linux-${{ matrix.arch }}" --with-erts
+      - name: Build .deb
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          BUNDLE: dist/redirect-proxy-${{ needs.meta.outputs.version }}-linux-${{ matrix.arch }}
+          MAINTAINER: ${{ vars.PACKAGE_MAINTAINER || 'Janalis' }}
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e VERSION -e ARCH -e BUNDLE -e MAINTAINER \
+            goreleaser/nfpm:v2.48.0 package --packager deb --target dist/
+      - name: Install and run the .deb
+        run: |
+          sudo apt-get install -y "./dist/redirect-proxy_${{ needs.meta.outputs.version }}_${{ matrix.arch }}.deb"
+          redirect-proxy version
+          sudo -u redirect-proxy RP_CONFIG=/etc/redirect-proxy/config.toml redirect-proxy check-config
+          sudo systemctl start redirect-proxy
+          for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8081/healthz && break; sleep 0.2; done
+          sudo systemctl is-active redirect-proxy
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  portable:
+    name: Portable bundle (system Erlang)
+    needs: meta
+    if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      # Compiled with the oldest supported OTP so it loads on every newer one.
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.3"
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: scripts/bundle.sh "${{ needs.meta.outputs.version }}" erlang
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portable
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macOS smoke test (Homebrew Erlang)
+    needs: [meta, portable]
+    if: always() && needs.portable.result == 'success'
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: portable
+          path: dist
+      - run: brew install erlang
+      - run: |
+          tar -xzf "dist/redirect-proxy-${{ needs.meta.outputs.version }}-erlang.tar.gz" -C dist
+          "dist/redirect-proxy-${{ needs.meta.outputs.version }}-erlang/bin/redirect-proxy" version
+
+  container:
+    name: Container image
+    needs: meta
+    if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: docker-meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.meta.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.meta.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.meta.outputs.tag }}
+            type=raw,value=latest
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.meta.outputs.version }}
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: ${{ steps.docker-meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ needs.meta.outputs.version }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  publish:
+    name: Publish release assets
+    needs: [meta, linux, portable, macos]
+    if: always() && needs.linux.result == 'success' && needs.portable.result == 'success' && needs.macos.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    outputs:
+      portable_sha256: ${{ steps.sums.outputs.portable_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - id: sums
+        working-directory: dist
+        run: |
+          sha256sum ./*.tar.gz ./*.deb | sed 's| \./| |' > SHA256SUMS
+          cat SHA256SUMS
+          echo "portable_sha256=$(grep -- '-erlang.tar.gz' SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: dist
+          format: spdx-json
+          output-file: dist/redirect-proxy-${{ needs.meta.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+            dist/*.tar.gz dist/*.deb dist/SHA256SUMS dist/*.spdx.json
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: [meta, publish]
+    if: always() && needs.publish.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - name: Render and push the formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          SHA256: ${{ needs.publish.outputs.portable_sha256 }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set, skipping the Homebrew tap update"
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${{ github.repository_owner }}/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -e "s/@VERSION@/${VERSION}/g" -e "s/@SHA256@/${SHA256}/g" \
+            packaging/homebrew/redirect-proxy.rb.in > tap/Formula/redirect-proxy.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/redirect-proxy.rb
+          git commit -m "redirect-proxy ${VERSION}"
+          git push

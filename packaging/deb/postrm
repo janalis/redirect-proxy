@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$1" = "purge" ]; then
+  rm -rf /var/lib/redirect-proxy
+  if getent passwd redirect-proxy >/dev/null; then
+    userdel redirect-proxy >/dev/null 2>&1 || true
+  fi
+  if getent group redirect-proxy >/dev/null; then
+    groupdel redirect-proxy >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

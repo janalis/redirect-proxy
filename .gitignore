@@ -1,0 +1,10 @@
+*.beam
+*.ez
+/build
+/dist
+/coverage
+/data
+erl_crash.dump
+.DS_Store
+/node_modules
+/.playwright-mcp

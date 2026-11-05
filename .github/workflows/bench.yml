@@ -1,0 +1,45 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      requests:
+        description: Requests per scenario
+        default: "200000"
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Load test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "29.1"
+          gleam-version: "1.19.2"
+          rebar3-version: "3"
+      - name: Install oha
+        env:
+          OHA_VERSION: "1.16.0"
+        run: |
+          curl -fsSL -o /usr/local/bin/oha \
+            "https://github.com/hatoo/oha/releases/download/v${OHA_VERSION}/oha-linux-amd64"
+          chmod +x /usr/local/bin/oha
+          oha --version
+      - run: gleam deps download
+      - name: Run benchmark
+        env:
+          REQUESTS: ${{ inputs.requests || '200000' }}
+        run: |
+          make bench TARGET=linux-amd64 | tee bench.txt
+          {
+            echo '### Redirect listener benchmark'
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

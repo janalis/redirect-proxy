@@ -1,0 +1,15 @@
+# redirect-proxy configuration (Debian/Ubuntu package).
+# See /usr/share/doc/redirect-proxy/config.example.toml for every option.
+# Apply changes with: sudo systemctl restart redirect-proxy
+
+[server]
+listen = "0.0.0.0"
+port = 8080
+
+[admin]
+listen = "127.0.0.1"
+port = 8081
+public_url = "http://localhost:8081"
+
+[storage]
+data_dir = "/var/lib/redirect-proxy"
