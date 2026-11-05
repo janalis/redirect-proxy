@@ -15,10 +15,6 @@ class RedirectProxy < Formula
     (etc/"redirect-proxy").install libexec/"share/redirect-proxy/config.example.toml" => "config.toml"
   end
 
-  def post_install
-    (var/"lib/redirect-proxy").mkpath
-  end
-
   service do
     run [opt_bin/"redirect-proxy", "serve"]
     environment_variables RP_CONFIG:           etc/"redirect-proxy/config.toml",
