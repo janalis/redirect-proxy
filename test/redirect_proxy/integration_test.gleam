@@ -720,3 +720,79 @@ fn wait_until(condition: fn() -> Bool, attempts: Int) -> Nil {
     }
   }
 }
+
+// --- API clients page -------------------------------------------------------
+
+pub fn api_clients_page_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let page = get(env.admin <> "/api-clients", [#("cookie", cookie)])
+  assert page.status == 200
+  assert string.contains(page.body, "No API client yet.")
+
+  // create: the secret is shown once
+  let resp =
+    post_form(env, "/api-clients", cookie, [
+      #("csrf_token", csrf),
+      #("name", "deploy"),
+      #("scope", "redirects:read"),
+      #("scope", "redirects:ops"),
+    ])
+  assert resp.status == 201
+  let secret = between(resp.body, "rps_", "<")
+  let client_id = between(resp.body, "rp_", "<")
+  assert string.length(secret) > 20
+
+  // the client can obtain a token
+  let token_resp =
+    send(
+      http.Post,
+      env.admin <> "/oauth/token",
+      [#("content-type", "application/x-www-form-urlencoded")],
+      uri.query_to_string([
+        #("grant_type", "client_credentials"),
+        #("client_id", "rp_" <> client_id),
+        #("client_secret", "rps_" <> secret),
+      ]),
+    )
+  assert token_resp.status == 200
+  assert string.contains(token_resp.body, "redirects:read redirects:ops")
+
+  // the listing no longer shows the secret
+  let page = get(env.admin <> "/api-clients", [#("cookie", cookie)])
+  assert !string.contains(page.body, secret)
+  assert string.contains(page.body, "deploy")
+
+  // invalid: no scope
+  let resp =
+    post_form(env, "/api-clients", cookie, [
+      #("csrf_token", csrf),
+      #("name", "noscope"),
+    ])
+  assert resp.status == 422
+
+  // rotate shows a new secret, then delete
+  let resp =
+    post_form(env, "/api-clients/rp_" <> client_id <> "/rotate", cookie, [
+      #("csrf_token", csrf),
+    ])
+  assert resp.status == 200
+  assert between(resp.body, "rps_", "<") != secret
+  let resp =
+    post_form(env, "/api-clients/rp_" <> client_id <> "/delete", cookie, [
+      #("csrf_token", csrf),
+    ])
+  assert resp.status == 303
+  let resp =
+    post_form(env, "/api-clients/rp_" <> client_id <> "/delete", cookie, [
+      #("csrf_token", csrf),
+    ])
+  assert resp.status == 404
+}
+
+/// The text after the first `start` marker up to `stop`.
+fn between(text: String, start: String, stop: String) -> String {
+  let assert Ok(#(_, rest)) = string.split_once(text, start)
+  let assert Ok(#(value, _)) = string.split_once(rest, stop)
+  value
+}

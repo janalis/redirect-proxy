@@ -19,6 +19,7 @@ pub type Config {
     local_auth: LocalAuthConfig,
     oidc: OidcConfig,
     header_auth: HeaderAuthConfig,
+    api: ApiConfig,
   )
 }
 
@@ -72,6 +73,30 @@ pub type OidcConfig {
   )
 }
 
+pub type ApiConfig {
+  ApiConfig(
+    enabled: Bool,
+    /// Lifetime of access tokens issued by the built-in token endpoint.
+    token_ttl: Int,
+    /// Maximum request body size of API calls (bulk imports).
+    max_body_bytes: Int,
+    oauth: ApiOAuthConfig,
+  )
+}
+
+/// Validation of JWT access tokens issued by an external OAuth2/OIDC server.
+pub type ApiOAuthConfig {
+  ApiOAuthConfig(
+    enabled: Bool,
+    issuer: String,
+    audience: String,
+    scope_claim: String,
+    read_scope: String,
+    write_scope: String,
+    ops_scope: String,
+  )
+}
+
 pub type HeaderAuthConfig {
   HeaderAuthConfig(
     enabled: Bool,
@@ -117,6 +142,20 @@ pub fn default() -> Config {
       user_header: "x-forwarded-user",
       email_header: "x-forwarded-email",
       trusted_proxies: ["127.0.0.1/32", "::1/128"],
+    ),
+    api: ApiConfig(
+      enabled: True,
+      token_ttl: 3600,
+      max_body_bytes: 10_485_760,
+      oauth: ApiOAuthConfig(
+        enabled: False,
+        issuer: "",
+        audience: "redirect-proxy",
+        scope_claim: "scope",
+        read_scope: "redirects:read",
+        write_scope: "redirects:write",
+        ops_scope: "redirects:ops",
+      ),
     ),
   )
 }
@@ -257,7 +296,61 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["auth", "header", "trusted_proxies"],
     h.trusted_proxies,
   ))
+  let a = d.api
+  use api_enabled <- result.try(boolean(t, ["api", "enabled"], a.enabled))
+  use token_ttl <- result.try(integer(t, ["api", "token_ttl"], a.token_ttl))
+  use max_body_bytes <- result.try(integer(
+    t,
+    ["api", "max_body_bytes"],
+    a.max_body_bytes,
+  ))
+  let ao = a.oauth
+  use ao_enabled <- result.try(boolean(
+    t,
+    ["api", "oauth", "enabled"],
+    ao.enabled,
+  ))
+  use ao_issuer <- result.try(str(t, ["api", "oauth", "issuer"], ao.issuer))
+  use ao_audience <- result.try(str(
+    t,
+    ["api", "oauth", "audience"],
+    ao.audience,
+  ))
+  use ao_scope_claim <- result.try(str(
+    t,
+    ["api", "oauth", "scope_claim"],
+    ao.scope_claim,
+  ))
+  use read_scope <- result.try(str(
+    t,
+    ["api", "oauth", "read_scope"],
+    ao.read_scope,
+  ))
+  use write_scope <- result.try(str(
+    t,
+    ["api", "oauth", "write_scope"],
+    ao.write_scope,
+  ))
+  use ops_scope <- result.try(str(
+    t,
+    ["api", "oauth", "ops_scope"],
+    ao.ops_scope,
+  ))
   Ok(Config(
+    api: ApiConfig(
+      enabled: api_enabled,
+      token_ttl:,
+      max_body_bytes:,
+      oauth: ApiOAuthConfig(
+        enabled: ao_enabled,
+        issuer: ao_issuer,
+        audience: ao_audience,
+        scope_claim: ao_scope_claim,
+        read_scope:,
+        write_scope:,
+        ops_scope:,
+      ),
+    ),
     server: ServerConfig(
       listen: server_listen,
       port: server_port,
@@ -323,9 +416,23 @@ pub fn apply_env(
       Error(Nil) -> current
     }
   }
-  let Config(server:, admin:, storage:, local_auth:, oidc:, header_auth:) =
+  let Config(server:, admin:, storage:, local_auth:, oidc:, header_auth:, api:) =
     config
   Config(
+    api: ApiConfig(
+      enabled: b("RP_API_ENABLED", api.enabled),
+      token_ttl: i("RP_API_TOKEN_TTL", api.token_ttl),
+      max_body_bytes: i("RP_API_MAX_BODY_BYTES", api.max_body_bytes),
+      oauth: ApiOAuthConfig(
+        enabled: b("RP_API_OAUTH_ENABLED", api.oauth.enabled),
+        issuer: s("RP_API_OAUTH_ISSUER", api.oauth.issuer),
+        audience: s("RP_API_OAUTH_AUDIENCE", api.oauth.audience),
+        scope_claim: s("RP_API_OAUTH_SCOPE_CLAIM", api.oauth.scope_claim),
+        read_scope: s("RP_API_OAUTH_READ_SCOPE", api.oauth.read_scope),
+        write_scope: s("RP_API_OAUTH_WRITE_SCOPE", api.oauth.write_scope),
+        ops_scope: s("RP_API_OAUTH_OPS_SCOPE", api.oauth.ops_scope),
+      ),
+    ),
     server: ServerConfig(
       listen: s("RP_SERVER_LISTEN", server.listen),
       port: i("RP_SERVER_PORT", server.port),
@@ -424,6 +531,19 @@ pub fn validate(config: Config) -> Result(Config, String) {
       && !config.header_auth.enabled,
     Error("at least one admin authentication method must be enabled"),
   )
+  use <- bool.guard(
+    config.api.token_ttl < 60 || config.api.token_ttl > 86_400,
+    Error("api.token_ttl must be between 60 and 86400 seconds"),
+  )
+  use <- bool.guard(
+    config.api.max_body_bytes < 1024,
+    Error("api.max_body_bytes must be at least 1024"),
+  )
+  use <- bool.guard(
+    config.api.oauth.enabled
+      && { config.api.oauth.issuer == "" || config.api.oauth.audience == "" },
+    Error("api.oauth requires issuer and audience when enabled"),
+  )
   Ok(config)
 }
 
@@ -443,6 +563,10 @@ pub fn audit_path(config: Config) -> String {
 
 pub fn backups_dir(config: Config) -> String {
   config.storage.data_dir <> "/backups"
+}
+
+pub fn api_clients_path(config: Config) -> String {
+  config.storage.data_dir <> "/api_clients.json"
 }
 
 pub fn secret_path(config: Config) -> String {

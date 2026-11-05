@@ -1,6 +1,8 @@
 import envoy
 import gleam/string
 import redirect_proxy
+import redirect_proxy/api/clients
+import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/password
 import redirect_proxy/rule
@@ -110,4 +112,59 @@ fn list_length(items: List(a)) -> Int {
     [] -> 0
     [_, ..rest] -> 1 + list_length(rest)
   }
+}
+
+pub fn client_commands_test() {
+  let #(dir, config_path) = setup()
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "client", "add", "ci", "--scope", "redirects:read",
+      "--scope=redirects:ops", "--config", config_path,
+    ])
+  let assert Ok(Nil) =
+    redirect_proxy.run(["client", "add", "default", "--config", config_path])
+  let assert Error(_) =
+    redirect_proxy.run([
+      "client", "add", "bad", "--scope", "admin", "--config", config_path,
+    ])
+  let assert Error(_) =
+    redirect_proxy.run(["client", "add", "bad", "oops", "--config", config_path])
+  let assert Ok(Nil) =
+    redirect_proxy.run(["client", "list", "--config", config_path])
+
+  let settings =
+    clients.Settings(
+      path: dir <> "/data/api_clients.json",
+      audit_path: dir <> "/data/audit.jsonl",
+    )
+  let assert Ok([ci, default]) = clients.list(settings)
+  assert ci.scopes == [scope.Read, scope.Ops]
+  assert default.scopes == [scope.Write]
+
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "client",
+      "rotate",
+      ci.client_id,
+      "--config",
+      config_path,
+    ])
+  let assert Ok(rotated) = clients.get(settings, ci.client_id)
+  assert rotated.secret_hash != ci.secret_hash
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "client",
+      "delete",
+      ci.client_id,
+      "--config",
+      config_path,
+    ])
+  let assert Error(_) =
+    redirect_proxy.run([
+      "client",
+      "delete",
+      ci.client_id,
+      "--config",
+      config_path,
+    ])
 }

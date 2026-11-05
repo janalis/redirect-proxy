@@ -15,7 +15,7 @@ import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -47,12 +47,30 @@ pub type ImportMode {
   Merge
 }
 
+/// Why a versioned change was refused.
+pub type ChangeError {
+  NotFound
+  /// The rule changed since the version the caller based its change on.
+  Conflict(current: Rule)
+  Invalid(List(String))
+}
+
 pub opaque type Message {
   All(reply: Subject(List(Rule)))
   Get(id: String, reply: Subject(Result(Rule, Nil)))
   Create(rule: Rule, actor: String, reply: Subject(Result(Rule, List(String))))
-  Update(rule: Rule, actor: String, reply: Subject(Result(Rule, List(String))))
-  Delete(id: String, actor: String, reply: Subject(Result(Rule, String)))
+  Update(
+    rule: Rule,
+    expected: Option(String),
+    actor: String,
+    reply: Subject(Result(Rule, ChangeError)),
+  )
+  Delete(
+    id: String,
+    expected: Option(String),
+    actor: String,
+    reply: Subject(Result(Rule, ChangeError)),
+  )
   Import(
     rules: List(Rule),
     mode: ImportMode,
@@ -120,7 +138,18 @@ pub fn update(
   rule: Rule,
   by actor_name: String,
 ) -> Result(Rule, List(String)) {
-  actor.call(store, timeout, Update(rule, actor_name, _))
+  update_versioned(store, rule, None, actor_name)
+  |> result.map_error(describe_change_error)
+}
+
+/// Updates a rule only if its current version equals `expected` (when given).
+pub fn update_versioned(
+  store: Store,
+  rule: Rule,
+  expected: Option(String),
+  by actor_name: String,
+) -> Result(Rule, ChangeError) {
+  actor.call(store, timeout, Update(rule, expected, actor_name, _))
 }
 
 pub fn delete(
@@ -128,7 +157,40 @@ pub fn delete(
   id: String,
   by actor_name: String,
 ) -> Result(Rule, String) {
-  actor.call(store, timeout, Delete(id, actor_name, _))
+  delete_versioned(store, id, None, actor_name)
+  |> result.map_error(fn(e) { string.join(describe_change_error(e), "; ") })
+}
+
+/// Deletes a rule only if its current version equals `expected` (when given).
+pub fn delete_versioned(
+  store: Store,
+  id: String,
+  expected: Option(String),
+  by actor_name: String,
+) -> Result(Rule, ChangeError) {
+  actor.call(store, timeout, Delete(id, expected, actor_name, _))
+}
+
+pub fn describe_change_error(error: ChangeError) -> List(String) {
+  case error {
+    NotFound -> ["id: rule not found"]
+    Conflict(_) -> ["version: the rule was modified concurrently"]
+    Invalid(errors) -> errors
+  }
+}
+
+fn check_version(
+  existing: Rule,
+  expected: Option(String),
+) -> Result(Nil, ChangeError) {
+  case expected {
+    Some(v) if v != "*" ->
+      case rule.version(existing) == v {
+        True -> Ok(Nil)
+        False -> Error(Conflict(existing))
+      }
+    _ -> Ok(Nil)
+  }
 }
 
 pub fn import_rules(
@@ -199,12 +261,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       reply_and_continue(state, reply, result)
     }
 
-    Update(input, actor_name, reply) -> {
+    Update(input, expected, actor_name, reply) -> {
       let result = {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == input.id })
-          |> result.replace_error(["id: rule not found"]),
+          |> result.replace_error(NotFound),
         )
+        use Nil <- result.try(check_version(existing, expected))
         let candidate =
           rule.Rule(
             ..input,
@@ -212,7 +275,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             updated_at: ffi.now_rfc3339(),
             updated_by: actor_name,
           )
-        use valid <- result.try(rule.validate(candidate))
+        use valid <- result.try(
+          rule.validate(candidate) |> result.map_error(Invalid),
+        )
         let rules =
           list.map(state.rules, fn(r) {
             case r.id == valid.id {
@@ -220,8 +285,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               False -> r
             }
           })
-        use Nil <- result.try(check_conflicts(rules))
-        use Nil <- result.try(commit(state.settings, rules))
+        use Nil <- result.try(
+          check_conflicts(rules) |> result.map_error(Invalid),
+        )
+        use Nil <- result.try(
+          commit(state.settings, rules) |> result.map_error(Invalid),
+        )
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -235,16 +304,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       reply_and_continue(state, reply, result)
     }
 
-    Delete(rule_id, actor_name, reply) -> {
+    Delete(rule_id, expected, actor_name, reply) -> {
       let result = {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == rule_id })
-          |> result.replace_error("rule not found"),
+          |> result.replace_error(NotFound),
         )
+        use Nil <- result.try(check_version(existing, expected))
         let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
         use Nil <- result.try(
-          commit(state.settings, rules)
-          |> result.map_error(string.join(_, "; ")),
+          commit(state.settings, rules) |> result.map_error(Invalid),
         )
         audit.record(
           state.settings.audit_path,

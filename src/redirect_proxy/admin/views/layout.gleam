@@ -15,12 +15,20 @@ pub type Flash {
   Info(String)
 }
 
+/// Optional sections shown in the navigation bar.
+pub type Features {
+  Features(users: Bool, api: Bool)
+}
+
+pub const no_features = Features(users: False, api: False)
+
 pub type Nav {
   NavRules
   NavTest
   NavImport
   NavUsers
   NavAudit
+  NavClients
   NavNone
 }
 
@@ -29,7 +37,7 @@ pub fn page(
   session session: Option(Session),
   nav nav: Nav,
   flash flash: Option(Flash),
-  show_users show_users: Bool,
+  features features: Features,
   content content: List(Element(Nil)),
 ) -> String {
   h.html([a.lang("en")], [
@@ -49,7 +57,7 @@ pub fn page(
       h.link([a.rel("icon"), a.href("/static/favicon.svg")]),
     ]),
     h.body([], [
-      navbar(session, nav, show_users),
+      navbar(session, nav, features),
       h.main([a.class("container py-4")], [flash_view(flash), ..content]),
       h.footer([a.class("container pb-4 small fg-secondary")], [
         h.text(app_name),
@@ -62,7 +70,7 @@ pub fn page(
 fn navbar(
   session: Option(Session),
   nav: Nav,
-  show_users: Bool,
+  features: Features,
 ) -> Element(Nil) {
   let link = fn(target: Nav, href: String, label: String) {
     h.li([a.class("nav-item")], [
@@ -99,8 +107,12 @@ fn navbar(
                   link(NavTest, "/test", "Test a URL"),
                   link(NavImport, "/import", "Import / export"),
                 ],
-                case show_users {
+                case features.users {
                   True -> [link(NavUsers, "/users", "Users")]
+                  False -> []
+                },
+                case features.api {
+                  True -> [link(NavClients, "/api-clients", "API clients")]
                   False -> []
                 },
                 [link(NavAudit, "/audit", "Audit log")],
@@ -146,14 +158,14 @@ pub fn flash_view(flash: Option(Flash)) -> Element(Nil) {
 }
 
 pub fn alert(theme: String, message: String) -> Element(Nil) {
-  h.div([a.class("alert " <> theme), a.role("alert")], [h.text(message)])
+  h.div([a.class("alert mb-3 " <> theme), a.role("alert")], [h.text(message)])
 }
 
 pub fn errors_view(errors: List(String)) -> Element(Nil) {
   case errors {
     [] -> element.none()
     _ ->
-      h.div([a.class("alert theme-danger"), a.role("alert")], [
+      h.div([a.class("alert mb-3 theme-danger"), a.role("alert")], [
         h.strong([], [h.text("Please fix the following:")]),
         h.ul(
           [a.class("mb-0")],

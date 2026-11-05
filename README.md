@@ -28,6 +28,11 @@ rules. It never proxies traffic to an upstream.
   - A "test a URL" tool.
   - JSON import and export.
   - Users and an audit log.
+- **REST API** with OAuth 2.0:
+  - A built-in client credentials token endpoint, with API clients managed in
+    the admin or the CLI.
+  - JWT access tokens from your own authorization server are also accepted.
+  - An OpenAPI 3.1 document is served at `/api/openapi.json`.
 - **Authentication:**
   - Local accounts (PBKDF2-SHA256).
   - Optional OpenID Connect single sign-on.
@@ -43,6 +48,7 @@ rules. It never proxies traffic to an upstream.
 - [Redirection rules](#redirection-rules)
 - [Configuration](#configuration)
 - [Administration and authentication](#administration-and-authentication)
+- [REST API](#rest-api)
 - [Command line](#command-line)
 - [Operations](#operations)
 - [Performance](#performance)
@@ -220,6 +226,8 @@ option. Each option can be overridden with an environment variable named
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
+| `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
+| `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
 | `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`) |
 | `NO_COLOR` | plain log lines (automatic when output is not a terminal) |
@@ -269,12 +277,81 @@ Security measures:
 > origin check passes. Serve the admin over HTTPS so that cookies get the
 > `Secure` flag.
 
+## REST API
+
+The API is served by the admin listener under `/api`, next to the OAuth 2.0
+token endpoint `/oauth/token`. Its OpenAPI 3.1 description is at
+[`/api/openapi.json`](http://localhost:8081/api/openapi.json).
+
+```sh
+# 1. Create an API client in the admin ("API clients"), or with the CLI.
+#    The secret is shown only once.
+redirect-proxy client add deploy --scope redirects:write
+
+# 2. Get an access token (client credentials grant).
+TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials \
+  http://localhost:8081/oauth/token | jq -r .access_token)
+
+# 3. Call the API.
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"source": "/old", "target": "https://example.com/new", "status": 301}' \
+  http://localhost:8081/api/redirects
+```
+
+| Endpoint | Scope | |
+| --- | --- | --- |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; pages via `page` and `per_page` (max 500). |
+| `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
+| `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch). |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. |
+| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing. |
+| `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
+| `GET /api/test?url=` | `redirects:read` | Which rule matches a URL, and where it redirects. |
+
+**Tokens.**
+
+- Tokens from `/oauth/token` are opaque and expire after `api.token_ttl`.
+- Rotating a client's secret or deleting the client revokes its tokens
+  immediately, including when you do it from the CLI.
+- A token request can ask for fewer scopes than the client has with
+  `scope=…`.
+- `redirects:write` implies `redirects:read`.
+
+**External authorization server.** With `[api.oauth]` enabled, JWT access
+tokens from your own authorization server are accepted too:
+
+- The server is found through OIDC or RFC 8414 discovery on `issuer`.
+- The signature is checked against its JWKS.
+- `iss`, `aud`, `exp` and `nbf` are verified.
+- Scopes are read from `scope` or `scp` and mapped through `read_scope`,
+  `write_scope` and `ops_scope`.
+
+**Errors** use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
+`application/problem+json`. Validation errors carry an `errors` array of
+`{field, message}`. Authentication failures follow
+[RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (`WWW-Authenticate:
+Bearer error="invalid_token"` or `"insufficient_scope"`). The API never uses
+cookies, so it isn't exposed to CSRF.
+
+**Compatibility.** There is no version prefix. The API only changes
+additively, so clients must ignore fields they don't know. Retiring a field
+or endpoint works like this:
+
+1. It is first deprecated. It still works, and responses that use it carry a
+   [`Deprecation`](https://www.rfc-editor.org/rfc/rfc9745) header, plus a
+   [`Sunset`](https://www.rfc-editor.org/rfc/rfc8594) header once a removal
+   date is set.
+2. It is flagged `deprecated: true` in the OpenAPI document and announced in
+   the changelog.
+3. It is removed only in a major release.
+
 ## Command line
 
 ```text
 redirect-proxy [serve] [--config FILE]
 redirect-proxy check-config [--config FILE]
 redirect-proxy user add|passwd|delete <username> | user list
+redirect-proxy client add <name> [--scope SCOPE]... | client list | client rotate|delete <client_id>
 redirect-proxy rules validate [FILE] | rules export | rules import <FILE> [--replace]
 redirect-proxy version | help
 ```
@@ -293,8 +370,8 @@ for it. `rules import` writes the file; a running server applies it on
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule
   before and after.
 - **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
-  fallbacks, login failures, reloads, loaded rules, VM memory and process
-  count.
+  fallbacks, login failures, reloads, API requests, issued tokens, API
+  authentication failures, loaded rules, VM memory and process count.
 - **Shutdown.** `SIGTERM` stops the VM gracefully, which suits containers and
   systemd.
 - **Tuning.** Pass extra VM flags with `ERL_FLAGS`. For example, on a small
@@ -357,6 +434,7 @@ src/redirect_proxy/
   store.gleam                 single writer actor: persistence, backups, audit, reload
   proxy/server.gleam          redirect listener (mist, hot path)
   admin/                      router, auth (local, OIDC, header, sessions), views
+  api/                        REST API, token endpoint, clients, OpenAPI, deprecations
   app.gleam                   supervision tree
 src/redirect_proxy_ffi.erl    persistent_term, PCRE limits, atomic writes, crypto, JWT
 packaging/                    launcher, systemd unit, Debian scripts, Homebrew formula

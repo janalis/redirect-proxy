@@ -67,6 +67,7 @@ regex_run(MP, Subject) ->
 %% ---------------------------------------------------------------------------
 
 atomic_write(Path, Content) ->
+    _ = filelib:ensure_dir(Path),
     Tmp = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     Result =
         case file:open(Tmp, [write, raw, binary]) of

@@ -1,5 +1,7 @@
 //// Redirection rules: data model, JSON codec and validation.
 
+import gleam/bit_array
+import gleam/crypto
 import gleam/dynamic/decode
 import gleam/int
 import gleam/json.{type Json}
@@ -87,6 +89,17 @@ pub fn kind_from_string(value: String) -> Result(MatchKind, Nil) {
     "regex" -> Ok(Regex)
     _ -> Error(Nil)
   }
+}
+
+// --- versions ---------------------------------------------------------------
+
+/// A version tag derived from the full content of the rule (used as HTTP
+/// ETag and for optimistic concurrency). Any change to any field changes it.
+pub fn version(rule: Rule) -> String {
+  crypto.hash(crypto.Sha256, <<json.to_string(to_json(rule)):utf8>>)
+  |> bit_array.slice(0, 12)
+  |> result.unwrap(<<>>)
+  |> bit_array.base64_url_encode(False)
 }
 
 // --- JSON -------------------------------------------------------------------

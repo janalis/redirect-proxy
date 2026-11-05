@@ -7,6 +7,8 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
+import redirect_proxy/api/clients
+import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
@@ -33,6 +35,8 @@ Usage:
   redirect-proxy user passwd <username> [--config FILE]
   redirect-proxy user delete <username> [--config FILE]
   redirect-proxy user list [--config FILE]
+  redirect-proxy client add <name> [--scope SCOPE]... [--config FILE]
+  redirect-proxy client list|rotate <client_id>|delete <client_id> [--config FILE]
   redirect-proxy rules validate [FILE] [--config FILE]
   redirect-proxy rules export [--config FILE]
   redirect-proxy rules import <FILE> [--replace] [--config FILE]
@@ -42,6 +46,7 @@ Usage:
 The configuration file defaults to $RP_CONFIG. Every setting can be
 overridden with RP_* environment variables (see README). Passwords for
 `user add`/`user passwd` are read from $RP_PASSWORD or prompted for.
+API client scopes: redirects:read, redirects:write (default), redirects:ops.
 "
 
 pub fn main() -> Nil {
@@ -69,6 +74,10 @@ pub fn run(args: List(String)) -> Result(Nil, String) {
     ["user", "passwd", username] -> user_passwd(config_path, username)
     ["user", "delete", username] -> user_delete(config_path, username)
     ["user", "list"] -> user_list(config_path)
+    ["client", "add", name, ..flags] -> client_add(config_path, name, flags)
+    ["client", "list"] -> client_list(config_path)
+    ["client", "rotate", client_id] -> client_rotate(config_path, client_id)
+    ["client", "delete", client_id] -> client_delete(config_path, client_id)
     ["rules", "validate"] -> rules_validate(config_path, "")
     ["rules", "validate", file] -> rules_validate(config_path, file)
     ["rules", "export"] -> rules_export(config_path)
@@ -217,6 +226,96 @@ fn user_list(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
   use all <- result.try(users.list(app.users_settings(cfg)))
   list.each(all, fn(u) { io.println(u.username <> "\t" <> u.created_at) })
+  Ok(Nil)
+}
+
+// --- API clients ------------------------------------------------------------
+
+fn client_add(
+  config_path: String,
+  name: String,
+  flags: List(String),
+) -> Result(Nil, String) {
+  use cfg <- result.try(load(config_path))
+  use names <- result.try(scope_flags(flags, []))
+  use scopes <- result.try(case names {
+    [] -> Ok([scope.Write])
+    _ ->
+      list.try_map(names, fn(n) {
+        scope.from_string(n) |> result.replace_error("unknown scope: " <> n)
+      })
+  })
+  use #(client, secret) <- result.try(clients.create(
+    app.clients_settings(cfg),
+    name,
+    scopes,
+    "cli",
+  ))
+  io.println("client_id:     " <> client.client_id)
+  io.println("client_secret: " <> secret)
+  io.println("scopes:        " <> scope.join(client.scopes))
+  io.println("The secret is shown only once; store it now.")
+  Ok(Nil)
+}
+
+fn scope_flags(
+  flags: List(String),
+  acc: List(String),
+) -> Result(List(String), String) {
+  case flags {
+    [] -> Ok(list.reverse(acc))
+    ["--scope", value, ..rest] -> scope_flags(rest, [value, ..acc])
+    ["--scope=" <> value, ..rest] -> scope_flags(rest, [value, ..acc])
+    [other, ..] -> Error("unexpected argument: " <> other)
+  }
+}
+
+fn client_list(config_path: String) -> Result(Nil, String) {
+  use cfg <- result.try(load(config_path))
+  use all <- result.try(clients.list(app.clients_settings(cfg)))
+  list.each(all, fn(c) {
+    io.println(
+      c.client_id
+      <> "\t"
+      <> c.name
+      <> "\t"
+      <> scope.join(c.scopes)
+      <> "\tlast used: "
+      <> case c.last_used_at {
+        "" -> "never"
+        at -> at
+      },
+    )
+  })
+  Ok(Nil)
+}
+
+fn client_rotate(
+  config_path: String,
+  client_id: String,
+) -> Result(Nil, String) {
+  use cfg <- result.try(load(config_path))
+  use secret <- result.try(clients.rotate(
+    app.clients_settings(cfg),
+    client_id,
+    "cli",
+  ))
+  io.println("client_secret: " <> secret)
+  io.println("Access tokens issued with the previous secret are revoked.")
+  Ok(Nil)
+}
+
+fn client_delete(
+  config_path: String,
+  client_id: String,
+) -> Result(Nil, String) {
+  use cfg <- result.try(load(config_path))
+  use Nil <- result.try(clients.delete(
+    app.clients_settings(cfg),
+    client_id,
+    "cli",
+  ))
+  io.println("API client " <> client_id <> " deleted")
   Ok(Nil)
 }
 

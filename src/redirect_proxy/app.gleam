@@ -15,6 +15,8 @@ import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
+import redirect_proxy/api/clients
+import redirect_proxy/api/token
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
 import redirect_proxy/id
@@ -43,6 +45,14 @@ pub fn init_tables() -> Nil {
   session.init()
   ratelimit.init()
   oidc.init()
+  token.init()
+}
+
+pub fn clients_settings(cfg: Config) -> clients.Settings {
+  clients.Settings(
+    path: config.api_clients_path(cfg),
+    audit_path: config.audit_path(cfg),
+  )
 }
 
 pub fn users_settings(cfg: Config) -> users.Settings {
@@ -105,6 +115,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         config: cfg,
         store: store_subject,
         users: users_settings(cfg),
+        clients: clients_settings(cfg),
         static_dir:,
         peer_ip:,
       )
@@ -254,5 +265,6 @@ fn janitor_loop() -> Nil {
   let _ = session.purge_expired()
   let _ = ratelimit.purge_expired()
   let _ = oidc.purge_expired()
+  let _ = token.purge_expired()
   janitor_loop()
 }

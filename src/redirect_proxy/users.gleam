@@ -195,18 +195,5 @@ fn save(path: String, users: List(User)) -> Result(Nil, String) {
       ),
     ])
     |> json.to_string
-  use Nil <- result.try(ensure_parent(path))
   ffi.atomic_write(path, content <> "\n")
-}
-
-fn ensure_parent(path: String) -> Result(Nil, String) {
-  case string.split(path, "/") |> list.reverse {
-    [_file, ..rest] if rest != [] ->
-      rest
-      |> list.reverse
-      |> string.join("/")
-      |> simplifile.create_directory_all
-      |> result.map_error(simplifile.describe_error)
-    _ -> Ok(Nil)
-  }
 }
