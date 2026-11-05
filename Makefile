@@ -76,11 +76,9 @@ bundle: ## Self-contained bundle with the Erlang runtime for this platform
 bundle-portable: ## Portable bundle that uses the system Erlang (OTP 27+)
 	scripts/bundle.sh $(VERSION) erlang
 
-deb: bundle ## Debian/Ubuntu package (Linux only, needs nfpm)
+deb: bundle ## Debian/Ubuntu package (Linux only; nfpm or Docker)
 	@test "$(UNAME_S)" = linux || { echo "build .deb packages on Linux (or via the release workflow)"; exit 1; }
-	VERSION=$(VERSION) ARCH=$(ARCH) MAINTAINER="$(MAINTAINER)" \
-	BUNDLE=dist/redirect-proxy-$(VERSION)-$(TARGET) \
-	nfpm package --packager deb --target dist/
+	MAINTAINER="$(MAINTAINER)" scripts/package-deb.sh $(VERSION) $(ARCH) dist/redirect-proxy-$(VERSION)-$(TARGET)
 
 docker: ## Build the container image
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) -t $(IMAGE):dev .

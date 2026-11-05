@@ -82,14 +82,10 @@ jobs:
         run: scripts/bundle.sh "${{ needs.meta.outputs.version }}" "linux-${{ matrix.arch }}" --with-erts
       - name: Build .deb
         env:
-          VERSION: ${{ needs.meta.outputs.version }}
-          ARCH: ${{ matrix.arch }}
-          BUNDLE: dist/redirect-proxy-${{ needs.meta.outputs.version }}-linux-${{ matrix.arch }}
           MAINTAINER: ${{ vars.PACKAGE_MAINTAINER || 'Janalis' }}
         run: |
-          docker run --rm -v "$PWD:/work" -w /work \
-            -e VERSION -e ARCH -e BUNDLE -e MAINTAINER \
-            goreleaser/nfpm:v2.48.0 package --packager deb --target dist/
+          scripts/package-deb.sh "${{ needs.meta.outputs.version }}" "${{ matrix.arch }}" \
+            "dist/redirect-proxy-${{ needs.meta.outputs.version }}-linux-${{ matrix.arch }}"
       - name: Install and run the .deb
         run: |
           sudo apt-get install -y "./dist/redirect-proxy_${{ needs.meta.outputs.version }}_${{ matrix.arch }}.deb"
