@@ -24,7 +24,7 @@ pub const page_size = 50
 
 pub fn index(
   session: Session,
-  show_users: Bool,
+  features: layout.Features,
   flash: Option(Flash),
   rows: List(Row),
   total: Int,
@@ -39,7 +39,7 @@ pub fn index(
     session: option.Some(session),
     nav: layout.NavRules,
     flash:,
-    show_users:,
+    features:,
     content: [
       layout.heading("Redirections", [
         h.form([a.method("post"), a.action("/reload")], [
@@ -274,7 +274,7 @@ fn pagination(filters: Filters, page: Int, pages: Int) -> Element(Nil) {
 
 pub fn form(
   session: Session,
-  show_users: Bool,
+  features: layout.Features,
   r: Rule,
   errors: List(String),
   is_new: Bool,
@@ -292,7 +292,7 @@ pub fn form(
     session: option.Some(session),
     nav: layout.NavRules,
     flash: option.None,
-    show_users:,
+    features:,
     content: [
       layout.heading(title, []),
       layout.errors_view(errors),
@@ -468,13 +468,17 @@ fn input_class(errors: List(String), field: String) -> String {
 
 // --- delete -----------------------------------------------------------------
 
-pub fn confirm_delete(session: Session, show_users: Bool, r: Rule) -> String {
+pub fn confirm_delete(
+  session: Session,
+  features: layout.Features,
+  r: Rule,
+) -> String {
   layout.page(
     title: "Delete redirection",
     session: option.Some(session),
     nav: layout.NavRules,
     flash: option.None,
-    show_users:,
+    features:,
     content: [
       layout.heading("Delete redirection", []),
       h.div([a.class("card")], [

@@ -63,3 +63,42 @@ enabled = false
 user_header = "X-Forwarded-User"
 email_header = "X-Forwarded-Email"
 trusted_proxies = ["127.0.0.1/32", "::1/128"]
+
+[api]
+# REST API under /api (bearer tokens) and OAuth 2.0 token endpoint
+# (/oauth/token, client credentials grant).
+# Manage API clients in the admin ("API clients") or with
+# `redirect-proxy client add <name> --scope redirects:write`.
+enabled = true
+# The API and the admin UI share a listener when they use the same port
+# (port = 0 means admin.port). Give the API another port to serve it on its
+# own listener: the admin listener then no longer answers /api and /oauth,
+# so each can be exposed to different networks. With the admin UI disabled
+# the API keeps running on its own listener.
+port = 0
+# Address of the API's own listener. Empty: admin.listen. When the API shares
+# admin.port it must be empty or equal to admin.listen.
+listen = ""
+# Externally visible URL of the API, shown in the admin usage examples.
+# Defaults to admin.public_url (shared) or http://localhost:<port> (own port).
+public_url = ""
+# Lifetime of access tokens issued by /oauth/token (seconds, 60-86400).
+token_ttl = 3600
+# Maximum request body size (bulk imports).
+max_body_bytes = 10485760
+
+[api.oauth]
+# Also accept JWT access tokens issued by an external OAuth 2.0 / OIDC
+# authorization server (Keycloak, Entra ID, Auth0, Okta...). Tokens must be
+# signed with a key of the issuer JWKS and contain iss, exp and an aud that
+# includes `audience`.
+enabled = false
+issuer = "https://idp.example.com/realms/main"
+audience = "redirect-proxy"
+# Claim holding the scopes: a space separated string ("scope") or an array
+# ("scp" is always read too).
+scope_claim = "scope"
+# Names of the scopes at your authorization server.
+read_scope = "redirects:read"
+write_scope = "redirects:write"
+ops_scope = "redirects:ops"

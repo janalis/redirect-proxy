@@ -12,9 +12,11 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/order
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
 
@@ -196,4 +198,28 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
     _, _ -> m.location
   }
   ffi.strip_control(base)
+}
+
+pub type UrlResolution {
+  Redirected(match: Match, location: String)
+  NotMatched
+  BadUrl
+}
+
+/// Resolves an absolute URL the way the redirect listener would (used by the
+/// admin and API URL testers).
+pub fn resolve_url(matcher: Matcher, url: String) -> UrlResolution {
+  case uri.parse(string.trim(url)) {
+    Ok(uri.Uri(host: option.Some(host), path:, query:, ..)) -> {
+      let path = case path {
+        "" -> "/"
+        p -> p
+      }
+      case lookup(matcher, host, path) {
+        Ok(m) -> Redirected(m, location(m, option.to_result(query, Nil)))
+        Error(Nil) -> NotMatched
+      }
+    }
+    _ -> BadUrl
+  }
 }

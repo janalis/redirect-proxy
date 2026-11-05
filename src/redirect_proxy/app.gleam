@@ -15,6 +15,10 @@ import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
+import redirect_proxy/api/clients
+import redirect_proxy/api/deprecation
+import redirect_proxy/api/router as api_router
+import redirect_proxy/api/token
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
 import redirect_proxy/id
@@ -33,6 +37,9 @@ pub type Running {
     store: store.Store,
     redirect_port: Int,
     admin_port: Int,
+    /// Port of the API's own listener (0 when the API shares the admin
+    /// listener or is disabled).
+    api_port: Int,
   )
 }
 
@@ -43,6 +50,14 @@ pub fn init_tables() -> Nil {
   session.init()
   ratelimit.init()
   oidc.init()
+  token.init()
+}
+
+pub fn clients_settings(cfg: Config) -> clients.Settings {
+  clients.Settings(
+    path: config.api_clients_path(cfg),
+    audit_path: config.audit_path(cfg),
+  )
 }
 
 pub fn users_settings(cfg: Config) -> users.Settings {
@@ -105,10 +120,27 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         config: cfg,
         store: store_subject,
         users: users_settings(cfg),
+        clients: clients_settings(cfg),
         static_dir:,
         peer_ip:,
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
+  }
+
+  let api_handler = fn(req: request.Request(mist.Connection)) {
+    let peer_ip = case mist.get_connection_info(req.body) {
+      Ok(info) -> mist.ip_address_to_string(info.ip_address)
+      Error(Nil) -> ""
+    }
+    let ctx =
+      api_router.Context(
+        config: cfg,
+        store: store_subject,
+        clients: clients_settings(cfg),
+        peer_ip:,
+        deprecations: deprecation.registry(),
+      )
+    wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
   }
 
   let builder =
@@ -140,6 +172,27 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
   }
 
+  let builder = case config.api_dedicated(cfg) {
+    False -> builder
+    True ->
+      supervisor.add(
+        builder,
+        mist.new(api_handler)
+          |> mist.bind(config.api_listen(cfg))
+          |> mist.port(config.api_port(cfg))
+          |> mist.after_start(fn(port, _, _) {
+            log.info(
+              "API listener on "
+              <> config.api_listen(cfg)
+              <> ":"
+              <> int.to_string(port),
+            )
+            process.send(ports, #("api", port))
+          })
+          |> mist.supervised,
+      )
+  }
+
   use started <- result.try(
     supervisor.start(builder)
     |> result.map_error(describe_start_error),
@@ -148,6 +201,10 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let redirect_port = wait_port(ports, "redirect")
   let admin_port = case cfg.admin.enabled {
     True -> wait_port(ports, "admin")
+    False -> 0
+  }
+  let api_port = case config.api_dedicated(cfg) {
+    True -> wait_port(ports, "api")
     False -> 0
   }
 
@@ -159,6 +216,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     store: store_subject,
     redirect_port:,
     admin_port:,
+    api_port:,
   ))
 }
 
@@ -254,5 +312,6 @@ fn janitor_loop() -> Nil {
   let _ = session.purge_expired()
   let _ = ratelimit.purge_expired()
   let _ = oidc.purge_expired()
+  let _ = token.purge_expired()
   janitor_loop()
 }

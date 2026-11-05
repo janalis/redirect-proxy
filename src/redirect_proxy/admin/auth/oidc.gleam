@@ -139,27 +139,46 @@ fn take_flow(state: String) -> Result(#(String, String), String) {
 // --- discovery and JWKS -----------------------------------------------------
 
 pub fn discover(cfg: OidcConfig) -> Result(Provider, String) {
-  case ffi.ets_get(table, "provider:" <> cfg.issuer) {
+  discover_issuer(cfg.issuer)
+}
+
+/// Discovers (and caches for an hour) the metadata of an OpenID Connect
+/// provider or OAuth 2.0 authorization server (RFC 8414).
+pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
+  case ffi.ets_get(table, "provider:" <> issuer) {
     Ok(#(expires_at, provider)) ->
       case expires_at > ffi.now_seconds() {
         True -> Ok(provider)
-        False -> fetch_provider(cfg)
+        False -> fetch_provider(issuer)
       }
-    Error(Nil) -> fetch_provider(cfg)
+    Error(Nil) -> fetch_provider(issuer)
   }
 }
 
-fn fetch_provider(cfg: OidcConfig) -> Result(Provider, String) {
-  let url =
-    trim_trailing_slash(cfg.issuer) <> "/.well-known/openid-configuration"
-  use body <- result.try(http_get(url))
+fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
+  let base = trim_trailing_slash(configured_issuer)
+  let url = base <> "/.well-known/openid-configuration"
+  use #(url, body) <- result.try(case http_get(url) {
+    Ok(body) -> Ok(#(url, body))
+    Error(first_error) -> {
+      let fallback = base <> "/.well-known/oauth-authorization-server"
+      http_get(fallback)
+      |> result.map(fn(body) { #(fallback, body) })
+      |> result.replace_error(first_error)
+    }
+  })
   let decoder = {
     use issuer <- decode.field("issuer", decode.string)
-    use authorization_endpoint <- decode.field(
+    use authorization_endpoint <- decode.optional_field(
       "authorization_endpoint",
+      "",
       decode.string,
     )
-    use token_endpoint <- decode.field("token_endpoint", decode.string)
+    use token_endpoint <- decode.optional_field(
+      "token_endpoint",
+      "",
+      decode.string,
+    )
     use jwks_uri <- decode.field("jwks_uri", decode.string)
     decode.success(Provider(
       issuer:,
@@ -173,15 +192,15 @@ fn fetch_provider(cfg: OidcConfig) -> Result(Provider, String) {
     |> result.replace_error("invalid OpenID discovery document at " <> url),
   )
   use <- bool.guard(
-    trim_trailing_slash(provider.issuer) != trim_trailing_slash(cfg.issuer),
+    trim_trailing_slash(provider.issuer) != base,
     Error(
       "discovery issuer "
       <> provider.issuer
       <> " does not match configured issuer "
-      <> cfg.issuer,
+      <> configured_issuer,
     ),
   )
-  ffi.ets_put(table, "provider:" <> cfg.issuer, #(
+  ffi.ets_put(table, "provider:" <> configured_issuer, #(
     ffi.now_seconds() + cache_ttl,
     provider,
   ))
@@ -189,26 +208,28 @@ fn fetch_provider(cfg: OidcConfig) -> Result(Provider, String) {
 }
 
 fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
-  let cached = case refresh {
-    True -> Error(Nil)
-    False ->
-      case ffi.ets_get(table, "jwks:" <> provider.jwks_uri) {
-        Ok(#(expires_at, body)) if expires_at > 0 ->
-          case expires_at > ffi.now_seconds() {
-            True -> Ok(body)
-            False -> Error(Nil)
-          }
-        _ -> Error(Nil)
+  let key = "jwks:" <> provider.jwks_uri
+  let now = ffi.now_seconds()
+  let cached = case ffi.ets_get(table, key) {
+    Ok(#(expires_at, #(fetched_at, body))) -> {
+      // A forced refresh (unknown signing key) is honoured at most once a
+      // minute so that bogus tokens cannot make us hammer the provider.
+      let fresh = case refresh {
+        True -> now - fetched_at < 60
+        False -> expires_at > now
       }
+      case fresh {
+        True -> Ok(body)
+        False -> Error(Nil)
+      }
+    }
+    Error(Nil) -> Error(Nil)
   }
   case cached {
     Ok(body) -> Ok(body)
     Error(Nil) -> {
       use body <- result.try(http_get(provider.jwks_uri))
-      ffi.ets_put(table, "jwks:" <> provider.jwks_uri, #(
-        ffi.now_seconds() + cache_ttl,
-        body,
-      ))
+      ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
       Ok(body)
     }
   }
@@ -261,13 +282,21 @@ fn verify(
   provider: Provider,
   id_token: String,
 ) -> Result(String, String) {
+  verify_signature(provider, id_token)
+}
+
+/// Verifies the signature of a JWT against the provider's JWKS and returns
+/// its claims as JSON. The JWKS is refreshed once on failure (key rotation).
+pub fn verify_signature(
+  provider: Provider,
+  token: String,
+) -> Result(String, String) {
   use keys <- result.try(jwks(provider, False))
-  case ffi.jwt_verify(keys, id_token) {
+  case ffi.jwt_verify(keys, token) {
     Ok(claims) -> Ok(claims)
     Error(_) -> {
-      // Keys may have been rotated: refresh once.
       use keys <- result.try(jwks(provider, True))
-      ffi.jwt_verify(keys, id_token)
+      ffi.jwt_verify(keys, token)
     }
   }
 }

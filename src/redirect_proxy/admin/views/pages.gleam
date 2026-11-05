@@ -8,6 +8,8 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
+import redirect_proxy/api/clients
+import redirect_proxy/api/scope
 import redirect_proxy/audit
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/users.{type User}
@@ -25,7 +27,7 @@ pub fn login(
     session: None,
     nav: layout.NavNone,
     flash: option.map(error, layout.Failure),
-    show_users: False,
+    features: layout.no_features,
     content: [
       h.div([a.class("row")], [
         h.div([a.class("col-12 md:col-6 lg:col-4 mx-auto")], [
@@ -114,7 +116,7 @@ pub type TestResult {
 
 pub fn test_url(
   session: Session,
-  show_users: Bool,
+  features: layout.Features,
   url: String,
   result: TestResult,
 ) -> String {
@@ -123,7 +125,7 @@ pub fn test_url(
     session: Some(session),
     nav: layout.NavTest,
     flash: None,
-    show_users:,
+    features:,
     content: [
       layout.heading("Test a URL", []),
       h.form([a.method("get"), a.action("/test"), a.class("row g-2 mb-4")], [
@@ -185,7 +187,7 @@ pub fn test_url(
 
 pub fn import_export(
   session: Session,
-  show_users: Bool,
+  features: layout.Features,
   flash: Option(Flash),
   errors: List(String),
 ) -> String {
@@ -194,7 +196,7 @@ pub fn import_export(
     session: Some(session),
     nav: layout.NavImport,
     flash:,
-    show_users:,
+    features:,
     content: [
       layout.heading("Import / export", [
         layout.button_link(
@@ -297,6 +299,7 @@ fn radio(
 
 pub fn users(
   session: Session,
+  features: layout.Features,
   flash: Option(Flash),
   all: List(User),
   errors: List(String),
@@ -306,7 +309,7 @@ pub fn users(
     session: Some(session),
     nav: layout.NavUsers,
     flash:,
-    show_users: True,
+    features:,
     content: [
       layout.heading("Local users", []),
       layout.errors_view(errors),
@@ -430,7 +433,7 @@ fn user_form(
 
 pub fn audit_log(
   session: Session,
-  show_users: Bool,
+  features: layout.Features,
   entries: List(audit.Entry),
 ) -> String {
   layout.page(
@@ -438,7 +441,7 @@ pub fn audit_log(
     session: Some(session),
     nav: layout.NavAudit,
     flash: None,
-    show_users:,
+    features:,
     content: [
       layout.heading("Audit log", []),
       h.p([a.class("small fg-secondary")], [
@@ -480,7 +483,7 @@ pub fn audit_log(
 
 pub fn error(
   session: Option(Session),
-  show_users: Bool,
+  features: layout.Features,
   title: String,
   message: String,
 ) -> String {
@@ -489,11 +492,212 @@ pub fn error(
     session:,
     nav: layout.NavNone,
     flash: None,
-    show_users:,
+    features:,
     content: [
       layout.heading(title, []),
       layout.alert("theme-danger", message),
       layout.button_link("/rules", "Back", "btn-outline theme-secondary"),
     ],
   )
+}
+
+// --- API clients ------------------------------------------------------------
+
+pub type IssuedSecret {
+  IssuedSecret(client_id: String, secret: String)
+}
+
+pub fn api_clients(
+  session: Session,
+  features: layout.Features,
+  flash: Option(Flash),
+  all: List(clients.Client),
+  issued: Option(IssuedSecret),
+  errors: List(String),
+  public_url: String,
+) -> String {
+  layout.page(
+    title: "API clients",
+    session: Some(session),
+    nav: layout.NavClients,
+    flash:,
+    features:,
+    content: [
+      layout.heading("API clients", [
+        h.a(
+          [
+            a.class("btn btn-outline theme-secondary"),
+            a.href("/api/openapi.json"),
+          ],
+          [h.text("OpenAPI document")],
+        ),
+      ]),
+      layout.errors_view(errors),
+      case issued {
+        None -> element.none()
+        Some(IssuedSecret(client_id, secret)) ->
+          h.div([a.class("alert mb-3 theme-warning"), a.role("alert")], [
+            h.div([], [
+              h.p([a.class("mb-2")], [
+                h.strong([], [h.text("Copy the client secret now: ")]),
+                h.text("it will not be shown again."),
+              ]),
+              h.dl([a.class("mb-0")], [
+                h.dt([], [h.text("client_id")]),
+                h.dd([], [
+                  h.code([a.class("user-select-all")], [h.text(client_id)]),
+                ]),
+                h.dt([], [h.text("client_secret")]),
+                h.dd([a.class("mb-0")], [
+                  h.code([a.class("user-select-all text-break")], [
+                    h.text(secret),
+                  ]),
+                ]),
+              ]),
+            ]),
+          ])
+      },
+      h.div([a.class("row g-4")], [
+        h.div([a.class("col-12 lg:col-7")], [
+          case all {
+            [] ->
+              h.div([a.class("card")], [
+                h.div([a.class("card-body fg-secondary")], [
+                  h.text("No API client yet."),
+                ]),
+              ])
+            _ ->
+              h.div([a.class("table-responsive")], [
+                h.table([a.class("table align-middle")], [
+                  h.thead([], [
+                    h.tr([], [
+                      h.th([], [h.text("Client")]),
+                      h.th([], [h.text("Scopes")]),
+                      h.th([], [h.text("Last used")]),
+                      h.th([a.class("text-end")], [h.text("Actions")]),
+                    ]),
+                  ]),
+                  h.tbody([], list.map(all, client_row(session, _))),
+                ]),
+              ])
+          },
+        ]),
+        h.div([a.class("col-12 lg:col-5")], [
+          new_client_form(session),
+          h.div([a.class("card mt-4")], [
+            h.div([a.class("card-body")], [
+              h.h2([a.class("h5 mb-3")], [h.text("Usage")]),
+              h.pre([a.class("small mb-0 text-wrap")], [
+                h.text(
+                  "curl -u CLIENT_ID:CLIENT_SECRET \\\n  -d grant_type=client_credentials \\\n  "
+                  <> public_url
+                  <> "/oauth/token\n\ncurl -H \"Authorization: Bearer $TOKEN\" \\\n  "
+                  <> public_url
+                  <> "/api/redirects",
+                ),
+              ]),
+            ]),
+          ]),
+        ]),
+      ]),
+    ],
+  )
+}
+
+fn client_row(session: Session, c: clients.Client) -> Element(Nil) {
+  h.tr([], [
+    h.td([], [
+      h.div([], [h.text(c.name)]),
+      h.code([a.class("small")], [h.text(c.client_id)]),
+    ]),
+    h.td(
+      [],
+      list.map(c.scopes, fn(s) {
+        h.span([a.class("badge badge-subtle theme-primary me-1")], [
+          h.text(scope.to_string(s)),
+        ])
+      }),
+    ),
+    h.td([a.class("small")], [
+      h.text(case c.last_used_at {
+        "" -> "never"
+        at -> at
+      }),
+    ]),
+    h.td([a.class("text-end text-nowrap")], [
+      h.form(
+        [
+          a.method("post"),
+          a.action("/api-clients/" <> c.client_id <> "/rotate"),
+          a.class("d-inline"),
+        ],
+        [
+          layout.csrf_field(session),
+          h.button(
+            [
+              a.type_("submit"),
+              a.class("btn btn-sm btn-outline theme-secondary me-1"),
+            ],
+            [h.text("Rotate secret")],
+          ),
+        ],
+      ),
+      h.form(
+        [
+          a.method("post"),
+          a.action("/api-clients/" <> c.client_id <> "/delete"),
+          a.class("d-inline"),
+        ],
+        [
+          layout.csrf_field(session),
+          h.button(
+            [a.type_("submit"), a.class("btn btn-sm btn-outline theme-danger")],
+            [h.text("Delete")],
+          ),
+        ],
+      ),
+    ]),
+  ])
+}
+
+fn new_client_form(session: Session) -> Element(Nil) {
+  let scope_box = fn(s: scope.Scope, checked: Bool, help: String) {
+    h.label([a.class("d-flex align-items-center gap-2 mb-2")], [
+      h.input([
+        a.type_("checkbox"),
+        a.class("check"),
+        a.name("scope"),
+        a.value(scope.to_string(s)),
+        a.checked(checked),
+      ]),
+      h.span([], [
+        h.code([a.class("text-nowrap")], [h.text(scope.to_string(s))]),
+        h.span([a.class("d-block small fg-secondary")], [h.text(help)]),
+      ]),
+    ])
+  }
+  h.form([a.method("post"), a.action("/api-clients"), a.class("card")], [
+    h.div([a.class("card-body")], [
+      h.h2([a.class("h5 mb-3")], [h.text("New API client")]),
+      layout.csrf_field(session),
+      h.div([a.class("mb-3")], [
+        h.label([a.class("form-label"), a.for("client-name")], [h.text("Name")]),
+        h.input([
+          a.id("client-name"),
+          a.name("name"),
+          a.class("form-control"),
+          a.required(True),
+          a.placeholder("ci-pipeline"),
+        ]),
+      ]),
+      h.div([a.class("mb-3")], [
+        scope_box(scope.Read, False, "read, export, test"),
+        scope_box(scope.Write, True, "create, update, delete, import"),
+        scope_box(scope.Ops, False, "reload from disk"),
+      ]),
+      h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
+        h.text("Create client"),
+      ]),
+    ]),
+  ])
 }

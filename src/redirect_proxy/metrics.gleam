@@ -20,6 +20,9 @@ pub type Metric {
   LoginFailures
   Reloads
   ReloadFailures
+  ApiRequests
+  TokensIssued
+  ApiAuthFailures
 }
 
 fn index(metric: Metric) -> Int {
@@ -32,6 +35,9 @@ fn index(metric: Metric) -> Int {
     LoginFailures -> 6
     Reloads -> 7
     ReloadFailures -> 8
+    ApiRequests -> 9
+    TokensIssued -> 10
+    ApiAuthFailures -> 11
   }
 }
 
@@ -46,7 +52,7 @@ fn counters() -> ffi.Counters {
   case ffi.snapshot_get(key) {
     Ok(c) -> c
     Error(Nil) -> {
-      let c = ffi.counter_new(8)
+      let c = ffi.counter_new(16)
       ffi.snapshot_put(key, c)
       c
     }
@@ -138,6 +144,24 @@ pub fn render_prometheus() -> String {
       "Rejected reloads of the redirections file.",
       "counter",
       get(ReloadFailures),
+    ),
+    line(
+      "redirect_proxy_api_requests_total",
+      "Requests to the REST API and token endpoint.",
+      "counter",
+      get(ApiRequests),
+    ),
+    line(
+      "redirect_proxy_api_tokens_issued_total",
+      "Access tokens issued by the built-in token endpoint.",
+      "counter",
+      get(TokensIssued),
+    ),
+    line(
+      "redirect_proxy_api_auth_failures_total",
+      "Rejected API tokens and client authentications.",
+      "counter",
+      get(ApiAuthFailures),
     ),
     line(
       "redirect_proxy_rules",

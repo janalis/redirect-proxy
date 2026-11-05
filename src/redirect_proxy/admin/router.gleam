@@ -16,6 +16,11 @@ import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/views/rules as rules_view
+import redirect_proxy/api/clients
+import redirect_proxy/api/deprecation
+import redirect_proxy/api/router as api_router
+import redirect_proxy/api/scope
+import redirect_proxy/api/token
 import redirect_proxy/audit
 import redirect_proxy/config.{type Config}
 import redirect_proxy/log
@@ -42,6 +47,7 @@ pub type Context {
     config: Config,
     store: Store,
     users: users.Settings,
+    clients: clients.Settings,
     static_dir: String,
     /// TCP peer address of the current request.
     peer_ip: String,
@@ -56,6 +62,9 @@ pub fn handle(req: Request, ctx: Context) -> Response {
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
   use <- wisp.serve_static(req, under: "/static", from: ctx.static_dir)
+  // The REST API is bearer-token only (no cookies): route it before the
+  // session and CSRF machinery.
+  use <- api_dispatch(req, ctx)
   use req <- wisp.csrf_known_header_protection(req)
 
   case req.method, wisp.path_segments(req) {
@@ -74,6 +83,27 @@ pub fn handle(req: Request, ctx: Context) -> Response {
 
     // Everything else requires an authenticated administrator
     _, _ -> authenticated(req, ctx)
+  }
+}
+
+fn api_dispatch(
+  req: Request,
+  ctx: Context,
+  next: fn() -> Response,
+) -> Response {
+  case config.api_on_admin(ctx.config), wisp.path_segments(req) {
+    True, ["api", ..] | True, ["oauth", ..] ->
+      api_router.handle(
+        req,
+        api_router.Context(
+          config: ctx.config,
+          store: ctx.store,
+          clients: ctx.clients,
+          peer_ip: ctx.peer_ip,
+          deprecations: deprecation.registry(),
+        ),
+      )
+    _, _ -> next()
   }
 }
 
@@ -100,6 +130,12 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Post, ["users", username, "delete"] -> delete_user(req, ctx, s, username)
     Post, ["account", "password"] -> change_password(req, ctx, s)
     Get, ["audit"] -> audit_page(ctx, s)
+    Get, ["api-clients"] -> api_clients_page(req, ctx, s)
+    Post, ["api-clients"] -> create_api_client(req, ctx, s)
+    Post, ["api-clients", client_id, "rotate"] ->
+      rotate_api_client(req, ctx, s, client_id)
+    Post, ["api-clients", client_id, "delete"] ->
+      delete_api_client(req, ctx, s, client_id)
     _, _ -> not_found(ctx, s)
   }
   set_cookie(resp)
@@ -384,6 +420,13 @@ fn show_users(ctx: Context) -> Bool {
   ctx.config.local_auth.enabled
 }
 
+fn features(ctx: Context) -> layout.Features {
+  layout.Features(
+    users: ctx.config.local_auth.enabled,
+    api: ctx.config.api.enabled,
+  )
+}
+
 fn flash_from_query(req: Request) -> Option(layout.Flash) {
   let query = wisp.get_query(req)
   case list.key_find(query, "flash") {
@@ -406,6 +449,8 @@ fn flash_from_query(req: Request) -> Option(layout.Flash) {
     Ok("user_created") -> Some(layout.Success("User created."))
     Ok("user_deleted") -> Some(layout.Success("User deleted."))
     Ok("password_changed") -> Some(layout.Success("Password changed."))
+    Ok("client_deleted") ->
+      Some(layout.Success("API client deleted; its tokens are revoked."))
     _ -> None
   }
 }
@@ -429,7 +474,7 @@ fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
     200,
     rules_view.index(
       s,
-      show_users(ctx),
+      features(ctx),
       flash_from_query(req),
       rows,
       list.length(all),
@@ -455,26 +500,26 @@ fn matches_filters(r: Rule, f: rules_view.Filters) -> Bool {
 }
 
 fn new_rule(_req: Request, ctx: Context, s: Session) -> Response {
-  html(200, rules_view.form(s, show_users(ctx), rule.blank(), [], True))
+  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True))
 }
 
 fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   case rule_from_form(form.values, rule.blank()) {
     Error(#(r, errors)) ->
-      html(422, rules_view.form(s, show_users(ctx), r, errors, True))
+      html(422, rules_view.form(s, features(ctx), r, errors, True))
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
         Error(errors) ->
-          html(422, rules_view.form(s, show_users(ctx), r, errors, True))
+          html(422, rules_view.form(s, features(ctx), r, errors, True))
       }
   }
 }
 
 fn edit_rule(ctx: Context, s: Session, id: String) -> Response {
   case store.get(ctx.store, id) {
-    Ok(r) -> html(200, rules_view.form(s, show_users(ctx), r, [], False))
+    Ok(r) -> html(200, rules_view.form(s, features(ctx), r, [], False))
     Error(Nil) -> not_found(ctx, s)
   }
 }
@@ -486,12 +531,12 @@ fn update_rule(req: Request, ctx: Context, s: Session, id: String) -> Response {
     Ok(existing) ->
       case rule_from_form(form.values, existing) {
         Error(#(r, errors)) ->
-          html(422, rules_view.form(s, show_users(ctx), r, errors, False))
+          html(422, rules_view.form(s, features(ctx), r, errors, False))
         Ok(r) ->
           case store.update(ctx.store, r, s.username) {
             Ok(_) -> wisp.redirect("/rules?flash=updated")
             Error(errors) ->
-              html(422, rules_view.form(s, show_users(ctx), r, errors, False))
+              html(422, rules_view.form(s, features(ctx), r, errors, False))
           }
       }
   }
@@ -499,7 +544,7 @@ fn update_rule(req: Request, ctx: Context, s: Session, id: String) -> Response {
 
 fn confirm_delete(ctx: Context, s: Session, id: String) -> Response {
   case store.get(ctx.store, id) {
-    Ok(r) -> html(200, rules_view.confirm_delete(s, show_users(ctx), r))
+    Ok(r) -> html(200, rules_view.confirm_delete(s, features(ctx), r))
     Error(Nil) -> not_found(ctx, s)
   }
 }
@@ -603,25 +648,13 @@ fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let result = case string.trim(url) {
     "" -> pages.NotTested
     url ->
-      case uri.parse(url) {
-        Ok(uri.Uri(host: Some(host), path: path, query: query, ..)) -> {
-          let path = case path {
-            "" -> "/"
-            p -> p
-          }
-          case matcher.lookup(snapshot.current(), host, path) {
-            Ok(m) ->
-              pages.Matched(
-                m.rule,
-                matcher.location(m, option.to_result(query, Nil)),
-              )
-            Error(Nil) -> pages.NoMatch
-          }
-        }
-        _ -> pages.InvalidUrl
+      case matcher.resolve_url(snapshot.current(), url) {
+        matcher.Redirected(m, location) -> pages.Matched(m.rule, location)
+        matcher.NotMatched -> pages.NoMatch
+        matcher.BadUrl -> pages.InvalidUrl
       }
   }
-  html(200, pages.test_url(s, show_users(ctx), url, result))
+  html(200, pages.test_url(s, features(ctx), url, result))
 }
 
 // --- import / export --------------------------------------------------------
@@ -637,7 +670,7 @@ fn export(ctx: Context) -> Response {
 }
 
 fn import_page(req: Request, ctx: Context, s: Session) -> Response {
-  html(200, pages.import_export(s, show_users(ctx), flash_from_query(req), []))
+  html(200, pages.import_export(s, features(ctx), flash_from_query(req), []))
 }
 
 fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
@@ -658,7 +691,7 @@ fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     _ -> store.Merge
   }
   let fail = fn(errors) {
-    html(422, pages.import_export(s, show_users(ctx), None, errors))
+    html(422, pages.import_export(s, features(ctx), None, errors))
   }
   case string.trim(content) {
     "" -> fail(["Provide a JSON file or paste JSON content."])
@@ -687,7 +720,7 @@ fn users_page(
   errors: List(String),
 ) -> Response {
   case users.list(ctx.users) {
-    Ok(all) -> html(status, pages.users(s, flash, all, errors))
+    Ok(all) -> html(status, pages.users(s, features(ctx), flash, all, errors))
     Error(reason) -> error_page(ctx, s, 500, "Users unavailable", reason)
   }
 }
@@ -758,11 +791,107 @@ fn change_password(req: Request, ctx: Context, s: Session) -> Response {
   }
 }
 
+// --- API clients ------------------------------------------------------------
+
+fn render_api_clients(
+  ctx: Context,
+  s: Session,
+  status: Int,
+  flash: Option(layout.Flash),
+  issued: Option(pages.IssuedSecret),
+  errors: List(String),
+) -> Response {
+  case clients.list(ctx.clients) {
+    Ok(all) ->
+      html(
+        status,
+        pages.api_clients(
+          s,
+          features(ctx),
+          flash,
+          all,
+          issued,
+          errors,
+          config.api_public_url(ctx.config),
+        ),
+      )
+    Error(reason) -> error_page(ctx, s, 500, "API clients unavailable", reason)
+  }
+}
+
+fn api_clients_page(req: Request, ctx: Context, s: Session) -> Response {
+  use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
+  render_api_clients(ctx, s, 200, flash_from_query(req), None, [])
+}
+
+fn create_api_client(req: Request, ctx: Context, s: Session) -> Response {
+  use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
+  use form <- require_csrf_form(req, s)
+  let name = list.key_find(form.values, "name") |> result.unwrap("")
+  let scopes =
+    form.values
+    |> list.filter(fn(pair) { pair.0 == "scope" })
+    |> list.filter_map(fn(pair) { scope.from_string(pair.1) })
+  case clients.create(ctx.clients, name, scopes, s.username) {
+    Ok(#(client, secret)) ->
+      render_api_clients(
+        ctx,
+        s,
+        201,
+        Some(layout.Success("API client created.")),
+        Some(pages.IssuedSecret(client.client_id, secret)),
+        [],
+      )
+    Error(reason) -> render_api_clients(ctx, s, 422, None, None, [reason])
+  }
+}
+
+fn rotate_api_client(
+  req: Request,
+  ctx: Context,
+  s: Session,
+  client_id: String,
+) -> Response {
+  use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
+  use _form <- require_csrf_form(req, s)
+  case clients.rotate(ctx.clients, client_id, s.username) {
+    Ok(secret) -> {
+      token.revoke_client(client_id)
+      render_api_clients(
+        ctx,
+        s,
+        200,
+        Some(layout.Success("Secret rotated; previous tokens are revoked.")),
+        Some(pages.IssuedSecret(client_id, secret)),
+        [],
+      )
+    }
+    Error(reason) -> render_api_clients(ctx, s, 404, None, None, [reason])
+  }
+}
+
+fn delete_api_client(
+  req: Request,
+  ctx: Context,
+  s: Session,
+  client_id: String,
+) -> Response {
+  use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
+  use _form <- require_csrf_form(req, s)
+  case clients.delete(ctx.clients, client_id, s.username) {
+    Ok(Nil) -> {
+      token.revoke_client(client_id)
+      wisp.redirect("/api-clients?flash=client_deleted")
+    }
+    Error(reason) -> render_api_clients(ctx, s, 404, None, None, [reason])
+  }
+}
+
 // --- audit ------------------------------------------------------------------
 
 fn audit_page(ctx: Context, s: Session) -> Response {
   let entries = audit.tail(config.audit_path(ctx.config), 200)
-  html(200, pages.audit_log(s, show_users(ctx), entries))
+  html(200, pages.audit_log(s, features(ctx), entries))
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -790,5 +919,5 @@ fn error_page(
   title: String,
   message: String,
 ) -> Response {
-  html(status, pages.error(Some(s), show_users(ctx), title, message))
+  html(status, pages.error(Some(s), features(ctx), title, message))
 }
