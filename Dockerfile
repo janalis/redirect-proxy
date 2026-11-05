@@ -33,7 +33,7 @@ RUN scripts/bundle.sh "${VERSION}" container --with-erts \
 # --- runtime ----------------------------------------------------------------
 FROM alpine:${ALPINE_VERSION}
 
-RUN apk add --no-cache libstdc++ libgcc ncurses-libs openssl zlib \
+RUN apk add --no-cache libstdc++ libgcc ncurses-libs openssl zlib lksctp-tools \
  && addgroup -S -g 10001 redirect-proxy \
  && adduser -S -D -H -u 10001 -G redirect-proxy -h /var/lib/redirect-proxy redirect-proxy \
  && mkdir -p /var/lib/redirect-proxy \
