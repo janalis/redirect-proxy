@@ -45,7 +45,9 @@ pub fn boot(cfg: config.Config) -> App {
       ..cfg,
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
-      api: config.ApiConfig(..cfg.api, listen: "127.0.0.1", port: 0),
+      // api.port 0 shares the admin listener; tests wanting the API on its
+      // own port pass one from `free_port()`.
+      api: config.ApiConfig(..cfg.api, listen: ""),
       storage: config.StorageConfig(data_dir: dir, backups: 3),
     )
   let assert Ok(running) = app.start(cfg)
@@ -78,6 +80,9 @@ pub fn send(
     httpc.configure() |> httpc.follow_redirects(False) |> httpc.dispatch(req)
   resp
 }
+
+@external(erlang, "test_net_ffi", "free_port")
+pub fn free_port() -> Int
 
 // --- fake OAuth 2.0 authorization server --------------------------------------
 

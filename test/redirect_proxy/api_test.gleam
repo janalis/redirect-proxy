@@ -707,21 +707,25 @@ pub fn clients_store_unit_test() {
   assert !string.contains(json.to_string(clients.public_json(c)), c.secret_hash)
 }
 
-// --- dedicated listener -------------------------------------------------------
+// --- API on its own port ---------------------------------------------------
 
-fn dedicated(admin_enabled: Bool) -> App {
+fn own_port(admin_enabled: Bool) -> App {
   let d = config.default()
   support.boot(
     config.Config(
       ..d,
       admin: config.AdminConfig(..d.admin, enabled: admin_enabled),
-      api: config.ApiConfig(..d.api, dedicated: True),
+      // with the admin UI disabled, port 0 means an ephemeral port of its own
+      api: config.ApiConfig(..d.api, port: case admin_enabled {
+        True -> support.free_port()
+        False -> 0
+      }),
     ),
   )
 }
 
-pub fn dedicated_listener_test() {
-  let env = dedicated(True)
+pub fn api_on_its_own_port_test() {
+  let env = own_port(True)
   assert env.api != env.admin
   assert support.send(Get, env.api <> "/healthz", [], "").status == 200
 
@@ -738,7 +742,7 @@ pub fn dedicated_listener_test() {
   assert resp.status == 201
   assert support.send(Get, env.redirect <> "/d", [], "").status == 301
   assert support.send(Get, env.api <> "/api/openapi.json", [], "").status == 200
-  // ...and nothing else is served there
+  // ...and the admin UI is not served there
   assert support.send(Get, env.api <> "/rules", [], "").status == 404
   assert support.send(Get, env.api <> "/login", [], "").status == 404
 
@@ -752,39 +756,47 @@ pub fn dedicated_listener_test() {
     )
   assert resp.status == 303
   assert support.send(Post, env.admin <> "/oauth/token", [], "").status != 200
+  // while the admin UI keeps working on its own port
+  assert support.send(Get, env.admin <> "/login", [], "").status == 200
 
-  // security headers
   let resp = support.send(Get, env.api <> "/healthz", [], "")
   assert header(resp, "x-content-type-options") == "nosniff"
 }
 
-pub fn dedicated_listener_without_admin_test() {
-  let env = dedicated(False)
+pub fn api_without_admin_ui_test() {
+  let env = own_port(False)
   let token = access_token(env, [scope.Read])
   assert api(env, Get, "/api/redirects", token, "").status == 200
 }
 
-pub fn dedicated_port_validation_test() {
+pub fn api_port_rules_test() {
   let d = config.default()
-  let clash =
-    config.Config(
-      ..d,
-      api: config.ApiConfig(..d.api, dedicated: True, port: d.admin.port),
-    )
-  let assert Error(_) = config.validate(clash)
-  let clash_server =
-    config.Config(
-      ..d,
-      api: config.ApiConfig(..d.api, dedicated: True, port: d.server.port),
-    )
-  let assert Error(_) = config.validate(clash_server)
-  // shared mode ignores api.port
-  let shared =
-    config.Config(..d, api: config.ApiConfig(..d.api, port: d.admin.port))
-  let assert Ok(_) = config.validate(shared)
-  assert config.api_public_url(d) == d.admin.public_url
-  assert config.api_public_url(
-      config.Config(..d, api: config.ApiConfig(..d.api, dedicated: True)),
-    )
-    == "http://localhost:8082"
+  let with_api = fn(api) { config.Config(..d, api:) }
+  // default and explicit admin port: shared listener
+  assert config.api_on_admin(d)
+  assert !config.api_dedicated(d)
+  let same = with_api(config.ApiConfig(..d.api, port: d.admin.port))
+  assert config.api_on_admin(same)
+  assert config.api_public_url(same) == d.admin.public_url
+  // another port: own listener, inheriting admin.listen
+  let other = with_api(config.ApiConfig(..d.api, port: 8082))
+  assert config.api_dedicated(other)
+  assert !config.api_on_admin(other)
+  assert config.api_listen(other) == d.admin.listen
+  assert config.api_public_url(other) == "http://localhost:8082"
+  let assert Ok(_) = config.validate(other)
+  // admin disabled: the API keeps the admin port on its own listener
+  let no_admin =
+    config.Config(..d, admin: config.AdminConfig(..d.admin, enabled: False))
+  assert config.api_dedicated(no_admin)
+  assert config.api_port(no_admin) == d.admin.port
+  // invalid combinations
+  let assert Error(_) =
+    config.validate(with_api(config.ApiConfig(..d.api, port: d.server.port)))
+  let assert Error(_) =
+    config.validate(with_api(config.ApiConfig(..d.api, listen: "0.0.0.0")))
+  let assert Ok(_) =
+    config.validate(with_api(
+      config.ApiConfig(..d.api, listen: "0.0.0.0", port: 8082),
+    ))
 }

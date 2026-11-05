@@ -37,7 +37,7 @@ pub type Running {
     store: store.Store,
     redirect_port: Int,
     admin_port: Int,
-    /// Port of the dedicated API listener (0 when the API shares the admin
+    /// Port of the API's own listener (0 when the API shares the admin
     /// listener or is disabled).
     api_port: Int,
   )
@@ -178,11 +178,14 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       supervisor.add(
         builder,
         mist.new(api_handler)
-          |> mist.bind(cfg.api.listen)
-          |> mist.port(cfg.api.port)
+          |> mist.bind(config.api_listen(cfg))
+          |> mist.port(config.api_port(cfg))
           |> mist.after_start(fn(port, _, _) {
             log.info(
-              "API listener on " <> cfg.api.listen <> ":" <> int.to_string(port),
+              "API listener on "
+              <> config.api_listen(cfg)
+              <> ":"
+              <> int.to_string(port),
             )
             process.send(ports, #("api", port))
           })

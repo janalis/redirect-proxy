@@ -76,10 +76,11 @@ pub type OidcConfig {
 pub type ApiConfig {
   ApiConfig(
     enabled: Bool,
-    /// Serve the API on its own listener (`listen`/`port`) instead of the
-    /// admin listener. The admin listener then no longer serves `/api`.
-    dedicated: Bool,
+    /// Address of the API listener. Empty: same as `admin.listen`.
     listen: String,
+    /// Port of the API. `0` or `admin.port`: the API shares the admin
+    /// listener. Any other port: the API gets its own listener (and the admin
+    /// listener no longer serves `/api`).
     port: Int,
     /// Externally visible base URL of the API (documentation and examples).
     /// Defaults to the admin public URL when the API shares its listener.
@@ -153,9 +154,8 @@ pub fn default() -> Config {
     ),
     api: ApiConfig(
       enabled: True,
-      dedicated: False,
-      listen: "0.0.0.0",
-      port: 8082,
+      listen: "",
+      port: 0,
       public_url: "",
       token_ttl: 3600,
       max_body_bytes: 10_485_760,
@@ -310,7 +310,6 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   ))
   let a = d.api
   use api_enabled <- result.try(boolean(t, ["api", "enabled"], a.enabled))
-  use api_dedicated <- result.try(boolean(t, ["api", "dedicated"], a.dedicated))
   use api_listen <- result.try(str(t, ["api", "listen"], a.listen))
   use api_port <- result.try(integer(t, ["api", "port"], a.port))
   use api_public_url <- result.try(str(t, ["api", "public_url"], a.public_url))
@@ -355,7 +354,6 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   Ok(Config(
     api: ApiConfig(
       enabled: api_enabled,
-      dedicated: api_dedicated,
       listen: api_listen,
       port: api_port,
       public_url: api_public_url,
@@ -441,7 +439,6 @@ pub fn apply_env(
   Config(
     api: ApiConfig(
       enabled: b("RP_API_ENABLED", api.enabled),
-      dedicated: b("RP_API_DEDICATED", api.dedicated),
       listen: s("RP_API_LISTEN", api.listen),
       port: i("RP_API_PORT", api.port),
       public_url: s("RP_API_PUBLIC_URL", api.public_url),
@@ -560,14 +557,18 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("api.port must be between 0 and 65535"),
   )
   use <- bool.guard(
-    config.api.enabled
-      && config.api.dedicated
-      && config.api.port != 0
-      && {
-      config.api.port == config.server.port
-      || { config.admin.enabled && config.api.port == config.admin.port }
-    },
-    Error("api.port must differ from server.port and admin.port"),
+    api_dedicated(config)
+      && api_port(config) != 0
+      && api_port(config) == config.server.port,
+    Error("api.port must differ from server.port"),
+  )
+  use <- bool.guard(
+    api_on_admin(config)
+      && config.api.listen != ""
+      && config.api.listen != config.admin.listen,
+    Error(
+      "api.listen must equal admin.listen when the API shares admin.port (or use another api.port)",
+    ),
   )
   use <- bool.guard(
     config.api.token_ttl < 60 || config.api.token_ttl > 86_400,
@@ -603,21 +604,39 @@ pub fn backups_dir(config: Config) -> String {
   config.storage.data_dir <> "/backups"
 }
 
-/// Whether the API is served on its own listener.
-pub fn api_dedicated(config: Config) -> Bool {
-  config.api.enabled && config.api.dedicated
+/// Effective port of the API (`api.port`, or `admin.port` when 0).
+pub fn api_port(config: Config) -> Int {
+  case config.api.port {
+    0 -> config.admin.port
+    port -> port
+  }
 }
 
-/// Whether the admin listener serves the API.
+/// Effective address of the API (`api.listen`, or `admin.listen` when empty).
+pub fn api_listen(config: Config) -> String {
+  case config.api.listen {
+    "" -> config.admin.listen
+    listen -> listen
+  }
+}
+
+/// Whether the API runs on its own listener: it uses another port than the
+/// admin UI, or the admin UI is disabled.
+pub fn api_dedicated(config: Config) -> Bool {
+  config.api.enabled
+  && { !config.admin.enabled || api_port(config) != config.admin.port }
+}
+
+/// Whether the admin listener also serves the API (same port).
 pub fn api_on_admin(config: Config) -> Bool {
-  config.api.enabled && !config.api.dedicated && config.admin.enabled
+  config.api.enabled && config.admin.enabled && !api_dedicated(config)
 }
 
 /// Base URL clients use to reach the API.
 pub fn api_public_url(config: Config) -> String {
-  case config.api.public_url, config.api.dedicated {
+  case config.api.public_url, api_dedicated(config) {
     "", False -> config.admin.public_url
-    "", True -> "http://localhost:" <> int.to_string(config.api.port)
+    "", True -> "http://localhost:" <> int.to_string(api_port(config))
     url, _ -> url
   }
 }

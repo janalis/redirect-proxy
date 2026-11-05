@@ -46,7 +46,8 @@ const max_per_page = 500
 
 const default_per_page = 100
 
-/// Entry point of the dedicated API listener (`api.dedicated = true`).
+/// Entry point of the API's own listener (when `api.port` differs from
+/// `admin.port`, or the admin UI is disabled).
 pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)

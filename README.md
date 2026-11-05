@@ -227,7 +227,7 @@ option. Each option can be overridden with an environment variable named
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
-| `RP_API_DEDICATED`, `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `false`, `0.0.0.0` / `8082`, (none) |
+| `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
 | `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`) |
@@ -284,11 +284,15 @@ The API lives under `/api`, next to the OAuth 2.0 token endpoint
 `/oauth/token`. Its OpenAPI 3.1 description is at
 [`/api/openapi.json`](http://localhost:8081/api/openapi.json).
 
-By default the admin listener serves the API. Set `api.dedicated = true` to
-serve it on its own listener instead, on `api.listen` and `api.port`
-(default `0.0.0.0:8082`, with a `/healthz` endpoint). The admin listener
-then no longer answers `/api`. This lets you expose the API to other
-networks than the admin UI, and run the API with the admin UI disabled.
+The port decides which listener serves the API:
+
+- **Same port as the admin UI** (the default; `api.port = 0` means
+  `admin.port`): one listener serves both.
+- **Another port:** the API gets its own listener, on `api.listen` (default
+  `admin.listen`) and `api.port`, with a `/healthz` endpoint. The admin
+  listener then no longer answers `/api`, so each can be exposed to different
+  networks.
+- **Admin UI disabled:** the API keeps running on its own listener.
 
 ```sh
 # 1. Create an API client in the admin ("API clients"), or with the CLI.

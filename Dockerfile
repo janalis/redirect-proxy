@@ -46,14 +46,12 @@ ENV RP_STORAGE_DATA_DIR=/var/lib/redirect-proxy \
     RP_SERVER_PORT=8080 \
     RP_ADMIN_LISTEN=0.0.0.0 \
     RP_ADMIN_PORT=8081 \
-    RP_API_LISTEN=0.0.0.0 \
-    RP_API_PORT=8082 \
     LANG=C.UTF-8
 
 USER 10001:10001
 WORKDIR /var/lib/redirect-proxy
 VOLUME ["/var/lib/redirect-proxy"]
-EXPOSE 8080 8081 8082
+EXPOSE 8080 8081
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
