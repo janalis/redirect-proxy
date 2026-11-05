@@ -129,6 +129,11 @@ fn serve(config_path: String) -> Result(Nil, String) {
     <> case cfg.admin.enabled {
       True -> ", admin on port " <> int.to_string(running.admin_port)
       False -> ", admin disabled"
+    }
+    <> case cfg.api.enabled, config.api_dedicated(cfg) {
+      False, _ -> ", API disabled"
+      True, True -> ", API on port " <> int.to_string(running.api_port)
+      True, False -> ", API on the admin listener"
     },
   )
   process.sleep_forever()
@@ -152,6 +157,12 @@ fn check_config(config_path: String) -> Result(Nil, String) {
       <> ":"
       <> int.to_string(cfg.admin.port)
     False -> "  admin listener: disabled"
+  })
+  io.println(case cfg.api.enabled, config.api_dedicated(cfg) {
+    False, _ -> "  API: disabled"
+    True, True ->
+      "  API listener: " <> cfg.api.listen <> ":" <> int.to_string(cfg.api.port)
+    True, False -> "  API: served by the admin listener"
   })
   let methods =
     [

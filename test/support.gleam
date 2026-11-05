@@ -27,7 +27,14 @@ pub fn temp_dir() -> String {
 }
 
 pub type App {
-  App(redirect: String, admin: String, dir: String, config: config.Config)
+  App(
+    redirect: String,
+    admin: String,
+    /// Base URL of the API: the admin URL, or the dedicated API listener.
+    api: String,
+    dir: String,
+    config: config.Config,
+  )
 }
 
 /// Starts the whole application on ephemeral ports with an empty data dir.
@@ -38,12 +45,18 @@ pub fn boot(cfg: config.Config) -> App {
       ..cfg,
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
+      api: config.ApiConfig(..cfg.api, listen: "127.0.0.1", port: 0),
       storage: config.StorageConfig(data_dir: dir, backups: 3),
     )
   let assert Ok(running) = app.start(cfg)
+  let admin = "http://127.0.0.1:" <> int.to_string(running.admin_port)
   App(
     redirect: "http://127.0.0.1:" <> int.to_string(running.redirect_port),
-    admin: "http://127.0.0.1:" <> int.to_string(running.admin_port),
+    admin:,
+    api: case config.api_dedicated(cfg) {
+      True -> "http://127.0.0.1:" <> int.to_string(running.api_port)
+      False -> admin
+    },
     dir:,
     config: cfg,
   )

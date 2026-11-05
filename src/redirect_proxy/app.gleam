@@ -16,6 +16,8 @@ import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
 import redirect_proxy/api/clients
+import redirect_proxy/api/deprecation
+import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
@@ -35,6 +37,9 @@ pub type Running {
     store: store.Store,
     redirect_port: Int,
     admin_port: Int,
+    /// Port of the dedicated API listener (0 when the API shares the admin
+    /// listener or is disabled).
+    api_port: Int,
   )
 }
 
@@ -122,6 +127,22 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
 
+  let api_handler = fn(req: request.Request(mist.Connection)) {
+    let peer_ip = case mist.get_connection_info(req.body) {
+      Ok(info) -> mist.ip_address_to_string(info.ip_address)
+      Error(Nil) -> ""
+    }
+    let ctx =
+      api_router.Context(
+        config: cfg,
+        store: store_subject,
+        clients: clients_settings(cfg),
+        peer_ip:,
+        deprecations: deprecation.registry(),
+      )
+    wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
+  }
+
   let builder =
     supervisor.new(supervisor.OneForOne)
     |> supervisor.restart_tolerance(intensity: 10, period: 60)
@@ -151,6 +172,24 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
   }
 
+  let builder = case config.api_dedicated(cfg) {
+    False -> builder
+    True ->
+      supervisor.add(
+        builder,
+        mist.new(api_handler)
+          |> mist.bind(cfg.api.listen)
+          |> mist.port(cfg.api.port)
+          |> mist.after_start(fn(port, _, _) {
+            log.info(
+              "API listener on " <> cfg.api.listen <> ":" <> int.to_string(port),
+            )
+            process.send(ports, #("api", port))
+          })
+          |> mist.supervised,
+      )
+  }
+
   use started <- result.try(
     supervisor.start(builder)
     |> result.map_error(describe_start_error),
@@ -159,6 +198,10 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let redirect_port = wait_port(ports, "redirect")
   let admin_port = case cfg.admin.enabled {
     True -> wait_port(ports, "admin")
+    False -> 0
+  }
+  let api_port = case config.api_dedicated(cfg) {
+    True -> wait_port(ports, "api")
     False -> 0
   }
 
@@ -170,6 +213,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     store: store_subject,
     redirect_port:,
     admin_port:,
+    api_port:,
   ))
 }
 

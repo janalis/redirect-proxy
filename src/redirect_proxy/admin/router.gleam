@@ -91,7 +91,7 @@ fn api_dispatch(
   ctx: Context,
   next: fn() -> Response,
 ) -> Response {
-  case ctx.config.api.enabled, wisp.path_segments(req) {
+  case config.api_on_admin(ctx.config), wisp.path_segments(req) {
     True, ["api", ..] | True, ["oauth", ..] ->
       api_router.handle(
         req,
@@ -812,7 +812,7 @@ fn render_api_clients(
           all,
           issued,
           errors,
-          ctx.config.admin.public_url,
+          config.api_public_url(ctx.config),
         ),
       )
     Error(reason) -> error_page(ctx, s, 500, "API clients unavailable", reason)

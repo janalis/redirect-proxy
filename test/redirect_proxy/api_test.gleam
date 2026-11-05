@@ -45,7 +45,7 @@ fn token_request(
 ) -> response.Response(String) {
   support.send(
     Post,
-    env.admin <> "/oauth/token",
+    env.api <> "/oauth/token",
     [#("content-type", "application/x-www-form-urlencoded"), ..headers],
     uri.query_to_string(fields),
   )
@@ -72,7 +72,7 @@ fn api(
 ) -> response.Response(String) {
   support.send(
     method,
-    env.admin <> path,
+    env.api <> path,
     [
       #("authorization", "Bearer " <> token),
       #("content-type", "application/json"),
@@ -158,7 +158,7 @@ pub fn token_endpoint_throttling_test() {
 
 pub fn bearer_required_test() {
   let env = support.boot(config.default())
-  let resp = support.send(Get, env.admin <> "/api/redirects", [], "")
+  let resp = support.send(Get, env.api <> "/api/redirects", [], "")
   assert resp.status == 401
   assert header(resp, "www-authenticate") == "Bearer realm=\"redirect-proxy\""
   assert header(resp, "content-type") == "application/problem+json"
@@ -177,7 +177,7 @@ pub fn admin_session_cookie_does_not_authorize_api_test() {
   let resp =
     support.send(
       Get,
-      env.admin <> "/api/redirects",
+      env.api <> "/api/redirects",
       [#("cookie", "rp_session=whatever")],
       "",
     )
@@ -265,7 +265,7 @@ pub fn crud_round_trip_test() {
   let resp =
     support.send(
       Put,
-      env.admin <> "/api/redirects/" <> id,
+      env.api <> "/api/redirects/" <> id,
       [
         #("authorization", "Bearer " <> token),
         #("content-type", "application/json"),
@@ -280,7 +280,7 @@ pub fn crud_round_trip_test() {
   let resp =
     support.send(
       Put,
-      env.admin <> "/api/redirects/" <> id,
+      env.api <> "/api/redirects/" <> id,
       [
         #("authorization", "Bearer " <> token),
         #("content-type", "application/json"),
@@ -297,7 +297,7 @@ pub fn crud_round_trip_test() {
   let resp =
     support.send(
       Patch,
-      env.admin <> "/api/redirects/" <> id,
+      env.api <> "/api/redirects/" <> id,
       [
         #("authorization", "Bearer " <> token),
         #("content-type", "application/merge-patch+json"),
@@ -329,7 +329,7 @@ pub fn crud_round_trip_test() {
   let resp =
     support.send(
       Post,
-      env.admin <> "/api/redirects",
+      env.api <> "/api/redirects",
       [#("authorization", "Bearer " <> token), #("content-type", "text/plain")],
       "{}",
     )
@@ -442,7 +442,7 @@ pub fn method_and_route_errors_test() {
   assert resp.status == 405
   assert header(resp, "allow") == "GET, POST"
   assert api(env, Get, "/api/nope", token, "").status == 404
-  assert support.send(Get, env.admin <> "/oauth/token", [], "").status == 405
+  assert support.send(Get, env.api <> "/oauth/token", [], "").status == 405
 }
 
 pub fn api_can_be_disabled_test() {
@@ -452,14 +452,14 @@ pub fn api_can_be_disabled_test() {
       config.Config(..d, api: config.ApiConfig(..d.api, enabled: False)),
     )
   // falls through to the admin, which asks for a login
-  assert support.send(Get, env.admin <> "/api/redirects", [], "").status == 303
+  assert support.send(Get, env.api <> "/api/redirects", [], "").status == 303
 }
 
 // --- OpenAPI and deprecations ----------------------------------------------
 
 pub fn openapi_document_test() {
   let env = support.boot(config.default())
-  let resp = support.send(Get, env.admin <> "/api/openapi.json", [], "")
+  let resp = support.send(Get, env.api <> "/api/openapi.json", [], "")
   assert resp.status == 200
   assert field(resp.body, ["openapi"], decode.string) == "3.1.0"
   let paths =
@@ -705,4 +705,86 @@ pub fn clients_store_unit_test() {
   let assert Error(_) = clients.rotate(settings, c.client_id, by: "t")
   // the secret hash never leaks in the public representation
   assert !string.contains(json.to_string(clients.public_json(c)), c.secret_hash)
+}
+
+// --- dedicated listener -------------------------------------------------------
+
+fn dedicated(admin_enabled: Bool) -> App {
+  let d = config.default()
+  support.boot(
+    config.Config(
+      ..d,
+      admin: config.AdminConfig(..d.admin, enabled: admin_enabled),
+      api: config.ApiConfig(..d.api, dedicated: True),
+    ),
+  )
+}
+
+pub fn dedicated_listener_test() {
+  let env = dedicated(True)
+  assert env.api != env.admin
+  assert support.send(Get, env.api <> "/healthz", [], "").status == 200
+
+  // the API and token endpoint live on the API port...
+  let token = access_token(env, [scope.Write])
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/d\",\"target\":\"/e\"}",
+    )
+  assert resp.status == 201
+  assert support.send(Get, env.redirect <> "/d", [], "").status == 301
+  assert support.send(Get, env.api <> "/api/openapi.json", [], "").status == 200
+  // ...and nothing else is served there
+  assert support.send(Get, env.api <> "/rules", [], "").status == 404
+  assert support.send(Get, env.api <> "/login", [], "").status == 404
+
+  // the admin listener no longer serves the API
+  let resp =
+    support.send(
+      Get,
+      env.admin <> "/api/redirects",
+      [#("authorization", "Bearer " <> token)],
+      "",
+    )
+  assert resp.status == 303
+  assert support.send(Post, env.admin <> "/oauth/token", [], "").status != 200
+
+  // security headers
+  let resp = support.send(Get, env.api <> "/healthz", [], "")
+  assert header(resp, "x-content-type-options") == "nosniff"
+}
+
+pub fn dedicated_listener_without_admin_test() {
+  let env = dedicated(False)
+  let token = access_token(env, [scope.Read])
+  assert api(env, Get, "/api/redirects", token, "").status == 200
+}
+
+pub fn dedicated_port_validation_test() {
+  let d = config.default()
+  let clash =
+    config.Config(
+      ..d,
+      api: config.ApiConfig(..d.api, dedicated: True, port: d.admin.port),
+    )
+  let assert Error(_) = config.validate(clash)
+  let clash_server =
+    config.Config(
+      ..d,
+      api: config.ApiConfig(..d.api, dedicated: True, port: d.server.port),
+    )
+  let assert Error(_) = config.validate(clash_server)
+  // shared mode ignores api.port
+  let shared =
+    config.Config(..d, api: config.ApiConfig(..d.api, port: d.admin.port))
+  let assert Ok(_) = config.validate(shared)
+  assert config.api_public_url(d) == d.admin.public_url
+  assert config.api_public_url(
+      config.Config(..d, api: config.ApiConfig(..d.api, dedicated: True)),
+    )
+    == "http://localhost:8082"
 }

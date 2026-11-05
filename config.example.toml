@@ -66,10 +66,20 @@ trusted_proxies = ["127.0.0.1/32", "::1/128"]
 
 [api]
 # REST API under /api (bearer tokens) and OAuth 2.0 token endpoint
-# (/oauth/token, client credentials grant), served by the admin listener.
+# (/oauth/token, client credentials grant).
 # Manage API clients in the admin ("API clients") or with
 # `redirect-proxy client add <name> --scope redirects:write`.
 enabled = true
+# By default the API is served by the admin listener. Set dedicated = true to
+# serve it on its own listener instead (the admin listener then no longer
+# answers /api and /oauth): useful to expose the API to other networks than
+# the admin UI, or to run the API with the admin UI disabled.
+dedicated = false
+listen = "0.0.0.0"
+port = 8082
+# Externally visible URL of the API, shown in the admin usage examples.
+# Defaults to admin.public_url (shared) or http://localhost:<port> (dedicated).
+public_url = ""
 # Lifetime of access tokens issued by /oauth/token (seconds, 60-86400).
 token_ttl = 3600
 # Maximum request body size (bulk imports).

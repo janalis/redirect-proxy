@@ -46,6 +46,22 @@ const max_per_page = 500
 
 const default_per_page = 100
 
+/// Entry point of the dedicated API listener (`api.dedicated = true`).
+pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
+  use <- wisp.rescue_crashes
+  use req <- wisp.handle_head(req)
+  case wisp.path_segments(req) {
+    ["healthz"] ->
+      wisp.response(200)
+      |> wisp.set_header("content-type", "text/plain; charset=utf-8")
+      |> wisp.string_body("ok")
+    _ -> handle(req, ctx)
+  }
+  |> wisp.set_header("x-content-type-options", "nosniff")
+  |> wisp.set_header("x-frame-options", "DENY")
+  |> wisp.set_header("referrer-policy", "no-referrer")
+}
+
 /// Entry point for `/oauth/*` and `/api/*` requests.
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.ApiRequests)

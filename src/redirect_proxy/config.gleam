@@ -76,6 +76,14 @@ pub type OidcConfig {
 pub type ApiConfig {
   ApiConfig(
     enabled: Bool,
+    /// Serve the API on its own listener (`listen`/`port`) instead of the
+    /// admin listener. The admin listener then no longer serves `/api`.
+    dedicated: Bool,
+    listen: String,
+    port: Int,
+    /// Externally visible base URL of the API (documentation and examples).
+    /// Defaults to the admin public URL when the API shares its listener.
+    public_url: String,
     /// Lifetime of access tokens issued by the built-in token endpoint.
     token_ttl: Int,
     /// Maximum request body size of API calls (bulk imports).
@@ -145,6 +153,10 @@ pub fn default() -> Config {
     ),
     api: ApiConfig(
       enabled: True,
+      dedicated: False,
+      listen: "0.0.0.0",
+      port: 8082,
+      public_url: "",
       token_ttl: 3600,
       max_body_bytes: 10_485_760,
       oauth: ApiOAuthConfig(
@@ -298,6 +310,10 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   ))
   let a = d.api
   use api_enabled <- result.try(boolean(t, ["api", "enabled"], a.enabled))
+  use api_dedicated <- result.try(boolean(t, ["api", "dedicated"], a.dedicated))
+  use api_listen <- result.try(str(t, ["api", "listen"], a.listen))
+  use api_port <- result.try(integer(t, ["api", "port"], a.port))
+  use api_public_url <- result.try(str(t, ["api", "public_url"], a.public_url))
   use token_ttl <- result.try(integer(t, ["api", "token_ttl"], a.token_ttl))
   use max_body_bytes <- result.try(integer(
     t,
@@ -339,6 +355,10 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   Ok(Config(
     api: ApiConfig(
       enabled: api_enabled,
+      dedicated: api_dedicated,
+      listen: api_listen,
+      port: api_port,
+      public_url: api_public_url,
       token_ttl:,
       max_body_bytes:,
       oauth: ApiOAuthConfig(
@@ -421,6 +441,10 @@ pub fn apply_env(
   Config(
     api: ApiConfig(
       enabled: b("RP_API_ENABLED", api.enabled),
+      dedicated: b("RP_API_DEDICATED", api.dedicated),
+      listen: s("RP_API_LISTEN", api.listen),
+      port: i("RP_API_PORT", api.port),
+      public_url: s("RP_API_PUBLIC_URL", api.public_url),
       token_ttl: i("RP_API_TOKEN_TTL", api.token_ttl),
       max_body_bytes: i("RP_API_MAX_BODY_BYTES", api.max_body_bytes),
       oauth: ApiOAuthConfig(
@@ -532,6 +556,20 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("at least one admin authentication method must be enabled"),
   )
   use <- bool.guard(
+    !port_ok(config.api.port),
+    Error("api.port must be between 0 and 65535"),
+  )
+  use <- bool.guard(
+    config.api.enabled
+      && config.api.dedicated
+      && config.api.port != 0
+      && {
+      config.api.port == config.server.port
+      || { config.admin.enabled && config.api.port == config.admin.port }
+    },
+    Error("api.port must differ from server.port and admin.port"),
+  )
+  use <- bool.guard(
     config.api.token_ttl < 60 || config.api.token_ttl > 86_400,
     Error("api.token_ttl must be between 60 and 86400 seconds"),
   )
@@ -563,6 +601,25 @@ pub fn audit_path(config: Config) -> String {
 
 pub fn backups_dir(config: Config) -> String {
   config.storage.data_dir <> "/backups"
+}
+
+/// Whether the API is served on its own listener.
+pub fn api_dedicated(config: Config) -> Bool {
+  config.api.enabled && config.api.dedicated
+}
+
+/// Whether the admin listener serves the API.
+pub fn api_on_admin(config: Config) -> Bool {
+  config.api.enabled && !config.api.dedicated && config.admin.enabled
+}
+
+/// Base URL clients use to reach the API.
+pub fn api_public_url(config: Config) -> String {
+  case config.api.public_url, config.api.dedicated {
+    "", False -> config.admin.public_url
+    "", True -> "http://localhost:" <> int.to_string(config.api.port)
+    url, _ -> url
+  }
 }
 
 pub fn api_clients_path(config: Config) -> String {
