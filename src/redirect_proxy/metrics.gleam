@@ -40,6 +40,7 @@ pub type Metric {
   LastReloadTimestamp
   ReloadDurationMicros
   /// Responses of the redirect listener by status class.
+  Responses2xx
   Responses3xx
   Responses4xx
   Responses5xx
@@ -63,6 +64,7 @@ fn index(metric: Metric) -> Int {
     Responses3xx -> 14
     Responses4xx -> 15
     Responses5xx -> 16
+    Responses2xx -> 17
   }
 }
 
@@ -115,6 +117,7 @@ fn bucket(bounds: List(Int), duration_us: Int, slot: Int) -> Int {
 /// Counts a response of the redirect listener by status class.
 pub fn response(status: Int) -> Nil {
   case status / 100 {
+    2 -> incr(Responses2xx)
     3 -> incr(Responses3xx)
     4 -> incr(Responses4xx)
     5 -> incr(Responses5xx)
@@ -132,7 +135,7 @@ fn counters() -> ffi.Counters {
   case ffi.snapshot_get(key) {
     Ok(c) -> c
     Error(Nil) -> {
-      let c = ffi.counter_new(16)
+      let c = ffi.counter_new(17)
       ffi.snapshot_put(key, c)
       c
     }
@@ -145,12 +148,6 @@ pub fn incr(metric: Metric) -> Nil {
 
 pub fn get(metric: Metric) -> Int {
   ffi.counter_get(counters(), index(metric))
-}
-
-/// Increments the hit counter of a rule. The counters live in the published
-/// matcher (see `matcher.record_hit`).
-pub fn hit(rule_id: String) -> Nil {
-  matcher.record_hit(snapshot.current(), rule_id)
 }
 
 pub fn hits(rule_id: String) -> Int {
@@ -346,6 +343,7 @@ pub fn render_prometheus() -> String {
       "Responses of the redirect listener, by status class.",
       "counter",
       [
+        #("class=\"2xx\"", get(Responses2xx)),
         #("class=\"3xx\"", get(Responses3xx)),
         #("class=\"4xx\"", get(Responses4xx)),
         #("class=\"5xx\"", get(Responses5xx)),

@@ -225,3 +225,16 @@ pub fn wildcard_and_international_hosts_test() {
   assert string.contains(reason, "punycode")
   let assert Ok(_) = with_host("xn--caf-dma.example")
 }
+
+pub fn lint_flags_parts_that_never_match_test() {
+  assert rule.lint(base()) == []
+  let assert [query] = rule.lint(Rule(..base(), source: "/page.php?id=5"))
+  assert string.starts_with(query, "source: cannot contain a query string")
+  let assert [fragment] =
+    rule.lint(Rule(..base(), kind: rule.Prefix, source: "/a#b"))
+  assert string.starts_with(fragment, "source: cannot contain a fragment")
+  let assert [port] = rule.lint(Rule(..base(), host: "example.com:8080"))
+  assert string.starts_with(port, "host: remove the port")
+  // `?` is a quantifier in a regex
+  assert rule.lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
+}

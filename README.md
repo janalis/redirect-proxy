@@ -178,7 +178,7 @@ accepted. Ids and timestamps are added automatically.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `host` | `*` | Host name to match, case-insensitively and ignoring the port. `*` matches every host; `*.example.com` matches every subdomain of `example.com` (not `example.com` itself). International names are written in punycode (`xn--caf-dma.example`). |
+| `host` | `*` | Host name to match, case-insensitively and without a port (requests match whatever their port). `*` matches every host; `*.example.com` matches every subdomain of `example.com` (not `example.com` itself). International names are written in punycode (`xn--caf-dma.example`). |
 | `match` | `exact` | `exact`, `prefix` or `regex`. |
 | `source` | (required) | The request path without its query string. Regexes are PCRE and are not anchored automatically. |
 | `target` | (required) | An absolute `http(s)://` URL, a protocol-relative `//host/path` or a path `/path`. |
@@ -242,6 +242,10 @@ are sent with `no-store`.
   redirects are followed, as a browser would. When the rules file is
   loaded, loops are logged as warnings instead, so a file that loaded before
   keeps loading.
+- When created or edited, it can never apply as written: an exact or prefix
+  source with a query string (`?`) or a fragment (`#`), or a host with a
+  port. These are also logged as warnings when the file is loaded or rules
+  are imported. Loop checks follow `server.trailing_slash`.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 
