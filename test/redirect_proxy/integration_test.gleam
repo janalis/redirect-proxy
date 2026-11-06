@@ -2206,3 +2206,27 @@ pub fn metrics_token_test() {
   assert scrape([#("authorization", "bearer " <> token)]).status == 200
   assert get(env.admin <> "/healthz", []).status == 200
 }
+
+pub fn admin_rule_tags_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let assert 303 =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("source", "/tagged"),
+      #("target", "/x"),
+      #("status", "301"),
+      #("priority", "100"),
+      #("enabled", "on"),
+      #("tags", "Spring Sale, legacy"),
+    ]).status
+  let page = fn(path) { get(env.admin <> path, [#("cookie", cookie)]).body }
+  let list = page("/rules?tag=legacy")
+  assert string.contains(list, "/tagged")
+  assert !string.contains(list, "/old")
+  // each tag links to its filter
+  assert string.contains(list, "href=\"/rules?tag=spring%20sale\"")
+  assert !string.contains(page("/rules?tag=other"), "/tagged")
+}

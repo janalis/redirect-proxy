@@ -52,6 +52,7 @@ fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
       value -> value
     },
     sort: get("sort"),
+    tag: string.trim(get("tag")),
     page: int.parse(get("page")) |> result.unwrap(1),
   )
 }
@@ -134,6 +135,7 @@ fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
         "false" -> Some(False)
         _ -> None
       },
+      tag: f.tag,
     ),
   )
 }
@@ -478,6 +480,7 @@ pub fn rule_from_form(
       priority: result.unwrap(priority, rule.default_priority),
       enabled: checked("enabled"),
       note: get("note"),
+      tags: rule.tags_from_string(get("tags")),
       // only meaningful for exact rules: ignored for the others
       query: case kind {
         Ok(rule.Exact) -> get("query")

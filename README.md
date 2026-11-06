@@ -24,7 +24,7 @@ rules. It never proxies traffic to an upstream.
   - Processes are supervised by OTP.
 - **Administration backend** (Bootstrap 6, a pre-release):
   - Create, read, update and delete rules, with search, filters (host, match
-    type, state) and sorting (source, host, hits, last hit, last update).
+    type, state, tag) and sorting (source, host, hits, last hit, last update).
     Hit counts and the time of the last hit are kept across restarts, so
     rules nobody uses any more are easy to find.
   - Enable, disable or delete a selection of rules, or every rule matching
@@ -214,6 +214,7 @@ accepted. Ids and timestamps are added automatically.
 | `starts_at` | `""` | RFC 3339 date-time with a time zone (`2026-12-01T00:00:00Z`) from which the rule applies. Empty: always. |
 | `expires_at` | `""` | RFC 3339 date-time from which the rule no longer applies. Empty: never. |
 | `note` | `""` | Free text shown in the admin. |
+| `tags` | `[]` | Labels to group and filter rules (`["campaign", "legacy"]`): stored lower case, sorted and without duplicates; at most 20, each at most 40 characters, without commas. Written to the file only when set. |
 
 **Scheduled rules.** A rule with `starts_at` or `expires_at` only applies
 within that window: the server republishes the rules within a second of a
@@ -489,10 +490,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`, `tag`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch) with the rule's `ETag`. `GET` always answers `200`: its body has the live `hits` and `last_hit_at`, which the `ETag` (the version of the rule's settings) does not cover. |
-| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`, `tag`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
 | `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |

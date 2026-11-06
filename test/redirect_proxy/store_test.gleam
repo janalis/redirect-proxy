@@ -1,7 +1,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
@@ -748,4 +748,22 @@ pub fn unchanged_hits_are_not_rewritten_test() {
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
   assert ffi.file_stamp(path) != written
+}
+
+pub fn filter_by_tag_test() {
+  let r = fn(source, tags) {
+    Rule(..rule.blank(), id: source, source:, target: "/x", tags:)
+  }
+  let rules = [
+    r("/a", ["campaign"]),
+    r("/b", ["campaign", "legacy"]),
+    r("/c", []),
+  ]
+  let ids = fn(f) { store_rules.filter(rules, f) |> list.map(fn(r) { r.id }) }
+  let none =
+    store_rules.Filter(text: "", host: "", kind: "", enabled: None, tag: "")
+  assert ids(store_rules.Filter(..none, tag: "legacy")) == ["/b"]
+  assert ids(store_rules.Filter(..none, tag: "Campaign")) == ["/a", "/b"]
+  // the text search covers tags too
+  assert ids(store_rules.Filter(..none, text: "legac")) == ["/b"]
 }

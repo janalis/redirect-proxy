@@ -1448,3 +1448,57 @@ pub fn routes_router_and_openapi_agree_test() {
 fn compare_pairs(a: #(String, String), b: #(String, String)) {
   string.compare(a.1 <> " " <> a.0, b.1 <> " " <> b.0)
 }
+
+pub fn rule_tags_over_the_api_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Write])
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/t\",\"target\":\"/x\",\"tags\":[\"Legacy\",\"campaign\"]}",
+    )
+  assert created.status == 201
+  assert field(created.body, ["tags"], decode.list(decode.string))
+    == ["campaign", "legacy"]
+  let id = field(created.body, ["id"], decode.string)
+  // untagged rules show an empty list
+  let plain =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/u\",\"target\":\"/x\"}",
+    )
+  assert field(plain.body, ["tags"], decode.list(decode.string)) == []
+  // the list filters by tag
+  let listed = api(env, Get, "/api/redirects?tag=legacy", token, "")
+  assert field(listed.body, ["meta", "total"], decode.int) == 1
+  // a merge patch replaces the tags
+  let patched =
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+      ],
+      "{\"tags\":[\"done\"]}",
+    )
+  assert patched.status == 200
+  assert field(patched.body, ["tags"], decode.list(decode.string)) == ["done"]
+  let too_long =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/v\",\"target\":\"/x\",\"tags\":[\""
+        <> string.repeat("x", 41)
+        <> "\"]}",
+    )
+  assert too_long.status == 422
+}

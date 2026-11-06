@@ -1,3 +1,4 @@
+import gleam/json
 import gleam/list
 import gleam/string
 import redirect_proxy/rule.{Rule}
@@ -370,4 +371,25 @@ pub fn guard_location_reads_the_host_like_a_browser_test() {
   let accented = rule.FixedHost("café.example")
   assert rule.guard_location(accented, "https://CAFÉ.example/x", rule.no_vars)
     == Ok("https://CAFÉ.example/x")
+}
+
+pub fn tags_test() {
+  let tagged = fn(tags) {
+    rule.validate(Rule(..rule.blank(), source: "/a", target: "/b", tags:))
+  }
+  let assert Ok(r) = tagged([" Legacy", "campaign", "legacy", ""])
+  assert r.tags == ["campaign", "legacy"]
+  assert rule.tags_from_string("b, A ,, a") == ["a", "b"]
+  assert rule.tags_to_string(["a", "b"]) == "a, b"
+  let assert Error([_]) = tagged([string.repeat("x", 41)])
+  let assert Error([_]) =
+    tagged(
+      list.index_map(list.repeat(Nil, 21), fn(_, i) { "t" <> string.inspect(i) }),
+    )
+  // written to the file only when set: untagged rules keep their version
+  let untagged = Rule(..rule.blank(), source: "/a", target: "/b")
+  assert !string.contains(json.to_string(rule.to_json(untagged)), "tags")
+  let assert Ok([back]) =
+    rule.file_from_string(rule.file_to_string([Rule(..untagged, tags: ["x"])]))
+  assert back.tags == ["x"]
 }

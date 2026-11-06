@@ -23,6 +23,8 @@ pub type Filters {
     status: String,
     sort: String,
     page: Int,
+    /// Rules with this tag ("" for any).
+    tag: String,
   )
 }
 
@@ -39,6 +41,7 @@ pub fn filters_query(filters: Filters) -> List(#(String, String)) {
     #("host", filters.host),
     #("match", filters.kind),
     #("enabled", filters.status),
+    #("tag", filters.tag),
     #("sort", filters.sort),
   ]
   |> list.filter(fn(kv) { kv.1 != "" })
@@ -147,7 +150,7 @@ fn filters_form(filters: Filters) -> Element(Nil) {
         a.name("q"),
         a.value(filters.query),
         a.class("form-control"),
-        a.placeholder("Search host, source, target or note"),
+        a.placeholder("Search host, source, target, note or tags"),
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
@@ -158,6 +161,16 @@ fn filters_form(filters: Filters) -> Element(Nil) {
         a.value(filters.host),
         a.class("form-control"),
         a.placeholder("Host (exact, or *)"),
+      ]),
+    ]),
+    h.div([a.class("col-6 md:col-auto")], [
+      h.label([a.for("tag"), a.class("visually-hidden")], [h.text("Tag")]),
+      h.input([
+        a.id("tag"),
+        a.name("tag"),
+        a.value(filters.tag),
+        a.class("form-control"),
+        a.placeholder("Tag"),
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
@@ -330,6 +343,7 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
       kind_badge(r.kind),
       h.text(" "),
       h.code([a.class("text-break")], [h.text(r.source)]),
+      tag_badges(r.tags),
       case r.note {
         "" -> element.none()
         note -> h.div([a.class("small fg-secondary")], [h.text(note)])
@@ -408,6 +422,26 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
       ),
     ]),
   ])
+}
+
+/// A rule's tags, each a link to the rules with that tag.
+fn tag_badges(tags: List(String)) -> Element(Nil) {
+  case tags {
+    [] -> element.none()
+    tags ->
+      h.div(
+        [a.class("d-flex flex-wrap gap-1 mt-1")],
+        list.map(tags, fn(tag) {
+          h.a(
+            [
+              a.class("badge badge-subtle theme-secondary"),
+              a.href("/rules?" <> uri.query_to_string([#("tag", tag)])),
+            ],
+            [h.text(tag)],
+          )
+        }),
+      )
+  }
 }
 
 fn kind_badge(kind: rule.MatchKind) -> Element(Nil) {
@@ -735,6 +769,21 @@ pub fn form(
                 layout.invalid_attributes(errors, "note"),
               )),
               layout.field_feedback(errors, "note"),
+            ]),
+            field_col("col-12", [
+              label("tags", "Tags"),
+              h.input(list.append(
+                [
+                  a.id("tags"),
+                  a.name("tags"),
+                  a.class(input_class(errors, "tags")),
+                  a.value(rule.tags_to_string(r.tags)),
+                  a.placeholder("campaign, legacy"),
+                ],
+                layout.invalid_attributes(errors, "tags"),
+              )),
+              layout.field_feedback(errors, "tags"),
+              help("Comma separated, to group and filter redirections."),
             ]),
             field_col("col-12", [
               label("query", "Query parameters (exact rules)"),

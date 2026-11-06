@@ -301,14 +301,16 @@ pub fn diff_to_json(d: Diff) -> List(#(String, json.Json)) {
 /// The filters of the rules list, in the admin and the API.
 pub type Filter {
   Filter(
-    /// Case-insensitive text searched in the host, source, target, note
-    /// and id ("" for any).
+    /// Case-insensitive text searched in the host, source, target, note,
+    /// tags and id ("" for any).
     text: String,
     /// A host as written in rules, or "" for any.
     host: String,
     /// `exact`, `prefix` or `regex`, or "" for any.
     kind: String,
     enabled: Option(Bool),
+    /// Rules with this tag (case-insensitive), or "" for any.
+    tag: String,
   )
 }
 
@@ -318,13 +320,16 @@ pub fn filter(rules: List(Rule), f: Filter) -> List(Rule) {
     "" -> ""
     h -> rule.normalise_host(h)
   }
+  let tag = string.lowercase(string.trim(f.tag))
   list.filter(rules, fn(r) {
     {
       needle == ""
-      || list.any([r.host, r.source, r.target, r.note, r.id], fn(field) {
-        string.contains(string.lowercase(field), needle)
-      })
+      || list.any(
+        [r.host, r.source, r.target, r.note, r.id, ..r.tags],
+        fn(field) { string.contains(string.lowercase(field), needle) },
+      )
     }
+    && { tag == "" || list.contains(r.tags, tag) }
     && { host == "" || r.host == host }
     && { f.kind == "" || rule.kind_to_string(r.kind) == f.kind }
     && case f.enabled {
