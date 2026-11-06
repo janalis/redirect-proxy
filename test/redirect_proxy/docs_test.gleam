@@ -1,4 +1,5 @@
-//// Keeps the README's environment variable table in step with the code.
+//// Keeps the documented environment variables (README.md and docs/) in
+//// step with the code.
 
 import gleam/list
 import gleam/option
@@ -6,9 +7,24 @@ import gleam/regexp
 import gleam/string
 import simplifile
 
-/// Every `RP_…` variable the code reads is named in the README.
-pub fn every_env_var_is_documented_test() {
+/// The README and the pages of docs/, as one text.
+fn documentation() -> String {
   let assert Ok(readme) = simplifile.read("README.md")
+  let assert Ok(pages) = simplifile.get_files("docs")
+  pages
+  |> list.filter(string.ends_with(_, ".md"))
+  |> list.sort(string.compare)
+  |> list.map(fn(path) {
+    let assert Ok(page) = simplifile.read(path)
+    page
+  })
+  |> list.prepend(readme)
+  |> string.join("\n")
+}
+
+/// Every `RP_…` variable the code reads is documented.
+pub fn every_env_var_is_documented_test() {
+  let readme = documentation()
   let documented = documented_vars(readme)
   let missing =
     code_literals()
@@ -18,11 +34,11 @@ pub fn every_env_var_is_documented_test() {
   assert missing == []
 }
 
-/// Every `RP_…` variable written out in the README is read by the code: a
+/// Every `RP_…` variable written out in the documentation is read by the code: a
 /// literal, a per-listener name built from a literal prefix, or a `_FILE`
 /// variant of a secret.
 pub fn every_documented_env_var_exists_test() {
-  let assert Ok(readme) = simplifile.read("README.md")
+  let readme = documentation()
   let literals = code_literals()
   let known = fn(var) {
     list.contains(literals, var)
