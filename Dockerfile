@@ -40,6 +40,7 @@ RUN apk add --no-cache libstdc++ libgcc ncurses-libs openssl zlib lksctp-tools \
  && chown redirect-proxy:redirect-proxy /var/lib/redirect-proxy
 
 COPY --from=build /opt/redirect-proxy /opt/redirect-proxy
+COPY --chmod=0755 packaging/docker/healthcheck.sh /usr/local/bin/healthcheck
 
 ENV RP_STORAGE_DATA_DIR=/var/lib/redirect-proxy \
     RP_SERVER_LISTEN=0.0.0.0 \
@@ -54,7 +55,7 @@ VOLUME ["/var/lib/redirect-proxy"]
 EXPOSE 8080 8081
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
-  CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+  CMD ["/usr/local/bin/healthcheck"]
 
 ENTRYPOINT ["/opt/redirect-proxy/bin/redirect-proxy"]
 CMD ["serve"]

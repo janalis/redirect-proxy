@@ -165,6 +165,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       supervision.worker(fn() { store.start(store_settings(cfg), store_name) }),
     )
     |> supervisor.add(redirect_child)
+    |> supervisor.add(supervision.worker(start_janitor))
 
   let builder = case cfg.admin.enabled {
     False -> builder
@@ -224,7 +225,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   }
 
   ffi.on_sighup(fn() { store.reload_async(store_subject) })
-  start_janitor()
+  ffi.on_sigterm_drain(cfg.server.shutdown_grace * 1000)
 
   Ok(Running(
     supervisor: started.pid,
@@ -243,7 +244,10 @@ fn wait_port(ports: process.Subject(#(String, Int)), name: String) -> Int {
       process.send(ports, other)
       wait_port(ports, name)
     }
-    Error(Nil) -> 0
+    Error(Nil) -> {
+      log.error(name <> " listener did not report its port within 10 seconds")
+      0
+    }
   }
 }
 
@@ -316,19 +320,32 @@ fn static_directory() -> String {
   }
 }
 
-/// Periodically purges expired sessions, rate limit windows and OIDC flows.
-fn start_janitor() -> Nil {
-  let _ = process.spawn(fn() { janitor_loop() })
-  Nil
+type JanitorTick {
+  Purge
 }
 
-fn janitor_loop() -> Nil {
-  process.sleep(60_000)
-  let _ = session.purge_expired()
-  let _ = ratelimit.purge_expired()
-  let _ = oidc.purge_expired()
-  let _ = token.purge_expired()
-  janitor_loop()
+const janitor_interval = 60_000
+
+/// Periodically purges expired sessions, rate limit windows, OIDC flows and
+/// tokens. Supervised: if a purge crashes, it is restarted (before, the loop
+/// died silently and nothing was purged any more).
+fn start_janitor() -> Result(
+  actor.Started(process.Subject(JanitorTick)),
+  actor.StartError,
+) {
+  actor.new_with_initialiser(1000, fn(subject) {
+    process.send_after(subject, janitor_interval, Purge)
+    actor.initialised(subject) |> actor.returning(subject) |> Ok
+  })
+  |> actor.on_message(fn(subject, _tick) {
+    let _ = session.purge_expired()
+    let _ = ratelimit.purge_expired()
+    let _ = oidc.purge_expired()
+    let _ = token.purge_expired()
+    process.send_after(subject, janitor_interval, Purge)
+    actor.continue(subject)
+  })
+  |> actor.start
 }
 
 /// The client address used for login and token throttling: the TCP peer, or

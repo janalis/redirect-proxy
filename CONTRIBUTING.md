@@ -52,10 +52,15 @@ One-time repository setup:
 3. **Homebrew tap.** Add a `HOMEBREW_TAP_TOKEN` secret: a fine-grained token
    with *Contents: read and write* on `janalis/homebrew-tap`. Without it the
    tap update is skipped with a warning.
-4. **Coverage.** Optionally add a `CODECOV_TOKEN` secret.
-5. **Package maintainer.** Optionally set a `PACKAGE_MAINTAINER` repository
+4. **Checks on the release PR.** A PR opened with `GITHUB_TOKEN` does not
+   trigger the CI workflow, so the release PR has no checks by default. Add
+   a `RELEASE_PLEASE_TOKEN` secret, a fine-grained token on this repository
+   with *Contents* and *Pull requests: read and write*, so that release-please
+   opens it with that token instead.
+5. **Coverage.** Optionally add a `CODECOV_TOKEN` secret.
+6. **Package maintainer.** Optionally set a `PACKAGE_MAINTAINER` repository
    variable (`Name <email>`) for the `.deb` metadata.
-6. **First release.** `0.1.0` is the initial version recorded in
+7. **First release.** `0.1.0` is the initial version recorded in
    `.release-please-manifest.json`. Tag the initial commit `v0.1.0`, create
    the GitHub release, then run the *Release* workflow manually with
    `tag: v0.1.0` to build and attach its artifacts. After that, release-please

@@ -479,6 +479,24 @@ pub fn users_file_is_private_test() {
   assert simplifile.file_info_permissions_octal(info) == 0o600
 }
 
+pub fn draining_before_a_stop_test() {
+  let env = boot(config.default())
+  assert get(env.admin <> "/readyz", []).status == 200
+  let resp = get(env.redirect <> "/old", [])
+  assert response.get_header(resp, "connection") != Ok("close")
+  // what SIGTERM does before the grace period ends
+  set_draining(True)
+  let ready = get(env.admin <> "/readyz", [])
+  let resp = get(env.redirect <> "/old", [])
+  set_draining(False)
+  assert ready.status == 503
+  assert resp.status == 301
+  assert response.get_header(resp, "connection") == Ok("close")
+}
+
+@external(erlang, "redirect_proxy_sigterm", "set_draining")
+fn set_draining(value: Bool) -> Nil
+
 pub fn login_rejects_bad_password_test() {
   let env = boot(config.default())
   let resp =

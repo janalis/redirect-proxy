@@ -245,12 +245,15 @@ the 404 applies.
 Configuration is read from the TOML file given with `--config` or
 `$RP_CONFIG`. [`config.example.toml`](config.example.toml) documents every
 option. Each option can be overridden with an environment variable named
-`RP_<SECTION>_<KEY>`; lists are comma separated.
+`RP_<SECTION>_<KEY>`; lists are comma separated. A number, a boolean
+(`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`) or a log level that does
+not parse stops the start with an error naming the variable.
 
 | Variable | Default |
 | --- | --- |
 | `RP_SERVER_LISTEN` / `RP_SERVER_PORT` | `0.0.0.0` / `8080` |
 | `RP_SERVER_CACHE_MAX_AGE` | `3600` |
+| `RP_SERVER_SHUTDOWN_GRACE` | `5` (seconds) |
 | `RP_SERVER_FALLBACK_URL` | (none) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |
@@ -284,7 +287,8 @@ The admin listener serves these pages:
 - The audit log.
 - "Reload from disk".
 
-Unauthenticated endpoints: `/healthz`, `/readyz` and `/metrics` (Prometheus).
+Unauthenticated endpoints: `/healthz` (the process is up), `/readyz` (ready
+for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
 
 - **Local accounts.**
   - Passwords are hashed with PBKDF2-HMAC-SHA256 (600 000 iterations) and
@@ -457,8 +461,16 @@ for it. `rules import` writes the file; a running server applies it on
   fallbacks, login failures, reloads, API requests, issued tokens, API
   authentication failures, regex runs stopped by the backtracking budget,
   loaded rules, VM memory and process count.
-- **Shutdown.** `SIGTERM` stops the VM gracefully, which suits containers and
-  systemd.
+- **Shutdown.** On `SIGTERM` the node drains for `server.shutdown_grace`
+  seconds (default 5, `RP_SERVER_SHUTDOWN_GRACE`): `/readyz` answers 503 and
+  the redirect listener closes connections after each response, so load
+  balancers move traffic away. Then the VM stops. A second `SIGTERM` stops
+  it at once. Keep the grace below the stop timeout of your supervisor
+  (systemd `TimeoutStopSec=15`, Docker 10 s by default).
+- **Container health check.** The image probes the admin listener's
+  `/healthz` on `RP_ADMIN_PORT`. With `RP_ADMIN_ENABLED=false` it checks
+  that the redirect listener on `RP_SERVER_PORT` accepts connections
+  instead. Ports set only in a config file need a `HEALTHCHECK` override.
 - **Tuning.** Pass extra VM flags with `ERL_FLAGS`. For example, on a small
   host `ERL_FLAGS="+S 2:2 +SDio 2"` limits schedulers and lowers memory use.
 
@@ -651,7 +663,8 @@ Merging that PR tags `vX.Y.Z` and publishes these artifacts:
 - A portable Erlang bundle, smoke-tested on macOS.
 - `SHA256SUMS`, an SPDX SBOM and build provenance attestations.
 - Multi-arch images `ghcr.io/janalis/redirect-proxy:{X.Y.Z,X.Y,X,latest}`,
-  scanned with Trivy.
+  scanned with Trivy before they are pushed. `latest` only moves to the
+  newest release: rebuilding an older tag leaves it alone.
 - An updated Homebrew formula in `janalis/homebrew-tap`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the required repository settings.

@@ -37,6 +37,10 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
+          # A PR opened with GITHUB_TOKEN does not trigger the CI workflow:
+          # set RELEASE_PLEASE_TOKEN (see CONTRIBUTING.md) to get checks on
+          # the release PR.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -48,18 +52,39 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
+      latest: ${{ steps.meta.outputs.latest }}
     steps:
       - id: meta
         env:
           TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # The tag is used in paths and shell commands of the jobs below.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag must look like v1.2.3, got: $TAG"
+            exit 1
+          fi
+          # Rebuilding an older release must not move the `latest` image tag.
+          highest=$(gh api "repos/$REPO/tags" --paginate --jq '.[].name' |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          latest=false
+          if [ "$TAG" = "$highest" ]; then latest=true; fi
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "latest=$latest"
+          } >> "$GITHUB_OUTPUT"
+          echo "$TAG (latest: $latest, highest tag: $highest)"
 
   linux:
     name: Linux ${{ matrix.arch }} bundle and .deb
     needs: meta
     if: always() && needs.meta.result == 'success'
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      ARCH: ${{ matrix.arch }}
     strategy:
       matrix:
         include:
@@ -79,21 +104,29 @@ jobs:
           rebar3-version: "3"
       - run: gleam deps download
       - name: Bundle with the Erlang runtime
-        run: scripts/bundle.sh "${{ needs.meta.outputs.version }}" "linux-${{ matrix.arch }}" --with-erts
+        run: scripts/bundle.sh "${VERSION}" "linux-${ARCH}" --with-erts
       - name: Build .deb
         env:
           MAINTAINER: ${{ vars.PACKAGE_MAINTAINER || 'Janalis' }}
         run: |
-          scripts/package-deb.sh "${{ needs.meta.outputs.version }}" "${{ matrix.arch }}" \
-            "dist/redirect-proxy-${{ needs.meta.outputs.version }}-linux-${{ matrix.arch }}"
+          scripts/package-deb.sh "${VERSION}" "${ARCH}" \
+            "dist/redirect-proxy-${VERSION}-linux-${ARCH}"
       - name: Install and run the .deb
         run: |
-          sudo apt-get install -y "./dist/redirect-proxy_${{ needs.meta.outputs.version }}_${{ matrix.arch }}.deb"
+          sudo apt-get install -y "./dist/redirect-proxy_${VERSION}_${ARCH}.deb"
           redirect-proxy version
           sudo -u redirect-proxy RP_CONFIG=/etc/redirect-proxy/config.toml redirect-proxy check-config
           sudo systemctl start redirect-proxy
           for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8081/healthz && break; sleep 0.2; done
           sudo systemctl is-active redirect-proxy
+      - name: Upgrade keeps a disabled service disabled
+        run: |
+          sudo systemctl disable --now redirect-proxy
+          sudo apt-get install -y --reinstall "./dist/redirect-proxy_${VERSION}_${ARCH}.deb"
+          if systemctl is-enabled --quiet redirect-proxy; then
+            echo "::error::the upgrade re-enabled the service"
+            exit 1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-${{ matrix.arch }}
@@ -106,6 +139,9 @@ jobs:
     name: Portable bundle (system Erlang)
     needs: meta
     if: always() && needs.meta.result == 'success'
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,7 +154,7 @@ jobs:
           gleam-version: ${{ env.GLEAM_VERSION }}
           rebar3-version: "3"
       - run: gleam deps download
-      - run: scripts/bundle.sh "${{ needs.meta.outputs.version }}" erlang
+      - run: scripts/bundle.sh "${VERSION}" erlang
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: portable
@@ -129,6 +165,9 @@ jobs:
     name: macOS smoke test (Homebrew Erlang)
     needs: [meta, portable]
     if: always() && needs.portable.result == 'success'
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
     runs-on: macos-15
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -137,8 +176,8 @@ jobs:
           path: dist
       - run: brew install erlang
       - run: |
-          tar -xzf "dist/redirect-proxy-${{ needs.meta.outputs.version }}-erlang.tar.gz" -C dist
-          "dist/redirect-proxy-${{ needs.meta.outputs.version }}-erlang/bin/redirect-proxy" version
+          tar -xzf "dist/redirect-proxy-${VERSION}-erlang.tar.gz" -C dist
+          "dist/redirect-proxy-${VERSION}-erlang/bin/redirect-proxy" version
 
   container:
     name: Container image
@@ -169,7 +208,25 @@ jobs:
             type=semver,pattern={{version}},value=${{ needs.meta.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.meta.outputs.tag }}
             type=semver,pattern={{major}},value=${{ needs.meta.outputs.tag }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.meta.outputs.latest }}
+      # Scan before publishing: a failing scan must not leave a pushed image
+      # (nor a moved `latest`) behind.
+      - name: Build the image for the scan
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: VERSION=${{ needs.meta.outputs.version }}
+          tags: redirect-proxy:scan
+          cache-from: type=gha
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: redirect-proxy:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
       - id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -183,12 +240,6 @@ jobs:
           provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE }}:${{ needs.meta.outputs.version }}
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -199,6 +250,9 @@ jobs:
     name: Publish release assets
     needs: [meta, linux, portable, macos]
     if: always() && needs.linux.result == 'success' && needs.portable.result == 'success' && needs.macos.result == 'success'
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -236,7 +290,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+          gh release upload "${TAG}" --clobber \
             dist/*.tar.gz dist/*.deb dist/SHA256SUMS dist/*.spdx.json
 
   homebrew:
@@ -266,5 +320,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/redirect-proxy.rb
+          # a rebuild of the same release leaves the formula unchanged
+          if git diff --cached --quiet; then
+            echo "formula unchanged"
+            exit 0
+          fi
           git commit -m "redirect-proxy ${VERSION}"
           git push
