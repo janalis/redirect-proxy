@@ -2,6 +2,7 @@
 
 import gleam/bool
 import gleam/http.{Get}
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -58,19 +59,28 @@ pub fn require_session(
       session.destroy(s.token)
       start_header_session(req, ctx, user, next)
     }
+    // ... and ends when the proxy no longer vouches for the user (signed out
+    // there, or the cookie replayed past the proxy)
+    Ok(s), Error(Nil) if s.method == session.Header -> {
+      session.destroy(s.token)
+      unauthenticated(req)
+    }
     Ok(s), _ -> next(s, fn(resp) { resp })
     Error(Nil), Ok(user) -> start_header_session(req, ctx, user, next)
-    Error(Nil), Error(Nil) ->
-      case req.method {
-        Get -> {
-          let path = case req.query {
-            Some(q) -> req.path <> "?" <> q
-            None -> req.path
-          }
-          wisp.redirect("/login?" <> uri.query_to_string([#("next", path)]))
-        }
-        _ -> wisp.response(401) |> wisp.string_body("Authentication required")
+    Error(Nil), Error(Nil) -> unauthenticated(req)
+  }
+}
+
+fn unauthenticated(req: Request) -> Response {
+  case req.method {
+    Get -> {
+      let path = case req.query {
+        Some(q) -> req.path <> "?" <> q
+        None -> req.path
       }
+      wisp.redirect("/login?" <> uri.query_to_string([#("next", path)]))
+    }
+    _ -> wisp.response(401) |> wisp.string_body("Authentication required")
   }
 }
 
@@ -180,19 +190,23 @@ pub fn login(req: Request, ctx: Context) -> Response {
   let who = log_value(username) <> " ip=" <> ctx.client_ip
 
   case
-    ratelimit.is_blocked(pair_key, login_pair_limit)
-    || ratelimit.is_blocked(ip_key, login_ip_limit)
-    || ratelimit.is_blocked(user_key, login_user_limit)
+    ratelimit.retry_after([
+      #(pair_key, login_pair_limit),
+      #(ip_key, login_ip_limit),
+      #(user_key, login_user_limit),
+    ])
   {
-    True -> {
+    Ok(seconds) -> {
       log.warning("login throttled for user=" <> who)
+      audit_auth(ctx, username, "auth.throttled", "local")
       fail(
         "Too many failed attempts. Try again in a few minutes.",
         429,
         username,
       )
+      |> wisp.set_header("retry-after", int.to_string(seconds))
     }
-    False -> {
+    Error(Nil) -> {
       let user = case users.get(ctx.users, username) {
         Ok(user) ->
           case pass != "" && password.verify(pass, user.password_hash) {
@@ -268,13 +282,23 @@ fn rehash_if_needed(
 
 /// Records a sign-in event in the audit trail, with the client address.
 fn audit_auth(ctx: Context, actor: String, action: String, method: String) {
+  audit_auth_with(ctx, actor, action, method, [])
+}
+
+fn audit_auth_with(
+  ctx: Context,
+  actor: String,
+  action: String,
+  method: String,
+  details: List(#(String, json.Json)),
+) {
   audit.record(
     config.audit_path(ctx.config),
     actor,
     action,
     method,
     None,
-    Some(json.object([#("client_ip", json.string(ctx.client_ip))])),
+    Some(json.object([#("client_ip", json.string(ctx.client_ip)), ..details])),
   )
 }
 
@@ -346,7 +370,11 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         <> log_value(identity.subject)
         <> ")",
       )
-      audit_auth(ctx, identity.username, "auth.login", "sso")
+      // the username may be editable at the provider: keep who it really is
+      audit_auth_with(ctx, identity.username, "auth.login", "sso", [
+        #("issuer", json.string(ctx.config.oidc.issuer)),
+        #("subject", json.string(identity.subject)),
+      ])
       let s =
         session.create(
           identity.username,
@@ -369,7 +397,15 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         )
       }
       log.warning("SSO login rejected: " <> log_value(logged))
-      audit_auth(ctx, "", "auth.login_failed", "sso")
+      audit_auth_with(ctx, "", "auth.login_failed", "sso", [
+        #(
+          "reason",
+          json.string(case failure {
+            oidc.Denied(reason) -> reason
+            oidc.Failed(_) -> "provider error (see the server log)"
+          }),
+        ),
+      ])
       html(
         403,
         pages.login(

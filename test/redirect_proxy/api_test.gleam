@@ -5,6 +5,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/http/response
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -142,6 +143,54 @@ pub fn token_endpoint_test() {
   assert field(resp.body, ["error"], decode.string) == "unsupported_grant_type"
 }
 
+pub fn token_requests_are_audited_test() {
+  let env = support.boot(config.default())
+  let #(id, secret) = new_client(env, [scope.Read])
+  let ok =
+    token_request(env, [basic(id, secret)], [
+      #("grant_type", "client_credentials"),
+    ])
+  assert ok.status == 200
+  let bad =
+    token_request(env, [basic(id, "wrong")], [
+      #("grant_type", "client_credentials"),
+    ])
+  assert bad.status == 401
+  let assert Ok(audit) = simplifile.read(config.audit_path(env.config))
+  assert string.contains(audit, "\"action\":\"api.token_issued\"")
+  assert string.contains(audit, "\"action\":\"api.token_rejected\"")
+  assert string.contains(audit, "\"scope\":\"redirects:read\"")
+}
+
+pub fn plain_errors_become_json_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(..d, api: config.ApiConfig(..d.api, max_body_bytes: 1000)),
+    )
+  let token = access_token(env, [scope.Write])
+  // malformed JSON
+  let resp = api(env, Post, "/api/redirects", token, "{")
+  assert resp.status == 400
+  assert header(resp, "content-type") == "application/problem+json"
+  assert field(resp.body, ["title"], decode.string) == "Bad Request"
+  // larger than api.max_body_bytes
+  let big = "{\"note\":\"" <> string.repeat("x", 2000) <> "\"}"
+  let resp = api(env, Post, "/api/redirects", token, big)
+  assert resp.status == 413
+  assert header(resp, "content-type") == "application/problem+json"
+  // the token endpoint answers with OAuth errors
+  let resp =
+    support.send(
+      Post,
+      env.api <> "/oauth/token",
+      [#("content-type", "application/json")],
+      "{}",
+    )
+  assert resp.status == 415
+  assert field(resp.body, ["error"], decode.string) == "invalid_request"
+}
+
 pub fn token_endpoint_throttling_test() {
   let env = support.boot(config.default())
   let #(id, _) = new_client(env, [scope.Read])
@@ -154,6 +203,12 @@ pub fn token_endpoint_throttling_test() {
     })
   assert list.take(statuses, 10) == list.repeat(401, 10)
   assert list.last(statuses) == Ok(429)
+  let resp =
+    token_request(env, [basic(id, "wrong")], [
+      #("grant_type", "client_credentials"),
+    ])
+  let assert Ok(seconds) = int.parse(header(resp, "retry-after"))
+  assert seconds > 0 && seconds <= 900
 }
 
 // --- authentication ---------------------------------------------------------
@@ -229,6 +284,20 @@ pub fn revocation_test() {
   let assert Ok([_, other]) = clients.list(settings)
   let assert Ok(Nil) = clients.delete(settings, other.client_id, by: "test")
   assert api(env, Get, "/api/redirects", token2, "").status == 401
+}
+
+pub fn tokens_lose_scopes_the_client_loses_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Ops])
+  assert api(env, Post, "/api/reload", token, "").status == 200
+  // the ops scope is removed from the clients file by hand
+  let path = config.api_clients_path(env.config)
+  let assert Ok(content) = simplifile.read(path)
+  assert string.contains(content, ",\"redirects:ops\"")
+  let assert Ok(Nil) =
+    simplifile.write(path, string.replace(content, ",\"redirects:ops\"", ""))
+  assert api(env, Post, "/api/reload", token, "").status == 403
+  assert api(env, Get, "/api/redirects", token, "").status == 200
 }
 
 // --- redirections -----------------------------------------------------------
@@ -336,6 +405,8 @@ pub fn crud_round_trip_test() {
       "{}",
     )
   assert resp.status == 415
+  assert header(resp, "content-type") == "application/problem+json"
+  assert field(resp.body, ["status"], decode.int) == 415
 
   // delete
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 204

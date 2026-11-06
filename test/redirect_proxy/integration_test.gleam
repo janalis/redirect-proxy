@@ -18,6 +18,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import mist
+import redirect_proxy/admin/auth/header
 import redirect_proxy/app
 import redirect_proxy/audit
 import redirect_proxy/config
@@ -370,6 +371,14 @@ pub fn login_failures_are_throttled_test() {
   let statuses = list.map(list.repeat(Nil, 11), fn(_) { attempt() })
   assert list.take(statuses, 10) == list.repeat(401, 10)
   assert list.last(statuses) == Ok(429)
+  let resp =
+    post_form(env, "/login", "", [
+      #("username", "throttled-user"),
+      #("password", "wrong"),
+    ])
+  let assert Ok(retry) = response.get_header(resp, "retry-after")
+  let assert Ok(seconds) = int.parse(retry)
+  assert seconds > 0 && seconds <= 900
 }
 
 pub fn failures_elsewhere_do_not_lock_the_account_test() {
@@ -1582,4 +1591,32 @@ fn between(text: String, start: String, stop: String) -> String {
   let assert Ok(#(_, rest)) = string.split_once(text, start)
   let assert Ok(#(value, _)) = string.split_once(rest, stop)
   value
+}
+
+pub fn header_session_ends_without_the_proxy_header_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        header_auth: config.HeaderAuthConfig(
+          ..d.header_auth,
+          enabled: True,
+          trusted_proxies: ["127.0.0.1/32"],
+        ),
+      ),
+    )
+  let user = #(header.identity_header(d.header_auth), "alice")
+  let resp = get(env.admin <> "/rules", [user])
+  assert resp.status == 200
+  let cookie = session_cookie(resp)
+  assert cookie != ""
+  // the proxy vouches for the user: the session holds
+  assert get(env.admin <> "/rules", [user, #("cookie", cookie)]).status == 200
+  // the cookie alone, without the proxy (signed out there, or replayed)
+  let resp = get(env.admin <> "/rules", [#("cookie", cookie)])
+  assert resp.status == 303
+  assert string.starts_with(location(resp), "/login")
+  // ... and the session is gone, not just skipped
+  assert get(env.admin <> "/rules", [#("cookie", cookie)]).status == 303
 }

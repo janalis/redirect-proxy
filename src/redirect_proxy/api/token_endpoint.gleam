@@ -3,8 +3,10 @@
 import gleam/bit_array
 import gleam/bool
 import gleam/http/request
+import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
@@ -15,6 +17,8 @@ import redirect_proxy/api/rule_json as _
 import redirect_proxy/api/scope
 import redirect_proxy/api/token
 import redirect_proxy/api/web.{type Context} as _
+import redirect_proxy/audit
+import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
@@ -38,14 +42,15 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
   let pair_key = "token:" <> ctx.client_ip <> " " <> client_id
   let ip_key = "token-ip:" <> ctx.client_ip
   let client_key = "token-client:" <> client_id
-  use <- bool.lazy_guard(
-    ratelimit.is_blocked(pair_key, 10)
-      || ratelimit.is_blocked(ip_key, 30)
-      || ratelimit.is_blocked(client_key, 100),
-    fn() {
-      oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
-    },
-  )
+  let throttled =
+    ratelimit.retry_after([#(pair_key, 10), #(ip_key, 30), #(client_key, 100)])
+  use <- bool.lazy_guard(result.is_ok(throttled), fn() {
+    oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
+    |> wisp.set_header(
+      "retry-after",
+      int.to_string(result.unwrap(throttled, 1)),
+    )
+  })
   use <- bool.lazy_guard(field("grant_type") != "client_credentials", fn() {
     oauth_error(
       400,
@@ -59,6 +64,7 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
       ratelimit.record_failure(ip_key, 900)
       ratelimit.record_failure(client_key, 900)
       metrics.incr(metrics.ApiAuthFailures)
+      audit_token(ctx, client_id, "api.token_rejected", [])
       log.warning(
         "token request rejected for client="
         <> ffi.escape_newlines(client_id)
@@ -106,6 +112,9 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
           let access_token =
             token.issue(client.client_id, client.secret_hash, scopes, ttl)
           metrics.incr(metrics.TokensIssued)
+          audit_token(ctx, client.client_id, "api.token_issued", [
+            #("scope", json.string(scope.join(scopes))),
+          ])
           problem.json_response(
             200,
             json.object([
@@ -120,6 +129,23 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
       }
     }
   }
+}
+
+/// Records a token request in the audit trail, with the client address.
+fn audit_token(
+  ctx: Context,
+  client_id: String,
+  action: String,
+  details: List(#(String, json.Json)),
+) -> Nil {
+  audit.record(
+    config.audit_path(ctx.config),
+    "client:" <> client_id,
+    action,
+    client_id,
+    None,
+    Some(json.object([#("client_ip", json.string(ctx.client_ip)), ..details])),
+  )
 }
 
 /// `Authorization: Basic` client credentials, form-urlencoded per RFC 6749

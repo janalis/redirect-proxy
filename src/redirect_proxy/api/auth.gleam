@@ -47,12 +47,13 @@ pub fn authenticate(
       use grant <- result.try(
         token.lookup(raw) |> result.replace_error(invalid),
       )
-      // The client must still exist with the same secret.
+      // The client must still exist with the same secret, and a token
+      // never keeps a scope the client has lost since (clients file edited).
       case clients.get(clients_settings, grant.client_id) {
         Ok(client) if client.secret_hash == grant.secret_hash ->
           Ok(Principal(
             actor: "client:" <> grant.client_id,
-            scopes: grant.scopes,
+            scopes: list.filter(grant.scopes, scope.allows(client.scopes, _)),
           ))
         _ -> Error(invalid)
       }

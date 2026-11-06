@@ -234,6 +234,8 @@ pub fn check_claims(
     use sub <- decode.field("sub", decode.string)
     use aud <- decode.field("aud", audience)
     use exp <- decode.field("exp", decode.int)
+    use nbf <- decode.optional_field("nbf", 0, decode.int)
+    use azp <- decode.optional_field("azp", "", decode.string)
     use nonce <- decode.optional_field("nonce", "", decode.string)
     use email <- decode.optional_field("email", "", decode.string)
     // A missing claim means unverified: some providers (Entra ID...) never
@@ -257,6 +259,8 @@ pub fn check_claims(
       sub,
       aud,
       exp,
+      nbf,
+      azp,
       nonce,
       email,
       email_verified,
@@ -264,7 +268,21 @@ pub fn check_claims(
       groups,
     ))
   }
-  use #(iss, sub, aud, exp, nonce, email, email_verified, preferred, groups) <- result.try(
+  use
+    #(
+      iss,
+      sub,
+      aud,
+      exp,
+      nbf,
+      azp,
+      nonce,
+      email,
+      email_verified,
+      preferred,
+      groups,
+    )
+  <- result.try(
     json.parse(claims_json, decoder)
     |> result.replace_error("ID token is missing required claims"),
   )
@@ -276,7 +294,15 @@ pub fn check_claims(
     !list.contains(aud, cfg.client_id),
     Error("ID token audience mismatch"),
   )
-  use <- bool.guard(exp + 60 < ffi.now_seconds(), Error("ID token expired"))
+  // OpenID Connect Core 3.1.3.7: when present, the authorised party must be
+  // this client (several providers omit it, even with several audiences)
+  use <- bool.guard(
+    azp != "" && azp != cfg.client_id,
+    Error("ID token authorised party mismatch"),
+  )
+  let now = ffi.now_seconds()
+  use <- bool.guard(exp + 60 < now, Error("ID token expired"))
+  use <- bool.guard(nbf - 60 > now, Error("ID token not yet valid"))
   use <- bool.guard(
     !ffi.secure_compare(<<nonce:utf8>>, <<expected_nonce:utf8>>),
     Error("ID token nonce mismatch"),

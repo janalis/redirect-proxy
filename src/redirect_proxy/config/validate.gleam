@@ -23,7 +23,8 @@ fn is_http_url(url: String) -> Bool {
 }
 
 /// Things that are allowed but probably wrong, reported by `check-config`:
-/// unknown keys and an admin listening beyond the loopback interface.
+/// unknown keys, an admin listening beyond the loopback interface, and the
+/// `runtime_warnings`.
 pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
   let unknown =
     unknown_keys(toml)
@@ -36,7 +37,23 @@ pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
     ]
     False -> []
   }
-  list.append(unknown, exposed)
+  list.flatten([unknown, exposed, runtime_warnings(config)])
+}
+
+/// Warnings also logged when the server starts.
+pub fn runtime_warnings(config: Config) -> List(String) {
+  let oidc = config.oidc
+  case
+    oidc.enabled
+    && oidc.allowed_emails == []
+    && oidc.allowed_domains == []
+    && oidc.allowed_groups == []
+  {
+    True -> [
+      "auth.oidc has no allowed_emails, allowed_domains or allowed_groups: every account of the provider can sign in to the admin",
+    ]
+    False -> []
+  }
 }
 
 fn is_loopback(address: String) -> Bool {

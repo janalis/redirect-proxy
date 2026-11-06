@@ -329,10 +329,11 @@ for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
 - **OpenID Connect.**
   - Uses the authorization code flow with PKCE, `state` and `nonce`.
   - The ID token signature is verified against the provider JWKS, and `iss`,
-    `aud` and `exp` are checked.
+    `aud`, `exp`, `nbf` and (when present) `azp` are checked.
   - To allow users, set `allowed_emails`, `allowed_domains` (checked against
     verified emails) and/or `allowed_groups` (from `groups_claim`). With all
-    three lists empty, every account of the provider is accepted.
+    three lists empty, every account of the provider is accepted, and the
+    server logs a warning at startup (and `check-config` reports it).
   - An email counts as verified only when the ID token says
     `email_verified: true`. Providers that never send that claim, such as
     Entra ID, can only be restricted with `allowed_groups`.
@@ -344,7 +345,9 @@ for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
   combined. The header is only accepted when the TCP peer is in
   `trusted_proxies`, and a request carrying several values in it is refused.
   Configure the proxy to set (not append to) that header, and never expose the
-  admin port directly in this mode.
+  admin port directly in this mode. The session ends on the first request
+  that arrives without the header (signed out at the proxy, or a replayed
+  cookie).
 
 Security measures:
 
@@ -365,7 +368,7 @@ Security measures:
   one account and 20 times in all; an account accepts 100 failures from all
   clients. A correct password from another client still works, so failures
   cannot lock a user out. The API token endpoint works the same way with
-  client ids. Behind a proxy, list it in `access_log.trusted_proxies` so
+  client ids. A throttled request gets a 429 with `Retry-After`. Behind a proxy, list it in `access_log.trusted_proxies` so
   that the client address is the forwarded one.
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
@@ -496,7 +499,10 @@ for it. `rules import` writes the file; a running server applies it on
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule
   before and after, and sign-ins: logins, failed logins (with the client
-  address) and logouts, for local, SSO and proxy-header sessions. Imports and
+  address) and logouts, for local, SSO and proxy-header sessions. SSO entries
+  carry the provider `issuer` and `subject`, failed ones the reason.
+  Throttled logins (`auth.throttled`) and API tokens issued and refused
+  (`api.token_issued`, `api.token_rejected`) are recorded too. Imports and
   reloads record the file fingerprint before and after and the rules added,
   removed and changed (counts, and up to 100 ids each). Rejected reloads and
   imports are recorded with the reason (`rules.reload_failed`,

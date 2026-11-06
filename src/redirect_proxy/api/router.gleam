@@ -58,6 +58,18 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.ApiRequests)
   let req = wisp.set_max_body_size(req, ctx.config.api.max_body_bytes)
+  let oauth = case wisp.path_segments(req) {
+    ["oauth", ..] -> True
+    _ -> False
+  }
+  {
+    use <- wisp.rescue_crashes
+    dispatch(req, ctx)
+  }
+  |> problem.from_plain_error(oauth)
+}
+
+fn dispatch(req: Request, ctx: Context) -> Response {
   case wisp.path_segments(req) {
     ["oauth", "token"] ->
       case req.method {

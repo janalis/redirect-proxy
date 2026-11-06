@@ -97,6 +97,23 @@ pub fn claim_mismatches_test() {
   let assert Error(_) =
     oidc.check_claims(c, provider, claims([]), "other-nonce")
   let assert Error(_) = oidc.check_claims(c, provider, "{}", "n")
+  // issued for another client of the same provider
+  let assert Error("ID token authorised party mismatch") =
+    oidc.check_claims(
+      c,
+      provider,
+      claims([#("azp", json.string("other"))]),
+      "n",
+    )
+  let assert Ok(_) =
+    oidc.check_claims(c, provider, claims([#("azp", json.string("rp"))]), "n")
+  let assert Error("ID token not yet valid") =
+    oidc.check_claims(
+      c,
+      provider,
+      claims([#("nbf", json.int(ffi.now_seconds() + 3600))]),
+      "n",
+    )
 }
 
 pub fn unverified_email_is_ignored_test() {
