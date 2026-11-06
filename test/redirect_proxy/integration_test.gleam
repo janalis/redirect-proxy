@@ -2230,3 +2230,33 @@ pub fn admin_rule_tags_test() {
   assert string.contains(list, "href=\"/rules?tag=spring%20sale\"")
   assert !string.contains(page("/rules?tag=other"), "/tagged")
 }
+
+pub fn admin_csv_import_and_export_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let resp =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "merge"),
+      #("content", "source,target,status,tags\n/from-csv,/landing,302,sheet\n"),
+    ])
+  assert resp.status == 303
+  let found = get(env.redirect <> "/from-csv", [])
+  assert found.status == 302
+  assert location(found) == "/landing"
+  // errors name the line
+  let resp =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "merge"),
+      #("content", "source,target,status\n/x,/y,moved\n"),
+    ])
+  assert resp.status == 422
+  assert string.contains(resp.body, "line 2: status: must be a number")
+  let export =
+    get(env.admin <> "/export?format=csv&tag=sheet", [#("cookie", cookie)])
+  assert response.get_header(export, "content-type")
+    == Ok("text/csv; charset=utf-8")
+  assert string.contains(export.body, "/from-csv,/landing,302")
+  assert !string.contains(export.body, "/old,")
+}

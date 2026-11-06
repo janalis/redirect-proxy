@@ -31,7 +31,7 @@ rules. It never proxies traffic to an upstream.
     the filters, in one change.
   - A "test a URL" tool that explains the result: every rule that matches,
     which one applies, which are shadowed or disabled, and the redirect chain.
-  - JSON import and export. An import can be previewed (rules added, changed
+  - JSON and CSV import and export. An import can be previewed (rules added, changed
     and removed); a replace is always previewed first.
   - Users, and an audit log with filters and a field by field diff.
 - **REST API** with OAuth 2.0:
@@ -215,6 +215,18 @@ accepted. Ids and timestamps are added automatically.
 | `expires_at` | `""` | RFC 3339 date-time from which the rule no longer applies. Empty: never. |
 | `note` | `""` | Free text shown in the admin. |
 | `tags` | `[]` | Labels to group and filter rules (`["campaign", "legacy"]`): stored lower case, sorted and without duplicates; at most 20, each at most 40 characters, without commas. Written to the file only when set. |
+
+**CSV.** Imports (admin, API, `rules import`, `rules validate`) also take
+CSV: a header row naming the columns, then one rule per line. The columns
+are those of the CSV export: `id`, `host`, `match`, `source`, `target`,
+`status`, `preserve_query`, `case_insensitive`, `whole_segments`, `query`,
+`priority`, `enabled`, `starts_at`, `expires_at`, `tags` and `note`, in any
+order. Only `source` and `target` are required; empty cells take the
+default, booleans are `true`/`false` (or `yes`/`no`, `1`/`0`), and tags are
+separated by commas inside a quoted cell (`"campaign, legacy"`). Unknown
+columns are refused, so that a typo does not drop a field. In an export,
+cells that a spreadsheet would run as a formula (starting with `=`, `+`,
+`-`, `@`) start with `'`, which an import removes.
 
 **Scheduled rules.** A rule with `starts_at` or `expires_at` only applies
 within that window: the server republishes the rules within a second of a
@@ -493,8 +505,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`, `tag`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch) with the rule's `ETag`. `GET` always answers `200`: its body has the live `hits` and `last_hit_at`, which the `ETag` (the version of the rule's settings) does not cover. |
-| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`, `tag`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
-| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`, or CSV with `format=csv`. Takes the list filters (`q`, `host`, `match`, `enabled`, `tag`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
+| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json` or `text/csv`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |

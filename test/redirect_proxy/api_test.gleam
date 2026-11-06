@@ -1502,3 +1502,37 @@ pub fn rule_tags_over_the_api_test() {
     )
   assert too_long.status == 422
 }
+
+pub fn csv_import_and_export_over_the_api_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Write])
+  let send_csv = fn(path, body) {
+    support.send(
+      Post,
+      env.api <> path,
+      [#("authorization", "Bearer " <> token), #("content-type", "text/csv")],
+      body,
+    )
+  }
+  let resp =
+    send_csv(
+      "/api/redirects/import?mode=replace",
+      "source,target,match\n/csv/,/to/$1,prefix\n",
+    )
+  assert resp.status == 200
+  let export = api(env, Get, "/api/redirects/export?format=csv", token, "")
+  assert export.status == 200
+  assert header(export, "content-type") == "text/csv; charset=utf-8"
+  assert string.starts_with(export.body, "id,host,match,source,target")
+  assert string.contains(export.body, ",prefix,/csv/,/to/$1,")
+  // the CSV export has its own ETag
+  let json_tag =
+    header(api(env, Get, "/api/redirects/export", token, ""), "etag")
+  assert header(export, "etag") != json_tag
+  assert api(env, Get, "/api/redirects/export?format=xml", token, "").status
+    == 400
+  // CSV errors are validation errors with the line
+  let bad = send_csv("/api/redirects/import", "source,target,status\n/a,/b,x\n")
+  assert bad.status == 422
+  assert string.contains(bad.body, "line 2: status: must be a number")
+}

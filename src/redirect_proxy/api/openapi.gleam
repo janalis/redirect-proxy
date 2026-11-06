@@ -538,6 +538,12 @@ fn paths(registry: List(Deprecation)) -> Json {
                   enum_schema(["true", "false"]),
                   "true or false.",
                 ),
+                param(
+                  "format",
+                  "query",
+                  enum_schema(["json", "csv"]),
+                  "json (default): a redirections file. csv: a header row of every column, then one rule per line (cells that a spreadsheet would run as a formula start with ').",
+                ),
                 if_none_match_param(),
               ]),
             ),
@@ -556,12 +562,16 @@ fn paths(registry: List(Deprecation)) -> Json {
                           "application/json",
                           json.object([#("schema", ref("RulesFile"))]),
                         ),
+                        #(
+                          "text/csv",
+                          json.object([#("schema", string_schema())]),
+                        ),
                       ]),
                     ),
                   ]),
                 ),
                 not_modified(),
-                ..errors([#("400", "Invalid match or enabled value.")])
+                ..errors([#("400", "Invalid match, enabled or format value.")])
               ]),
             ),
           ],
@@ -595,7 +605,33 @@ fn paths(registry: List(Deprecation)) -> Json {
                 set_if_match_param(),
               ]),
             ),
-            body(ref("RulesFile"), "application/json"),
+            #(
+              "requestBody",
+              json.object([
+                #("required", json.bool(True)),
+                #(
+                  "content",
+                  json.object([
+                    #(
+                      "application/json",
+                      json.object([#("schema", ref("RulesFile"))]),
+                    ),
+                    #(
+                      "text/csv",
+                      json.object([
+                        #("schema", string_schema()),
+                        #(
+                          "description",
+                          json.string(
+                            "A header row naming the columns (those of the CSV export; source and target are required), then one rule per line.",
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ]),
+                ),
+              ]),
+            ),
             #(
               "responses",
               json.object([

@@ -19,6 +19,7 @@ import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/password
 import redirect_proxy/rule
+import redirect_proxy/rule_csv
 import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
 import redirect_proxy/users
@@ -376,7 +377,9 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
       "cannot read " <> path <> ": " <> simplifile.describe_error(e)
     }),
   )
-  use rules <- result.try(rule.file_from_string(content))
+  use rules <- result.try(
+    rule_csv.parse_import(content) |> result.map_error(string.join(_, "\n")),
+  )
   use valid <- result.try(
     store_rules.validate_all(rules) |> result.map_error(string.join(_, "\n")),
   )
@@ -409,7 +412,9 @@ fn rules_import(
       "cannot read " <> file <> ": " <> simplifile.describe_error(e)
     }),
   )
-  use incoming <- result.try(rule.file_from_string(content))
+  use incoming <- result.try(
+    rule_csv.parse_import(content) |> result.map_error(string.join(_, "\n")),
+  )
   use Nil <- result.try(
     simplifile.create_directory_all(cfg.storage.data_dir)
     |> result.map_error(simplifile.describe_error),

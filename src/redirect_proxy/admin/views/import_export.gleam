@@ -1,4 +1,4 @@
-//// JSON import and export, and the import preview.
+//// JSON and CSV import and export, and the import preview.
 
 import gleam/int
 import gleam/list
@@ -30,6 +30,11 @@ pub fn import_export(
           "Download JSON export",
           "btn-outline theme-primary",
         ),
+        layout.button_link(
+          "/export?format=csv",
+          "Download CSV export",
+          "btn-outline theme-secondary",
+        ),
       ]),
       layout.errors_view(errors),
       h.form(
@@ -44,24 +49,24 @@ pub fn import_export(
             layout.csrf_field(session),
             h.div([a.class("mb-3")], [
               h.label([a.for("file"), a.class("form-label")], [
-                h.text("JSON file"),
+                h.text("JSON or CSV file"),
               ]),
               h.input([
                 a.id("file"),
                 a.name("file"),
                 a.type_("file"),
-                a.accept(["application/json", ".json"]),
+                a.accept(["application/json", ".json", "text/csv", ".csv"]),
                 a.class("form-control"),
               ]),
               h.div([a.class("form-text")], [
                 h.text(
-                  "Either {\"version\": 1, \"rules\": [...]} (as exported) or a bare array of rules. Only source and target are required.",
+                  "JSON: {\"version\": 1, \"rules\": [...]} (as exported) or a bare array of rules. CSV: a header row naming the columns (as in the CSV export), then one rule per line. Only source and target are required.",
                 ),
               ]),
             ]),
             h.div([a.class("mb-3")], [
               h.label([a.for("content"), a.class("form-label")], [
-                h.text("…or paste JSON"),
+                h.text("…or paste JSON or CSV"),
               ]),
               h.textarea(
                 [

@@ -26,6 +26,7 @@ import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
+import redirect_proxy/rule_csv
 import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
@@ -551,13 +552,19 @@ pub fn export(req: Request, ctx: Context) -> Response {
   let query = wisp.get_query(req)
   let filters =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
-  let body =
-    matching(store.all(ctx.store), filters)
-    |> store_rules.export
+  let rules = matching(store.all(ctx.store), filters)
+  let #(content_type, name, body) = case list.key_find(query, "format") {
+    Ok("csv") -> #(
+      "text/csv; charset=utf-8",
+      "redirects.csv",
+      rule_csv.to_string(rules),
+    )
+    _ -> #("application/json", "redirects.json", store_rules.export(rules))
+  }
   wisp.ok()
-  |> wisp.set_header("content-type", "application/json")
+  |> wisp.set_header("content-type", content_type)
   |> wisp.file_download_from_memory(
-    named: "redirects.json",
+    named: name,
     containing: bytes_tree.from_string(body),
   )
 }
@@ -618,10 +625,10 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     }
   }
   case string.trim(content) {
-    "" -> fail(["Provide a JSON file or paste JSON content."])
+    "" -> fail(["Provide a JSON or CSV file, or paste its content."])
     _ ->
-      case rule.file_from_string(content) {
-        Error(reason) -> fail([reason])
+      case rule_csv.parse_import(content) {
+        Error(errors) -> fail(errors)
         Ok(incoming) ->
           // a replace is always previewed before it is applied
           case form_value(form, "step"), mode {
