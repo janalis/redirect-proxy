@@ -4,6 +4,7 @@ import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None}
 import gleam/result
+import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
@@ -69,15 +70,63 @@ pub fn delete_user(
   }
 }
 
+pub fn confirm_delete_user(
+  ctx: Context,
+  s: Session,
+  username: String,
+) -> Response {
+  use <- bool.lazy_guard(!show_users(ctx), fn() { not_found(ctx, s) })
+  case users.get(ctx.users, username) {
+    Error(Nil) -> not_found(ctx, s)
+    Ok(user) ->
+      html(
+        200,
+        pages.confirm(
+          s,
+          features(ctx),
+          layout.NavUsers,
+          "Delete a user",
+          "The user "
+            <> user.username
+            <> " will be removed and signed out everywhere.",
+          "/users/" <> uri.percent_encode(user.username) <> "/delete",
+          "Delete " <> user.username,
+          "/users",
+        ),
+      )
+  }
+}
+
+/// Changing a local password, yours or another user's, needs a local session
+/// and your current password: a stolen session or an SSO account cannot take
+/// over local accounts.
 pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
   use <- bool.lazy_guard(!show_users(ctx), fn() { not_found(ctx, s) })
   use form <- require_csrf_form(req, s)
+  use <- bool.lazy_guard(s.method != session.Local, fn() {
+    error_page(
+      ctx,
+      s,
+      403,
+      "Not allowed",
+      "Only local administrators can change local passwords.",
+    )
+  })
   let username =
     list.key_find(form.values, "username")
     |> result.unwrap(s.username)
     |> users.normalise
   let pass = form_value(form, "password")
+  let current_ok = case users.get(ctx.users, s.username) {
+    Ok(me) ->
+      password.verify(form_value(form, "current_password"), me.password_hash)
+    Error(Nil) -> False
+  }
   let result = {
+    use <- bool.guard(
+      !current_ok,
+      Error("Your current password is not correct."),
+    )
     use Nil <- result.try(password.validate_strength(pass))
     users.set_password(ctx.users, username, password.hash(pass), s.username)
   }

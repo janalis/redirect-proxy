@@ -979,3 +979,15 @@ pub fn tester_explains_the_resolution_test() {
   assert chain == ["/exact", "/final"]
   assert field(resp.body, ["loop"], decode.bool) == False
 }
+
+pub fn export_follows_filters_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True), #("b", "/b", False)])
+  let resp = api(env, Get, "/api/redirects/export?enabled=false", token, "")
+  assert resp.status == 200
+  assert string.contains(resp.body, "\"/b\"")
+  assert !string.contains(resp.body, "\"/a\"")
+  assert api(env, Get, "/api/redirects/export?match=foo", token, "").status
+    == 400
+}

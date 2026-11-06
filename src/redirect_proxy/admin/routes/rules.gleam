@@ -10,6 +10,7 @@ import gleam/set
 import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/views/rules as rules_view
 import redirect_proxy/admin/web.{
@@ -66,12 +67,28 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
         #("page", int.to_string(page)),
       ]),
     )
+  // after enabling or disabling, name the rule (looked up by id, never
+  // taken as text from the link)
+  let flash = case
+    list.key_find(query, "flash"),
+    list.key_find(query, "id") |> result.try(store.get(ctx.store, _))
+  {
+    Ok("enabled"), Ok(r) ->
+      Some(layout.Success(
+        "Redirection " <> r.host <> " " <> r.source <> " enabled.",
+      ))
+    Ok("disabled"), Ok(r) ->
+      Some(layout.Success(
+        "Redirection " <> r.host <> " " <> r.source <> " disabled.",
+      ))
+    _, _ -> flash_from_query(req)
+  }
   html(
     200,
     rules_view.index(
       s,
       features(ctx),
-      flash_from_query(req),
+      flash,
       rows,
       list.length(all),
       count,
@@ -159,8 +176,21 @@ fn apply_bulk(
   }
 }
 
-pub fn new_rule(_req: Request, ctx: Context, s: Session) -> Response {
-  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True, "", 0))
+/// The form of a new rule, or of a copy of `?from=<id>` (Duplicate).
+pub fn new_rule(req: Request, ctx: Context, s: Session) -> Response {
+  let start = case list.key_find(wisp.get_query(req), "from") {
+    Ok(id) ->
+      case store.get(ctx.store, id) {
+        Ok(r) ->
+          rule.Rule(..r, id: "", note: case r.note {
+            "" -> "Copy"
+            note -> note <> " (copy)"
+          })
+        Error(Nil) -> rule.blank()
+      }
+    Error(Nil) -> rule.blank()
+  }
+  html(200, rules_view.form(s, features(ctx), start, [], True, "", 0))
 }
 
 pub fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
@@ -322,6 +352,7 @@ pub fn toggle_rule(
                 True -> "disabled"
                 False -> "enabled"
               }),
+              #("id", r.id),
             ]),
           )
         Error(store.Conflict(current)) ->
@@ -460,8 +491,16 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   html(200, pages.test_url(s, features(ctx), url, result, explanation))
 }
 
-pub fn export(ctx: Context) -> Response {
-  let body = store_rules.export(store.all(ctx.store))
+/// Exports the rules matching the list filters of the query (all of them
+/// without filters).
+pub fn export(req: Request, ctx: Context) -> Response {
+  let query = wisp.get_query(req)
+  let filters =
+    filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
+  let body =
+    store.all(ctx.store)
+    |> list.filter(matches_filters(_, filters))
+    |> store_rules.export
   wisp.ok()
   |> wisp.set_header("content-type", "application/json")
   |> wisp.file_download_from_memory(

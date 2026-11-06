@@ -356,6 +356,10 @@ Security measures:
     password changes, including from the CLI. Changing your own password
     keeps you signed in, in a new session.
   - SSO logins are bound to the browser that started them.
+- **Passwords.** Changing a local password, yours or another user's, needs
+  your current password and a local session: administrators signed in with
+  SSO or proxy headers cannot change local passwords. Deleting a user or an
+  API client, and rotating a secret, ask for a confirmation.
 - **CSRF.** Every form carries a token, and `Origin`/`Referer` are checked.
 - **Login throttling.** Over 15 minutes, a client may fail 10 times for
   one account and 20 times in all; an account accepts 100 failures from all
@@ -411,7 +415,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` since the server started. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch). |
-| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). |
 | `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing. `dry_run=true` returns what would be added, changed and removed without writing. |
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |

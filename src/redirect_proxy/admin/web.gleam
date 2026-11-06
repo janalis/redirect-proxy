@@ -142,7 +142,7 @@ pub fn return_to(value: String, flash: List(#(String, String))) -> String {
   let kept =
     uri.parse_query(query)
     |> result.unwrap([])
-    |> list.filter(fn(kv) { kv.0 != "flash" && kv.0 != "count" })
+    |> list.filter(fn(kv) { kv.0 != "flash" && kv.0 != "count" && kv.0 != "id" })
   path <> "?" <> uri.query_to_string(list.append(kept, flash))
 }
 

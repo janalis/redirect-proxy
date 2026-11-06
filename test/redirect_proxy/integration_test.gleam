@@ -463,6 +463,7 @@ pub fn own_password_change_keeps_the_current_session_test() {
     post_form(env, "/account/password", first, [
       #("csrf_token", csrf),
       #("password", "a-brand-new-password"),
+      #("current_password", admin_password),
     ])
   assert resp.status == 303
   // the browser that changed it continues with a fresh session
@@ -693,7 +694,12 @@ pub fn toggle_keeps_the_list_filters_test() {
       #("return_to", "/rules?q=old&sort=source&page=1"),
     ])
   assert resp.status == 303
-  assert location(resp) == "/rules?q=old&sort=source&page=1&flash=disabled"
+  assert location(resp)
+    == "/rules?q=old&sort=source&page=1&flash=disabled&id="
+    <> uri.percent_encode(id)
+  // the flash names the rule (looked up by id)
+  let back = get(env.admin <> location(resp), [#("cookie", cookie)])
+  assert string.contains(back.body, "Redirection * /old disabled.")
   // anything else than the rules list goes back to /rules
   let resp =
     post_form(env, "/rules/" <> id <> "/toggle", cookie, [
@@ -725,6 +731,102 @@ pub fn audit_page_filters_test() {
   assert !string.contains(page("action=rule."), "<code>auth.login</code>")
   assert string.contains(page("action=auth."), "<code>auth.login</code>")
   assert string.contains(page("actor=nobody"), "No audit entry matches.")
+}
+
+pub fn password_changes_need_the_current_password_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let change = fn(current) {
+    post_form(env, "/account/password", cookie, [
+      #("csrf_token", csrf),
+      #("username", "admin"),
+      #("password", "a-brand-new-password"),
+      #("current_password", current),
+    ])
+  }
+  let resp = change("not my password")
+  assert resp.status == 422
+  assert string.contains(resp.body, "current password is not correct")
+  assert change("").status == 422
+  // nothing changed: the old password still signs in
+  let #(_, _) = login(env)
+}
+
+pub fn sso_admins_cannot_change_local_passwords_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let env = oidc_env(issuer, ["example.com"])
+  let resp = sso_login(env)
+  let cookie = session_cookie(resp)
+  let page = get(env.admin <> "/users", [#("cookie", cookie)])
+  assert string.contains(page.body, "only local administrators can change")
+  let csrf = csrf_token(page.body)
+  let resp =
+    post_form(env, "/account/password", cookie, [
+      #("csrf_token", csrf),
+      #("username", "admin"),
+      #("password", "a-brand-new-password"),
+      #("current_password", "anything"),
+    ])
+  assert resp.status == 403
+}
+
+pub fn destructive_actions_are_confirmed_test() {
+  let env = boot(config.default())
+  let #(cookie, _) = login(env)
+  let page = fn(path) { get(env.admin <> path, [#("cookie", cookie)]) }
+  let users = page("/users")
+  // a link to a confirmation page, not a form posting at once
+  assert !string.contains(users.body, "action=\"/users/admin/delete\"")
+  let assert Ok(_) =
+    users.create(
+      users.Settings(
+        path: env.dir <> "/users.json",
+        audit_path: env.dir <> "/audit.jsonl",
+      ),
+      "bob",
+      password.hash_with("bob-password-123", 1000),
+      by: "test",
+    )
+  let confirm = page("/users/bob/delete")
+  assert confirm.status == 200
+  assert string.contains(confirm.body, "will be removed and signed out")
+  assert string.contains(confirm.body, "action=\"/users/bob/delete\"")
+}
+
+pub fn admin_forms_and_exports_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let page = fn(path) { get(env.admin <> path, [#("cookie", cookie)]) }
+  // every page starts with a skip link to the content
+  assert string.contains(page("/rules").body, "href=\"#main\"")
+  // field errors are next to the field, announced as such
+  let resp =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("source", "no-slash"),
+      #("target", "/x"),
+      #("status", "301"),
+      #("priority", "100"),
+    ])
+  assert resp.status == 422
+  assert string.contains(resp.body, "aria-invalid=\"true\"")
+  assert string.contains(resp.body, "id=\"source-errors\"")
+  assert string.contains(resp.body, "href=\"#source\"")
+  // Duplicate opens the form filled from another rule
+  // the id of the regex rule, from its edit link
+  let list = page("/rules?kind=regex").body
+  let assert Ok(#(before, _)) = string.split_once(list, "/edit\"")
+  let assert Ok(id) = string.split(before, "/rules/") |> list.last
+  let copy = page("/rules/new?from=" <> id)
+  assert string.contains(copy.body, "^/blog/")
+  assert string.contains(copy.body, "(copy)")
+    || string.contains(copy.body, "Copy")
+  // exports follow the filters, in the admin and the API
+  let export = page("/export?kind=regex").body
+  assert string.contains(export, "/blog/")
+  assert !string.contains(export, "/old")
 }
 
 pub fn login_rejects_bad_password_test() {

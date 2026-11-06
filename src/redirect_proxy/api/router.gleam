@@ -98,9 +98,12 @@ fn route(
     }
     Get, ["redirects", "export"] -> {
       use <- require(principal, scope.Read, ctx)
+      let query = wisp.get_query(req)
+      let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
+      use rules <- result_or_response(filtered_rules(ctx, get))
       wisp.response(200)
       |> wisp.set_header("content-type", "application/json")
-      |> wisp.string_body(store_rules.export(store.all(ctx.store)))
+      |> wisp.string_body(store_rules.export(rules))
     }
     Post, ["redirects", "import"] -> {
       use <- require(principal, scope.Write, ctx)
@@ -240,33 +243,7 @@ fn list_rules(req: Request, ctx: Context) -> Response {
     int.parse(get("per_page"))
     |> result.unwrap(default_per_page)
     |> int.clamp(1, max_per_page)
-  let needle = string.lowercase(string.trim(get("q")))
-  let host = case get("host") {
-    "" -> ""
-    h -> rule.normalise_host(h)
-  }
-  let kind = get("match")
-  let enabled = get("enabled")
-  // invalid filters are errors: silently ignoring them returns the wrong set
-  use <- bool.lazy_guard(
-    !list.contains(["", "exact", "prefix", "regex"], kind),
-    fn() { problem.bad_request("match must be exact, prefix or regex.") },
-  )
-  use <- bool.lazy_guard(!list.contains(["", "true", "false"], enabled), fn() {
-    problem.bad_request("enabled must be true or false.")
-  })
-  let matching =
-    store.all(ctx.store)
-    |> list.filter(fn(r) {
-      { needle == "" || text_matches(r, needle) }
-      && { host == "" || r.host == host }
-      && { kind == "" || rule.kind_to_string(r.kind) == kind }
-      && case enabled {
-        "true" -> r.enabled
-        "false" -> !r.enabled
-        _ -> True
-      }
-    })
+  use matching <- result_or_response(filtered_rules(ctx, get))
   case store_rules.sort(matching, get("sort"), metrics.hits) {
     Error(Nil) ->
       problem.bad_request(
@@ -324,6 +301,53 @@ fn list_rules(req: Request, ctx: Context) -> Response {
       }
     }
   }
+}
+
+fn result_or_response(
+  result: Result(a, Response),
+  next: fn(a) -> Response,
+) -> Response {
+  case result {
+    Ok(value) -> next(value)
+    Error(response) -> response
+  }
+}
+
+/// The rules matching the `q`, `host`, `match` and `enabled` filters (list
+/// and export). Invalid filter values are a 400.
+fn filtered_rules(
+  ctx: Context,
+  get: fn(String) -> String,
+) -> Result(List(Rule), Response) {
+  let needle = string.lowercase(string.trim(get("q")))
+  let host = case get("host") {
+    "" -> ""
+    h -> rule.normalise_host(h)
+  }
+  let kind = get("match")
+  let enabled = get("enabled")
+  // invalid filters are errors: silently ignoring them returns the wrong set
+  use <- bool.guard(
+    !list.contains(["", "exact", "prefix", "regex"], kind),
+    Error(problem.bad_request("match must be exact, prefix or regex.")),
+  )
+  use <- bool.guard(
+    !list.contains(["", "true", "false"], enabled),
+    Error(problem.bad_request("enabled must be true or false.")),
+  )
+  Ok(
+    store.all(ctx.store)
+    |> list.filter(fn(r) {
+      { needle == "" || text_matches(r, needle) }
+      && { host == "" || r.host == host }
+      && { kind == "" || rule.kind_to_string(r.kind) == kind }
+      && case enabled {
+        "true" -> r.enabled
+        "false" -> !r.enabled
+        _ -> True
+      }
+    }),
+  )
 }
 
 fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
