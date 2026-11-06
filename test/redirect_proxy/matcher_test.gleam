@@ -176,6 +176,7 @@ pub fn large_rule_set_test() {
 }
 
 import gleam/int
+import redirect_proxy/matcher/loop as matcher_loop
 
 fn int_to_string(i: Int) -> String {
   int.to_string(i)
@@ -304,10 +305,10 @@ pub fn redirect_loop_test() {
     }
   }
   // /a/x -> /a/b/x -> /a/b/b/x ...
-  assert ids(matcher.redirect_loop(m, prefix)) == Ok(["p", "p"])
+  assert ids(matcher_loop.redirect_loop(m, prefix)) == Ok(["p", "p"])
   // across hosts
-  assert ids(matcher.redirect_loop(m, to_c)) == Ok(["1", "2", "1"])
-  assert matcher.redirect_loop(m, plain) == Error(Nil)
+  assert ids(matcher_loop.redirect_loop(m, to_c)) == Ok(["1", "2", "1"])
+  assert matcher_loop.redirect_loop(m, plain) == Error(Nil)
 }
 
 pub fn shadowed_rule_is_not_a_loop_test() {
@@ -315,5 +316,5 @@ pub fn shadowed_rule_is_not_a_loop_test() {
   let prefix = r("p", "*", rule.Prefix, "/a/", "/a/b")
   let exact = r("e", "*", rule.Exact, "/a/b", "/done")
   let m = matcher.build([prefix, exact])
-  assert matcher.redirect_loop(m, prefix) == Error(Nil)
+  assert matcher_loop.redirect_loop(m, prefix) == Error(Nil)
 }

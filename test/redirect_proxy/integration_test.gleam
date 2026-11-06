@@ -1140,6 +1140,49 @@ pub fn sighup_reloads_rules_test() {
   assert location(get(env.redirect <> "/hup", [])) == "/after-sighup"
 }
 
+pub fn sighup_with_an_invalid_file_keeps_the_rules_test() {
+  let env = boot(config.default())
+  let failures = metric(env, "redirect_proxy_reload_failures_total")
+  let assert Ok(Nil) =
+    simplifile.write(env.dir <> "/redirects.json", "{ not json")
+  let _ =
+    os_cmd(charlist.from_string("kill -HUP " <> charlist.to_string(os_pid())))
+  wait_until(
+    fn() { metric(env, "redirect_proxy_reload_failures_total") > failures },
+    50,
+  )
+  assert location(get(env.redirect <> "/old", [])) == "https://example.com/new"
+}
+
+pub fn request_counters_test() {
+  let env = boot(config.default())
+  let before = fn(name) { metric(env, name) }
+  let requests = before("redirect_proxy_requests_total")
+  let redirects = before("redirect_proxy_redirects_total")
+  let not_found = before("redirect_proxy_not_found_total")
+  assert get(env.redirect <> "/old", []).status == 301
+  assert get(env.redirect <> "/blog/7", []).status == 308
+  assert get(env.redirect <> "/nothing", []).status == 404
+  // other tests may run requests concurrently: at least ours are counted
+  assert metric(env, "redirect_proxy_requests_total") >= requests + 3
+  assert metric(env, "redirect_proxy_redirects_total") >= redirects + 2
+  assert metric(env, "redirect_proxy_not_found_total") >= not_found + 1
+}
+
+/// The value of an unlabelled metric in /metrics.
+fn metric(env: Env, name: String) -> Int {
+  let body = get(env.admin <> "/metrics", []).body
+  body
+  |> string.split("\n")
+  |> list.find_map(fn(line) {
+    case string.split_once(line, " ") {
+      Ok(#(n, value)) if n == name -> int.parse(value)
+      _ -> Error(Nil)
+    }
+  })
+  |> result.unwrap(0)
+}
+
 fn wait_until(condition: fn() -> Bool, attempts: Int) -> Nil {
   case condition(), attempts {
     True, _ -> Nil

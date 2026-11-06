@@ -17,11 +17,14 @@ import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
+import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
+import redirect_proxy/api/web as api_web
 import redirect_proxy/config.{type Config}
+import redirect_proxy/config/env as config_env
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/log
@@ -120,7 +123,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       Error(Nil) -> ""
     }
     let ctx =
-      router.Context(
+      admin_web.Context(
         config: cfg,
         store: store_subject,
         users: users_settings(cfg),
@@ -146,7 +149,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       Error(Nil) -> ""
     }
     let ctx =
-      api_router.Context(
+      api_web.Context(
         config: cfg,
         store: store_subject,
         clients: clients_settings(cfg),
@@ -284,12 +287,12 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
 
 /// Creates the first administrator from RP_BOOTSTRAP_ADMIN_USERNAME and
 /// RP_BOOTSTRAP_ADMIN_PASSWORD (or RP_BOOTSTRAP_ADMIN_PASSWORD_FILE) when no
-/// local user exists yet.
-fn bootstrap_admin(cfg: Config) -> Nil {
+/// local user exists yet. Exposed for tests.
+pub fn bootstrap_admin(cfg: Config) -> Nil {
   let settings = users_settings(cfg)
   let from_env = envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD")
   let bootstrap_password = case envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD_FILE") {
-    Ok(path) -> config.read_secret_file(path) |> result.replace_error(Nil)
+    Ok(path) -> config_env.read_secret_file(path) |> result.replace_error(Nil)
     Error(Nil) -> from_env
   }
   let count = users.count(settings)

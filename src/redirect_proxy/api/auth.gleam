@@ -13,7 +13,7 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/admin/auth/oidc
+import redirect_proxy/admin/auth/oidc/provider as oidc_provider
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token
@@ -84,11 +84,11 @@ pub fn bearer(req: wisp.Request) -> Result(String, AuthError) {
 
 fn external(oauth: ApiOAuthConfig, jwt: String) -> Result(Principal, String) {
   use provider <- result.try(
-    oidc.discover_issuer(oauth.issuer)
+    oidc_provider.discover_issuer(oauth.issuer)
     |> result.replace_error("authorization server unavailable"),
   )
   use claims <- result.try(
-    oidc.verify_signature(provider, jwt)
+    oidc_provider.verify_signature(provider, jwt)
     |> result.replace_error("invalid token signature"),
   )
   check_claims(oauth, provider.issuer, claims, ffi.now_seconds())

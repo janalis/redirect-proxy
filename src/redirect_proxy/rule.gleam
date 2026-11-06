@@ -105,7 +105,12 @@ pub fn version(rule: Rule) -> String {
 // --- JSON -------------------------------------------------------------------
 
 pub fn to_json(rule: Rule) -> Json {
-  json.object([
+  json.object(json_fields(rule))
+}
+
+/// The fields of `to_json`, for representations that add their own.
+pub fn json_fields(rule: Rule) -> List(#(String, Json)) {
+  [
     #("id", json.string(rule.id)),
     #("host", json.string(rule.host)),
     #("source", json.string(rule.source)),
@@ -120,7 +125,7 @@ pub fn to_json(rule: Rule) -> Json {
     #("created_at", json.string(rule.created_at)),
     #("updated_at", json.string(rule.updated_at)),
     #("updated_by", json.string(rule.updated_by)),
-  ])
+  ]
 }
 
 fn kind_decoder() -> decode.Decoder(MatchKind) {

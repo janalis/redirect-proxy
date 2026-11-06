@@ -3,7 +3,9 @@ import gleam/string
 import redirect_proxy
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
+import redirect_proxy/app
 import redirect_proxy/config
+import redirect_proxy/config/loader as config_loader
 import redirect_proxy/password
 import redirect_proxy/rule
 import redirect_proxy/users
@@ -167,4 +169,24 @@ pub fn client_commands_test() {
       "--config",
       config_path,
     ])
+}
+
+pub fn bootstrap_admin_test() {
+  let #(_dir, config_path) = setup()
+  let assert Ok(cfg) = config_loader.load(config_path)
+  let settings = app.users_settings(cfg)
+  envoy.set("RP_BOOTSTRAP_ADMIN_USERNAME", "boot")
+  envoy.set("RP_BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-password")
+  app.bootstrap_admin(cfg)
+  assert users.count(settings) == 1
+  let assert Ok(user) = users.get(settings, "boot")
+  assert password.verify("bootstrap-password", user.password_hash)
+  // once an administrator exists, nothing more is created or changed
+  envoy.set("RP_BOOTSTRAP_ADMIN_PASSWORD", "another-password")
+  app.bootstrap_admin(cfg)
+  envoy.unset("RP_BOOTSTRAP_ADMIN_USERNAME")
+  envoy.unset("RP_BOOTSTRAP_ADMIN_PASSWORD")
+  assert users.count(settings) == 1
+  let assert Ok(same) = users.get(settings, "boot")
+  assert same.password_hash == user.password_hash
 }

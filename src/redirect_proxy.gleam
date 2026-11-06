@@ -12,11 +12,15 @@ import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config.{type Config}
+import redirect_proxy/config/file as config_file
+import redirect_proxy/config/loader as config_loader
+import redirect_proxy/config/validate as config_validate
 import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/password
 import redirect_proxy/rule
 import redirect_proxy/store
+import redirect_proxy/store/rules as store_rules
 import redirect_proxy/users
 import simplifile
 
@@ -117,7 +121,7 @@ fn extract_option(
 }
 
 fn load(config_path: String) -> Result(Config, String) {
-  config.load(config_path)
+  config_loader.load(config_path)
 }
 
 fn serve(config_path: String) -> Result(Nil, String) {
@@ -144,12 +148,12 @@ fn serve(config_path: String) -> Result(Nil, String) {
 fn check_config(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
   io.println("configuration OK")
-  let toml = config.read_toml(config_path) |> result.unwrap(dict.new())
+  let toml = config_file.read_toml(config_path) |> result.unwrap(dict.new())
   let writable = case data_dir_writable(cfg.storage.data_dir) {
     Ok(Nil) -> []
     Error(reason) -> [reason]
   }
-  list.append(config.warnings(toml, cfg), writable)
+  list.append(config_validate.warnings(toml, cfg), writable)
   |> list.each(fn(w) { io.println("  warning: " <> w) })
   io.println("  data directory: " <> cfg.storage.data_dir)
   io.println(
@@ -371,7 +375,7 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   )
   use rules <- result.try(rule.file_from_string(content))
   use valid <- result.try(
-    store.validate_all(rules) |> result.map_error(string.join(_, "\n")),
+    store_rules.validate_all(rules) |> result.map_error(string.join(_, "\n")),
   )
   io.println(
     path <> ": " <> int.to_string(list.length(valid)) <> " valid rule(s)",
@@ -386,7 +390,7 @@ fn rules_export(config_path: String) -> Result(Nil, String) {
     |> result.map_error(simplifile.describe_error),
   )
   use rules <- result.try(rule.file_from_string(content))
-  io.println(store.export(rules))
+  io.println(store_rules.export(rules))
   Ok(Nil)
 }
 
