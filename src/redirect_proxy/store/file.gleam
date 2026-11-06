@@ -128,6 +128,16 @@ fn backup(files: Files) -> Result(Nil, String) {
         simplifile.copy_file(files.rules_path, name)
         |> result.map_error(simplifile.describe_error),
       )
+      // a copy gets the umask default: give it the permissions of the file
+      // it copies (e.g. not readable by others)
+      let _ =
+        simplifile.file_info(files.rules_path)
+        |> result.map(fn(info) {
+          simplifile.set_permissions_octal(
+            name,
+            simplifile.file_info_permissions_octal(info),
+          )
+        })
       prune_backups(files)
       Ok(Nil)
     }

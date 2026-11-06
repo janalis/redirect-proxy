@@ -18,7 +18,9 @@
     keeps the rules it had (and logs an error) instead of failing again until
     the whole node stops. Changes are refused until the file is fixed.
   - Files are replaced atomically and durably (the directory is synced
-    after the rename) and keep their permissions.
+    after the rename) and keep their permissions. Files holding secrets
+    (`users.json`, `api_clients.json`, `secret_key_base`) are created
+    `0600`, and backups get the permissions of `redirects.json`.
 - **Concurrent writes.** The admin UI, the API and the CLI can change the
   rules, users and API clients at the same time:
   - Every write holds a lock file next to the file it changes

@@ -190,6 +190,20 @@ pub fn backups_are_rotated_test() {
   assert list.length(files) == 2
 }
 
+/// A backup is readable by whoever can read the rules file, no one else.
+pub fn backups_keep_the_rules_file_mode_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 5))
+  let assert Ok(_) = store.create(s, new_rule("/mode-1", "/x"), by: "t")
+  let assert Ok(Nil) =
+    simplifile.set_permissions_octal(dir <> "/redirects.json", 0o640)
+  let assert Ok(_) = store.create(s, new_rule("/mode-2", "/x"), by: "t")
+  let assert Ok(backups) = simplifile.read_directory(dir <> "/backups")
+  let assert Ok(latest) = list.max(backups, string.compare)
+  let assert Ok(info) = simplifile.file_info(dir <> "/backups/" <> latest)
+  assert simplifile.file_info_permissions_octal(info) == 0o640
+}
+
 pub fn import_merge_and_replace_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))

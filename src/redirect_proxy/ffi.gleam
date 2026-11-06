@@ -56,6 +56,14 @@ pub fn memo_file(path: String, compute: fn() -> Result(a, e)) -> Result(a, e)
 @external(erlang, "redirect_proxy_ffi", "atomic_write")
 pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 
+/// `atomic_write` for files holding secrets: a new file is created 0600
+/// (an existing one keeps its permissions).
+@external(erlang, "redirect_proxy_ffi", "atomic_write_private")
+pub fn atomic_write_private(
+  path: String,
+  content: String,
+) -> Result(Nil, String)
+
 @external(erlang, "redirect_proxy_ffi", "append_line")
 pub fn append_line(path: String, line: String) -> Result(Nil, String)
 

@@ -288,10 +288,9 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
         _ -> {
           let secret = id.token(48)
           use Nil <- result.try(
-            ffi.atomic_write(path, secret)
+            ffi.atomic_write_private(path, secret)
             |> result.map_error(fn(e) { "cannot write " <> path <> ": " <> e }),
           )
-          let _ = simplifile.set_permissions_octal(path, 0o600)
           log.info("generated a new cookie signing secret in " <> path)
           Ok(secret)
         }
