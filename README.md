@@ -219,6 +219,22 @@ are sent with `no-store`.
 
 At request time, each regex match also has a fixed backtracking budget.
 
+**Substitutions cannot leave the target's host.** Captures come from the
+request path, so they are checked after `$1`... are replaced (open redirect
+guard):
+
+- A target starting with `/` stays a path on the same host: leading `/` and
+  `\` are collapsed, so `/old/(.*)` → `/$1` sends `/old//evil.com` to
+  `/evil.com`, not to `//evil.com`.
+- An absolute target keeps its host: with `https://example.com$1`,
+  `/go/page` redirects but `/go.evil.com` and `/go@evil.com` do not.
+- A host starting with placeholders, as in `https://$1.example.com/`, must
+  stay a subdomain of `example.com`. Placeholders elsewhere in the host
+  (`https://example$1.com/`, `https://$1.com/`) never redirect.
+
+A rule whose result fails the check does not match, so the next rule or
+the 404 applies.
+
 ## Configuration
 
 Configuration is read from the TOML file given with `--config` or

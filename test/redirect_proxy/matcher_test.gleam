@@ -232,3 +232,34 @@ pub fn regex_index_keeps_priority_order_test() {
   assert loc("/r/q") == "/indexed/q"
   assert matcher.lookup(m, "x.test", "/s/q") == Error(Nil)
 }
+
+pub fn substitutions_cannot_leave_the_host_test() {
+  let m =
+    matcher.build([
+      r("1", "*", rule.Prefix, "/old/", "/$1"),
+      r("2", "*", rule.Prefix, "/go", "https://example.com$1"),
+      Rule(
+        ..r("3", "*", rule.Regex, "^/r/(.*)$", "https://example.com/$1"),
+        priority: 1,
+      ),
+      Rule(
+        ..r("4", "*", rule.Regex, "^/u/(.*)$", "https://$1.example.com/"),
+        priority: 1,
+      ),
+      Rule(..r("5", "*", rule.Regex, "^/u/(.*)$", "/users/$1"), priority: 2),
+    ])
+  // collapsed to a path on the same host
+  assert location(m, "h", "/old//evil.com") == Ok("/evil.com")
+  assert location(m, "h", "/old/\\evil.com") == Ok("/evil.com")
+  assert location(m, "h", "/old/page") == Ok("/page")
+  // the host cannot be extended or replaced
+  assert location(m, "h", "/go/page") == Ok("https://example.com/page")
+  assert location(m, "h", "/go.evil.com") == Error(Nil)
+  assert location(m, "h", "/go@evil.com") == Error(Nil)
+  // a path after a fixed host is fine, even with slashes
+  assert location(m, "h", "/r//evil.com") == Ok("https://example.com//evil.com")
+  // a subdomain capture must stay a subdomain; otherwise the next rule applies
+  assert location(m, "h", "/u/blog") == Ok("https://blog.example.com/")
+  assert location(m, "h", "/u/evil.com%23") == Ok("/users/evil.com%23")
+  assert location(m, "h", "/u/evil.com/x") == Ok("/users/evil.com/x")
+}

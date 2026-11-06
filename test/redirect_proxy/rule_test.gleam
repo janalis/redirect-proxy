@@ -157,3 +157,54 @@ pub fn common_regexes_are_accepted_test() {
     rule.compile(regex("^/(fr|en|de)/products/([^/]+)\\.html$"))
   let assert Ok(_) = rule.compile(regex("\\.php$"))
 }
+
+pub fn target_guard_shapes_test() {
+  assert rule.target_guard("/static") == rule.Static
+  assert rule.target_guard("/new/$1") == rule.SameHostPath
+  assert rule.target_guard("https://Example.com$1")
+    == rule.FixedHost("example.com")
+  assert rule.target_guard("https://example.com:8443/$1")
+    == rule.FixedHost("example.com:8443")
+  assert rule.target_guard("//example.com${1}") == rule.FixedHost("example.com")
+  assert rule.target_guard("https://$1.example.com/")
+    == rule.SubdomainOf(".example.com")
+  assert rule.target_guard("https://example$1.com/") == rule.Unsafe
+  assert rule.target_guard("https://$1.com/") == rule.Unsafe
+  assert rule.target_guard("https://x$1.example.com/") == rule.Unsafe
+  assert rule.target_guard("https://$1-$2.example.com/")
+    == rule.SubdomainOf(".example.com")
+  // the host is entirely a capture: nothing can match it
+  assert rule.target_guard("https://$1/") == rule.FixedHost("")
+}
+
+pub fn guard_blocks_open_redirects_test() {
+  let path = rule.target_guard("/$1")
+  assert rule.guard_location(path, "//evil.com") == Ok("/evil.com")
+  assert rule.guard_location(path, "/\\evil.com") == Ok("/evil.com")
+  assert rule.guard_location(path, "/\t/evil.com") == Ok("/evil.com")
+  assert rule.guard_location(path, "/blog/post") == Ok("/blog/post")
+
+  let fixed = rule.target_guard("https://example.com$1")
+  assert rule.guard_location(fixed, "https://example.com/blog")
+    == Ok("https://example.com/blog")
+  assert rule.guard_location(fixed, "https://example.com?q")
+    == Ok("https://example.com?q")
+  assert rule.guard_location(fixed, "https://example.com")
+    == Ok("https://example.com")
+  assert rule.guard_location(fixed, "https://example.com.evil.com/")
+    == Error(Nil)
+  assert rule.guard_location(fixed, "https://example.com@evil.com/")
+    == Error(Nil)
+  assert rule.guard_location(fixed, "https://example.com:1@evil.com")
+    == Error(Nil)
+
+  let sub = rule.target_guard("https://$1.example.com/")
+  assert rule.guard_location(sub, "https://blog.example.com/")
+    == Ok("https://blog.example.com/")
+  assert rule.guard_location(sub, "https://evil.com#.example.com/")
+    == Error(Nil)
+  assert rule.guard_location(sub, "https://evil.com/.example.com/")
+    == Error(Nil)
+  assert rule.guard_location(sub, "https://.example.com/") == Error(Nil)
+  assert rule.guard_location(rule.Unsafe, "/x") == Error(Nil)
+}

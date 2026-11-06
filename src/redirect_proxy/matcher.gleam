@@ -66,11 +66,16 @@ type Index(a) {
 }
 
 type PrefixRule {
-  PrefixRule(rank: Int, rule: Rule)
+  PrefixRule(rank: Int, rule: Rule, guard: rule.TargetGuard)
 }
 
 type RegexRule {
-  RegexRule(rank: Int, rule: Rule, regex: ffi.CompiledRegex)
+  RegexRule(
+    rank: Int,
+    rule: Rule,
+    regex: ffi.CompiledRegex,
+    guard: rule.TargetGuard,
+  )
 }
 
 pub type Match {
@@ -171,7 +176,9 @@ fn build_host(rules: List(Rule)) -> HostRules {
       int.compare(string.length(b.source), string.length(a.source))
       |> order.break_tie(int.compare(a.priority, b.priority))
     })
-    |> list.index_map(fn(r, rank) { PrefixRule(rank:, rule: r) })
+    |> list.index_map(fn(r, rank) {
+      PrefixRule(rank:, rule: r, guard: rule.target_guard(r.target))
+    })
   let #(prefix_ci, prefix) =
     list.partition(prefix, fn(p) { p.rule.case_insensitive })
   let regex =
@@ -183,7 +190,8 @@ fn build_host(rules: List(Rule)) -> HostRules {
       |> result.map(fn(compiled) { #(r, compiled) })
     })
     |> list.index_map(fn(entry, rank) {
-      RegexRule(rank:, rule: entry.0, regex: entry.1)
+      let #(r, regex) = entry
+      RegexRule(rank:, rule: r, regex:, guard: rule.target_guard(r.target))
     })
   let #(regex_unindexed, regex) =
     list.partition(regex, fn(r) { regex_literal(r.rule) == "" })
@@ -340,7 +348,10 @@ fn match_prefix(rules: HostRules, path: String) -> Result(Match, Nil) {
         // lower-casing may change byte lengths outside ASCII
         True -> string.drop_start(path, string.length(r.source))
       }
-      Ok(Match(r, rule.expand(r.target, [path, remainder])))
+      // a substitution leaving the target's host: the rule does not apply
+      rule.expand(r.target, [path, remainder])
+      |> rule.guard_location(best.guard, _)
+      |> result.map(Match(r, _))
     }
   }
 }
@@ -371,7 +382,16 @@ fn run_regexes(
     Ok(#(entry, a, b)) ->
       case ffi.regex_run(entry.regex, path) {
         Ok(captures) ->
-          Ok(Match(entry.rule, rule.expand(entry.rule.target, captures)))
+          case
+            rule.guard_location(
+              entry.guard,
+              rule.expand(entry.rule.target, captures),
+            )
+          {
+            Ok(location) -> Ok(Match(entry.rule, location))
+            // the substitution would leave the target's host: try the next
+            Error(Nil) -> run_regexes(a, b, path)
+          }
         // a run exhausting its budget is counted by `regex_run`
         Error(_) -> run_regexes(a, b, path)
       }
