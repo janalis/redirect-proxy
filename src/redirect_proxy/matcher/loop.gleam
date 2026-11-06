@@ -35,7 +35,12 @@ pub fn redirect_loop(
   }
   use path <- result.try(case r.kind {
     Exact -> Ok(r.source)
-    Prefix -> Ok(r.source <> "loop-check")
+    // a path the rule matches: past a segment boundary for whole segments
+    Prefix ->
+      case r.whole_segments && !string.ends_with(r.source, "/") {
+        True -> Ok(r.source <> "/loop-check")
+        False -> Ok(r.source <> "loop-check")
+      }
     Regex -> Error(Nil)
   })
   let host = case normalise_request_host(r.host) {

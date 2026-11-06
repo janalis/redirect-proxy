@@ -729,6 +729,11 @@ pub fn form(
                   "Case insensitive",
                   r.case_insensitive,
                 ),
+                checkbox(
+                  "whole_segments",
+                  "Whole path segments (prefix: /blog matches /blog/…, not /blogger)",
+                  r.whole_segments,
+                ),
               ]),
             ]),
           ]),

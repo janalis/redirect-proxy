@@ -1194,3 +1194,44 @@ pub fn export_follows_filters_test() {
   assert api(env, Get, "/api/redirects/export?match=foo", token, "").status
     == 400
 }
+
+pub fn whole_segments_over_the_api_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/plain\",\"match\":\"prefix\",\"target\":\"/p$1\"}",
+    )
+  // always present in the API, false by default
+  assert field(resp.body, ["whole_segments"], decode.bool) == False
+  let id = field(resp.body, ["id"], decode.string)
+  assert support.send(Get, env.redirect <> "/plainer", [], "").status == 301
+  let resp =
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+      ],
+      "{\"whole_segments\": true}",
+    )
+  assert field(resp.body, ["whole_segments"], decode.bool)
+  assert support.send(Get, env.redirect <> "/plainer", [], "").status == 404
+  let resp = support.send(Get, env.redirect <> "/plain/x", [], "")
+  assert header(resp, "location") == "/p/x"
+  // refused on other kinds
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/e\",\"target\":\"/x\",\"whole_segments\":true}",
+    )
+  assert resp.status == 422
+}

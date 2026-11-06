@@ -32,6 +32,9 @@ pub type Rule {
     status: Int,
     preserve_query: Bool,
     case_insensitive: Bool,
+    /// Prefix rules: match whole path segments only, so that `/blog` matches
+    /// `/blog` and `/blog/…` but not `/blogger`.
+    whole_segments: Bool,
     /// Lower values are evaluated first (prefix ties and regex ordering).
     priority: Int,
     enabled: Bool,
@@ -63,6 +66,7 @@ pub fn blank() -> Rule {
     status: 301,
     preserve_query: False,
     case_insensitive: False,
+    whole_segments: False,
     priority: default_priority,
     enabled: True,
     note: "",
@@ -125,6 +129,11 @@ pub fn json_fields(rule: Rule) -> List(#(String, Json)) {
     #("created_at", json.string(rule.created_at)),
     #("updated_at", json.string(rule.updated_at)),
     #("updated_by", json.string(rule.updated_by)),
+    // only when set: existing files and rule versions stay as they were
+    ..case rule.whole_segments {
+      True -> [#("whole_segments", json.bool(True))]
+      False -> []
+    }
   ]
 }
 
@@ -155,6 +164,11 @@ pub fn decoder() -> decode.Decoder(Rule) {
     False,
     decode.bool,
   )
+  use whole_segments <- decode.optional_field(
+    "whole_segments",
+    False,
+    decode.bool,
+  )
   use priority <- decode.optional_field(
     "priority",
     default_priority,
@@ -174,6 +188,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
     status:,
     preserve_query:,
     case_insensitive:,
+    whole_segments:,
     priority:,
     enabled:,
     note:,
@@ -274,6 +289,10 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
       "priority: must be between 0 and 1000000",
     )
     |> check(string.length(note) <= 1000, "note: is too long")
+    |> check(
+      !rule.whole_segments || rule.kind == Prefix,
+      "whole_segments: only applies to prefix rules",
+    )
 
   case errors {
     [] -> Ok(rule)

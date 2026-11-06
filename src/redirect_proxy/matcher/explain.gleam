@@ -164,7 +164,18 @@ fn matches(r: Rule, path: String) -> Bool {
   }
   case r.kind {
     Exact -> fold(ffi.normalise_path(r.source)) == fold(path)
-    Prefix -> string.starts_with(fold(path), fold(ffi.normalise_path(r.source)))
+    Prefix -> {
+      let source = fold(ffi.normalise_path(r.source))
+      let path = fold(path)
+      string.starts_with(path, source)
+      && case r.whole_segments {
+        False -> True
+        True -> {
+          let rest = string.drop_start(path, string.length(source))
+          rest == "" || string.starts_with(rest, "/")
+        }
+      }
+    }
     Regex ->
       case ffi.regex_compile(r.source, r.case_insensitive) {
         Ok(regex) -> result.is_ok(ffi.regex_run(regex, path))

@@ -204,6 +204,7 @@ accepted. Ids and timestamps are added automatically.
 | `status` | `301` | `301`, `302`, `303`, `307` or `308`. |
 | `preserve_query` | `false` | Append the request query string to the target. |
 | `case_insensitive` | `false` | Match the source without regard to case. |
+| `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`. Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |
 | `note` | `""` | Free text shown in the admin. |

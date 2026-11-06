@@ -429,6 +429,8 @@ pub fn rule_from_form(
       status: result.unwrap(status, 301),
       preserve_query: checked("preserve_query"),
       case_insensitive: checked("case_insensitive"),
+      // only meaningful for prefix rules: ignored for the others
+        whole_segments: checked("whole_segments") && kind == Ok(rule.Prefix),
       priority: result.unwrap(priority, rule.default_priority),
       enabled: checked("enabled"),
       note: get("note"),

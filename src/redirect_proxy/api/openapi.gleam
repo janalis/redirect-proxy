@@ -1038,6 +1038,13 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
     ),
     #("preserve_query", typed("boolean", "Append the request query string.")),
     #("case_insensitive", typed("boolean", "Match regardless of case.")),
+    #(
+      "whole_segments",
+      typed(
+        "boolean",
+        "Prefix rules: match whole path segments only (/blog matches /blog and /blog/..., not /blogger).",
+      ),
+    ),
     #("priority", typed("integer", "Lower runs first (default 100).")),
     #("enabled", typed("boolean", "Disabled rules are ignored.")),
     #("note", typed("string", "Free text.")),

@@ -8,12 +8,21 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 
 /// `rule.to_json` plus the version (the ETag of the rule) and the hits since
-/// the server started (read only).
+/// the server started (read only). Every field is present, including
+/// `whole_segments`, which the rules file only holds when set.
 pub fn rule_json(r: Rule) -> Json {
+  let unset = case r.whole_segments {
+    True -> []
+    False -> [#("whole_segments", json.bool(False))]
+  }
   json.object(
-    list.append(rule.json_fields(r), [
-      #("version", json.string(rule.version(r))),
-      #("hits", json.int(metrics.hits(r.id))),
+    list.flatten([
+      rule.json_fields(r),
+      unset,
+      [
+        #("version", json.string(rule.version(r))),
+        #("hits", json.int(metrics.hits(r.id))),
+      ],
     ]),
   )
 }
@@ -57,6 +66,7 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
   use status <- field("status", decode.int)
   use preserve_query <- field("preserve_query", decode.bool)
   use case_insensitive <- field("case_insensitive", decode.bool)
+  use whole_segments <- field("whole_segments", decode.bool)
   use priority <- field("priority", decode.int)
   use enabled <- field("enabled", decode.bool)
   use note <- field("note", decode.string)
@@ -77,6 +87,11 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
         case_insensitive,
         r.case_insensitive,
         defaults.case_insensitive,
+      ),
+      whole_segments: pick(
+        whole_segments,
+        r.whole_segments,
+        defaults.whole_segments,
       ),
       priority: pick(priority, r.priority, defaults.priority),
       enabled: pick(enabled, r.enabled, defaults.enabled),
