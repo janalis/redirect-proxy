@@ -517,12 +517,15 @@ pub fn rule_from_form(
 
 pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
+  // one read of the published rules: the result and its explanation come
+  // from the same rule set, even if a change is published in between
+  let current = snapshot.current()
   let result = case string.trim(url) {
     "" -> tester_view.NotTested
     url ->
       case
         matcher.resolve_url(
-          snapshot.current(),
+          current,
           url,
           config.ignore_trailing_slash(ctx.config),
         )
@@ -535,7 +538,7 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let explanation = case result {
     tester_view.Matched(..) | tester_view.NoMatch ->
       explain.explain(
-        snapshot.current(),
+        current,
         store.all(ctx.store),
         url,
         config.ignore_trailing_slash(ctx.config),
