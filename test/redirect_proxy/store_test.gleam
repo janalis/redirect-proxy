@@ -395,6 +395,30 @@ pub fn equivalent_exact_sources_conflict_test() {
   assert string.contains(reason, "already matches")
 }
 
+/// Hosts are compared as the matcher does: without port, trailing dot or
+/// case (a file may hold `example.com:8080`).
+pub fn equivalent_exact_hosts_conflict_test() {
+  let on = fn(id, host) {
+    Rule(..rule.blank(), id:, host:, source: "/a", target: "/x")
+  }
+  let assert Error([reason]) =
+    store_rules.check_conflicts([
+      on("a", "example.com"),
+      on("b", "Example.com:8080"),
+    ])
+  assert string.contains(reason, "already matches")
+  let assert Error(_) =
+    store_rules.check_conflicts([
+      on("a", "example.com"),
+      on("b", "example.com."),
+    ])
+  assert store_rules.check_conflicts([
+      on("a", "example.com"),
+      on("b", "other.com"),
+    ])
+    == Ok(Nil)
+}
+
 pub fn imports_and_reloads_are_audited_with_their_changes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
@@ -586,6 +610,25 @@ pub fn hit_counts_survive_a_restart_test() {
   assert matcher.last_hit(snapshot.current(), created.id) > 0
 }
 
+/// Hits counted while draining (after the save that starts it) are kept:
+/// the SIGTERM handler flushes them right before the node stops.
+pub fn hits_counted_while_draining_are_kept_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) = store.create(s, new_rule("/drained", "/x"), by: "t")
+  matcher.record_hit(snapshot.current(), created.id)
+  set_draining(True)
+  wait_for_file(dir <> "/hits.json", 30)
+  // served during the grace period
+  matcher.record_hit(snapshot.current(), created.id)
+  matcher.record_hit(snapshot.current(), created.id)
+  store.flush_hits(s)
+  set_draining(False)
+  snapshot.publish(matcher.empty())
+  let _ = start(settings(dir, 0))
+  assert matcher.hit_count(snapshot.current(), created.id) == 3
+}
+
 fn wait_for_file(path: String, attempts: Int) -> Nil {
   case simplifile.is_file(path), attempts {
     Ok(True), _ -> Nil
@@ -663,4 +706,29 @@ pub fn query_rules_conflicts_and_loops_test() {
   let assert Error([loop]) =
     store.create(s, Rule(..new_rule("/l", "/l?x=1"), query: "x=1"), by: "t")
   assert string.contains(loop, "redirect loop")
+}
+
+@external(erlang, "test_log_ffi", "capture_start")
+fn capture_logs() -> Nil
+
+@external(erlang, "test_log_ffi", "capture_stop")
+fn captured_logs() -> List(String)
+
+/// An update can uncover a loop it is not part of: the old version of the
+/// rule shadowed a rule that loops. It is applied, and the loop is logged.
+pub fn an_update_warns_about_an_uncovered_loop_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  // `/a` (exact) shadows the looping prefix rule for `/a`; `/a/x` reaches it
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"id\":\"shadow\",\"source\":\"/a\",\"target\":\"/elsewhere\"},{\"id\":\"p\",\"match\":\"prefix\",\"source\":\"/a\",\"target\":\"/a$1\"}]}",
+    )
+  let s = start(settings(dir, 0))
+  let assert Ok(shadow) = store.get(s, "shadow")
+  capture_logs()
+  let assert Ok(_) = store.update(s, Rule(..shadow, source: "/b"), by: "t")
+  let logs = captured_logs()
+  assert list.any(logs, string.contains(_, "redirect loop"))
 }

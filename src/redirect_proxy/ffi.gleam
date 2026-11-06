@@ -156,8 +156,9 @@ pub fn now_rfc3339() -> String {
 pub fn on_sighup(callback: fn() -> Nil) -> Nil
 
 /// On SIGTERM, drain for `grace_ms` (see `draining`) before stopping.
+/// `before_stop` runs right before the VM stops (its failures are logged).
 @external(erlang, "redirect_proxy_sigterm", "install")
-pub fn on_sigterm_drain(grace_ms: Int) -> Nil
+pub fn on_sigterm_drain(grace_ms: Int, before_stop: fn() -> Nil) -> Nil
 
 /// True once SIGTERM was received: the node stops after the grace period.
 @external(erlang, "redirect_proxy_sigterm", "draining")

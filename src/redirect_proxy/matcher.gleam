@@ -584,7 +584,7 @@ fn match_query(
       case list.append(exact, folded) {
         [] -> Error(Nil)
         found -> {
-          let request = uri.parse_query(query) |> result.unwrap([])
+          let request = rule.request_query(query)
           found
           |> list.sort(fn(a, b) {
             int.compare(list.length(b.conditions), list.length(a.conditions))
@@ -733,15 +733,25 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
         Ok(#(url, fragment)) -> #(url, "#" <> fragment)
         Error(Nil) -> #(m.location, "")
       }
-      case string.contains(url, "?") {
-        True -> url <> "&" <> q <> fragment
-        False -> url <> "?" <> q <> fragment
-      }
+      merge_query(url, q) <> fragment
     }
     _, _ -> m.location
   }
   // a header value must be ASCII: captures may hold decoded characters
   base |> ffi.strip_control |> ffi.encode_non_ascii
+}
+
+/// Appends the request query to the target URL, after the target's own
+/// parameters: a target ending in `?` or `&` gets no extra separator.
+fn merge_query(url: String, query: String) -> String {
+  case string.contains(url, "?") {
+    False -> url <> "?" <> query
+    True ->
+      case string.ends_with(url, "?") || string.ends_with(url, "&") {
+        True -> url <> query
+        False -> url <> "&" <> query
+      }
+  }
 }
 
 pub type UrlResolution {

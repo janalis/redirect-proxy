@@ -58,6 +58,17 @@ pub fn warn_problems(
       )
     })
   })
+  warn_loops(built, rules, ignore_trailing_slash)
+}
+
+/// Logs the redirect loops of a rule set, each cycle once: for changes that
+/// may uncover a loop without being part of it (a rule that no longer
+/// shadows another, a scheduled rule starting or expiring).
+pub fn warn_loops(
+  built: matcher.Matcher,
+  rules: List(Rule),
+  ignore_trailing_slash: Bool,
+) -> matcher.Matcher {
   let _ =
     rules
     |> list.filter(fn(r) { r.enabled })
@@ -128,12 +139,14 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
     |> dict.keys
     |> list.map(fn(key) { "id: duplicate id " <> key })
 
-  // in the form the matcher compares paths: /café and /caf%C3%A9 are one
+  // in the form the matcher compares hosts and paths: example.com:8080 and
+  // example.com are one host, /café and /caf%C3%A9 one path
   let exact_key = fn(r: Rule) {
+    let host = matcher.normalise_request_host(r.host)
     let source = ffi.normalise_path(r.source)
     let path = case r.case_insensitive {
-      True -> r.host <> " " <> string.lowercase(source)
-      False -> r.host <> " " <> source
+      True -> host <> " " <> string.lowercase(source)
+      False -> host <> " " <> source
     }
     // the same query conditions in any order are one key
     case rule.query_conditions(r) {

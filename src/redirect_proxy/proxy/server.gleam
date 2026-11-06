@@ -6,7 +6,6 @@ import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/int
-import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
@@ -17,6 +16,7 @@ import redirect_proxy/ffi
 import redirect_proxy/listener
 import redirect_proxy/matcher
 import redirect_proxy/metrics
+import redirect_proxy/rule
 import redirect_proxy/snapshot
 
 /// The request handler. With access log settings each request is logged,
@@ -132,7 +132,7 @@ fn to_https(
     request.get_header(req, "host")
     |> result.unwrap(req.host)
     |> matcher.normalise_request_host
-  case is_host_name(host) {
+  case rule.is_host_name(host) {
     False -> empty(400)
     True -> {
       let query = case req.query {
@@ -147,13 +147,6 @@ fn to_https(
       redirect(status, "https://" <> host <> req.path <> query, permanent_cache)
     }
   }
-}
-
-fn is_host_name(host: String) -> Bool {
-  host != ""
-  && list.all(string.to_graphemes(host), fn(c) {
-    string.contains("abcdefghijklmnopqrstuvwxyz0123456789-.", c)
-  })
 }
 
 fn empty(status: Int) -> Response(mist.ResponseData) {

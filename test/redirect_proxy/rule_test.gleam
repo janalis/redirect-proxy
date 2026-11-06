@@ -340,3 +340,9 @@ pub fn query_validation_test() {
   assert !string.contains(rule.file_to_string([base()]), "\"query\"")
   assert rule.file_from_string(rule.file_to_string([r])) == Ok([r])
 }
+
+pub fn request_query_skips_malformed_parameters_test() {
+  assert rule.request_query("a=1&b=2") == [#("a", "1"), #("b", "2")]
+  assert rule.request_query("a=1&b=%zz&c=%33") == [#("a", "1"), #("c", "3")]
+  assert rule.request_query("") == []
+}
