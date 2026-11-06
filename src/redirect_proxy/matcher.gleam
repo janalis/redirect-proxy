@@ -17,9 +17,10 @@
 //// rank in the resolution order above, so the result is the same as trying
 //// every rule in that order.
 ////
-//// The matcher also holds the hit counter of every rule (`record_hit`): a
-//// lock-free `counters` array, carried over to the next matcher by rule id
-//// (`carry_hits`).
+//// The matcher also holds the hit count and the time of the last hit of
+//// every rule (`record_hit`): a lock-free `counters` array, carried over to
+//// the next matcher by rule id (`carry_hits`) and kept across restarts by
+//// the store (`hit_records`, `seed_hits`).
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -41,8 +42,9 @@ pub opaque type Matcher {
     wildcards: Bool,
     /// Enabled rules by kind: exact, prefix, regex.
     kinds: #(Int, Int, Int),
-    /// Rule id to its slot in `hits`, for every rule (disabled ones too, so
-    /// that their count survives being disabled then enabled again).
+    /// Rule id to its slot, for every rule (disabled ones too, so that their
+    /// count survives being disabled then enabled again). Slot `n` uses
+    /// `hits` indexes `2n - 1` (count) and `2n` (last hit, in seconds).
     slots: Dict(String, Int),
     hits: ffi.Counters,
   )
@@ -99,7 +101,15 @@ pub fn empty() -> Matcher {
 }
 
 fn new_hits(rules: Int) -> ffi.Counters {
-  ffi.counter_new(int.max(rules, 1))
+  ffi.counter_new(int.max(2 * rules, 2))
+}
+
+fn count_index(slot: Int) -> Int {
+  2 * slot - 1
+}
+
+fn last_index(slot: Int) -> Int {
+  2 * slot
 }
 
 /// Enabled rules by kind: exact, prefix, regex.
@@ -160,16 +170,67 @@ pub fn build(rules: List(Rule)) -> Matcher {
 /// contend even on the same rule.
 pub fn record_hit(matcher: Matcher, rule_id: String) -> Nil {
   case dict.get(matcher.slots, rule_id) {
-    Ok(slot) -> ffi.counter_add(matcher.hits, slot, 1)
+    Ok(slot) -> {
+      ffi.counter_add(matcher.hits, count_index(slot), 1)
+      ffi.counter_put(matcher.hits, last_index(slot), ffi.now_seconds())
+    }
     Error(Nil) -> Nil
   }
 }
 
-/// Hits of a rule since the server started.
+/// Hits of a rule (kept across restarts by the store).
 pub fn hit_count(matcher: Matcher, rule_id: String) -> Int {
   case dict.get(matcher.slots, rule_id) {
-    Ok(slot) -> ffi.counter_get(matcher.hits, slot)
+    Ok(slot) -> ffi.counter_get(matcher.hits, count_index(slot))
     Error(Nil) -> 0
+  }
+}
+
+/// When a rule was last hit, in seconds since the epoch (0: never).
+pub fn last_hit(matcher: Matcher, rule_id: String) -> Int {
+  case dict.get(matcher.slots, rule_id) {
+    Ok(slot) -> ffi.counter_get(matcher.hits, last_index(slot))
+    Error(Nil) -> 0
+  }
+}
+
+/// A rule's hits, as saved and restored by the store.
+pub type HitRecord {
+  HitRecord(rule_id: String, count: Int, last: Int)
+}
+
+/// The hits of every rule hit at least once.
+pub fn hit_records(matcher: Matcher) -> List(HitRecord) {
+  dict.to_list(matcher.slots)
+  |> list.filter_map(fn(entry) {
+    let #(rule_id, slot) = entry
+    case ffi.counter_get(matcher.hits, count_index(slot)) {
+      0 -> Error(Nil)
+      count ->
+        Ok(HitRecord(
+          rule_id:,
+          count:,
+          last: ffi.counter_get(matcher.hits, last_index(slot)),
+        ))
+    }
+  })
+}
+
+/// Adds saved hits to the rules of `matcher` with the same id.
+pub fn seed_hits(matcher: Matcher, records: List(HitRecord)) -> Nil {
+  list.each(records, fn(record) {
+    case dict.get(matcher.slots, record.rule_id) {
+      Ok(slot) -> add_hits(matcher, slot, record.count, record.last)
+      Error(Nil) -> Nil
+    }
+  })
+}
+
+fn add_hits(matcher: Matcher, slot: Int, count: Int, last: Int) -> Nil {
+  ffi.counter_add(matcher.hits, count_index(slot), count)
+  case last > ffi.counter_get(matcher.hits, last_index(slot)) {
+    True -> ffi.counter_put(matcher.hits, last_index(slot), last)
+    False -> Nil
   }
 }
 
@@ -180,7 +241,7 @@ pub fn carry_hits(next: Matcher, from previous: Matcher) -> Matcher {
   dict.each(next.slots, fn(rule_id, slot) {
     case hit_count(previous, rule_id) {
       0 -> Nil
-      count -> ffi.counter_add(next.hits, slot, count)
+      count -> add_hits(next, slot, count, last_hit(previous, rule_id))
     }
   })
   next

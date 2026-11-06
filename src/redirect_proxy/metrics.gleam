@@ -160,6 +160,11 @@ pub fn hits(rule_id: String) -> Int {
   matcher.hit_count(snapshot.current(), rule_id)
 }
 
+/// When a rule was last hit, in seconds since the epoch (0: never).
+pub fn last_hit(rule_id: String) -> Int {
+  matcher.last_hit(snapshot.current(), rule_id)
+}
+
 fn labelled(
   name: String,
   help: String,

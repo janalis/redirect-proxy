@@ -10,6 +10,7 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
+import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule}
 
 pub type Filters {
@@ -24,7 +25,7 @@ pub type Filters {
 }
 
 pub type Row {
-  Row(rule: Rule, hits: Int)
+  Row(rule: Rule, hits: Int, last_hit: Int)
 }
 
 pub const page_size = 50
@@ -181,6 +182,7 @@ fn filters_form(filters: Filters) -> Element(Nil) {
         option("host", "Host", filters.sort),
         option("-hits", "Most hits", filters.sort),
         option("hits", "Fewest hits", filters.sort),
+        option("last_hit", "Least recently hit", filters.sort),
         option("-updated", "Recently updated", filters.sort),
       ]),
     ]),
@@ -329,7 +331,16 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
     ]),
     h.td([a.class("text-break")], [h.code([], [h.text(r.target)])]),
     h.td([], [h.text(int.to_string(r.status))]),
-    h.td([a.class("text-end")], [h.text(int.to_string(row.hits))]),
+    h.td(
+      [
+        a.class("text-end"),
+        a.title(case row.last_hit {
+          0 -> "Never hit"
+          at -> "Last hit " <> ffi.rfc3339(at)
+        }),
+      ],
+      [h.text(int.to_string(row.hits))],
+    ),
     h.td([], [
       h.form(
         [
@@ -786,7 +797,7 @@ fn details(r: Rule, hits: Int) -> Element(Nil) {
       <> r.updated_by
       <> " · "
       <> int.to_string(hits)
-      <> " hit(s) since the server started · ",
+      <> " hit(s) · ",
     ),
     h.a([a.href("/audit?" <> uri.query_to_string([#("target", r.id)]))], [
       h.text("History"),

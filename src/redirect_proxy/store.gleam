@@ -17,6 +17,8 @@
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
+import gleam/dict
+import gleam/dynamic/decode
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/json
@@ -63,6 +65,8 @@ pub type Settings {
     ignore_trailing_slash: Bool,
     /// Milliseconds between checks of the file for outside changes (0: off).
     watch_interval: Int,
+    /// Where hit counts are kept across restarts ("": not kept).
+    hits_path: String,
   )
 }
 
@@ -149,6 +153,9 @@ pub opaque type Message {
   ReloadInBackground(actor: String)
   /// `watch_interval` tick: reloads the file if it changed on disk.
   Watch(self: Subject(Message))
+  /// Every second: saves the hit counts when due (`hits_interval`) or when
+  /// the node starts draining before a stop.
+  SaveHits(self: Subject(Message))
 }
 
 /// What a bulk change does to the rules it names.
@@ -183,6 +190,10 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
+    /// When the hit counts were last saved.
+    hits_saved_at: Int,
+    /// Whether they were saved since draining began.
+    hits_saved_draining: Bool,
   )
 }
 
@@ -222,6 +233,8 @@ pub fn start(
             rules:,
             fingerprint:,
             stamp: ffi.file_stamp(settings.rules_path),
+            hits_saved_at: ffi.now_seconds(),
+            hits_saved_draining: False,
           ))
         }
         Error(reason) ->
@@ -244,6 +257,8 @@ pub fn start(
                 rules:,
                 fingerprint: "",
                 stamp: ffi.file_stamp(settings.rules_path),
+                hits_saved_at: ffi.now_seconds(),
+                hits_saved_draining: False,
               ))
             }
             Error(Nil) -> Error(reason)
@@ -251,6 +266,8 @@ pub fn start(
       },
     )
     schedule_watch(settings, subject)
+    load_hits(settings)
+    process.send_after(subject, 1000, SaveHits(subject))
     actor.initialised(state)
     |> actor.returning(subject)
     |> Ok
@@ -692,6 +709,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       })
     }
 
+    SaveHits(self) -> {
+      process.send_after(self, 1000, SaveHits(self))
+      let now = ffi.now_seconds()
+      let draining = ffi.draining()
+      case
+        now - state.hits_saved_at >= hits_interval
+        || { draining && !state.hits_saved_draining }
+      {
+        False -> actor.continue(state)
+        True -> {
+          save_hits(state)
+          actor.continue(
+            State(..state, hits_saved_at: now, hits_saved_draining: draining),
+          )
+        }
+      }
+    }
+
     Watch(self) -> {
       schedule_watch(state.settings, self)
       let stamp = ffi.file_stamp(state.settings.rules_path)
@@ -878,6 +913,82 @@ fn refresh(state: State) -> Result(State, String) {
           }
       }
   }
+}
+
+/// Seconds between saves of the hit counts.
+const hits_interval = 60
+
+/// Hit counts saved by an earlier run, added to the published rules. Only
+/// at a fresh start: a store restarted after a crash has carried the counts
+/// of the rules already published.
+fn load_hits(settings: Settings) -> Nil {
+  case settings.hits_path, matcher.hit_records(snapshot.current()) {
+    "", _ | _, [_, ..] -> Nil
+    path, [] ->
+      case simplifile.read(path) {
+        // first start, or counts never saved
+        Error(_) -> Nil
+        Ok(content) ->
+          case json.parse(content, hits_decoder()) {
+            Ok(records) -> matcher.seed_hits(snapshot.current(), records)
+            Error(_) ->
+              log.warning(path <> " is not a valid hit count file: ignored")
+          }
+      }
+  }
+}
+
+/// Saves the hit counts of the store's rules (atomically; a failure is
+/// logged and retried at the next save).
+fn save_hits(state: State) -> Nil {
+  case state.settings.hits_path {
+    "" -> Nil
+    path -> {
+      let ids = set.from_list(list.map(state.rules, fn(r) { r.id }))
+      let records =
+        matcher.hit_records(snapshot.current())
+        |> list.filter(fn(h) { set.contains(ids, h.rule_id) })
+      let content =
+        json.object([
+          #("version", json.int(1)),
+          #(
+            "hits",
+            json.object(
+              list.map(records, fn(h) {
+                #(
+                  h.rule_id,
+                  json.object([
+                    #("count", json.int(h.count)),
+                    #("last", json.int(h.last)),
+                  ]),
+                )
+              }),
+            ),
+          ),
+        ])
+        |> json.to_string
+      case ffi.atomic_write(path, content <> "\n") {
+        Ok(Nil) -> Nil
+        Error(reason) -> log.warning("hit counts not saved: " <> reason)
+      }
+    }
+  }
+}
+
+fn hits_decoder() -> decode.Decoder(List(matcher.HitRecord)) {
+  let record = {
+    use count <- decode.field("count", decode.int)
+    use last <- decode.optional_field("last", 0, decode.int)
+    decode.success(#(count, last))
+  }
+  use hits <- decode.field("hits", decode.dict(decode.string, record))
+  decode.success(
+    dict.to_list(hits)
+    |> list.map(fn(entry) {
+      let #(rule_id, #(count, last)) = entry
+      matcher.HitRecord(rule_id:, count:, last:)
+    }),
+  )
 }
 
 fn schedule_watch(settings: Settings, self: Subject(Message)) -> Nil {

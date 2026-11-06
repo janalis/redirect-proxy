@@ -47,7 +47,7 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let all = store.all(ctx.store)
   let found = matching(all, filters)
   let sorted =
-    store_rules.sort(found, filters.sort, metrics.hits)
+    store_rules.sort(found, filters.sort, metrics.hits, metrics.last_hit)
     |> result.unwrap(found)
   let count = list.length(sorted)
   let pages =
@@ -58,7 +58,13 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
     sorted
     |> list.drop({ page - 1 } * rules_view.page_size)
     |> list.take(rules_view.page_size)
-    |> list.map(fn(r) { rules_view.Row(rule: r, hits: metrics.hits(r.id)) })
+    |> list.map(fn(r) {
+      rules_view.Row(
+        rule: r,
+        hits: metrics.hits(r.id),
+        last_hit: metrics.last_hit(r.id),
+      )
+    })
   let filters = rules_view.Filters(..filters, page:)
   let here =
     "/rules?"
