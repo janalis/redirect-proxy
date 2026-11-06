@@ -155,3 +155,14 @@ pub fn json_log_lines_test() {
 
 @external(erlang, "test_net_ffi", "format_json_log")
 fn format_json_log(level: String, message: String) -> String
+
+/// Rewriting a file keeps its permissions instead of the umask default.
+pub fn atomic_write_keeps_the_file_mode_test() {
+  let path = support.temp_dir() <> "/kept-mode.json"
+  let assert Ok(Nil) = ffi.atomic_write(path, "one")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
+  let assert Ok(Nil) = ffi.atomic_write(path, "two")
+  let assert Ok(info) = simplifile.file_info(path)
+  assert simplifile.file_info_permissions_octal(info) == 0o640
+  assert simplifile.read(path) == Ok("two")
+}

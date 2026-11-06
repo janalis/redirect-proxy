@@ -20,6 +20,12 @@ shutdown_grace = 5
 # "strict": /docs/ and /docs are different paths. "ignore": a request that
 # matches no rule is retried with the trailing slash added or removed.
 trailing_slash = "strict"
+# A path answered by this listener before any rule, for load balancers that
+# can only probe the traffic port: 200 while serving, 503 while draining
+# before a stop. Empty: off (every path goes to the rules).
+health_path = ""
+# Requests with a longer path (in bytes) get a 414 without rule lookup.
+max_path_bytes = 8192
 
 [access_log]
 # Traffic logs, one line per request, of the redirect, admin and API
@@ -110,6 +116,10 @@ format = "text"
 data_dir = "./data"
 # Number of previous redirects.json versions kept in data_dir/backups.
 backups = 10
+# Seconds between checks of redirects.json for changes made outside the
+# server (ConfigMap, GitOps, an editor). A change is reloaded like SIGHUP.
+# 0: off.
+watch_interval = 0
 
 [auth.local]
 # Username / password accounts stored in users.json.

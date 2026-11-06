@@ -24,9 +24,11 @@ pub const int_env_vars = [
   "RP_API_PORT",
   "RP_API_TOKEN_TTL",
   "RP_SERVER_CACHE_MAX_AGE",
+  "RP_SERVER_MAX_PATH_BYTES",
   "RP_SERVER_PORT",
   "RP_SERVER_SHUTDOWN_GRACE",
   "RP_STORAGE_BACKUPS",
+  "RP_STORAGE_WATCH_INTERVAL",
 ]
 
 pub const bool_env_vars = [
@@ -243,6 +245,8 @@ pub fn apply_env(
         |> string.lowercase,
       fallback_url: s("RP_SERVER_FALLBACK_URL", server.fallback_url),
       not_found_body: s("RP_SERVER_NOT_FOUND_BODY", server.not_found_body),
+      health_path: s("RP_SERVER_HEALTH_PATH", server.health_path),
+      max_path_bytes: i("RP_SERVER_MAX_PATH_BYTES", server.max_path_bytes),
     ),
     admin: AdminConfig(
       enabled: b("RP_ADMIN_ENABLED", admin.enabled),
@@ -259,6 +263,7 @@ pub fn apply_env(
     storage: StorageConfig(
       data_dir: s("RP_STORAGE_DATA_DIR", storage.data_dir),
       backups: i("RP_STORAGE_BACKUPS", storage.backups),
+      watch_interval: i("RP_STORAGE_WATCH_INTERVAL", storage.watch_interval),
     ),
     local_auth: LocalAuthConfig(enabled: b(
       "RP_AUTH_LOCAL_ENABLED",

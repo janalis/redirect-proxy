@@ -101,6 +101,19 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("server.trailing_slash must be \"strict\" or \"ignore\""),
   )
   use <- bool.guard(
+    config.server.health_path != ""
+      && !string.starts_with(config.server.health_path, "/"),
+    Error("server.health_path must be empty or start with /"),
+  )
+  use <- bool.guard(
+    config.server.max_path_bytes < 256,
+    Error("server.max_path_bytes must be at least 256"),
+  )
+  use <- bool.guard(
+    config.storage.watch_interval < 0,
+    Error("storage.watch_interval must be >= 0 (0: off)"),
+  )
+  use <- bool.guard(
     config.admin.session_ttl < 60,
     Error("admin.session_ttl must be at least 60 seconds"),
   )

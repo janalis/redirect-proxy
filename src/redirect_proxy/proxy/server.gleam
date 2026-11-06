@@ -8,6 +8,7 @@ import gleam/http/response.{type Response}
 import gleam/int
 import gleam/option.{type Option}
 import gleam/result
+import gleam/string
 import mist
 import redirect_proxy/access_log
 import redirect_proxy/config.{type ServerConfig}
@@ -63,7 +64,43 @@ fn route(
   not_found_body: bytes_tree.BytesTree,
   permanent_cache: String,
 ) -> #(Response(mist.ResponseData), String) {
-  metrics.incr(metrics.Requests)
+  case config.health_path != "" && req.path == config.health_path {
+    True -> #(health(), "")
+    False -> {
+      metrics.incr(metrics.Requests)
+      case string.byte_size(req.path) > config.max_path_bytes {
+        True -> #(empty(414), "")
+        False -> route_rules(config, req, not_found_body, permanent_cache)
+      }
+    }
+  }
+}
+
+/// `server.health_path`: for load balancers that can only probe the traffic
+/// port. Not counted as a request, like the admin's /readyz.
+fn health() -> Response(mist.ResponseData) {
+  let #(status, body) = case ffi.draining() {
+    False -> #(200, "ok")
+    True -> #(503, "draining")
+  }
+  response.new(status)
+  |> response.set_header("content-type", "text/plain; charset=utf-8")
+  |> response.set_header("cache-control", "no-store")
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+}
+
+fn empty(status: Int) -> Response(mist.ResponseData) {
+  response.new(status)
+  |> response.set_header("cache-control", "no-store")
+  |> response.set_body(mist.Bytes(bytes_tree.new()))
+}
+
+fn route_rules(
+  config: ServerConfig,
+  req: Request(mist.Connection),
+  not_found_body: bytes_tree.BytesTree,
+  permanent_cache: String,
+) -> #(Response(mist.ResponseData), String) {
   let host = request.get_header(req, "host") |> result.unwrap(req.host)
   case req.method {
     http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch -> {

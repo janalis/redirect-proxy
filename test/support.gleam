@@ -48,7 +48,11 @@ pub fn boot(cfg: config.Config) -> App {
       // api.port 0 shares the admin listener; tests wanting the API on its
       // own port pass one from `free_port()`.
       api: config.ApiConfig(..cfg.api, listen: ""),
-      storage: config.StorageConfig(data_dir: dir, backups: 3),
+      storage: config.StorageConfig(
+        data_dir: dir,
+        backups: 3,
+        watch_interval: 0,
+      ),
       // Keep access lines out of the test output unless a test picks a path.
       access_log: case cfg.access_log.output {
         "stdout" | "stderr" ->
