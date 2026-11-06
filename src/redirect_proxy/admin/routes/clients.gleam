@@ -3,13 +3,12 @@
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/web.{
-  type Context, error_page, features, flash_from_query, html, not_found,
-  require_csrf_form,
+  type Context, error_page, features, flash_from_query, form_value, html,
+  not_found, require_csrf_form,
 } as _
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
@@ -51,7 +50,7 @@ pub fn api_clients_page(req: Request, ctx: Context, s: Session) -> Response {
 pub fn create_api_client(req: Request, ctx: Context, s: Session) -> Response {
   use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
   use form <- require_csrf_form(req, s)
-  let name = list.key_find(form.values, "name") |> result.unwrap("")
+  let name = form_value(form, "name")
   let scopes =
     form.values
     |> list.filter(fn(pair) { pair.0 == "scope" })

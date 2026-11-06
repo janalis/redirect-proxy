@@ -2,6 +2,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import redirect_proxy/admin/auth/oidc
+import redirect_proxy/admin/auth/oidc/provider as oidc_provider
 import redirect_proxy/config
 import redirect_proxy/ffi
 
@@ -18,7 +19,7 @@ fn cfg(domains: List(String), groups: List(String)) -> config.OidcConfig {
 }
 
 const provider =
-  oidc.Provider(
+  oidc_provider.Provider(
     issuer: "https://idp.test",
     authorization_endpoint: "https://idp.test/auth",
     token_endpoint: "https://idp.test/token",
@@ -158,11 +159,11 @@ pub fn provider_failures_are_remembered_test() {
   // trying (and waiting for) it again
   let #(port, counter) = counting_server()
   let issuer = "http://127.0.0.1:" <> int.to_string(port)
-  let assert Error(_) = oidc.discover_issuer(issuer)
+  let assert Error(_) = oidc_provider.discover_issuer(issuer)
   let first = accepted(counter)
   assert first > 0
-  let assert Error(_) = oidc.discover_issuer(issuer)
-  let assert Error(_) = oidc.discover_issuer(issuer)
+  let assert Error(_) = oidc_provider.discover_issuer(issuer)
+  let assert Error(_) = oidc_provider.discover_issuer(issuer)
   assert accepted(counter) == first
 }
 

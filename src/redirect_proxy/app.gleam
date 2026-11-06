@@ -22,6 +22,7 @@ import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
+import redirect_proxy/api/web as api_web
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/ffi
@@ -148,7 +149,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       Error(Nil) -> ""
     }
     let ctx =
-      api_router.Context(
+      api_web.Context(
         config: cfg,
         store: store_subject,
         clients: clients_settings(cfg),

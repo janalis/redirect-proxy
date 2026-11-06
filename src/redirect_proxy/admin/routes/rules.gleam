@@ -11,8 +11,8 @@ import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/views/rules as rules_view
 import redirect_proxy/admin/web.{
-  type Context, error_page, features, flash_from_query, html, not_found,
-  require_csrf_form,
+  type Context, error_page, features, flash_from_query, form_value, html,
+  not_found, require_csrf_form,
 } as _
 import redirect_proxy/audit
 import redirect_proxy/config
@@ -331,7 +331,7 @@ pub fn import_page(req: Request, ctx: Context, s: Session) -> Response {
 
 pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
-  let pasted = list.key_find(form.values, "content") |> result.unwrap("")
+  let pasted = form_value(form, "content")
   let uploaded = case list.key_find(form.files, "file") {
     Ok(file) ->
       simplifile.read(file.path)
@@ -342,10 +342,10 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     "" -> pasted
     _ -> uploaded
   }
-  let mode = case list.key_find(form.values, "mode") {
-    Ok("replace") -> store.Replace
-    _ -> store.Merge
-  }
+  let mode =
+    form_value(form, "mode")
+    |> store.import_mode_from_string
+    |> result.unwrap(store.Merge)
   let fail = fn(errors) {
     html(422, pages.import_export(s, features(ctx), None, errors))
   }

@@ -41,6 +41,20 @@ pub const bool_env_vars = [
   "RP_AUTH_OIDC_ENABLED",
 ]
 
+/// An integer override (surrounding spaces ignored).
+fn parse_int(value: String) -> Result(Int, Nil) {
+  int.parse(string.trim(value))
+}
+
+/// A boolean override: true/false, yes/no, on/off, 1/0, in any case.
+fn parse_bool(value: String) -> Result(Bool, Nil) {
+  case string.lowercase(string.trim(value)) {
+    "1" | "true" | "yes" | "on" -> Ok(True)
+    "0" | "false" | "no" | "off" -> Ok(False)
+    _ -> Error(Nil)
+  }
+}
+
 /// The overrides of `int_env_vars`, `bool_env_vars` and `RP_LOG_LEVEL` whose
 /// value is invalid, described.
 pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
@@ -48,7 +62,7 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
     list.filter_map(int_env_vars, fn(name) {
       case get(name) {
         Ok(value) ->
-          case int.parse(string.trim(value)) {
+          case parse_int(value) {
             Ok(_) -> Error(Nil)
             Error(Nil) ->
               Ok(name <> ": expected an integer, got \"" <> value <> "\"")
@@ -58,13 +72,13 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
     })
   let bools =
     list.filter_map(bool_env_vars, fn(name) {
-      case get(name) |> result.map(fn(v) { string.lowercase(string.trim(v)) }) {
-        Ok("1") | Ok("true") | Ok("yes") | Ok("on") -> Error(Nil)
-        Ok("0") | Ok("false") | Ok("no") | Ok("off") -> Error(Nil)
-        Ok(_) -> {
-          let assert Ok(value) = get(name)
-          Ok(name <> ": expected true or false, got \"" <> value <> "\"")
-        }
+      case get(name) {
+        Ok(value) ->
+          case parse_bool(value) {
+            Ok(_) -> Error(Nil)
+            Error(Nil) ->
+              Ok(name <> ": expected true or false, got \"" <> value <> "\"")
+          }
         Error(Nil) -> Error(Nil)
       }
     })
@@ -142,16 +156,10 @@ pub fn apply_env(
     }
   }
   let i = fn(name, current) {
-    get(name)
-    |> result.try(fn(v) { int.parse(string.trim(v)) })
-    |> result.unwrap(current)
+    get(name) |> result.try(parse_int) |> result.unwrap(current)
   }
   let b = fn(name, current) {
-    case get(name) |> result.map(fn(v) { string.lowercase(string.trim(v)) }) {
-      Ok("1") | Ok("true") | Ok("yes") | Ok("on") -> True
-      Ok("0") | Ok("false") | Ok("no") | Ok("off") -> False
-      _ -> current
-    }
+    get(name) |> result.try(parse_bool) |> result.unwrap(current)
   }
   let l = fn(name, current) {
     case get(name) {

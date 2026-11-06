@@ -65,6 +65,15 @@ pub type ImportMode {
   Merge
 }
 
+/// `merge` or `replace`, as given to the admin form and the API.
+pub fn import_mode_from_string(mode: String) -> Result(ImportMode, Nil) {
+  case mode {
+    "merge" -> Ok(Merge)
+    "replace" -> Ok(Replace)
+    _ -> Error(Nil)
+  }
+}
+
 /// Why a versioned change was refused.
 pub type ChangeError {
   NotFound

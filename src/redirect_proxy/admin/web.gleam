@@ -125,6 +125,11 @@ pub fn set_session_cookie(
   )
 }
 
+/// A form field, "" when absent.
+pub fn form_value(form: wisp.FormData, name: String) -> String {
+  list.key_find(form.values, name) |> result.unwrap("")
+}
+
 /// Parses the form and verifies the CSRF token of the session.
 pub fn require_csrf_form(
   req: Request,
@@ -132,7 +137,7 @@ pub fn require_csrf_form(
   next: fn(wisp.FormData) -> Response,
 ) -> Response {
   use form <- wisp.require_form(req)
-  let token = list.key_find(form.values, "csrf_token") |> result.unwrap("")
+  let token = form_value(form, "csrf_token")
   case session_token_matches(s, token) {
     True -> next(form)
     False -> {

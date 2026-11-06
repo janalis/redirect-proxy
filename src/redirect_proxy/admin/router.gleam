@@ -21,6 +21,7 @@ import redirect_proxy/admin/web.{
 } as _
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
+import redirect_proxy/api/web as api_web
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/metrics
@@ -72,7 +73,7 @@ fn api_dispatch(
     True, ["api", ..] | True, ["oauth", ..] ->
       api_router.handle(
         req,
-        api_router.Context(
+        api_web.Context(
           config: ctx.config,
           store: ctx.store,
           clients: ctx.clients,

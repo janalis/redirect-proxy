@@ -14,8 +14,8 @@ import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/web.{
-  type Context, html, log_value, oidc_state_cookie, require_csrf_form,
-  session_cookie_name, set_session_cookie,
+  type Context, form_value, html, log_value, oidc_state_cookie,
+  require_csrf_form, session_cookie_name, set_session_cookie,
 } as _
 import redirect_proxy/audit
 import redirect_proxy/config
@@ -156,10 +156,9 @@ pub fn login(req: Request, ctx: Context) -> Response {
   })
   use form <- wisp.require_form(req)
   let username =
-    list.key_find(form.values, "username")
-    |> result.unwrap("")
+    form_value(form, "username")
     |> users.normalise
-  let pass = list.key_find(form.values, "password") |> result.unwrap("")
+  let pass = form_value(form, "password")
   let fail = fn(message: String, status: Int, username: String) {
     html(
       status,

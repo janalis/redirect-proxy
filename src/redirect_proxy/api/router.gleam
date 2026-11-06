@@ -2,49 +2,33 @@
 //// by the admin listener. There is no version prefix: see
 //// `api/deprecation.gleam` for how the API evolves.
 
-import gleam/bit_array
 import gleam/bool
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/http/request
 import gleam/int
-import gleam/json.{type Json}
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/uri
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/auth.{type Principal}
-import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation.{type Deprecation}
 import redirect_proxy/api/openapi
 import redirect_proxy/api/problem
+import redirect_proxy/api/rule_json.{patch_decoder, rule_json} as _
 import redirect_proxy/api/scope.{type Scope}
-import redirect_proxy/api/token
-import redirect_proxy/config.{type Config}
-import redirect_proxy/ffi
+import redirect_proxy/api/token_endpoint.{token_endpoint} as _
+import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
-import redirect_proxy/store.{type Store}
+import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
 import wisp.{type Request, type Response}
-
-pub type Context {
-  Context(
-    config: Config,
-    store: Store,
-    clients: clients.Settings,
-    peer_ip: String,
-    /// Client address used for throttling (see the admin router).
-    client_ip: String,
-    deprecations: List(Deprecation),
-  )
-}
 
 const max_per_page = 500
 
@@ -194,8 +178,6 @@ fn add_deprecation_headers(
   })
 }
 
-// --- authentication ---------------------------------------------------------
-
 fn authenticated(
   req: Request,
   ctx: Context,
@@ -231,159 +213,6 @@ fn require(
       problem.insufficient_scope(name)
     }
   }
-}
-
-// --- token endpoint (RFC 6749 §4.4) ------------------------------------------
-
-fn token_endpoint(req: Request, ctx: Context) -> Response {
-  use form <- wisp.require_form(req)
-  let field = fn(name) { list.key_find(form.values, name) |> result.unwrap("") }
-  let basic = basic_credentials(req)
-  let #(client_id, secret) = case basic {
-    Ok(credentials) -> credentials
-    Error(Nil) -> #(field("client_id"), field("client_secret"))
-  }
-  // Same scheme as admin logins: per client address and client id, per
-  // address, and per client id (high, so that failures from elsewhere cannot
-  // cheaply lock a deployment pipeline out).
-  let client_id = case string.byte_size(client_id) > 128 {
-    True -> ""
-    False -> client_id
-  }
-  let pair_key = "token:" <> ctx.client_ip <> " " <> client_id
-  let ip_key = "token-ip:" <> ctx.client_ip
-  let client_key = "token-client:" <> client_id
-  use <- bool.lazy_guard(
-    ratelimit.is_blocked(pair_key, 10)
-      || ratelimit.is_blocked(ip_key, 30)
-      || ratelimit.is_blocked(client_key, 100),
-    fn() {
-      oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
-    },
-  )
-  use <- bool.lazy_guard(field("grant_type") != "client_credentials", fn() {
-    oauth_error(
-      400,
-      "unsupported_grant_type",
-      "Only the client_credentials grant is supported.",
-    )
-  })
-  case client_id, clients.authenticate(ctx.clients, client_id, secret) {
-    "", _ | _, Error(Nil) -> {
-      ratelimit.record_failure(pair_key, 900)
-      ratelimit.record_failure(ip_key, 900)
-      ratelimit.record_failure(client_key, 900)
-      metrics.incr(metrics.ApiAuthFailures)
-      log.warning(
-        "token request rejected for client="
-        <> ffi.escape_newlines(client_id)
-        <> " ip="
-        <> ctx.client_ip,
-      )
-      let resp =
-        oauth_error(401, "invalid_client", "Client authentication failed.")
-      case basic {
-        Ok(_) ->
-          wisp.set_header(
-            resp,
-            "www-authenticate",
-            "Basic realm=\"redirect-proxy\"",
-          )
-        Error(Nil) -> resp
-      }
-    }
-    _, Ok(client) -> {
-      let requested = case string.trim(field("scope")) {
-        "" -> Ok(client.scopes)
-        value -> {
-          let names =
-            value |> string.split(" ") |> list.filter(fn(s) { s != "" })
-          let parsed = list.filter_map(names, scope.from_string)
-          case
-            list.length(parsed) == list.length(names)
-            && list.all(parsed, scope.allows(client.scopes, _))
-          {
-            True -> Ok(list.unique(parsed))
-            False -> Error(Nil)
-          }
-        }
-      }
-      case requested {
-        Error(Nil) ->
-          oauth_error(
-            400,
-            "invalid_scope",
-            "The requested scope exceeds the scopes granted to the client.",
-          )
-        Ok(scopes) -> {
-          ratelimit.reset(client_key)
-          let ttl = ctx.config.api.token_ttl
-          let access_token =
-            token.issue(client.client_id, client.secret_hash, scopes, ttl)
-          metrics.incr(metrics.TokensIssued)
-          problem.json_response(
-            200,
-            json.object([
-              #("access_token", json.string(access_token)),
-              #("token_type", json.string("Bearer")),
-              #("expires_in", json.int(ttl)),
-              #("scope", json.string(scope.join(scopes))),
-            ]),
-          )
-          |> wisp.set_header("pragma", "no-cache")
-        }
-      }
-    }
-  }
-}
-
-/// `Authorization: Basic` client credentials, form-urlencoded per RFC 6749
-/// §2.3.1.
-fn basic_credentials(req: Request) -> Result(#(String, String), Nil) {
-  use value <- result.try(request.get_header(req, "authorization"))
-  use #(scheme, encoded) <- result.try(string.split_once(
-    string.trim(value),
-    " ",
-  ))
-  use <- bool.guard(string.lowercase(scheme) != "basic", Error(Nil))
-  use bits <- result.try(bit_array.base64_decode(string.trim(encoded)))
-  use decoded <- result.try(bit_array.to_string(bits))
-  use #(id, secret) <- result.try(string.split_once(decoded, ":"))
-  let unescape = fn(v) { uri.percent_decode(v) |> result.unwrap(v) }
-  Ok(#(unescape(id), unescape(secret)))
-}
-
-fn oauth_error(status: Int, error: String, description: String) -> Response {
-  problem.json_response(
-    status,
-    json.object([
-      #("error", json.string(error)),
-      #("error_description", json.string(description)),
-    ]),
-  )
-  |> wisp.set_header("pragma", "no-cache")
-}
-
-// --- redirections -----------------------------------------------------------
-
-pub fn rule_json(r: Rule) -> Json {
-  json.object([
-    #("id", json.string(r.id)),
-    #("host", json.string(r.host)),
-    #("source", json.string(r.source)),
-    #("match", json.string(rule.kind_to_string(r.kind))),
-    #("target", json.string(r.target)),
-    #("status", json.int(r.status)),
-    #("preserve_query", json.bool(r.preserve_query)),
-    #("case_insensitive", json.bool(r.case_insensitive)),
-    #("priority", json.int(r.priority)),
-    #("enabled", json.bool(r.enabled)),
-    #("note", json.string(r.note)),
-    #("created_at", json.string(r.created_at)),
-    #("updated_at", json.string(r.updated_at)),
-    #("updated_by", json.string(r.updated_by)),
-    #("version", json.string(rule.version(r))),
-  ])
 }
 
 fn rule_response(status: Int, r: Rule) -> Response {
@@ -569,73 +398,6 @@ fn patch_rule(
   |> add_deprecation_headers(deprecated)
 }
 
-fn field(
-  name: String,
-  inner: decode.Decoder(a),
-  next: fn(Option(Option(a))) -> decode.Decoder(b),
-) -> decode.Decoder(b) {
-  decode.optional_field(
-    name,
-    None,
-    decode.optional(inner) |> decode.map(Some),
-    next,
-  )
-}
-
-fn pick(patch: Option(Option(a)), current: a, default: a) -> a {
-  case patch {
-    None -> current
-    Some(None) -> default
-    Some(Some(value)) -> value
-  }
-}
-
-/// JSON merge patch (RFC 7396) of the writable rule fields: absent fields are
-/// kept, `null` resets a field to its default, other values replace it.
-pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
-  let defaults = rule.blank()
-  let kind_decoder = {
-    use value <- decode.then(decode.string)
-    case rule.kind_from_string(value) {
-      Ok(kind) -> decode.success(kind)
-      Error(Nil) -> decode.failure(rule.Exact, "exact | prefix | regex")
-    }
-  }
-  use host <- field("host", decode.string)
-  use kind <- field("match", kind_decoder)
-  use source <- field("source", decode.string)
-  use target <- field("target", decode.string)
-  use status <- field("status", decode.int)
-  use preserve_query <- field("preserve_query", decode.bool)
-  use case_insensitive <- field("case_insensitive", decode.bool)
-  use priority <- field("priority", decode.int)
-  use enabled <- field("enabled", decode.bool)
-  use note <- field("note", decode.string)
-  decode.success(fn(r: Rule) {
-    rule.Rule(
-      ..r,
-      host: pick(host, r.host, defaults.host),
-      kind: pick(kind, r.kind, defaults.kind),
-      source: pick(source, r.source, defaults.source),
-      target: pick(target, r.target, defaults.target),
-      status: pick(status, r.status, defaults.status),
-      preserve_query: pick(
-        preserve_query,
-        r.preserve_query,
-        defaults.preserve_query,
-      ),
-      case_insensitive: pick(
-        case_insensitive,
-        r.case_insensitive,
-        defaults.case_insensitive,
-      ),
-      priority: pick(priority, r.priority, defaults.priority),
-      enabled: pick(enabled, r.enabled, defaults.enabled),
-      note: pick(note, r.note, defaults.note),
-    )
-  })
-}
-
 fn delete_rule(
   req: Request,
   ctx: Context,
@@ -660,9 +422,8 @@ fn delete_rule(
 
 fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
   let mode = case list.key_find(wisp.get_query(req), "mode") {
-    Ok("replace") -> Ok(store.Replace)
-    Ok("merge") | Error(Nil) -> Ok(store.Merge)
-    Ok(_) -> Error(Nil)
+    Ok(mode) -> store.import_mode_from_string(mode)
+    Error(Nil) -> Ok(store.Merge)
   }
   use body <- wisp.require_string_body(req)
   case mode, rule.file_from_string(body) {

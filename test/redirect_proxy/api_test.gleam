@@ -16,7 +16,6 @@ import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/openapi
 import redirect_proxy/api/problem
-import redirect_proxy/api/router
 import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config
@@ -479,6 +478,7 @@ pub fn openapi_document_test() {
 }
 
 import gleam/dict
+import redirect_proxy/api/rule_json as api_rule_json
 
 fn dict_get(d: dict.Dict(String, a), key: String) -> Result(a, Nil) {
   dict.get(d, key)
@@ -683,13 +683,16 @@ pub fn patch_decoder_unit_test() {
       note: "keep",
     )
   let assert Ok(apply) =
-    json.parse("{\"target\":\"/c\",\"status\":null}", router.patch_decoder())
+    json.parse(
+      "{\"target\":\"/c\",\"status\":null}",
+      api_rule_json.patch_decoder(),
+    )
   let patched = apply(base)
   assert patched.target == "/c"
   assert patched.status == 301
   assert patched.note == "keep"
   let assert Error(_) =
-    json.parse("{\"match\":\"glob\"}", router.patch_decoder())
+    json.parse("{\"match\":\"glob\"}", api_rule_json.patch_decoder())
 }
 
 pub fn clients_store_unit_test() {
