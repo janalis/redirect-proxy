@@ -205,3 +205,27 @@ pub fn throttle_address_test() {
   assert ffi.throttle_address("not an address") == "not an address"
   assert ffi.throttle_address("") == ""
 }
+
+fn mode(path: String) -> Int {
+  let assert Ok(info) = simplifile.file_info(path)
+  simplifile.file_info_permissions_octal(info)
+}
+
+/// Files with secrets are created 0600; an existing file keeps the
+/// permissions it was given.
+pub fn atomic_write_private_mode_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/users.json"
+  let assert Ok(Nil) = ffi.atomic_write_private(path, "{}")
+  assert mode(path) == 0o600
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
+  let assert Ok(Nil) = ffi.atomic_write_private(path, "{\"a\":1}")
+  assert mode(path) == 0o640
+  assert simplifile.read(path) == Ok("{\"a\":1}")
+  // other files: the old permissions too
+  let rules = dir <> "/redirects.json"
+  let assert Ok(Nil) = ffi.atomic_write(rules, "[]")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(rules, 0o604)
+  let assert Ok(Nil) = ffi.atomic_write(rules, "[ ]")
+  assert mode(rules) == 0o604
+}

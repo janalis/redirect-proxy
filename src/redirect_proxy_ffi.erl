@@ -3,7 +3,7 @@
 -export([
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
-    atomic_write/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1,
+    atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
@@ -96,7 +96,13 @@ count_regex_limit() ->
 %% Files
 %% ---------------------------------------------------------------------------
 
-atomic_write(Path, Content) ->
+atomic_write(Path, Content) -> atomic_write(Path, Content, default).
+
+%% For files holding secrets (password hashes, client secret hashes, the
+%% cookie signing key): created 0600 instead of the umask default.
+atomic_write_private(Path, Content) -> atomic_write(Path, Content, 8#600).
+
+atomic_write(Path, Content, NewMode) ->
     _ = filelib:ensure_dir(Path),
     Tmp = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     %% Every step returns {error, _} instead of raising, so that a full or
@@ -104,11 +110,13 @@ atomic_write(Path, Content) ->
     Result =
         case file:open(Tmp, [write, raw, binary]) of
             {ok, Fd} ->
+                %% before the content is written: a secret is never readable
+                %% by others, not even for a moment
+                set_mode(Path, Tmp, NewMode),
                 Written = write_and_sync(Fd, Content),
                 Closed = file:close(Fd),
                 case {Written, Closed} of
                     {ok, ok} ->
-                        keep_mode(Path, Tmp),
                         case file:rename(Tmp, Path) of
                             ok -> sync_dir(filename:dirname(Path));
                             RenameError -> RenameError
@@ -127,11 +135,12 @@ atomic_write(Path, Content) ->
 
 %% The new file replaces the old one: give it the old one's permissions
 %% (e.g. 0640 for a group-readable redirections file) instead of the umask
-%% default.
-keep_mode(Path, Tmp) ->
-    case file:read_file_info(Path) of
-        {ok, #file_info{mode = Mode}} -> _ = file:change_mode(Tmp, Mode band 8#7777);
-        {error, _} -> ok
+%% default. A new file gets NewMode, or the umask default.
+set_mode(Path, Tmp, NewMode) ->
+    case {file:read_file_info(Path), NewMode} of
+        {{ok, #file_info{mode = Mode}}, _} -> _ = file:change_mode(Tmp, Mode band 8#7777);
+        {{error, _}, default} -> ok;
+        {{error, _}, _} -> _ = file:change_mode(Tmp, NewMode)
     end,
     ok.
 

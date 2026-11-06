@@ -279,7 +279,7 @@ fn save(path: String, clients: List(Client)) -> Result(Nil, String) {
       ),
     ])
     |> json.to_string
-  use Nil <- result.try(ffi.atomic_write(path, content <> "\n"))
+  use Nil <- result.try(ffi.atomic_write_private(path, content <> "\n"))
   let _ = simplifile.set_permissions_octal(path, 0o600)
   Ok(Nil)
 }
