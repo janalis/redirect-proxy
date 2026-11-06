@@ -10,6 +10,7 @@ import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/ffi
 import redirect_proxy/log
 import simplifile
@@ -22,6 +23,51 @@ pub type Entry {
     target: String,
     details: String,
   )
+}
+
+/// Failed sign-ins and token requests recorded per minute, from all
+/// addresses. They need no credentials: without a limit, many addresses
+/// could push real entries out of the files kept by rotation.
+const max_failures_per_minute = 60
+
+/// `record` for a failure that needs no credentials. Past
+/// `max_failures_per_minute`, failures are not recorded, and one
+/// `audit.failures_not_recorded` entry per minute says so (they are still
+/// logged and counted in the metrics).
+pub fn record_failure(
+  path: String,
+  actor: String,
+  action: String,
+  target: String,
+  details: Json,
+) -> Nil {
+  case ratelimit.take("audit-failures", max_failures_per_minute, 60) {
+    True ->
+      record(path, actor, action, target, option.None, option.Some(details))
+    False ->
+      case ratelimit.take("audit-failures-noted", 1, 60) {
+        True -> {
+          log.warning(
+            "more than "
+            <> int.to_string(max_failures_per_minute)
+            <> " failed sign-ins or token requests in a minute: the next ones are not in the audit log for the rest of the minute",
+          )
+          record(
+            path,
+            "system",
+            "audit.failures_not_recorded",
+            "",
+            option.None,
+            option.Some(
+              json.object([
+                #("limit_per_minute", json.int(max_failures_per_minute)),
+              ]),
+            ),
+          )
+        }
+        False -> Nil
+      }
+  }
 }
 
 pub fn record(

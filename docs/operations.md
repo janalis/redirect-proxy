@@ -53,7 +53,14 @@
   `proxy:<name>`, so that they cannot pass for a local user, `system` or an
   API client (`client:<id>`). Throttling (`auth.throttled`) is recorded
   once per client and window, and API tokens issued and refused
-  (`api.token_issued`, `api.token_rejected`) are recorded too. Imports and
+  (`api.token_issued`, `api.token_rejected`) are recorded too. Failures
+  need no credentials, so at most 60 failed sign-ins and token requests a
+  minute are recorded, from all clients: past that, one
+  `audit.failures_not_recorded` entry per minute says that some were left
+  out (they are still logged and counted in the metrics), so that they
+  cannot push real entries out of the rotated files. A failed login with a
+  name no account can have keeps that name in its details, not as the
+  actor. Imports and
   reloads record the file fingerprint before and after and the rules added,
   removed and changed (counts, and up to 100 ids each). Rejected reloads and
   imports are recorded with the reason (`rules.reload_failed`,

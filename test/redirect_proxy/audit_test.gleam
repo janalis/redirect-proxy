@@ -1,7 +1,9 @@
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option
 import gleam/string
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/audit
 import simplifile
 import support
@@ -100,4 +102,30 @@ pub fn a_broken_line_does_not_hide_the_file_test() {
     >>)
   assert audit.search(path, audit.any, 10) |> list.map(fn(e) { e.target })
     == ["last", "first"]
+}
+
+/// Failures need no credentials: past a budget per minute they are not
+/// recorded, so that they cannot push real entries out of the files kept.
+pub fn failures_have_a_budget_test() {
+  ratelimit.init()
+  ratelimit.reset("audit-failures")
+  ratelimit.reset("audit-failures-noted")
+  let path = support.temp_dir() <> "/audit.jsonl"
+  int.range(from: 0, to: 70, with: Nil, run: fn(_, i) {
+    audit.record_failure(
+      path,
+      "u" <> int.to_string(i),
+      "auth.login_failed",
+      "local",
+      json.object([]),
+    )
+  })
+  let entries = audit.tail(path, 100)
+  let failed = list.filter(entries, fn(e) { e.action == "auth.login_failed" })
+  assert list.length(failed) == 60
+  let noted =
+    list.filter(entries, fn(e) { e.action == "audit.failures_not_recorded" })
+  assert list.length(noted) == 1
+  ratelimit.reset("audit-failures")
+  ratelimit.reset("audit-failures-noted")
 }

@@ -39,6 +39,18 @@ pub fn record_failure(key: String, window: Int) -> Nil {
   ffi.window_record(table, key, ffi.now_seconds(), window)
 }
 
+/// Counts one use of `key` when it is under `limit` in the current window:
+/// True when it was, False (nothing counted) when the budget is spent.
+pub fn take(key: String, limit: Int, window: Int) -> Bool {
+  case is_blocked(key, limit) {
+    True -> False
+    False -> {
+      record_failure(key, window)
+      True
+    }
+  }
+}
+
 pub fn reset(key: String) -> Nil {
   ffi.ets_delete(table, key)
 }

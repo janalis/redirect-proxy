@@ -64,7 +64,13 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
       ratelimit.record_failure(pair_key, window)
       ratelimit.record_failure(ip_key, window)
       metrics.incr(metrics.ApiAuthFailures)
-      audit_token(ctx, client_id, "api.token_rejected", [])
+      audit.record_failure(
+        config.audit_path(ctx.config),
+        "client:" <> client_id,
+        "api.token_rejected",
+        client_id,
+        json.object([#("client_ip", json.string(ctx.client_ip))]),
+      )
       log.warning(
         "token request rejected for client="
         <> ffi.escape_newlines(client_id)
