@@ -235,6 +235,9 @@ pub fn lint_flags_parts_that_never_match_test() {
   assert string.starts_with(fragment, "source: cannot contain a fragment")
   let assert [port] = rule.lint(Rule(..base(), host: "example.com:8080"))
   assert string.starts_with(port, "host: remove the port")
+  let assert [slashes] =
+    rule.lint(Rule(..base(), kind: rule.Prefix, source: "//legacy/"))
+  assert string.starts_with(slashes, "source: cannot start with //")
   // `?` is a quantifier in a regex
   assert rule.lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
 }

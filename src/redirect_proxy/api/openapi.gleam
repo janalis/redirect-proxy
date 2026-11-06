@@ -81,6 +81,12 @@ fn errors(codes: List(#(String, String))) -> List(#(String, Json)) {
   [
     #("401", problem_response("Missing, invalid or expired access token.")),
     #("403", problem_response("The token lacks the required scope.")),
+    #(
+      "429",
+      problem_response(
+        "Too many invalid access tokens from this client address. Retry-After gives the seconds to wait.",
+      ),
+    ),
     ..list.map(codes, fn(c) { #(c.0, problem_response(c.1)) })
   ]
 }

@@ -447,8 +447,13 @@ fn match_regex(rules: HostRules, path: String) -> Result(Match, Nil) {
   let indexed =
     candidates(rules.regex, path)
     |> list.sort(fn(a, b) { int.compare(a.rank, b.rank) })
-  run_regexes(indexed, rules.regex_unindexed, path)
+  run_regexes(indexed, rules.regex_unindexed, path, 0)
 }
+
+/// Regex runs of one request that may exhaust their budget before the
+/// request stops trying the next regex rules: each run is capped, but a
+/// crafted path could otherwise cost the cap once per regex rule.
+const max_exhausted_runs = 3
 
 /// Runs the regex rules of two lists sorted by rank, merged in rank order,
 /// until one matches.
@@ -456,6 +461,7 @@ fn run_regexes(
   a: List(RegexRule),
   b: List(RegexRule),
   path: String,
+  exhausted: Int,
 ) -> Result(Match, Nil) {
   let next = case a, b {
     [], [] -> Error(Nil)
@@ -477,10 +483,15 @@ fn run_regexes(
           {
             Ok(location) -> Ok(Match(entry.rule, location))
             // the substitution would leave the target's host: try the next
-            Error(Nil) -> run_regexes(a, b, path)
+            Error(Nil) -> run_regexes(a, b, path, exhausted)
           }
+        Error(ffi.NoMatch) -> run_regexes(a, b, path, exhausted)
         // a run exhausting its budget is counted by `regex_run`
-        Error(_) -> run_regexes(a, b, path)
+        Error(ffi.LimitExceeded) ->
+          case exhausted + 1 >= max_exhausted_runs {
+            True -> Error(Nil)
+            False -> run_regexes(a, b, path, exhausted + 1)
+          }
       }
   }
 }

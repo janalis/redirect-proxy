@@ -31,22 +31,35 @@ const secure_session_cookie = "__Host-rp_session"
 /// the cookie is `Secure` (wisp sends it without `Secure` only for plain
 /// HTTP on localhost).
 pub fn session_cookie_name(req: Request, ctx: Context) -> String {
-  let local_http =
-    req.scheme == http.Http
-    && list.contains(["localhost", "127.0.0.1", "[::1]"], req.host)
-    && result.is_error(request.get_header(req, "x-forwarded-proto"))
-  case https_admin(ctx) && !local_http {
+  case host_prefixed(req, ctx) {
     True -> secure_session_cookie
     False -> session_cookie
   }
 }
 
+/// Binds an SSO login in progress to the browser that started it. Prefixed
+/// like the session cookie, so that a sibling subdomain cannot plant its own
+/// login attempt in a victim's browser (login CSRF).
+pub fn oidc_state_cookie_name(req: Request, ctx: Context) -> String {
+  case host_prefixed(req, ctx) {
+    True -> "__Host-" <> oidc_state_cookie
+    False -> oidc_state_cookie
+  }
+}
+
+const oidc_state_cookie = "rp_oidc_state"
+
+fn host_prefixed(req: Request, ctx: Context) -> Bool {
+  let local_http =
+    req.scheme == http.Http
+    && list.contains(["localhost", "127.0.0.1", "[::1]"], req.host)
+    && result.is_error(request.get_header(req, "x-forwarded-proto"))
+  https_admin(ctx) && !local_http
+}
+
 fn https_admin(ctx: Context) -> Bool {
   string.starts_with(string.lowercase(ctx.config.admin.public_url), "https://")
 }
-
-/// Binds an SSO login in progress to the browser that started it.
-pub const oidc_state_cookie = "rp_oidc_state"
 
 pub type Context {
   Context(

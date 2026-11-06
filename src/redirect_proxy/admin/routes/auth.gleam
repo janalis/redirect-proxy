@@ -15,7 +15,7 @@ import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/web.{
-  type Context, form_value, html, log_value, oidc_state_cookie,
+  type Context, form_value, html, log_value, oidc_state_cookie_name,
   require_csrf_form, session_cookie_name, set_session_cookie,
 } as _
 import redirect_proxy/audit
@@ -42,6 +42,13 @@ const max_username_bytes = 64
 
 const login_window = 900
 
+/// SSO logins started from one address in a window: each one holds a pending
+/// login attempt until it completes or expires (`oidc.flow_ttl`).
+const sso_start_ip_limit = 30
+
+/// Failed SSO callbacks from one address in a window.
+const sso_callback_ip_limit = 20
+
 /// Resolves the current session from the session cookie, or from trusted
 /// proxy headers. `next` receives the session and a function that must be
 /// applied to the response (it may set a fresh session cookie).
@@ -53,9 +60,13 @@ pub fn require_session(
   let from_cookie = current_session(req, ctx)
   let proxy_user = header.identify(ctx.config.header_auth, req, ctx.peer_ip)
 
+  // the name a header session acts as, to compare with the cookie's session
+  let proxy_actor =
+    result.map(proxy_user, session.actor(session.Header, _))
+    |> result.unwrap("")
   case from_cookie, proxy_user {
     // Header auth: the proxy is authoritative, the session must follow it.
-    Ok(s), Ok(user) if s.method == session.Header && s.username != user -> {
+    Ok(s), Ok(user) if s.method == session.Header && s.username != proxy_actor -> {
       session.destroy(s.token)
       start_header_session(req, ctx, user, next)
     }
@@ -128,7 +139,7 @@ fn start_header_session(
     <> " from "
     <> ctx.peer_ip,
   )
-  audit_auth(ctx, user, "auth.login", "proxy")
+  audit_auth(ctx, session.actor(session.Header, user), "auth.login", "proxy")
   let s = session.create(user, session.Header, ctx.config.admin.session_ttl, "")
   next(s, set_session_cookie(_, req, ctx, s))
 }
@@ -198,7 +209,9 @@ pub fn login(req: Request, ctx: Context) -> Response {
   {
     Ok(seconds) -> {
       log.warning("login throttled for user=" <> who)
-      audit_auth(ctx, username, "auth.throttled", "local")
+      audit_once_per_window(ctx.client_ip, seconds, fn() {
+        audit_auth(ctx, username, "auth.throttled", "local")
+      })
       fail(
         "Too many failed attempts. Try again in a few minutes.",
         429,
@@ -209,9 +222,18 @@ pub fn login(req: Request, ctx: Context) -> Response {
     Error(Nil) -> {
       let user = case users.get(ctx.users, username) {
         Ok(user) ->
-          case pass != "" && password.verify(pass, user.password_hash) {
-            True -> Ok(user)
-            False -> Error(Nil)
+          case pass {
+            // as slow as a wrong password: the timing must not tell that
+            // the user exists
+            "" -> {
+              password.dummy_verify()
+              Error(Nil)
+            }
+            _ ->
+              case password.verify(pass, user.password_hash) {
+                True -> Ok(user)
+                False -> Error(Nil)
+              }
           }
         Error(Nil) -> {
           password.dummy_verify()
@@ -325,12 +347,15 @@ pub fn logout(req: Request, ctx: Context, s: Session) -> Response {
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  let start_key = "sso-start-ip:" <> ctx.client_ip
+  use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
+  ratelimit.record_failure(start_key, login_window)
   case oidc.begin(ctx.config.oidc, ctx.config.admin.public_url) {
     Ok(#(url, state)) ->
       wisp.redirect(url)
       |> wisp.set_cookie(
         req,
-        oidc_state_cookie,
+        oidc_state_cookie_name(req, ctx),
         state,
         wisp.Signed,
         oidc.flow_ttl,
@@ -346,17 +371,19 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
 
 pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  let failure_key = "sso-callback-ip:" <> ctx.client_ip
+  use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
   let outcome =
     oidc.complete(
       ctx.config.oidc,
       ctx.config.admin.public_url,
       wisp.get_query(req),
-      wisp.get_cookie(req, oidc_state_cookie, wisp.Signed),
+      wisp.get_cookie(req, oidc_state_cookie_name(req, ctx), wisp.Signed),
     )
   let clear_state = wisp.set_cookie(
     _,
     req,
-    oidc_state_cookie,
+    oidc_state_cookie_name(req, ctx),
     "",
     wisp.Signed,
     0,
@@ -371,10 +398,16 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         <> ")",
       )
       // the username may be editable at the provider: keep who it really is
-      audit_auth_with(ctx, identity.username, "auth.login", "sso", [
-        #("issuer", json.string(ctx.config.oidc.issuer)),
-        #("subject", json.string(identity.subject)),
-      ])
+      audit_auth_with(
+        ctx,
+        session.actor(session.Oidc, identity.username),
+        "auth.login",
+        "sso",
+        [
+          #("issuer", json.string(ctx.config.oidc.issuer)),
+          #("subject", json.string(identity.subject)),
+        ],
+      )
       let s =
         session.create(
           identity.username,
@@ -387,6 +420,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
       |> clear_state
     }
     Error(failure) -> {
+      ratelimit.record_failure(failure_key, login_window)
       metrics.incr(metrics.LoginFailures)
       // provider errors and internal URLs stay in the log
       let #(logged, shown) = case failure {
@@ -416,6 +450,48 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         ),
       )
       |> clear_state
+    }
+  }
+}
+
+/// Answers 429 while `key` is blocked. The audit log records it once per
+/// window and address, so that an anonymous loop cannot flood it.
+fn sso_throttle(
+  ctx: Context,
+  key: String,
+  limit: Int,
+  next: fn() -> Response,
+) -> Response {
+  case ratelimit.blocked_for(key, limit) {
+    Error(Nil) -> next()
+    Ok(seconds) -> {
+      log.warning("SSO throttled for ip=" <> ctx.client_ip)
+      audit_once_per_window(ctx.client_ip, seconds, fn() {
+        audit_auth(ctx, "", "auth.throttled", "sso")
+      })
+      html(
+        429,
+        pages.login(
+          Some("Too many sign-in attempts. Try again in a few minutes."),
+          ctx.config.local_auth.enabled,
+          sso_label(ctx),
+          "",
+        ),
+      )
+      |> wisp.set_header("retry-after", int.to_string(seconds))
+    }
+  }
+}
+
+/// Runs `write` (an audit entry about throttling) at most once per address
+/// while it stays throttled.
+fn audit_once_per_window(client_ip: String, seconds: Int, write: fn() -> Nil) {
+  let key = "throttle-audited:" <> client_ip
+  case ratelimit.is_blocked(key, 1) {
+    True -> Nil
+    False -> {
+      ratelimit.record_failure(key, seconds)
+      write()
     }
   }
 }

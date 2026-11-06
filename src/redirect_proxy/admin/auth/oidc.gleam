@@ -27,6 +27,10 @@ pub const flow_ttl = 600
 /// them so that a loop on /auth/oidc/start cannot fill the memory.
 const max_flows = 10_000
 
+/// Login attempts in progress, apart from the provider cache in `table` so
+/// that the cap counts them only.
+const flows = "redirect_proxy_oidc_flows"
+
 /// Why a login failed. `Denied` explains itself to the user; the details of
 /// `Failed` (provider errors, internal URLs) only go to the log.
 pub type Failure {
@@ -45,6 +49,7 @@ pub type Identity {
 
 pub fn init() -> Nil {
   ffi.ets_new(table)
+  ffi.ets_new(flows)
 }
 
 pub fn redirect_uri(public_url: String) -> String {
@@ -59,7 +64,7 @@ pub fn begin(
   public_url: String,
 ) -> Result(#(String, String), String) {
   use <- bool.guard(
-    ffi.ets_size(table) >= max_flows,
+    ffi.ets_size(flows) >= max_flows,
     Error("too many login attempts in progress"),
   )
   use provider <- result.try(discover(cfg))
@@ -69,7 +74,7 @@ pub fn begin(
   let challenge =
     crypto.hash(crypto.Sha256, <<verifier:utf8>>)
     |> bit_array.base64_url_encode(False)
-  ffi.ets_put(table, "flow:" <> state, #(
+  ffi.ets_put(flows, "flow:" <> state, #(
     ffi.now_seconds() + flow_ttl,
     #(verifier, nonce),
   ))
@@ -154,10 +159,10 @@ fn authenticate(
 
 fn take_flow(state: String) -> Result(#(String, String), String) {
   let key = "flow:" <> state
-  case ffi.ets_get(table, key) {
+  case ffi.ets_get(flows, key) {
     Ok(#(expires_at, flow)) -> {
       // single use
-      ffi.ets_delete(table, key)
+      ffi.ets_delete(flows, key)
       case expires_at > ffi.now_seconds() {
         True -> Ok(flow)
         False -> Error("login attempt expired, please try again")
@@ -350,5 +355,6 @@ pub fn authorise(cfg: OidcConfig, identity: Identity) -> Result(Nil, String) {
 }
 
 pub fn purge_expired() -> Int {
-  ffi.ets_delete_older(table, ffi.now_seconds())
+  let now = ffi.now_seconds()
+  ffi.ets_delete_older(table, now) + ffi.ets_delete_older(flows, now)
 }

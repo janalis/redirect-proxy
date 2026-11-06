@@ -132,7 +132,7 @@ fn navbar(
             h.div([a.class("d-flex align-items-center gap-2")], [
               h.span([a.class("navbar-text small")], [
                 h.text(
-                  s.username
+                  session.display_name(s)
                   <> " ("
                   <> session.method_to_string(s.method)
                   <> ")",

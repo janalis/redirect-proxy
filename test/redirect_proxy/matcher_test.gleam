@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/string
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 
@@ -388,4 +389,18 @@ pub fn redirect_loop_through_trailing_slash_retry_test() {
   let assert Ok([first, second]) = matcher_loop.redirect_loop(m, slash, True)
   assert first.id == "s"
   assert second.id == "s"
+}
+
+/// Each regex run is capped; after a few capped runs the request stops
+/// trying further regex rules, so one crafted path cannot cost the cap once
+/// per rule.
+pub fn regex_budget_is_per_request_test() {
+  let path = "/" <> string.repeat("a", 30) <> "!"
+  let expensive = fn(id) { r(id, "*", rule.Regex, "^/(a+)+$", "/x") }
+  let cheap = r("cheap", "*", rule.Regex, "^/a+!$", "/found")
+  let two = matcher.build([expensive("1"), expensive("2"), cheap])
+  assert location(two, "x.test", path) == Ok("/found")
+  let three =
+    matcher.build([expensive("1"), expensive("2"), expensive("3"), cheap])
+  assert location(three, "x.test", path) == Error(Nil)
 }

@@ -295,6 +295,11 @@ pub fn lint(rule: Rule) -> List(String) {
     !path_rule || !string.contains(rule.source, "#"),
     "source: cannot contain a fragment (#): browsers never send it",
   )
+  // the HTTP server reads `//a/b` as an authority (`a`) and a path (`/b`)
+  |> check(
+    !path_rule || !string.starts_with(rule.source, "//"),
+    "source: cannot start with //: such a request path is read as /<rest after the next />",
+  )
   |> check(
     !string.contains(rule.host, ":"),
     "host: remove the port: requests are matched on the host name only",
