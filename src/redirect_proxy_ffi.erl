@@ -8,7 +8,7 @@
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, valid_cidr/1,
+    ip_in_cidr/2, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1,
     on_sighup/1,
     plain_arguments/0, halt/1, read_password/1,
@@ -319,6 +319,26 @@ ip_in_cidr(IpBin, CidrBin) ->
 valid_cidr(CidrBin) ->
     case parse_cidr(CidrBin) of
         {ok, _} -> true;
+        _ -> false
+    end.
+
+%% What the HTTP server accepts to listen on (glisten:bind/2 panics on
+%% anything else): an IP address or "localhost".
+valid_listen_address(<<"localhost">>) -> true;
+valid_listen_address(Bin) ->
+    case inet:parse_address(binary_to_list(Bin)) of
+        {ok, _} -> true;
+        _ -> false
+    end.
+
+is_loopback_address(<<"localhost">>) -> true;
+is_loopback_address(Bin) ->
+    Trimmed = string:trim(Bin, both, "[]"),
+    case inet:parse_address(binary_to_list(Trimmed)) of
+        {ok, {127, _, _, _}} -> true;
+        {ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true;
+        %% IPv4-mapped (::ffff:127.0.0.1)
+        {ok, {0, 0, 0, 0, 0, 16#ffff, A, _}} -> A bsr 8 =:= 127;
         _ -> false
     end.
 

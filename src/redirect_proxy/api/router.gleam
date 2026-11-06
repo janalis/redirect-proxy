@@ -113,10 +113,12 @@ fn route(
       use <- require(principal, scope.Read, ctx)
       let query = wisp.get_query(req)
       let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
-      use rules <- result_or_response(filtered_rules(ctx, get))
+      use #(rules, version) <- result_or_response(filtered_rules(ctx, get))
       wisp.response(200)
       |> wisp.set_header("content-type", "application/json")
       |> wisp.string_body(store_rules.export(rules))
+      |> wisp.set_header("etag", problem.etag(version))
+      |> unless_not_modified(req, version, _)
     }
     Post, ["redirects", "import"] -> {
       use <- require(principal, scope.Write, ctx)
@@ -129,7 +131,8 @@ fn route(
     Get, ["redirects", id] -> {
       use <- require(principal, scope.Read, ctx)
       case store.get(ctx.store, id) {
-        Ok(r) -> rule_response(200, r)
+        Ok(r) ->
+          unless_not_modified(req, rule.version(r), rule_response(200, r))
         Error(Nil) -> rule_not_found(id)
       }
     }
@@ -279,7 +282,7 @@ fn list_rules(req: Request, ctx: Context) -> Response {
     int.parse(get("per_page"))
     |> result.unwrap(default_per_page)
     |> int.clamp(1, max_per_page)
-  use matching <- result_or_response(filtered_rules(ctx, get))
+  use #(matching, version) <- result_or_response(filtered_rules(ctx, get))
   case store_rules.sort(matching, get("sort"), metrics.hits) {
     Error(Nil) ->
       problem.bad_request(
@@ -331,6 +334,8 @@ fn list_rules(req: Request, ctx: Context) -> Response {
             ),
           ]),
         )
+      // the version of the whole rule set, for If-Match on import and bulk
+      let resp = wisp.set_header(resp, "etag", problem.etag(version))
       case links {
         [] -> resp
         _ -> wisp.set_header(resp, "link", string.join(links, ", "))
@@ -350,16 +355,12 @@ fn result_or_response(
 }
 
 /// The rules matching the `q`, `host`, `match` and `enabled` filters (list
-/// and export). Invalid filter values are a 400.
+/// and export), and the version of the rule set they were read from.
+/// Invalid filter values are a 400.
 fn filtered_rules(
   ctx: Context,
   get: fn(String) -> String,
-) -> Result(List(Rule), Response) {
-  let needle = string.lowercase(string.trim(get("q")))
-  let host = case get("host") {
-    "" -> ""
-    h -> rule.normalise_host(h)
-  }
+) -> Result(#(List(Rule), String), Response) {
   let kind = get("match")
   let enabled = get("enabled")
   // invalid filters are errors: silently ignoring them returns the wrong set
@@ -367,23 +368,59 @@ fn filtered_rules(
     !list.contains(["", "exact", "prefix", "regex"], kind),
     Error(problem.bad_request("match must be exact, prefix or regex.")),
   )
-  use <- bool.guard(
-    !list.contains(["", "true", "false"], enabled),
-    Error(problem.bad_request("enabled must be true or false.")),
-  )
-  Ok(
-    store.all(ctx.store)
-    |> list.filter(fn(r) {
-      { needle == "" || text_matches(r, needle) }
-      && { host == "" || r.host == host }
-      && { kind == "" || rule.kind_to_string(r.kind) == kind }
-      && case enabled {
-        "true" -> r.enabled
-        "false" -> !r.enabled
-        _ -> True
+  use enabled <- result.try(case enabled {
+    "" -> Ok(None)
+    "true" -> Ok(Some(True))
+    "false" -> Ok(Some(False))
+    _ -> Error(problem.bad_request("enabled must be true or false."))
+  })
+  let #(rules, version) = store.versioned(ctx.store)
+  let filter =
+    store_rules.Filter(text: get("q"), host: get("host"), kind:, enabled:)
+  Ok(#(store_rules.filter(rules, filter), version))
+}
+
+/// The version `If-Match` requires of the whole rule set (import, bulk), if
+/// the header is set.
+fn collection_if_match(req: Request, ctx: Context) -> Option(String) {
+  case request.get_header(req, "if-match") {
+    Error(Nil) -> None
+    Ok(value) -> {
+      let #(_, current) = store.versioned(ctx.store)
+      Some(problem.expected_version(problem.parse_if_match(value), current))
+    }
+  }
+}
+
+fn set_change_error(error: store.SetChangeError) -> Response {
+  case error {
+    store.Stale(current) -> problem.precondition_failed(current)
+    store.Rejected(errors) -> problem.validation(errors)
+  }
+}
+
+/// 304 when `If-None-Match` lists the current version (or is `*`).
+fn unless_not_modified(
+  req: Request,
+  version: String,
+  resp: Response,
+) -> Response {
+  case request.get_header(req, "if-none-match") {
+    Error(Nil) -> resp
+    Ok(value) -> {
+      let unchanged = case problem.parse_if_none_match(value) {
+        problem.AnyVersion -> True
+        problem.Versions(versions) -> list.contains(versions, version)
       }
-    }),
-  )
+      case unchanged {
+        False -> resp
+        True ->
+          wisp.response(304)
+          |> wisp.set_header("etag", problem.etag(version))
+          |> wisp.set_header("cache-control", "no-store")
+      }
+    }
+  }
 }
 
 fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
@@ -400,30 +437,28 @@ fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
         Error(Nil) ->
           problem.validation(["action: must be enable, disable or delete"])
         Ok(action) ->
-          case store.bulk(ctx.store, ids, action, principal.actor) {
+          case
+            store.bulk_versioned(
+              ctx.store,
+              ids,
+              action,
+              collection_if_match(req, ctx),
+              principal.actor,
+            )
+          {
             Ok(count) ->
               problem.json_response(
                 200,
                 json.object([#("changed", json.int(count))]),
               )
-            Error(errors) -> problem.validation(errors)
+            Error(error) -> set_change_error(error)
           }
       }
   }
 }
 
-fn text_matches(r: Rule, needle: String) -> Bool {
-  list.any([r.host, r.source, r.target, r.note, r.id], fn(field) {
-    string.contains(string.lowercase(field), needle)
-  })
-}
-
-/// Reads a JSON object body. Returns the parsed value with the list of
-/// top-level keys used (for field deprecations).
-fn require_json_object(
-  req: Request,
-  next: fn(String, List(String)) -> Response,
-) -> Response {
+/// Reads a body sent as JSON (415 otherwise).
+fn require_json_body(req: Request, next: fn(String) -> Response) -> Response {
   let content_type =
     request.get_header(req, "content-type") |> result.unwrap("")
   use <- bool.lazy_guard(
@@ -438,7 +473,16 @@ fn require_json_object(
       )
     },
   )
-  use body <- wisp.require_string_body(req)
+  wisp.require_string_body(req, next)
+}
+
+/// Reads a JSON object body. Returns the parsed value with the list of
+/// top-level keys used (for field deprecations).
+fn require_json_object(
+  req: Request,
+  next: fn(String, List(String)) -> Response,
+) -> Response {
+  use body <- require_json_body(req)
   case json.parse(body, decode.dict(decode.string, decode.dynamic)) {
     Ok(fields) -> next(body, dict.keys(fields))
     Error(_) -> problem.bad_request("The body must be a JSON object.")
@@ -568,13 +612,14 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
     Error(Nil) -> Ok(store.Merge)
   }
   let dry_run = list.key_find(wisp.get_query(req), "dry_run") == Ok("true")
-  use body <- wisp.require_string_body(req)
+  // a rules file may be an array of rules: not `require_json_object`
+  use body <- require_json_body(req)
   case mode, rule.file_from_string(body) {
     Error(Nil), _ -> problem.bad_request("mode must be merge or replace.")
     _, Error(reason) -> problem.validation([reason])
     Ok(mode), Ok(incoming) if dry_run ->
       case store.preview_import(ctx.store, incoming, mode, principal.actor) {
-        Ok(d) ->
+        Ok(#(d, version)) ->
           problem.json_response(
             200,
             json.object([
@@ -582,10 +627,20 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
               ..store_rules.diff_to_json(d)
             ]),
           )
+          // send it back in If-Match to apply exactly this change
+          |> wisp.set_header("etag", problem.etag(version))
         Error(errors) -> problem.validation(errors)
       }
     Ok(mode), Ok(incoming) ->
-      case store.import_rules(ctx.store, incoming, mode, principal.actor) {
+      case
+        store.import_rules_versioned(
+          ctx.store,
+          incoming,
+          mode,
+          collection_if_match(req, ctx),
+          principal.actor,
+        )
+      {
         Ok(count) ->
           problem.json_response(
             200,
@@ -594,7 +649,7 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
               #("total", json.int(list.length(store.all(ctx.store)))),
             ]),
           )
-        Error(errors) -> problem.validation(errors)
+        Error(error) -> set_change_error(error)
       }
   }
 }

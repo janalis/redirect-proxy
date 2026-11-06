@@ -122,6 +122,15 @@ pub fn ip_in_cidr(ip: String, cidr: String) -> Bool
 @external(erlang, "redirect_proxy_ffi", "valid_cidr")
 pub fn valid_cidr(cidr: String) -> Bool
 
+/// An address the HTTP server can listen on: an IP address or "localhost".
+@external(erlang, "redirect_proxy_ffi", "valid_listen_address")
+pub fn valid_listen_address(address: String) -> Bool
+
+/// "localhost" or a loopback IP address (IPv6 possibly in brackets, or
+/// IPv4-mapped).
+@external(erlang, "redirect_proxy_ffi", "is_loopback_address")
+pub fn is_loopback_address(address: String) -> Bool
+
 // --- time -------------------------------------------------------------------
 
 @external(erlang, "redirect_proxy_ffi", "now_seconds")

@@ -90,8 +90,26 @@ pub type ChangeError {
   Invalid(List(String))
 }
 
+/// Why a change to the whole rule set (an import, a bulk change) was refused.
+pub type SetChangeError {
+  /// The rule set changed since the version (`versioned`) the caller based
+  /// its change on, such as an import preview: nothing was written.
+  Stale(current: String)
+  Rejected(List(String))
+}
+
+pub fn describe_set_change_error(error: SetChangeError) -> List(String) {
+  case error {
+    Stale(_) -> [
+      "version: the rules were changed since they were read: review the changes and retry",
+    ]
+    Rejected(errors) -> errors
+  }
+}
+
 pub opaque type Message {
   All(reply: Subject(List(Rule)))
+  Versioned(reply: Subject(#(List(Rule), String)))
   Get(id: String, reply: Subject(Result(Rule, Nil)))
   Create(rule: Rule, actor: String, reply: Subject(Result(Rule, List(String))))
   Update(
@@ -110,20 +128,22 @@ pub opaque type Message {
   Import(
     rules: List(Rule),
     mode: ImportMode,
+    expected: Option(String),
     actor: String,
-    reply: Subject(Result(Int, List(String))),
+    reply: Subject(Result(Int, SetChangeError)),
   )
   /// `rules` are prepared and validated, as for `Import`.
   PreviewImport(
     rules: List(Rule),
     mode: ImportMode,
-    reply: Subject(Result(store_rules.Diff, List(String))),
+    reply: Subject(Result(#(store_rules.Diff, String), List(String))),
   )
   Bulk(
     ids: List(String),
     action: BulkAction,
+    expected: Option(String),
     actor: String,
-    reply: Subject(Result(Int, List(String))),
+    reply: Subject(Result(Int, SetChangeError)),
   )
   Reload(actor: String, reply: Subject(Result(Int, String)))
   ReloadInBackground(actor: String)
@@ -244,6 +264,12 @@ pub fn all(store: Store) -> List(Rule) {
   actor.call(store, timeout, All)
 }
 
+/// Every rule and the version of the rule set (the fingerprint of the file
+/// last read or written), for `import_rules_versioned` and `bulk_versioned`.
+pub fn versioned(store: Store) -> #(List(Rule), String) {
+  actor.call(store, timeout, Versioned)
+}
+
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
   actor.call(store, timeout, Get(id, _))
 }
@@ -302,6 +328,19 @@ pub fn describe_change_error(error: ChangeError) -> List(String) {
   }
 }
 
+/// `expected` (when given, `*` for any) must be the current version of the
+/// rule set.
+fn check_collection_version(
+  state: State,
+  expected: Option(String),
+) -> Result(Nil, SetChangeError) {
+  case expected {
+    Some(v) if v != "*" && v != state.fingerprint ->
+      Error(Stale(state.fingerprint))
+    _ -> Ok(Nil)
+  }
+}
+
 fn check_version(
   existing: Rule,
   expected: Option(String),
@@ -322,20 +361,37 @@ pub fn import_rules(
   mode: ImportMode,
   by actor_name: String,
 ) -> Result(Int, List(String)) {
+  import_rules_versioned(store, rules, mode, None, actor_name)
+  |> result.map_error(describe_set_change_error)
+}
+
+/// Imports only if the rule set is still at version `expected` (when
+/// given): the one a preview was shown for, or read with `versioned`.
+pub fn import_rules_versioned(
+  store: Store,
+  rules: List(Rule),
+  mode: ImportMode,
+  expected: Option(String),
+  by actor_name: String,
+) -> Result(Int, SetChangeError) {
   // Validation is done here, in the caller's process, so that the store
   // does not hold the file lock (nor block other callers) while it runs.
-  use prepared <- result.try(prepare_import(rules, actor_name))
-  actor.call(store, 60_000, Import(prepared, mode, actor_name, _))
+  use prepared <- result.try(
+    prepare_import(rules, actor_name) |> result.map_error(Rejected),
+  )
+  actor.call(store, 60_000, Import(prepared, mode, expected, actor_name, _))
 }
 
 /// What an import would change, without writing anything: rules added,
-/// removed and changed (by id). Fails like `import_rules` would.
+/// removed and changed (by id), and the version of the rule set it was
+/// computed against (to apply exactly this with `import_rules_versioned`).
+/// Fails like `import_rules` would.
 pub fn preview_import(
   store: Store,
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(store_rules.Diff, List(String)) {
+) -> Result(#(store_rules.Diff, String), List(String)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
   actor.call(store, 60_000, PreviewImport(prepared, mode, _))
 }
@@ -348,7 +404,25 @@ pub fn bulk(
   action: BulkAction,
   by actor_name: String,
 ) -> Result(Int, List(String)) {
-  actor.call(store, timeout, Bulk(list.unique(ids), action, actor_name, _))
+  bulk_versioned(store, ids, action, None, actor_name)
+  |> result.map_error(describe_set_change_error)
+}
+
+/// `bulk`, only if the rule set is still at version `expected` (when given).
+pub fn bulk_versioned(
+  store: Store,
+  ids: List(String),
+  action: BulkAction,
+  expected: Option(String),
+  by actor_name: String,
+) -> Result(Int, SetChangeError) {
+  actor.call(store, timeout, Bulk(
+    list.unique(ids),
+    action,
+    expected,
+    actor_name,
+    _,
+  ))
 }
 
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
@@ -364,6 +438,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     All(reply) -> {
       process.send(reply, state.rules)
+      actor.continue(state)
+    }
+
+    Versioned(reply) -> {
+      process.send(reply, #(state.rules, state.fingerprint))
       actor.continue(state)
     }
 
@@ -495,9 +574,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
-    Import(prepared, mode, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { [e] })
+    Import(prepared, mode, expected, actor_name, reply) -> {
+      use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
+        use Nil <- result.try(check_collection_version(state, expected))
         let rules = case mode {
           Replace -> prepared
           Merge -> merge(state.rules, prepared)
@@ -537,7 +617,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               None,
               Some(json.object([#("errors", json.array(errors, json.string))])),
             )
-            Error(errors)
+            Error(Rejected(errors))
           }
         }
       }
@@ -551,14 +631,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(
         reply,
         check_conflicts(rules)
-          |> result.map(fn(_) { store_rules.diff(state.rules, rules) }),
+          |> result.map(fn(_) {
+            #(store_rules.diff(state.rules, rules), state.fingerprint)
+          }),
       )
       actor.continue(state)
     }
 
-    Bulk(ids, action, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { [e] })
-      {
+    Bulk(ids, action, expected, actor_name, reply) -> {
+      use state <- mutate(state, reply, fn(e) { Rejected([e]) })
+      use Nil <- result.try(check_collection_version(state, expected))
+      result.map_error(_, Rejected)({
         let known = list.map(state.rules, fn(r) { r.id }) |> set.from_list
         let wanted = set.from_list(ids)
         use <- bool.guard(ids == [], Error(["ids: select at least one rule"]))
@@ -606,7 +689,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           fingerprint,
         )
         Ok(#(count, rules, fingerprint))
-      }
+      })
     }
 
     Watch(self) -> {

@@ -424,3 +424,70 @@ watch_interval = 5
   assert cfg.server.max_path_bytes == 2048
   assert cfg.storage.watch_interval == 2
 }
+
+/// Mistakes `check-config` used to accept and the server only hit at boot
+/// (or never).
+pub fn more_value_checks_test() {
+  let d = config.default()
+  let refused = fn(cfg) {
+    let assert Error(message) = config_validate.validate(cfg)
+    message
+  }
+  let server = fn(listen) {
+    config.Config(..d, server: config.ServerConfig(..d.server, listen:))
+  }
+  assert string.starts_with(refused(server("0.0.0.O")), "server.listen")
+  let assert Ok(_) = config_validate.validate(server("::"))
+  let assert Ok(_) = config_validate.validate(server("localhost"))
+  let api = config.ApiConfig(..d.api, listen: "my-host")
+  assert string.starts_with(refused(config.Config(..d, api:)), "api.listen")
+  let api = config.ApiConfig(..d.api, public_url: "api.example.com")
+  assert string.starts_with(refused(config.Config(..d, api:)), "api.public_url")
+  let header =
+    config.HeaderAuthConfig(
+      enabled: True,
+      trusted_proxies: ["10.0.0.0/8"],
+      user_header: "",
+      email_header: " ",
+    )
+  assert string.starts_with(
+    refused(config.Config(..d, header_auth: header)),
+    "auth.header needs",
+  )
+  let oidc =
+    config.OidcConfig(
+      ..d.oidc,
+      enabled: True,
+      issuer: "accounts.example.com",
+      client_id: "c",
+      client_secret: "s",
+    )
+  assert string.starts_with(
+    refused(config.Config(..d, oidc:)),
+    "auth.oidc.issuer",
+  )
+}
+
+pub fn more_warnings_test() {
+  let d = config.default()
+  assert config_validate.runtime_warnings(d) == []
+  let cfg =
+    config.Config(
+      ..d,
+      server: config.ServerConfig(..d.server, shutdown_grace: 20),
+      admin: config.AdminConfig(
+        ..d.admin,
+        session_ttl: 600,
+        session_idle_timeout: 600,
+      ),
+    )
+  let assert [idle, grace] = config_validate.runtime_warnings(cfg)
+  assert string.starts_with(idle, "admin.session_idle_timeout")
+  assert string.starts_with(grace, "server.shutdown_grace is 20")
+  // loopback addresses in every form are not reported as exposed
+  let assert Ok(toml) = tom.parse("")
+  list.each(["[::1]", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1"], fn(listen) {
+    let cfg = config.Config(..d, admin: config.AdminConfig(..d.admin, listen:))
+    assert config_validate.warnings(toml, cfg) == []
+  })
+}
