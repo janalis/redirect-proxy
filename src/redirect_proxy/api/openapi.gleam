@@ -417,15 +417,17 @@ fn paths(registry: List(Deprecation)) -> Json {
       "/api/redirects/{id}",
       json.object([
         op("get", "/api/redirects/{id}", "Get a redirection", "redirects:read", [
-          #(
-            "parameters",
-            json.preprocessed_array([id_param(), if_none_match_param()]),
-          ),
+          #("parameters", json.preprocessed_array([id_param()])),
           #(
             "responses",
             json.object([
-              #("200", response("The redirection (ETag header).", ref("Rule"))),
-              not_modified(),
+              #(
+                "200",
+                response(
+                  "The redirection, with its current hit counts. The ETag is the version of the rule (for If-Match), not of its hit counts.",
+                  ref("Rule"),
+                ),
+              ),
               ..errors([#("404", "Not found.")])
             ]),
           ),

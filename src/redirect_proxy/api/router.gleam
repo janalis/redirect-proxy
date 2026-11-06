@@ -149,8 +149,10 @@ fn route(
     Get, ["redirects", id] -> {
       use <- require(principal, scope.Read, ctx)
       case store.get(ctx.store, id) {
-        Ok(r) ->
-          unless_not_modified(req, rule.version(r), rule_response(200, r))
+        // always 200: the body has live hit counts that the ETag (the
+        // rule's version, for If-Match) does not cover, so a 304 would
+        // keep stale counts in the client's copy
+        Ok(r) -> rule_response(200, r)
         Error(Nil) -> rule_not_found(id)
       }
     }
