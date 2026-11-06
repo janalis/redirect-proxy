@@ -104,6 +104,14 @@ fn header(description: String) -> Json {
   ])
 }
 
+fn typed(t: String, doc: String) -> Json {
+  json.object([#("type", json.string(t)), #("description", json.string(doc))])
+}
+
+fn string_array() -> Json {
+  json.object([#("type", json.string("array")), #("items", string_schema())])
+}
+
 fn enum_schema(values: List(String)) -> Json {
   json.object([
     #("type", json.string("string")),
@@ -270,10 +278,24 @@ fn paths(registry: List(Deprecation)) -> Json {
               param(
                 "match",
                 "query",
-                string_schema(),
+                enum_schema(["exact", "prefix", "regex"]),
                 "exact, prefix or regex.",
               ),
-              param("enabled", "query", string_schema(), "true or false."),
+              param(
+                "enabled",
+                "query",
+                enum_schema(["true", "false"]),
+                "true or false.",
+              ),
+              param(
+                "sort",
+                "query",
+                enum_schema([
+                  "source", "-source", "host", "-host", "hits", "-hits",
+                  "updated", "-updated",
+                ]),
+                "Sort field; - for descending. File order by default.",
+              ),
               param("page", "query", int_schema(), "Page number (from 1)."),
               param("per_page", "query", int_schema(), "Page size (max 500)."),
             ]),
@@ -281,8 +303,31 @@ fn paths(registry: List(Deprecation)) -> Json {
           #(
             "responses",
             json.object([
-              #("200", response("A page of redirections.", ref("RuleList"))),
-              ..errors([])
+              #(
+                "200",
+                json.object([
+                  #("description", json.string("A page of redirections.")),
+                  #(
+                    "headers",
+                    json.object([
+                      #(
+                        "Link",
+                        header("rel=\"next\" and rel=\"prev\" page URLs."),
+                      ),
+                    ]),
+                  ),
+                  #(
+                    "content",
+                    json.object([
+                      #(
+                        "application/json",
+                        json.object([#("schema", ref("RuleList"))]),
+                      ),
+                    ]),
+                  ),
+                ]),
+              ),
+              ..errors([#("400", "Invalid match, enabled or sort value.")])
             ]),
           ),
         ]),
@@ -451,6 +496,12 @@ fn paths(registry: List(Deprecation)) -> Json {
                   enum_schema(["merge", "replace"]),
                   "merge (default) or replace.",
                 ),
+                param(
+                  "dry_run",
+                  "query",
+                  enum_schema(["true", "false"]),
+                  "true: return what would change (added, removed, changed) without writing.",
+                ),
               ]),
             ),
             body(ref("RulesFile"), "application/json"),
@@ -468,6 +519,13 @@ fn paths(registry: List(Deprecation)) -> Json {
                         json.object([
                           #("imported", int_schema()),
                           #("total", int_schema()),
+                          #("dry_run", typed("boolean", "With dry_run=true.")),
+                          #("added", int_schema()),
+                          #("removed", int_schema()),
+                          #("changed", int_schema()),
+                          #("added_ids", string_array()),
+                          #("removed_ids", string_array()),
+                          #("changed_ids", string_array()),
                         ]),
                       ),
                     ]),
@@ -479,6 +537,58 @@ fn paths(registry: List(Deprecation)) -> Json {
                     #("400", "mode is not merge or replace."),
                     #("422", "Validation failed."),
                   ]),
+                )
+              ]),
+            ),
+          ],
+        ),
+      ]),
+    ),
+    #(
+      "/api/redirects/bulk",
+      json.object([
+        op(
+          "post",
+          "/api/redirects/bulk",
+          "Enable, disable or delete several redirections (all or nothing)",
+          "redirects:write",
+          [
+            body(
+              json.object([
+                #("type", json.string("object")),
+                #("required", json.array(["ids", "action"], json.string)),
+                #(
+                  "properties",
+                  json.object([
+                    #(
+                      "ids",
+                      json.object([
+                        #("type", json.string("array")),
+                        #("items", string_schema()),
+                      ]),
+                    ),
+                    #("action", enum_schema(["enable", "disable", "delete"])),
+                  ]),
+                ),
+              ]),
+              "application/json",
+            ),
+            #(
+              "responses",
+              json.object([
+                #(
+                  "200",
+                  response(
+                    "Changed (rules already in the requested state are not counted).",
+                    json.object([
+                      #("type", json.string("object")),
+                      #("properties", json.object([#("changed", int_schema())])),
+                    ]),
+                  ),
+                ),
+                ..list.append(
+                  body_errors(),
+                  errors([#("422", "Unknown id, invalid action or conflict.")]),
                 )
               ]),
             ),
@@ -638,6 +748,7 @@ fn components(registry: List(Deprecation)) -> Json {
                         #("total", int_schema()),
                         #("page", int_schema()),
                         #("per_page", int_schema()),
+                        #("total_pages", int_schema()),
                       ]),
                     ),
                   ]),
@@ -687,6 +798,61 @@ fn components(registry: List(Deprecation)) -> Json {
                 #("status", int_schema()),
                 #("location", string_schema()),
                 #("rule", ref("Rule")),
+                #(
+                  "candidates",
+                  json.object([
+                    #("type", json.string("array")),
+                    #(
+                      "description",
+                      json.string(
+                        "Every rule of the candidate hosts matching the path, in resolution order.",
+                      ),
+                    ),
+                    #(
+                      "items",
+                      json.object([
+                        #("type", json.string("object")),
+                        #(
+                          "properties",
+                          json.object([
+                            #(
+                              "verdict",
+                              enum_schema(["applied", "shadowed", "disabled"]),
+                            ),
+                            #("rule", ref("Rule")),
+                          ]),
+                        ),
+                      ]),
+                    ),
+                  ]),
+                ),
+                #(
+                  "chain",
+                  json.object([
+                    #("type", json.string("array")),
+                    #(
+                      "description",
+                      json.string(
+                        "The redirects a browser follows (10 at most).",
+                      ),
+                    ),
+                    #(
+                      "items",
+                      json.object([
+                        #("type", json.string("object")),
+                        #(
+                          "properties",
+                          json.object([
+                            #("location", string_schema()),
+                            #("status", int_schema()),
+                            #("rule_id", string_schema()),
+                          ]),
+                        ),
+                      ]),
+                    ),
+                  ]),
+                ),
+                #("loop", typed("boolean", "The chain comes back to a URL.")),
               ]),
             ),
           ]),
@@ -760,9 +926,6 @@ fn components(registry: List(Deprecation)) -> Json {
 }
 
 fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
-  let typed = fn(t, doc) {
-    json.object([#("type", json.string(t)), #("description", json.string(doc))])
-  }
   let writable = [
     #("host", typed("string", "Host name or * (default *).")),
     #(
@@ -801,6 +964,10 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
           #("updated_at", typed("string", "RFC 3339 last update time.")),
           #("updated_by", typed("string", "Actor of the last change.")),
           #("version", typed("string", "Content version, also sent as ETag.")),
+          #(
+            "hits",
+            typed("integer", "Requests redirected since the server started."),
+          ),
         ],
       ])
   }

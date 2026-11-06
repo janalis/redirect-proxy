@@ -58,7 +58,7 @@ fn follow(
 }
 
 /// The host and path a browser requests when redirected to `location`.
-fn next_request(
+pub fn next_request(
   host: String,
   location: String,
 ) -> Result(#(String, String), Nil) {

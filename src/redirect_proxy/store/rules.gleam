@@ -5,6 +5,7 @@ import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/set
 import gleam/string
@@ -242,4 +243,38 @@ pub fn diff_to_json(d: Diff) -> List(#(String, json.Json)) {
     ids("removed", d.removed),
     ids("changed", d.changed),
   ])
+}
+
+/// The fields rules can be sorted by; `-field` sorts in descending order.
+pub const sort_fields = ["source", "host", "hits", "updated"]
+
+/// Sorts rules by `by` (one of `sort_fields`, optionally prefixed with `-`;
+/// "" keeps the file order). Hit counts come from `hits`.
+pub fn sort(
+  rules: List(Rule),
+  by: String,
+  hits: fn(String) -> Int,
+) -> Result(List(Rule), Nil) {
+  let #(field, descending) = case by {
+    "-" <> field -> #(field, True)
+    field -> #(field, False)
+  }
+  let compare = case field {
+    "" -> Ok(fn(_, _) { order.Eq })
+    "source" -> Ok(fn(a: Rule, b: Rule) { string.compare(a.source, b.source) })
+    "host" -> Ok(fn(a: Rule, b: Rule) { string.compare(a.host, b.host) })
+    "updated" ->
+      Ok(fn(a: Rule, b: Rule) { string.compare(a.updated_at, b.updated_at) })
+    "hits" -> Ok(fn(a: Rule, b: Rule) { int.compare(hits(a.id), hits(b.id)) })
+    _ -> Error(Nil)
+  }
+  use compare <- result.map(compare)
+  case field {
+    "" -> rules
+    _ ->
+      list.sort(rules, case descending {
+        True -> fn(a, b) { order.negate(compare(a, b)) }
+        False -> compare
+      })
+  }
 }

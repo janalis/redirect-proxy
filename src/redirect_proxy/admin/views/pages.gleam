@@ -3,6 +3,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/uri
 import lustre/attribute as a
 import lustre/element.{type Element}
 import lustre/element/html as h
@@ -11,6 +12,7 @@ import redirect_proxy/admin/views/layout.{type Flash}
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/audit
+import redirect_proxy/matcher/explain
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/users.{type User}
 
@@ -119,6 +121,7 @@ pub fn test_url(
   features: layout.Features,
   url: String,
   result: TestResult,
+  explanation: Option(explain.Explanation),
 ) -> String {
   layout.page(
     title: "Test a URL",
@@ -174,13 +177,113 @@ pub fn test_url(
                 h.text("Matched by " <> rule.kind_to_string(r.kind) <> " rule "),
                 h.code([], [h.text(r.host <> " " <> r.source)]),
                 h.text(" · "),
-                h.a([a.href("/rules/" <> r.id <> "/edit")], [h.text("edit")]),
+                h.a([a.href(edit_href(r))], [h.text("edit")]),
               ]),
             ]),
           ])
       },
+      case explanation {
+        Some(e) -> explanation_view(e)
+        None -> element.none()
+      },
     ],
   )
+}
+
+fn edit_href(r: Rule) -> String {
+  "/rules/" <> uri.percent_encode(r.id) <> "/edit"
+}
+
+/// Why this rule: every matching rule of the candidate hosts, and the
+/// redirect chain.
+fn explanation_view(e: explain.Explanation) -> Element(Nil) {
+  element.fragment([
+    h.h2([a.class("h5 mt-4")], [h.text("Rules matching this URL")]),
+    h.p([a.class("small fg-secondary")], [
+      h.text("Host "),
+      h.code([], [h.text(e.host)]),
+      h.text(", path compared as "),
+      h.code([], [h.text(e.path)]),
+      h.text(
+        ". Host rules come first, then wildcard hosts, then *; within a host: exact, longest prefix, then regex by priority.",
+      ),
+    ]),
+    case e.candidates {
+      [] ->
+        h.p([a.class("small")], [h.text("No rule matches, enabled or not.")])
+      _ ->
+        h.div([a.class("table-responsive")], [
+          h.table([a.class("table table-sm align-middle")], [
+            h.thead([], [
+              h.tr([], [
+                h.th([a.scope("col")], [h.text("Rule")]),
+                h.th([a.scope("col")], [h.text("Verdict")]),
+              ]),
+            ]),
+            h.tbody(
+              [],
+              list.map(e.candidates, fn(c) {
+                h.tr([], [
+                  h.td([], [
+                    h.a([a.href(edit_href(c.rule))], [
+                      h.code([], [
+                        h.text(
+                          c.rule.host
+                          <> " "
+                          <> rule.kind_to_string(c.rule.kind)
+                          <> " "
+                          <> c.rule.source,
+                        ),
+                      ]),
+                    ]),
+                  ]),
+                  h.td([], [
+                    case c.verdict {
+                      explain.Applied ->
+                        h.span([a.class("badge theme-success")], [
+                          h.text("applies"),
+                        ])
+                      explain.Shadowed ->
+                        h.span([a.class("badge theme-secondary")], [
+                          h.text("shadowed by the rule that applies"),
+                        ])
+                      explain.Disabled ->
+                        h.span([a.class("badge theme-warning")], [
+                          h.text("disabled"),
+                        ])
+                    },
+                  ]),
+                ])
+              }),
+            ),
+          ]),
+        ])
+    },
+    case e.chain {
+      [] | [_] -> element.none()
+      chain ->
+        element.fragment([
+          h.h2([a.class("h5 mt-4")], [h.text("Redirect chain")]),
+          h.ol(
+            [],
+            list.map(chain, fn(hop) {
+              h.li([], [
+                h.text(int.to_string(hop.status) <> " → "),
+                h.code([a.class("text-break")], [h.text(hop.location)]),
+              ])
+            }),
+          ),
+          case e.loops {
+            True ->
+              layout.alert(
+                "theme-danger",
+                "This chain loops: a browser would stop with too many redirects.",
+              )
+            False -> element.none()
+          },
+        ])
+    },
+  ])
 }
 
 // --- import / export --------------------------------------------------------
@@ -264,15 +367,92 @@ pub fn import_export(
                 False,
               ),
             ]),
-            h.button(
-              [a.type_("submit"), a.class("btn btn-solid theme-primary")],
-              [
-                h.text("Import"),
-              ],
-            ),
+            h.div([a.class("d-flex flex-wrap gap-2")], [
+              h.button(
+                [
+                  a.type_("submit"),
+                  a.name("step"),
+                  a.value("preview"),
+                  a.class("btn btn-outline theme-primary"),
+                ],
+                [h.text("Preview changes")],
+              ),
+              h.button(
+                [a.type_("submit"), a.class("btn btn-solid theme-primary")],
+                [h.text("Import")],
+              ),
+            ]),
+            h.div([a.class("form-text")], [
+              h.text("A replace is always previewed before it is applied."),
+            ]),
           ]),
         ],
       ),
+    ],
+  )
+}
+
+/// What an import would change, and a form to apply it.
+pub fn import_preview(
+  session: Session,
+  features: layout.Features,
+  added: List(String),
+  removed: List(String),
+  changed: List(String),
+  content: String,
+  mode: String,
+) -> String {
+  let group = fn(title, ids, theme) {
+    h.div([a.class("col-12 md:col-4")], [
+      h.div([a.class("card h-100")], [
+        h.div([a.class("card-body")], [
+          h.h2([a.class("h6")], [
+            h.span([a.class("badge " <> theme <> " me-2")], [
+              h.text(int.to_string(list.length(ids))),
+            ]),
+            h.text(title),
+          ]),
+          h.ul(
+            [a.class("small mb-0")],
+            ids
+              |> list.take(50)
+              |> list.map(fn(id) { h.li([], [h.code([], [h.text(id)])]) }),
+          ),
+        ]),
+      ]),
+    ])
+  }
+  layout.page(
+    title: "Import preview",
+    session: Some(session),
+    nav: layout.NavImport,
+    flash: None,
+    features:,
+    content: [
+      layout.heading("Import preview", []),
+      h.p([], [
+        h.text(case mode {
+          "replace" ->
+            "Replace every existing redirection. Nothing has been written yet."
+          _ ->
+            "Merge into the existing redirections. Nothing has been written yet."
+        }),
+      ]),
+      h.div([a.class("row g-3 mb-3")], [
+        group("added", added, "theme-success"),
+        group("changed", changed, "theme-info"),
+        group("removed", removed, "theme-danger"),
+      ]),
+      h.form([a.method("post"), a.action("/import"), a.class("d-flex gap-2")], [
+        layout.csrf_field(session),
+        h.input([a.type_("hidden"), a.name("mode"), a.value(mode)]),
+        h.input([a.type_("hidden"), a.name("step"), a.value("apply")]),
+        h.textarea([a.name("content"), a.hidden(True)], content),
+        h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
+          h.text("Apply"),
+        ]),
+        layout.button_link("/import", "Cancel", "btn-outline theme-secondary"),
+      ]),
     ],
   )
 }
@@ -431,11 +611,28 @@ fn user_form(
 
 // --- audit ------------------------------------------------------------------
 
+pub type AuditFilters {
+  AuditFilters(actor: String, action: String, target: String)
+}
+
 pub fn audit_log(
   session: Session,
   features: layout.Features,
   entries: List(audit.Entry),
+  filters: AuditFilters,
+  page: Int,
+  pages: Int,
 ) -> String {
+  let query = fn(page) {
+    [
+      #("actor", filters.actor),
+      #("action", filters.action),
+      #("target", filters.target),
+    ]
+    |> list.filter(fn(kv) { kv.1 != "" })
+    |> list.append([#("page", int.to_string(page))])
+    |> uri.query_to_string
+  }
   layout.page(
     title: "Audit log",
     session: Some(session),
@@ -444,39 +641,128 @@ pub fn audit_log(
     features:,
     content: [
       layout.heading("Audit log", []),
-      h.p([a.class("small fg-secondary")], [
-        h.text("Most recent 200 entries, newest first."),
-      ]),
-      h.div([a.class("table-responsive")], [
-        h.table([a.class("table table-sm align-middle")], [
-          h.thead([], [
-            h.tr([], [
-              h.th([], [h.text("When")]),
-              h.th([], [h.text("Who")]),
-              h.th([], [h.text("Action")]),
-              h.th([], [h.text("Subject")]),
-            ]),
-          ]),
-          h.tbody(
-            [],
-            list.map(entries, fn(e) {
-              h.tr([], [
-                h.td([a.class("small text-nowrap")], [h.text(e.at)]),
-                h.td([], [h.text(e.actor)]),
-                h.td([], [h.code([], [h.text(e.action)])]),
-                h.td([a.class("small text-break")], [
-                  h.details([], [
-                    h.summary([], [h.text(e.target)]),
-                    h.pre([a.class("small mb-0")], [h.text(e.details)]),
-                  ]),
-                ]),
-              ])
-            }),
+      h.form([a.method("get"), a.action("/audit"), a.class("row g-2 mb-3")], [
+        audit_filter("actor", "Who", filters.actor, "alice, oauth:client..."),
+        audit_filter("action", "Action", filters.action, "rule., auth.login..."),
+        audit_filter("target", "Subject", filters.target, "rule id, user..."),
+        h.div([a.class("col-12 md:col-auto")], [
+          h.button(
+            [a.type_("submit"), a.class("btn btn-outline theme-primary w-100")],
+            [h.text("Filter")],
           ),
         ]),
       ]),
+      h.p([a.class("small fg-secondary")], [
+        h.text(
+          "Among the 1000 most recent entries, newest first. Page "
+          <> int.to_string(page)
+          <> " of "
+          <> int.to_string(pages)
+          <> ".",
+        ),
+      ]),
+      case entries {
+        [] ->
+          h.div([a.class("card")], [
+            h.div([a.class("card-body text-center fg-secondary")], [
+              h.text("No audit entry matches."),
+            ]),
+          ])
+        _ ->
+          h.div([a.class("table-responsive")], [
+            h.table([a.class("table table-sm align-middle")], [
+              h.thead([], [
+                h.tr([], [
+                  h.th([a.scope("col")], [h.text("When")]),
+                  h.th([a.scope("col")], [h.text("Who")]),
+                  h.th([a.scope("col")], [h.text("Action")]),
+                  h.th([a.scope("col")], [h.text("Subject")]),
+                ]),
+              ]),
+              h.tbody([], list.map(entries, audit_row)),
+            ]),
+          ])
+      },
+      h.nav([a.aria_label("Pagination"), a.class("d-flex gap-2")], [
+        case page > 1 {
+          True ->
+            layout.button_link(
+              "/audit?" <> query(page - 1),
+              "Newer",
+              "btn-outline theme-secondary",
+            )
+          False -> element.none()
+        },
+        case page < pages {
+          True ->
+            layout.button_link(
+              "/audit?" <> query(page + 1),
+              "Older",
+              "btn-outline theme-secondary",
+            )
+          False -> element.none()
+        },
+      ]),
     ],
   )
+}
+
+fn audit_filter(
+  name: String,
+  label: String,
+  value: String,
+  placeholder: String,
+) -> Element(Nil) {
+  h.div([a.class("col-12 md:col")], [
+    h.label([a.for("audit-" <> name), a.class("visually-hidden")], [
+      h.text(label),
+    ]),
+    h.input([
+      a.id("audit-" <> name),
+      a.name(name),
+      a.value(value),
+      a.class("form-control"),
+      a.placeholder(label <> ": " <> placeholder),
+    ]),
+  ])
+}
+
+fn audit_row(e: audit.Entry) -> Element(Nil) {
+  let changes = audit.changes(e)
+  h.tr([], [
+    h.td([a.class("small text-nowrap")], [h.text(e.at)]),
+    h.td([], [h.text(e.actor)]),
+    h.td([], [h.code([], [h.text(e.action)])]),
+    h.td([a.class("small text-break")], [
+      h.details([], [
+        h.summary([], [h.text(e.target)]),
+        case changes {
+          [] -> element.none()
+          _ ->
+            h.table([a.class("table table-sm mb-2")], [
+              h.thead([], [
+                h.tr([], [
+                  h.th([a.scope("col")], [h.text("Field")]),
+                  h.th([a.scope("col")], [h.text("Before")]),
+                  h.th([a.scope("col")], [h.text("After")]),
+                ]),
+              ]),
+              h.tbody(
+                [],
+                list.map(changes, fn(c) {
+                  h.tr([], [
+                    h.td([], [h.code([], [h.text(c.0)])]),
+                    h.td([], [h.text(c.1)]),
+                    h.td([], [h.text(c.2)]),
+                  ])
+                }),
+              ),
+            ])
+        },
+        h.pre([a.class("small mb-0")], [h.text(e.details)]),
+      ]),
+    ]),
+  ])
 }
 
 // --- errors -----------------------------------------------------------------
