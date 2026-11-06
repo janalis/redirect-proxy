@@ -894,6 +894,48 @@ pub fn admin_bulk_actions_test() {
   assert get(env.redirect <> "/blog/1", []).status == 404
 }
 
+/// A bulk action applies to the rules the page showed: when they changed
+/// since, nothing is changed ("every matching rule" would otherwise take
+/// in a rule nobody saw).
+pub fn bulk_actions_refuse_a_changed_rule_set_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let bulk_version = fn() {
+    let page = get(env.admin <> "/rules", [#("cookie", cookie)]).body
+    let assert Ok(#(_, form)) = string.split_once(page, "id=\"bulk\"")
+    hidden_value(form, "version")
+  }
+  let shown = bulk_version()
+  // another admin adds a rule meanwhile
+  let assert 303 =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("source", "/added-meanwhile"),
+      #("target", "/x"),
+      #("status", "301"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ]).status
+  let disable_all = fn(version) {
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "disable"),
+      #("all_matching", "on"),
+      #("version", version),
+      #("return_to", "/rules"),
+    ])
+  }
+  let resp = disable_all(shown)
+  assert resp.status == 409
+  assert string.contains(resp.body, "changed since this page was shown")
+  assert get(env.redirect <> "/added-meanwhile", []).status == 301
+  // from the current list, it applies
+  assert disable_all(bulk_version()).status == 303
+  assert get(env.redirect <> "/added-meanwhile", []).status == 404
+}
+
 pub fn toggle_keeps_the_list_filters_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)

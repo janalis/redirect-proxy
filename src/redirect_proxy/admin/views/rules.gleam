@@ -55,6 +55,7 @@ pub fn index(
   filters: Filters,
   pages: Int,
   here: String,
+  version: String,
 ) -> String {
   layout.page(
     title: "Redirections",
@@ -101,7 +102,7 @@ pub fn index(
         [] -> empty_state(total)
         _ ->
           element.fragment([
-            bulk_form(session, filters, matching, here),
+            bulk_form(session, filters, matching, here, version),
             table(session, rows, filters, here),
           ])
       },
@@ -207,6 +208,7 @@ fn bulk_form(
   filters: Filters,
   matching: Int,
   here: String,
+  version: String,
 ) -> Element(Nil) {
   h.form(
     [
@@ -218,6 +220,8 @@ fn bulk_form(
     list.flatten([
       [layout.csrf_field(session)],
       [h.input([a.type_("hidden"), a.name("return_to"), a.value(here)])],
+      // the rules the page shows: a change since refuses the action
+      [h.input([a.type_("hidden"), a.name("version"), a.value(version)])],
       // the filters, for "every matching rule"
       list.map(filters_query(filters), fn(kv) {
         h.input([a.type_("hidden"), a.name("filter_" <> kv.0), a.value(kv.1)])
@@ -490,6 +494,7 @@ pub fn confirm_bulk_delete(
   features: layout.Features,
   rules: List(Rule),
   return_to: String,
+  version: String,
 ) -> String {
   let shown = list.take(rules, 20)
   layout.page(
@@ -528,6 +533,7 @@ pub fn confirm_bulk_delete(
               [
                 h.input([a.type_("hidden"), a.name("action"), a.value("delete")]),
                 h.input([a.type_("hidden"), a.name("confirm"), a.value("yes")]),
+                h.input([a.type_("hidden"), a.name("version"), a.value(version)]),
                 h.input([
                   a.type_("hidden"),
                   a.name("return_to"),
