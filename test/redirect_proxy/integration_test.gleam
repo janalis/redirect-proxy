@@ -1198,6 +1198,13 @@ pub fn login_next_is_not_an_open_redirect_test() {
   assert try_next("//evil.test/") == "/rules"
   assert try_next("https://evil.test/") == "/rules"
   assert try_next("/\\evil.test") == "/rules"
+  // browsers drop tabs and newlines in a Location: these would become
+  // `//evil.test`, or split the response headers
+  assert try_next("/\t/evil.test") == "/rules"
+  assert try_next("/\n/evil.test") == "/rules"
+  assert try_next("/\r\nx-evil: 1") == "/rules"
+  assert try_next("/a\\b") == "/rules"
+  assert try_next("/\u{7f}") == "/rules"
 }
 
 pub fn login_form_keeps_next_parameter_test() {
@@ -1783,6 +1790,8 @@ pub fn oidc_login_returns_to_next_test() {
   assert via("/audit?action=rule") == "/audit?action=rule"
   assert via("//evil.test/x") == "/rules"
   assert via("https://evil.test/") == "/rules"
+  assert via("/\t/evil.test") == "/rules"
+  assert via("/\r\nx-evil: 1") == "/rules"
 }
 
 /// With `logout_at_provider`, signing out of an SSO session also signs out
