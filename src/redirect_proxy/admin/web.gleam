@@ -49,6 +49,45 @@ pub fn oidc_state_cookie_name(req: Request, ctx: Context) -> String {
 
 const oidc_state_cookie = "rp_oidc_state"
 
+/// Marks a browser where an account signed in with its password. Failed
+/// logins from anywhere can block an account; this browser is let through
+/// that limit (still not past the limits of its own address), so that
+/// guessing a password cannot lock its owner out (OWASP "device cookies").
+/// Signed, so that it cannot be made up.
+const device_cookie = "rp_device"
+
+/// How long a browser stays known after a sign-in, in seconds (90 days).
+const device_cookie_max_age = 7_776_000
+
+fn device_cookie_name(req: Request, ctx: Context) -> String {
+  case host_prefixed(req, ctx) {
+    True -> "__Host-" <> device_cookie
+    False -> device_cookie
+  }
+}
+
+/// True when this browser signed in as `username` with its password before.
+pub fn known_device(req: Request, ctx: Context, username: String) -> Bool {
+  wisp.get_cookie(req, device_cookie_name(req, ctx), wisp.Signed)
+  == Ok(username)
+}
+
+pub fn set_device_cookie(
+  resp: Response,
+  req: Request,
+  ctx: Context,
+  username: String,
+) -> Response {
+  wisp.set_cookie(
+    resp,
+    req,
+    device_cookie_name(req, ctx),
+    username,
+    wisp.Signed,
+    device_cookie_max_age,
+  )
+}
+
 fn host_prefixed(req: Request, ctx: Context) -> Bool {
   let local_http =
     req.scheme == http.Http

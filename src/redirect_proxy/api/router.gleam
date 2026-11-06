@@ -72,13 +72,20 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   |> wisp.set_header("referrer-policy", "no-referrer")
 }
 
+const max_token_request_bytes = 65_536
+
 /// Entry point for `/oauth/*` and `/api/*` requests.
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.ApiRequests)
-  let req = wisp.set_max_body_size(req, ctx.config.api.max_body_bytes)
   let oauth = case wisp.path_segments(req) {
     ["oauth", ..] -> True
     _ -> False
+  }
+  // token requests are small and unauthenticated: anything larger is
+  // refused before it is read
+  let req = case oauth {
+    True -> wisp.set_max_body_size(req, max_token_request_bytes)
+    False -> wisp.set_max_body_size(req, ctx.config.api.max_body_bytes)
   }
   {
     use <- wisp.rescue_crashes
@@ -260,7 +267,7 @@ fn authenticated(
   next: fn(Principal) -> Response,
 ) -> Response {
   // checked before the token: verifying a signature costs CPU
-  let ip_key = "api-ip:" <> ctx.client_ip
+  let ip_key = "api-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- api_throttle(ip_key)
   case auth.authenticate(req, ctx.config.api.oauth, ctx.clients) {
     Ok(principal) -> next(principal)

@@ -212,6 +212,74 @@ pub fn token_endpoint_throttling_test() {
   assert seconds > 0 && seconds <= 900
 }
 
+/// Failures from many addresses do not lock a client out: its secret is
+/// too long to guess, a limit per client would only help a denial of
+/// service.
+pub fn token_client_is_not_locked_out_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let #(id, secret) = new_client(env, [scope.Read])
+  let request = fn(secret, ip) {
+    token_request(env, [basic(id, secret), #("x-forwarded-for", ip)], [
+      #("grant_type", "client_credentials"),
+    ]).status
+  }
+  list.each(int.range(1, 13, [], list.prepend), fn(n) {
+    list.each(list.repeat(Nil, 10), fn(_) {
+      assert request("wrong", "198.51.100." <> int.to_string(100 + n)) == 401
+    })
+  })
+  assert request(secret, "198.51.100.200") == 200
+}
+
+/// One IPv6 host holds a whole /64: its addresses share their limits.
+pub fn token_throttling_counts_ipv6_by_64_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let #(id, _) = new_client(env, [scope.Read])
+  let statuses =
+    int.range(1, 12, [], list.prepend)
+    |> list.map(fn(n) {
+      token_request(
+        env,
+        [
+          basic(id, "wrong"),
+          #("x-forwarded-for", "2001:db8:77:1::" <> int.to_string(n)),
+        ],
+        [#("grant_type", "client_credentials")],
+      ).status
+    })
+  assert list.take(statuses, 10) == list.repeat(401, 10)
+  assert list.last(statuses) == Ok(429)
+}
+
+/// Token requests are small: a large body is refused before it is read.
+pub fn token_request_body_is_limited_test() {
+  let env = support.boot(config.default())
+  let resp =
+    token_request(env, [], [
+      #("grant_type", "client_credentials"),
+      #("padding", string.repeat("x", 70_000)),
+    ])
+  assert resp.status == 413
+}
+
 /// A successful token request forgives that client's failures from that
 /// address (a pipeline that recovered is not one failure from a 429).
 pub fn token_success_resets_the_address_failures_test() {

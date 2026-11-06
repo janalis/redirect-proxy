@@ -19,6 +19,7 @@ import gleam/string
 import gleam/uri
 import mist
 import redirect_proxy/admin/auth/header
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/app
 import redirect_proxy/audit
 import redirect_proxy/config
@@ -369,6 +370,83 @@ pub fn security_headers_test() {
   assert string.contains(csp, "frame-ancestors 'none'")
   assert response.get_header(resp, "x-frame-options") == Ok("DENY")
   assert response.get_header(resp, "x-content-type-options") == Ok("nosniff")
+}
+
+/// Failures from anywhere can block an account, but not in a browser where
+/// it signed in before: guessing its password cannot lock its owner out.
+pub fn known_device_is_not_locked_out_test() {
+  let d = config.default()
+  // its own address: the once per window audit of a 429 is per address
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let post = fn(cookie, fields) {
+    send(
+      http.Post,
+      env.admin <> "/login",
+      [
+        #("content-type", "application/x-www-form-urlencoded"),
+        #("origin", env.admin),
+        #("cookie", cookie),
+        #("x-forwarded-for", "198.51.100.61"),
+      ],
+      uri.query_to_string(fields),
+    )
+  }
+  let assert Ok(_) =
+    users.create(
+      users.Settings(
+        path: env.dir <> "/users.json",
+        audit_path: env.dir <> "/audit.jsonl",
+      ),
+      "device-user",
+      password.hash_with("device-password-1", 1000),
+      by: "test",
+    )
+  let sign_in = fn(cookie) {
+    post(cookie, [
+      #("username", "device-user"),
+      #("password", "device-password-1"),
+    ])
+  }
+  let first = sign_in("")
+  assert first.status == 303
+  let device = cookie_of(first, "rp_device")
+  assert device != ""
+  // as if 100 addresses had failed for this account
+  list.each(list.repeat(Nil, 100), fn(_) {
+    ratelimit.record_failure("login-user:device-user", 900)
+  })
+  assert sign_in("").status == 429
+  assert sign_in(device).status == 303
+  // the cookie is for this account only
+  let assert Ok(_) =
+    users.create(
+      users.Settings(
+        path: env.dir <> "/users.json",
+        audit_path: env.dir <> "/audit.jsonl",
+      ),
+      "other-device-user",
+      password.hash_with("device-password-2", 1000),
+      by: "test",
+    )
+  list.each(list.repeat(Nil, 100), fn(_) {
+    ratelimit.record_failure("login-user:other-device-user", 900)
+  })
+  let other =
+    post(device, [
+      #("username", "other-device-user"),
+      #("password", "device-password-2"),
+    ])
+  assert other.status == 429
+  ratelimit.reset("login-user:device-user")
+  ratelimit.reset("login-user:other-device-user")
 }
 
 pub fn login_failures_are_throttled_test() {

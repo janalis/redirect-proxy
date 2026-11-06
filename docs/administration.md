@@ -105,13 +105,19 @@ API clients are not affected: they have scopes (see [REST API](api.md)).
 - **CSRF.** Every form carries a token, and `Origin`/`Referer` are checked.
 - **Login throttling.** Over 15 minutes, a client may fail 10 times for
   one account and 20 times in all; an account accepts 100 failures from all
-  clients. A correct password from another client still works, so failures
-  cannot lock a user out. The API token endpoint works the same way with
-  client ids. A client may start 30 SSO logins and fail 20 SSO callbacks,
-  and the API accepts 100 invalid access tokens from one client before
-  answering 429 without checking more. A throttled request gets a 429 with
-  `Retry-After`. Behind a proxy, list it in `access_log.trusted_proxies` so
-  that the client address is the forwarded one.
+  clients. IPv6 clients are counted by /64, since one host usually holds a
+  whole /64. A browser where the account signed in with its password before
+  (a signed `rp_device` cookie, kept 90 days) is not held back by the
+  account's limit, so failures from elsewhere cannot lock its owner out.
+  The API token endpoint allows 10 failures for one client id and 30 in
+  all per client address. There is no limit per client id alone: secrets
+  are too long to guess, so such a limit would only let anyone lock a
+  pipeline out. Token requests are limited to 64 KB. A client may start 30
+  SSO logins and fail 20 SSO callbacks, and the API accepts 100 invalid
+  access tokens from one client before answering 429 without checking more.
+  A throttled request gets a 429 with `Retry-After`. Behind a proxy, list
+  it in `access_log.trusted_proxies` so that the client address is the
+  forwarded one.
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),
