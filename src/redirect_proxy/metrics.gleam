@@ -9,8 +9,6 @@ import redirect_proxy/snapshot
 
 const key = "metrics"
 
-const hits_table = "redirect_proxy_hits"
-
 pub type Metric {
   Requests
   Redirects
@@ -41,11 +39,10 @@ fn index(metric: Metric) -> Int {
   }
 }
 
-/// Must be called once at boot, from a long lived process (it owns the hit
-/// counter ETS table).
+/// Must be called once at boot.
 pub fn init() -> Nil {
   let _ = counters()
-  ffi.ets_new(hits_table)
+  ffi.regex_limit_init()
 }
 
 fn counters() -> ffi.Counters {
@@ -67,17 +64,14 @@ pub fn get(metric: Metric) -> Int {
   ffi.counter_get(counters(), index(metric))
 }
 
-/// Increments the hit counter of a rule.
+/// Increments the hit counter of a rule. The counters live in the published
+/// matcher (see `matcher.record_hit`).
 pub fn hit(rule_id: String) -> Nil {
-  let _ = ffi.ets_incr(hits_table, rule_id, 1)
-  Nil
+  matcher.record_hit(snapshot.current(), rule_id)
 }
 
 pub fn hits(rule_id: String) -> Int {
-  case ffi.ets_get(hits_table, rule_id) {
-    Ok(count) -> count
-    Error(Nil) -> 0
-  }
+  matcher.hit_count(snapshot.current(), rule_id)
 }
 
 pub fn render_prometheus() -> String {
@@ -162,6 +156,12 @@ pub fn render_prometheus() -> String {
       "Rejected API tokens and client authentications.",
       "counter",
       get(ApiAuthFailures),
+    ),
+    line(
+      "redirect_proxy_regex_limit_exceeded_total",
+      "Regex runs stopped by the backtracking budget (counted as no match).",
+      "counter",
+      ffi.regex_limit_count(),
     ),
     line(
       "redirect_proxy_rules",
