@@ -20,10 +20,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "29.1"
-          gleam-version: "1.19.2"
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
           rebar3-version: "3"
       - name: Install oha
         env:

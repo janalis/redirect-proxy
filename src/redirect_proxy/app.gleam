@@ -287,8 +287,8 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
 
 /// Creates the first administrator from RP_BOOTSTRAP_ADMIN_USERNAME and
 /// RP_BOOTSTRAP_ADMIN_PASSWORD (or RP_BOOTSTRAP_ADMIN_PASSWORD_FILE) when no
-/// local user exists yet.
-fn bootstrap_admin(cfg: Config) -> Nil {
+/// local user exists yet. Exposed for tests.
+pub fn bootstrap_admin(cfg: Config) -> Nil {
   let settings = users_settings(cfg)
   let from_env = envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD")
   let bootstrap_password = case envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD_FILE") {

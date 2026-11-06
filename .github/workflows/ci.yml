@@ -13,10 +13,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  GLEAM_VERSION: "1.19.2"
-  OTP_VERSION: "29.1"
-
 jobs:
   lint:
     name: Lint
@@ -25,6 +21,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}
@@ -35,6 +33,7 @@ jobs:
           path: build/packages
           key: gleam-packages-${{ hashFiles('manifest.toml') }}
       - run: gleam deps download
+      - run: scripts/check-versions.sh
       - run: make fmt-check build lint-erlang lint-shell
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
@@ -68,14 +67,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        otp: ["27.3", "28.1", "29.1"]
+        # oldest supported releases, then the one of .tool-versions
+        otp: ["27.3", "28.1", "tool-versions"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: ${{ matrix.otp }}
+          otp-version: ${{ matrix.otp == 'tool-versions' && env.OTP_VERSION || matrix.otp }}
           gleam-version: ${{ env.GLEAM_VERSION }}
           rebar3-version: "3"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -92,6 +94,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}
@@ -117,6 +121,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}
@@ -158,7 +164,11 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Smoke test
         run: |
-          docker run -d --name rp -p 18080:8080 redirect-proxy:ci
+          # as locked down as a hardened deployment: read-only root
+          # filesystem, no capabilities, writable data volume and /tmp only
+          docker run -d --name rp -p 18080:8080 \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+            -v rp-data:/var/lib/redirect-proxy redirect-proxy:ci
           for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.2; done
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/missing)" = "404"
           docker logs rp
