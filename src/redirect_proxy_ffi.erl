@@ -69,16 +69,18 @@ regex_run(MP, Subject) ->
 atomic_write(Path, Content) ->
     _ = filelib:ensure_dir(Path),
     Tmp = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    %% Every step returns {error, _} instead of raising, so that a full or
+    %% failing disk is reported to the caller and the temp file is removed.
     Result =
         case file:open(Tmp, [write, raw, binary]) of
             {ok, Fd} ->
-                try
-                    ok = file:write(Fd, Content),
-                    ok = file:sync(Fd)
-                after
-                    file:close(Fd)
-                end,
-                file:rename(Tmp, Path);
+                Written = write_and_sync(Fd, Content),
+                Closed = file:close(Fd),
+                case {Written, Closed} of
+                    {ok, ok} -> file:rename(Tmp, Path);
+                    {ok, CloseError} -> CloseError;
+                    {WriteError, _} -> WriteError
+                end;
             Error -> Error
         end,
     case Result of
@@ -86,6 +88,12 @@ atomic_write(Path, Content) ->
         {error, Reason} ->
             _ = file:delete(Tmp),
             {error, atom_to_binary_safe(Reason)}
+    end.
+
+write_and_sync(Fd, Content) ->
+    case file:write(Fd, Content) of
+        ok -> file:sync(Fd);
+        Error -> Error
     end.
 
 append_line(Path, Line) ->
@@ -323,31 +331,45 @@ with_lock(Name, Fun) ->
 %% Runs Fun while holding <Path>.lock, shared by every OS process (server,
 %% CLI) that writes Path. Returns {ok, Result} or {error, Reason} when the
 %% lock is not acquired within TimeoutMs.
+%%
+%% The lock file holds a token unique to this acquisition, so that a holder
+%% only ever removes its own lock: when it was held past the stale delay and
+%% another process broke it, releasing leaves the new owner's lock in place.
 with_file_lock(Path, TimeoutMs, Fun) ->
     Lock = <<Path/binary, ".lock">>,
     Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
     %% the data directory may not exist yet (first CLI command)
     _ = filelib:ensure_dir(Lock),
-    case acquire_lock(Lock, Deadline) of
+    Token = lock_token(),
+    case acquire_lock(Lock, Token, Deadline) of
         ok ->
             try {ok, Fun()}
-            after _ = file:delete(Lock)
+            after release_lock(Lock, Token)
             end;
         {error, Reason} ->
             {error, Reason}
     end.
 
-acquire_lock(Lock, Deadline) ->
+lock_token() ->
+    iolist_to_binary(io_lib:format("~s ~s ~B~n",
+        [os:getpid(), node(), erlang:unique_integer([positive])])).
+
+acquire_lock(Lock, Token, Deadline) ->
     case file:open(Lock, [write, exclusive, raw, binary]) of
         {ok, Fd} ->
-            _ = file:write(Fd, io_lib:format("~s ~s~n", [os:getpid(), node()])),
+            Written = file:write(Fd, Token),
             _ = file:close(Fd),
-            ok;
-        {error, eexist} ->
-            case stale_lock(Lock) of
-                true ->
+            case Written of
+                ok -> ok;
+                {error, Reason} ->
+                    %% an empty lock would never be released by its token
                     _ = file:delete(Lock),
-                    acquire_lock(Lock, Deadline);
+                    {error, <<"cannot write ", Lock/binary, ": ",
+                              (atom_to_binary_safe(Reason))/binary>>}
+            end;
+        {error, eexist} ->
+            case break_stale_lock(Lock) of
+                true -> acquire_lock(Lock, Token, Deadline);
                 false ->
                     case erlang:monotonic_time(millisecond) >= Deadline of
                         true ->
@@ -355,7 +377,7 @@ acquire_lock(Lock, Deadline) ->
                                       (lock_owner(Lock))/binary, ")">>};
                         false ->
                             timer:sleep(5 + rand:uniform(20)),
-                            acquire_lock(Lock, Deadline)
+                            acquire_lock(Lock, Token, Deadline)
                     end
             end;
         {error, Reason} ->
@@ -363,8 +385,44 @@ acquire_lock(Lock, Deadline) ->
                       (atom_to_binary_safe(Reason))/binary>>}
     end.
 
-stale_lock(Lock) ->
-    case file:read_file_info(Lock, [{time, posix}]) of
+%% Removes a stale lock and returns true when the caller should retry at
+%% once. Several waiters may see the same stale lock: breaking it holds
+%% <Lock>.break (created with O_EXCL) and checks again that the lock is
+%% stale, so a waiter never deletes the fresh lock another one just took.
+break_stale_lock(Lock) ->
+    case is_stale_file(Lock) of
+        false -> false;
+        true ->
+            Breaker = <<Lock/binary, ".break">>,
+            case file:open(Breaker, [write, exclusive, raw]) of
+                {ok, Fd} ->
+                    _ = file:close(Fd),
+                    _ = case is_stale_file(Lock) of
+                        true -> file:delete(Lock);
+                        false -> ok
+                    end,
+                    _ = file:delete(Breaker),
+                    true;
+                {error, _} ->
+                    %% another waiter is breaking it (held for microseconds):
+                    %% a breaker left by a crash is removed in turn
+                    _ = case is_stale_file(Breaker) of
+                        true -> file:delete(Breaker);
+                        false -> ok
+                    end,
+                    false
+            end
+    end.
+
+%% Releases the lock only while it still holds this acquisition's token.
+release_lock(Lock, Token) ->
+    case file:read_file(Lock) of
+        {ok, Token} -> _ = file:delete(Lock), ok;
+        _ -> ok
+    end.
+
+is_stale_file(Path) ->
+    case file:read_file_info(Path, [{time, posix}]) of
         {ok, {file_info, _, _, _, _, MTime, _, _, _, _, _, _, _, _}} ->
             MTime < erlang:system_time(second) - ?STALE_LOCK_SECONDS;
         _ -> false

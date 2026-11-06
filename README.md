@@ -401,8 +401,8 @@ for it. `rules import` writes the file; a running server applies it on
 ## Operations
 
 - **Reload.** Edit `redirects.json`, then `kill -HUP <pid>` (or
-  `systemctl reload redirect-proxy`). An invalid file is rejected, the error
-  is logged and the current rules stay active.
+  `systemctl reload redirect-proxy`). An invalid or missing file is rejected,
+  the error is logged and the current rules stay active.
 - **Concurrent writes.** The admin UI, the API and the CLI can change the
   rules, users and API clients at the same time:
   - Every write holds a lock file next to the file it changes
