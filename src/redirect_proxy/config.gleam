@@ -105,6 +105,9 @@ pub type ServerConfig {
     fallback_url: String,
     /// Body sent with 404 responses.
     not_found_body: String,
+    /// On SIGTERM, seconds during which /readyz answers 503 and connections
+    /// are closed after each response, before the node stops.
+    shutdown_grace: Int,
   )
 }
 
@@ -195,6 +198,7 @@ pub fn default() -> Config {
       listen: "0.0.0.0",
       port: 8080,
       cache_max_age: 3600,
+      shutdown_grace: 5,
       fallback_url: "",
       not_found_body: "Not Found",
     ),
@@ -283,6 +287,10 @@ pub fn load(path: String) -> Result(Config, String) {
     }
   })
   use config <- result.try(from_toml(toml))
+  use Nil <- result.try(case env_errors(envoy.get) {
+    [] -> Ok(Nil)
+    errors -> Error(string.join(errors, "; "))
+  })
   let config = apply_env(config, envoy.get)
   use config <- result.try(validate(config))
   Ok(config)
@@ -296,6 +304,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "cache_max_age"],
     d.server.cache_max_age,
+  ))
+  use shutdown_grace <- result.try(integer(
+    t,
+    ["server", "shutdown_grace"],
+    d.server.shutdown_grace,
   ))
   use fallback_url <- result.try(str(
     t,
@@ -504,6 +517,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       listen: server_listen,
       port: server_port,
       cache_max_age:,
+      shutdown_grace:,
       fallback_url:,
       not_found_body:,
     ),
@@ -539,18 +553,97 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   ))
 }
 
+/// Integer and boolean overrides of `apply_env`. A value that does not parse
+/// is a load error (`env_errors`) instead of being silently ignored, which
+/// would leave e.g. the admin enabled after `RP_ADMIN_ENABLED=flase`.
+pub const int_env_vars = [
+  "RP_ACCESS_LOG_MAX_BYTES",
+  "RP_ACCESS_LOG_MAX_FILES",
+  "RP_ADMIN_PORT",
+  "RP_ADMIN_SESSION_IDLE_TIMEOUT",
+  "RP_ADMIN_SESSION_TTL",
+  "RP_API_MAX_BODY_BYTES",
+  "RP_API_PORT",
+  "RP_API_TOKEN_TTL",
+  "RP_SERVER_CACHE_MAX_AGE",
+  "RP_SERVER_PORT",
+  "RP_SERVER_SHUTDOWN_GRACE",
+  "RP_STORAGE_BACKUPS",
+]
+
+pub const bool_env_vars = [
+  "RP_ACCESS_LOG_COMPRESS",
+  "RP_ACCESS_LOG_ENABLED",
+  "RP_ACCESS_LOG_LOG_QUERY",
+  "RP_ADMIN_ENABLED",
+  "RP_API_ENABLED",
+  "RP_API_OAUTH_ENABLED",
+  "RP_AUTH_HEADER_ENABLED",
+  "RP_AUTH_LOCAL_ENABLED",
+  "RP_AUTH_OIDC_ENABLED",
+]
+
+/// The overrides of `int_env_vars`, `bool_env_vars` and `RP_LOG_LEVEL` whose
+/// value is invalid, described.
+pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
+  let ints =
+    list.filter_map(int_env_vars, fn(name) {
+      case get(name) {
+        Ok(value) ->
+          case int.parse(string.trim(value)) {
+            Ok(_) -> Error(Nil)
+            Error(Nil) ->
+              Ok(name <> ": expected an integer, got \"" <> value <> "\"")
+          }
+        Error(Nil) -> Error(Nil)
+      }
+    })
+  let bools =
+    list.filter_map(bool_env_vars, fn(name) {
+      case get(name) |> result.map(fn(v) { string.lowercase(string.trim(v)) }) {
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on") -> Error(Nil)
+        Ok("0") | Ok("false") | Ok("no") | Ok("off") -> Error(Nil)
+        Ok(_) -> {
+          let assert Ok(value) = get(name)
+          Ok(name <> ": expected true or false, got \"" <> value <> "\"")
+        }
+        Error(Nil) -> Error(Nil)
+      }
+    })
+  let level = case get("RP_LOG_LEVEL") {
+    Ok(level) ->
+      case list.contains(log_levels, string.lowercase(string.trim(level))) {
+        True -> []
+        False -> [
+          "RP_LOG_LEVEL: expected one of "
+          <> string.join(log_levels, ", ")
+          <> ", got \""
+          <> level
+          <> "\"",
+        ]
+      }
+    Error(Nil) -> []
+  }
+  list.flatten([ints, bools, level])
+}
+
+pub const log_levels = ["debug", "info", "warning", "error", "critical", "none"]
+
 /// Applies `RP_*` environment variable overrides. `get` is injectable for
-/// testing.
+/// testing. Values are checked by `env_errors` first: add new integer and
+/// boolean variables to `int_env_vars` / `bool_env_vars`.
 pub fn apply_env(
   config: Config,
   get: fn(String) -> Result(String, Nil),
 ) -> Config {
   let s = fn(name, current) { get(name) |> result.unwrap(current) }
   let i = fn(name, current) {
-    get(name) |> result.try(int.parse) |> result.unwrap(current)
+    get(name)
+    |> result.try(fn(v) { int.parse(string.trim(v)) })
+    |> result.unwrap(current)
   }
   let b = fn(name, current) {
-    case get(name) |> result.map(string.lowercase) {
+    case get(name) |> result.map(fn(v) { string.lowercase(string.trim(v)) }) {
       Ok("1") | Ok("true") | Ok("yes") | Ok("on") -> True
       Ok("0") | Ok("false") | Ok("no") | Ok("off") -> False
       _ -> current
@@ -616,6 +709,7 @@ pub fn apply_env(
       listen: s("RP_SERVER_LISTEN", server.listen),
       port: i("RP_SERVER_PORT", server.port),
       cache_max_age: i("RP_SERVER_CACHE_MAX_AGE", server.cache_max_age),
+      shutdown_grace: i("RP_SERVER_SHUTDOWN_GRACE", server.shutdown_grace),
       fallback_url: s("RP_SERVER_FALLBACK_URL", server.fallback_url),
       not_found_body: s("RP_SERVER_NOT_FOUND_BODY", server.not_found_body),
     ),
@@ -680,6 +774,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.storage.backups < 0,
     Error("storage.backups must be >= 0"),
+  )
+  use <- bool.guard(
+    config.server.shutdown_grace < 0 || config.server.shutdown_grace > 60,
+    Error("server.shutdown_grace must be between 0 and 60 seconds"),
   )
   use <- bool.guard(
     config.admin.session_ttl < 60,

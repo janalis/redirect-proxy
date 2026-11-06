@@ -3,6 +3,7 @@ import gleam/list
 import gleam/string
 import redirect_proxy/config
 import redirect_proxy/listener
+import simplifile
 import tom
 
 pub fn defaults_test() {
@@ -204,4 +205,57 @@ pub fn access_log_validation_test() {
     let assert Error(message) = config.validate(cfg)
     assert string.starts_with(message, "access_log.")
   })
+}
+
+pub fn invalid_env_values_are_errors_test() {
+  let env = [
+    #("RP_ADMIN_ENABLED", "flase"),
+    #("RP_SERVER_PORT", "80a"),
+    #("RP_LOG_LEVEL", "verbose"),
+    #("RP_API_ENABLED", " TRUE "),
+    #("RP_ADMIN_PORT", " 9000 "),
+  ]
+  let errors = config.env_errors(fn(name) { list.key_find(env, name) })
+  assert errors
+    == [
+      "RP_SERVER_PORT: expected an integer, got \"80a\"",
+      "RP_ADMIN_ENABLED: expected true or false, got \"flase\"",
+      "RP_LOG_LEVEL: expected one of debug, info, warning, error, critical, none, got \"verbose\"",
+    ]
+  // valid values (case and surrounding spaces aside) are applied
+  let cfg =
+    config.apply_env(config.default(), fn(name) { list.key_find(env, name) })
+  assert cfg.api.enabled == True
+  assert cfg.admin.port == 9000
+}
+
+pub fn every_listed_env_var_is_checked_test() {
+  // each variable is reported when its value is garbage
+  let garbage = fn(_name) { Ok("garbage") }
+  let reported = config.env_errors(garbage)
+  assert list.length(reported)
+    == list.length(config.int_env_vars) + list.length(config.bool_env_vars) + 1
+  // and every integer or boolean override of apply_env is listed
+  let assert Ok(source) = simplifile.read("src/redirect_proxy/config.gleam")
+  let assert Ok(#(_, body)) = string.split_once(source, "pub fn apply_env(")
+  let used = fn(prefix) {
+    body
+    |> string.split(prefix <> "(")
+    |> list.drop(1)
+    |> list.filter_map(fn(chunk) {
+      case string.split_once(string.trim_start(chunk), "\"") {
+        Ok(#("", rest)) ->
+          case string.split_once(rest, "\"") {
+            Ok(#(name, _)) -> Ok(name)
+            Error(Nil) -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+    |> list.filter(fn(name) { string.starts_with(name, "RP_") })
+    |> list.unique
+    |> list.sort(string.compare)
+  }
+  assert used(" i") == config.int_env_vars
+  assert used(" b") == config.bool_env_vars
 }

@@ -41,8 +41,23 @@ pub fn handler(
   }
 }
 
-/// The response and the id of the matched rule ("" when none).
+/// The response and the id of the matched rule ("" when none). While the
+/// node drains before stopping (SIGTERM), connections are closed after each
+/// response so that clients reconnect to another instance.
 fn respond(
+  config: ServerConfig,
+  req: Request(mist.Connection),
+  not_found_body: bytes_tree.BytesTree,
+  permanent_cache: String,
+) -> #(Response(mist.ResponseData), String) {
+  let #(resp, rule_id) = route(config, req, not_found_body, permanent_cache)
+  case ffi.draining() {
+    False -> #(resp, rule_id)
+    True -> #(response.set_header(resp, "connection", "close"), rule_id)
+  }
+}
+
+fn route(
   config: ServerConfig,
   req: Request(mist.Connection),
   not_found_body: bytes_tree.BytesTree,

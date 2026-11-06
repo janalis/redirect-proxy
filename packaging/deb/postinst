@@ -13,18 +13,24 @@ if [ "$1" = "configure" ]; then
   fi
   install -d -o redirect-proxy -g redirect-proxy -m 0750 /var/lib/redirect-proxy
   install -d -o redirect-proxy -g redirect-proxy -m 0750 /var/log/redirect-proxy
-  chown root:redirect-proxy /etc/redirect-proxy/config.toml
-  chmod 0640 /etc/redirect-proxy/config.toml
+
+  # $2 is the previously configured version: empty on a first install. On an
+  # upgrade, keep what the administrator chose (a disabled service, the
+  # config file's owner and mode).
+  if [ -z "$2" ]; then
+    chown root:redirect-proxy /etc/redirect-proxy/config.toml
+    chmod 0640 /etc/redirect-proxy/config.toml
+  fi
 
   if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || true
-    if systemctl is-enabled --quiet redirect-proxy 2>/dev/null; then
-      systemctl try-restart redirect-proxy >/dev/null 2>&1 || true
-    else
+    if [ -z "$2" ]; then
       systemctl enable redirect-proxy >/dev/null 2>&1 || true
       echo "redirect-proxy installed. Create an administrator, then start the service:"
       echo "  sudo -u redirect-proxy RP_CONFIG=/etc/redirect-proxy/config.toml redirect-proxy user add admin"
       echo "  sudo systemctl start redirect-proxy"
+    else
+      systemctl try-restart redirect-proxy >/dev/null 2>&1 || true
     fi
   fi
 fi

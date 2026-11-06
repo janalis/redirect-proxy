@@ -130,6 +130,14 @@ pub fn now_rfc3339() -> String {
 @external(erlang, "redirect_proxy_ffi", "on_sighup")
 pub fn on_sighup(callback: fn() -> Nil) -> Nil
 
+/// On SIGTERM, drain for `grace_ms` (see `draining`) before stopping.
+@external(erlang, "redirect_proxy_sigterm", "install")
+pub fn on_sigterm_drain(grace_ms: Int) -> Nil
+
+/// True once SIGTERM was received: the node stops after the grace period.
+@external(erlang, "redirect_proxy_sigterm", "draining")
+pub fn draining() -> Bool
+
 @external(erlang, "redirect_proxy_ffi", "plain_arguments")
 pub fn plain_arguments() -> List(String)
 

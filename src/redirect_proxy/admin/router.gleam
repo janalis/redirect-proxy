@@ -88,7 +88,12 @@ pub fn handle(req: Request, ctx: Context) -> Response {
   case req.method, wisp.path_segments(req) {
     // Public endpoints
     Get, ["healthz"] -> plain(200, "ok")
-    Get, ["readyz"] -> plain(200, "ready")
+    // 503 while draining before a stop, so that load balancers move away
+    Get, ["readyz"] ->
+      case ffi.draining() {
+        True -> plain(503, "draining")
+        False -> plain(200, "ready")
+      }
     Get, ["metrics"] ->
       wisp.response(200)
       |> wisp.set_header("content-type", "text/plain; version=0.0.4")
