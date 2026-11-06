@@ -281,6 +281,27 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   }
 }
 
+/// Parts of a valid rule that can never apply as written. A file with them
+/// still loads (so that a file that loaded before keeps loading), but changes
+/// made in the admin or the API are refused.
+pub fn lint(rule: Rule) -> List(String) {
+  let path_rule = rule.kind == Exact || rule.kind == Prefix
+  []
+  |> check(
+    !path_rule || !string.contains(rule.source, "?"),
+    "source: cannot contain a query string (?): rules match the request path only",
+  )
+  |> check(
+    !path_rule || !string.contains(rule.source, "#"),
+    "source: cannot contain a fragment (#): browsers never send it",
+  )
+  |> check(
+    !string.contains(rule.host, ":"),
+    "host: remove the port: requests are matched on the host name only",
+  )
+  |> list.reverse
+}
+
 fn check(errors: List(String), ok: Bool, message: String) -> List(String) {
   case ok {
     True -> errors

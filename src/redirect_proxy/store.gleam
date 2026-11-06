@@ -35,7 +35,8 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store/rules.{
-  check_conflicts, check_loop, merge, prepare_import, validate_all, warn_loops,
+  check_conflicts, check_lint, check_loop, merge, prepare_import, validate_all,
+  warn_problems,
 } as store_rules
 import simplifile
 
@@ -57,6 +58,9 @@ pub type Settings {
     backups_dir: String,
     backups: Int,
     audit_path: String,
+    /// `server.trailing_slash = "ignore"`: loops are followed the way the
+    /// redirect listener answers.
+    ignore_trailing_slash: Bool,
   )
 }
 
@@ -173,7 +177,11 @@ pub fn start(
       start_lock_timeout,
     ))
     let state = State(settings:, rules:, fingerprint:)
-    publish(warn_loops(matcher.build(rules), rules))
+    publish(warn_problems(
+      matcher.build(rules),
+      rules,
+      settings.ignore_trailing_slash,
+    ))
     metrics.reloaded(ffi.monotonic_micros() - started)
     log.info(
       "loaded "
@@ -343,10 +351,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Error(["id: already exists"]),
         )
         use valid <- result.try(rule.validate(candidate))
+        use Nil <- result.try(check_lint(valid))
         let rules = list.append(state.rules, [valid])
         use Nil <- result.try(check_conflicts(rules))
         let built = matcher.build(rules)
-        use Nil <- result.try(check_loop(built, valid))
+        use Nil <- result.try(check_loop(
+          built,
+          valid,
+          state.settings.ignore_trailing_slash,
+        ))
         use fingerprint <- result.try(commit(state.settings, rules, built))
         audit.record(
           state.settings.audit_path,
@@ -378,6 +391,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use valid <- result.try(
           rule.validate(candidate) |> result.map_error(Invalid),
         )
+        use Nil <- result.try(check_lint(valid) |> result.map_error(Invalid))
         let rules =
           list.map(state.rules, fn(r) {
             case r.id == valid.id {
@@ -390,7 +404,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         )
         let built = matcher.build(rules)
         use Nil <- result.try(
-          check_loop(built, valid) |> result.map_error(Invalid),
+          check_loop(built, valid, state.settings.ignore_trailing_slash)
+          |> result.map_error(Invalid),
         )
         use fingerprint <- result.try(
           commit(state.settings, rules, built) |> result.map_error(Invalid),
@@ -417,7 +432,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use Nil <- result.try(check_version(existing, expected))
         let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
         // removing a rule may uncover a loop it was shadowing
-        let built = warn_loops(matcher.build(rules), rules)
+        let built =
+          warn_problems(
+            matcher.build(rules),
+            rules,
+            state.settings.ignore_trailing_slash,
+          )
         use fingerprint <- result.try(
           commit(state.settings, rules, built) |> result.map_error(Invalid),
         )
@@ -446,7 +466,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
         let outcome = {
           use Nil <- result.try(check_conflicts(rules))
-          let built = warn_loops(matcher.build(rules), rules)
+          let built =
+            warn_problems(
+              matcher.build(rules),
+              rules,
+              state.settings.ignore_trailing_slash,
+            )
           commit(state.settings, rules, built)
         }
         case outcome {
@@ -521,7 +546,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
         // enabling may bring two exact rules for one path back together
         use Nil <- result.try(check_conflicts(rules))
-        let built = warn_loops(matcher.build(rules), rules)
+        let built =
+          warn_problems(
+            matcher.build(rules),
+            rules,
+            state.settings.ignore_trailing_slash,
+          )
         use fingerprint <- result.try(commit(state.settings, rules, built))
         let d = store_rules.diff(state.rules, rules)
         let count = list.length(d.removed) + list.length(d.changed)
@@ -549,7 +579,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let started = ffi.monotonic_micros()
       case load_locked(state.settings, Reloading, lock_timeout) {
         Ok(#(rules, fingerprint)) -> {
-          publish(warn_loops(matcher.build(rules), rules))
+          publish(warn_problems(
+            matcher.build(rules),
+            rules,
+            state.settings.ignore_trailing_slash,
+          ))
           metrics.incr(metrics.Reloads)
           metrics.reloaded(ffi.monotonic_micros() - started)
           audit_rules_change(
@@ -664,7 +698,11 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              publish(warn_loops(matcher.build(rules), rules))
+              publish(warn_problems(
+                matcher.build(rules),
+                rules,
+                state.settings.ignore_trailing_slash,
+              ))
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(

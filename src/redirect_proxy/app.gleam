@@ -79,6 +79,7 @@ pub fn store_settings(cfg: Config) -> store.Settings {
     backups_dir: config.backups_dir(cfg),
     backups: cfg.storage.backups,
     audit_path: config.audit_path(cfg),
+    ignore_trailing_slash: config.ignore_trailing_slash(cfg),
   )
 }
 

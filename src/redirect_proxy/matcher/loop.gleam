@@ -8,7 +8,8 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/matcher.{
-  type Match, type Matcher, location, lookup, normalise_request_host,
+  type Match, type Matcher, location, lookup, lookup_tolerant,
+  normalise_request_host,
 } as _
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
 
@@ -21,7 +22,17 @@ const loop_check_host = "loop-check.invalid"
 /// Returns the rules of the cycle, starting and ending with `r`. Regex rules
 /// cannot be sampled (they may still be part of a cycle started elsewhere);
 /// a rule shadowed by another one for its sample request is not checked.
-pub fn redirect_loop(matcher: Matcher, r: Rule) -> Result(List(Rule), Nil) {
+/// With `ignore_trailing_slash`, a request that misses is retried with or
+/// without its trailing slash, as the redirect listener does.
+pub fn redirect_loop(
+  matcher: Matcher,
+  r: Rule,
+  ignore_trailing_slash: Bool,
+) -> Result(List(Rule), Nil) {
+  let lookup = case ignore_trailing_slash {
+    True -> lookup_tolerant
+    False -> lookup
+  }
   use path <- result.try(case r.kind {
     Exact -> Ok(r.source)
     Prefix -> Ok(r.source <> "loop-check")
@@ -32,12 +43,14 @@ pub fn redirect_loop(matcher: Matcher, r: Rule) -> Result(List(Rule), Nil) {
     h -> h
   }
   case lookup(matcher, host, path) {
-    Ok(first) if first.rule.id == r.id -> follow(matcher, host, first, [r], 10)
+    Ok(first) if first.rule.id == r.id ->
+      follow(lookup, matcher, host, first, [r], 10)
     _ -> Error(Nil)
   }
 }
 
 fn follow(
+  lookup: fn(Matcher, String, String) -> Result(Match, Nil),
   matcher: Matcher,
   host: String,
   current: Match,
@@ -53,7 +66,7 @@ fn follow(
   let chain = [next.rule, ..chain]
   case list.last(chain) {
     Ok(start) if start.id == next.rule.id -> Ok(list.reverse(chain))
-    _ -> follow(matcher, host, next, chain, hops - 1)
+    _ -> follow(lookup, matcher, host, next, chain, hops - 1)
   }
 }
 

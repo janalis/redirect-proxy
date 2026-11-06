@@ -17,6 +17,7 @@ fn settings(dir: String, backups: Int) -> store.Settings {
     backups_dir: dir <> "/backups",
     backups:,
     audit_path: dir <> "/audit.jsonl",
+    ignore_trailing_slash: False,
   )
 }
 
@@ -107,6 +108,37 @@ pub fn conflicts_are_rejected_test() {
   let assert Error([loop]) =
     store.create(s, new_rule("/loop", "/loop"), by: "t")
   assert string.contains(loop, "redirects to itself")
+}
+
+pub fn rules_that_never_match_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 5))
+  let assert Error([query]) =
+    store.create(s, new_rule("/page.php?id=5", "/page"), by: "t")
+  assert string.contains(query, "query string")
+  let assert Error([port]) =
+    store.create(
+      s,
+      Rule(..new_rule("/a", "/b"), host: "example.com:8080"),
+      by: "t",
+    )
+  assert string.contains(port, "port")
+  let assert Ok(created) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let assert Error([_]) =
+    store.update(s, Rule(..created, source: "/a?b"), by: "t")
+  assert store.all(s) == [created]
+}
+
+pub fn rules_that_never_match_still_load_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"id\":\"q\",\"host\":\"example.com:8080\",\"match\":\"exact\",\"source\":\"/a?b\",\"target\":\"/c\"}]}",
+    )
+  let s = start(settings(dir, 5))
+  let assert [loaded] = store.all(s)
+  assert loaded.id == "q"
 }
 
 pub fn reload_keeps_rules_when_file_is_invalid_test() {

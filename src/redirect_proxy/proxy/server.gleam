@@ -67,11 +67,13 @@ fn route(
   metrics.incr(metrics.Requests)
   let host = request.get_header(req, "host") |> result.unwrap(req.host)
   case req.method {
-    http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch ->
-      case find(config, host, req.path) {
+    http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch -> {
+      // one read of the published matcher for both the lookup and the hit
+      let current = snapshot.current()
+      case find(current, config, host, req.path) {
         Ok(m) -> {
           metrics.incr(metrics.Redirects)
-          metrics.hit(m.rule.id)
+          matcher.record_hit(current, m.rule.id)
           #(
             redirect(
               m.rule.status,
@@ -83,6 +85,7 @@ fn route(
         }
         Error(Nil) -> #(unmatched(config, not_found_body), "")
       }
+    }
     http.Options -> #(
       response.new(204)
         |> response.set_header("allow", allowed_methods)
@@ -167,12 +170,18 @@ pub fn start(
 const allowed_methods = "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS"
 
 fn find(
+  current: matcher.Matcher,
   config: ServerConfig,
   host: String,
   path: String,
 ) -> Result(matcher.Match, Nil) {
+  // `//` parses as an empty authority and an empty path
+  let path = case path {
+    "" -> "/"
+    p -> p
+  }
   case config.trailing_slash {
-    "ignore" -> matcher.lookup_tolerant(snapshot.current(), host, path)
-    _ -> matcher.lookup(snapshot.current(), host, path)
+    "ignore" -> matcher.lookup_tolerant(current, host, path)
+    _ -> matcher.lookup(current, host, path)
   }
 }

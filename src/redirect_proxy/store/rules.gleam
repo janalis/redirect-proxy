@@ -21,25 +21,46 @@ import redirect_proxy/rule.{type Rule}
 pub fn check_loop(
   built: matcher.Matcher,
   changed: Rule,
+  ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  case changed.enabled, matcher_loop.redirect_loop(built, changed) {
+  case
+    changed.enabled,
+    matcher_loop.redirect_loop(built, changed, ignore_trailing_slash)
+  {
     True, Ok(cycle) ->
       Error(["target: redirect loop: " <> describe_cycle(cycle)])
     _, _ -> Ok(Nil)
   }
 }
 
-/// Logs the redirect loops of a rule set (loading never fails on them, so
-/// that a file that loaded before keeps loading). Each cycle once.
-pub fn warn_loops(
+/// Refuses a change to a rule that could never apply as written.
+pub fn check_lint(changed: Rule) -> Result(Nil, List(String)) {
+  case rule.lint(changed) {
+    [] -> Ok(Nil)
+    errors -> Error(errors)
+  }
+}
+
+/// Logs the redirect loops of a rule set, each cycle once, and the rules that
+/// can never apply (loading never fails on them, so that a file that loaded
+/// before keeps loading).
+pub fn warn_problems(
   built: matcher.Matcher,
   rules: List(Rule),
+  ignore_trailing_slash: Bool,
 ) -> matcher.Matcher {
+  list.each(rules, fn(r) {
+    list.each(rule.lint(r), fn(problem) {
+      log.warning(
+        "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> problem,
+      )
+    })
+  })
   let _ =
     rules
     |> list.filter(fn(r) { r.enabled })
     |> list.fold(set.new(), fn(reported, r) {
-      case matcher_loop.redirect_loop(built, r) {
+      case matcher_loop.redirect_loop(built, r, ignore_trailing_slash) {
         Error(Nil) -> reported
         Ok(cycle) -> {
           let key =
