@@ -32,6 +32,7 @@ import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
 import redirect_proxy/rule.{type Rule}
+import redirect_proxy/rule_csv
 import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
@@ -131,9 +132,23 @@ fn route(
       let query = wisp.get_query(req)
       let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
       use #(rules, version) <- result_or_response(filtered_rules(ctx, get))
+      use #(content_type, body, version) <- result_or_response(
+        case get("format") {
+          "" | "json" ->
+            Ok(#("application/json", store_rules.export(rules), version))
+          // its own ETag: a cached JSON copy is not a CSV one
+          "csv" ->
+            Ok(#(
+              "text/csv; charset=utf-8",
+              rule_csv.to_string(rules),
+              version <> "-csv",
+            ))
+          _ -> Error(problem.bad_request("format must be json or csv."))
+        },
+      )
       wisp.response(200)
-      |> wisp.set_header("content-type", "application/json")
-      |> wisp.string_body(store_rules.export(rules))
+      |> wisp.set_header("content-type", content_type)
+      |> wisp.string_body(body)
       |> wisp.set_header("etag", problem.etag(version))
       |> unless_not_modified(req, version, _)
     }
@@ -513,6 +528,19 @@ fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
   }
 }
 
+/// Reads an import body: JSON, or CSV sent as `text/csv` (`True`).
+fn require_import_body(
+  req: Request,
+  next: fn(String, Bool) -> Response,
+) -> Response {
+  let content_type =
+    request.get_header(req, "content-type") |> result.unwrap("")
+  case string.starts_with(string.lowercase(content_type), "text/csv") {
+    True -> wisp.require_string_body(req, fn(body) { next(body, True) })
+    False -> require_json_body(req, fn(body) { next(body, False) })
+  }
+}
+
 /// Reads a body sent as JSON (415 otherwise).
 fn require_json_body(req: Request, next: fn(String) -> Response) -> Response {
   let content_type =
@@ -669,10 +697,14 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
   }
   let dry_run = list.key_find(wisp.get_query(req), "dry_run") == Ok("true")
   // a rules file may be an array of rules: not `require_json_object`
-  use body <- require_json_body(req)
-  case mode, rule.file_from_string(body) {
+  use body, csv <- require_import_body(req)
+  let incoming = case csv {
+    True -> rule_csv.parse(body)
+    False -> rule.file_from_string(body) |> result.map_error(fn(e) { [e] })
+  }
+  case mode, incoming {
     Error(Nil), _ -> problem.bad_request("mode must be merge or replace.")
-    _, Error(reason) -> problem.validation([reason])
+    _, Error(errors) -> problem.validation(errors)
     Ok(mode), Ok(incoming) if dry_run ->
       case store.preview_import(ctx.store, incoming, mode, principal.actor) {
         Ok(#(d, version)) ->
