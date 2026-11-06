@@ -2180,3 +2180,29 @@ pub fn replica_on_a_read_only_data_dir_test() {
   let assert Ok(files) = simplifile.read_directory(dir)
   assert files == ["redirects.json"]
 }
+
+/// With `admin.metrics_token`, /metrics needs the bearer token; health
+/// probes stay public.
+pub fn metrics_token_test() {
+  let d = config.default()
+  let token = "a-metrics-token-of-some-length"
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        admin: config.AdminConfig(..d.admin, metrics_token: token),
+      ),
+    )
+  let scrape = fn(headers) { get(env.admin <> "/metrics", headers) }
+  let resp = scrape([])
+  assert resp.status == 401
+  assert response.get_header(resp, "www-authenticate")
+    == Ok("Bearer realm=\"metrics\"")
+  assert scrape([#("authorization", "Bearer wrong")]).status == 401
+  assert scrape([#("authorization", "Basic " <> token)]).status == 401
+  let resp = scrape([#("authorization", "Bearer " <> token)])
+  assert resp.status == 200
+  assert string.contains(resp.body, "redirect_proxy_build_info")
+  assert scrape([#("authorization", "bearer " <> token)]).status == 200
+  assert get(env.admin <> "/healthz", []).status == 200
+}
