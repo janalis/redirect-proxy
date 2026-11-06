@@ -1460,6 +1460,31 @@ pub fn every_operation_needs_its_scope_test() {
   })
 }
 
+/// The Rule schema of the OpenAPI document lists the fields the API sends,
+/// no more and no fewer.
+pub fn openapi_rule_schema_matches_the_rule_json_test() {
+  let _ = support.boot(config.default())
+  let keys = decode.dict(decode.string, decode.dynamic)
+  let documented =
+    json.parse(
+      openapi.document([]),
+      decode.at(["components", "schemas", "Rule", "properties"], keys),
+    )
+    |> result.unwrap(dict.new())
+    |> dict.keys
+    |> list.sort(string.compare)
+  let sent =
+    rule.Rule(..rule.blank(), id: "x", source: "/a", target: "/b")
+    |> api_rule_json.rule_json
+    |> json.to_string
+    |> json.parse(keys)
+    |> result.unwrap(dict.new())
+    |> dict.keys
+    |> list.sort(string.compare)
+  assert documented != []
+  assert documented == sent
+}
+
 pub fn routes_router_and_openapi_agree_test() {
   let methods = ["get", "post", "put", "patch", "delete"]
   let documented =
