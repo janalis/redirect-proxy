@@ -116,9 +116,10 @@ pub fn check_claims(
     use azp <- decode.optional_field("azp", "", decode.string)
     use names <- decode.optional_field(oauth.scope_claim, [], scope_names())
     use scp <- decode.optional_field("scp", [], scope_names())
-    decode.success(#(iss, exp, nbf, aud, sub, client_id, azp, names, scp))
+    use nonce <- decode.optional_field("nonce", "", decode.string)
+    decode.success(#(iss, exp, nbf, aud, sub, client_id, azp, names, scp, nonce))
   }
-  use #(iss, exp, nbf, aud, sub, client_id, azp, names, scp) <- result.try(
+  use #(iss, exp, nbf, aud, sub, client_id, azp, names, scp, nonce) <- result.try(
     json.parse(claims_json, decoder)
     |> result.replace_error("access token is missing required claims"),
   )
@@ -131,6 +132,9 @@ pub fn check_claims(
     !list.contains(aud, oauth.audience),
     Error("access token audience mismatch"),
   )
+  // an ID token (the admin's SSO sign-in always sends a nonce) is not an
+  // access token, even when its audience is the API's
+  use <- bool.guard(nonce != "", Error("an ID token is not an access token"))
   use <- bool.guard(exp + leeway < now, Error("access token expired"))
   use <- bool.guard(nbf - leeway > now, Error("access token not yet valid"))
   let subject = case sub, client_id, azp {

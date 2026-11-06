@@ -66,6 +66,16 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       ]
       False -> []
     },
+    case
+      config.api.oauth.enabled
+      && oidc.enabled
+      && config.api.oauth.audience == oidc.client_id
+    {
+      True -> [
+        "api.oauth.audience is the auth.oidc client_id: use an audience of its own for API access tokens, so that tokens issued for the admin sign-in are not meant for the API",
+      ]
+      False -> []
+    },
     case config.server.shutdown_grace >= 10 {
       True -> [
         "server.shutdown_grace is "

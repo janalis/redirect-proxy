@@ -211,6 +211,36 @@ pub fn token_endpoint_throttling_test() {
   assert seconds > 0 && seconds <= 900
 }
 
+/// A successful token request forgives that client's failures from that
+/// address (a pipeline that recovered is not one failure from a 429).
+pub fn token_success_resets_the_address_failures_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let #(id, secret) = new_client(env, [scope.Read])
+  // its own address: the per address count must not block other tests
+  let request = fn(secret) {
+    token_request(
+      env,
+      [basic(id, secret), #("x-forwarded-for", "198.51.100.30")],
+      [#("grant_type", "client_credentials")],
+    ).status
+  }
+  assert list.map(list.repeat(Nil, 9), fn(_) { request("wrong") })
+    == list.repeat(401, 9)
+  assert request(secret) == 200
+  assert list.map(list.repeat(Nil, 10), fn(_) { request("wrong") })
+    == list.repeat(401, 10)
+  assert request("wrong") == 429
+}
+
 // --- authentication ---------------------------------------------------------
 
 pub fn bearer_required_test() {
@@ -484,6 +514,12 @@ pub fn list_filters_and_pagination_test() {
   assert field(resp.body, ["meta", "total"], decode.int) == 11
   let resp = api(env, Get, "/api/redirects?per_page=100000", token, "")
   assert field(resp.body, ["meta", "per_page"], decode.int) == 500
+  // values that are not positive integers are refused, not guessed
+  list.each(["page=abc", "page=0", "per_page=-1", "per_page=ten"], fn(query) {
+    let resp = api(env, Get, "/api/redirects?" <> query, token, "")
+    assert resp.status == 400
+    assert header(resp, "content-type") == "application/problem+json"
+  })
 }
 
 pub fn import_export_reload_and_tester_test() {
@@ -754,6 +790,15 @@ pub fn check_claims_unit_test() {
   let assert Error(_) = auth.check_claims(cfg, "https://as.test", "{}", 1000)
   let assert Error(_) =
     auth.check_claims(cfg, "https://as.test", claims([]), 5000)
+  // an ID token (it has a nonce) is refused even with the API's audience
+  let assert Error(reason) =
+    auth.check_claims(
+      cfg,
+      "https://as.test",
+      claims([#("nonce", json.string("n-1"))]),
+      1000,
+    )
+  assert string.contains(reason, "ID token")
 }
 
 pub fn scope_unit_test() {

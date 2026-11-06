@@ -484,6 +484,24 @@ pub fn more_warnings_test() {
   let assert [idle, grace] = config_validate.runtime_warnings(cfg)
   assert string.starts_with(idle, "admin.session_idle_timeout")
   assert string.starts_with(grace, "server.shutdown_grace is 20")
+  // the API accepting tokens meant for the admin sign-in
+  let shared =
+    config.Config(
+      ..d,
+      oidc: config.OidcConfig(..d.oidc, enabled: True, client_id: "rp-admin"),
+      api: config.ApiConfig(
+        ..d.api,
+        oauth: config.ApiOAuthConfig(
+          ..d.api.oauth,
+          enabled: True,
+          audience: "rp-admin",
+        ),
+      ),
+    )
+  assert list.any(config_validate.runtime_warnings(shared), string.starts_with(
+    _,
+    "api.oauth.audience is the auth.oidc client_id",
+  ))
   // loopback addresses in every form are not reported as exposed
   let assert Ok(toml) = tom.parse("")
   list.each(["[::1]", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1"], fn(listen) {

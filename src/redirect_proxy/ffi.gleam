@@ -98,6 +98,19 @@ pub fn ets_to_list(table: String) -> List(#(k, v))
 @external(erlang, "redirect_proxy_ffi", "ets_delete_older")
 pub fn ets_delete_older(table: String, now: Int) -> Int
 
+/// Counts a failure for `key` in its fixed window (a new window of `window`
+/// seconds when there is none or it ended), atomically.
+@external(erlang, "redirect_proxy_ffi", "window_record")
+pub fn window_record(table: String, key: String, now: Int, window: Int) -> Nil
+
+/// The end of `key`'s window and its failure count.
+@external(erlang, "redirect_proxy_ffi", "window_get")
+pub fn window_get(table: String, key: String) -> Result(#(Int, Int), Nil)
+
+/// Deletes the windows that ended; the number deleted.
+@external(erlang, "redirect_proxy_ffi", "window_purge")
+pub fn window_purge(table: String, now: Int) -> Int
+
 // --- counters ---------------------------------------------------------------
 
 pub type Counters

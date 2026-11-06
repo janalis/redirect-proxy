@@ -107,7 +107,10 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
             "The requested scope exceeds the scopes granted to the client.",
           )
         Ok(scopes) -> {
-          ratelimit.reset(client_key)
+          // like admin logins: only this client's failures from this
+          // address are forgiven; the per client id count keeps bounding
+          // guesses spread over many addresses
+          ratelimit.reset(pair_key)
           let ttl = ctx.config.api.token_ttl
           let access_token =
             token.issue(client.client_id, client.secret_hash, scopes, ttl)

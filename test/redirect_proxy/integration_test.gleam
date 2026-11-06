@@ -968,6 +968,61 @@ pub fn password_changes_need_the_current_password_test() {
   let #(_, _) = login(env)
 }
 
+/// Wrong current passwords count as failed logins: a stolen session cannot
+/// guess the password through this form either.
+pub fn password_changes_are_throttled_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  // its own client address, so that other tests' counters stay untouched
+  let ip = "198.51.100.42"
+  let post = fn(path, cookie, fields) {
+    send(
+      http.Post,
+      env.admin <> path,
+      [
+        #("content-type", "application/x-www-form-urlencoded"),
+        #("origin", env.admin),
+        #("x-forwarded-for", ip),
+        #("cookie", cookie),
+      ],
+      uri.query_to_string(fields),
+    )
+  }
+  let resp =
+    post("/login", "", [#("username", "admin"), #("password", admin_password)])
+  assert resp.status == 303
+  let cookie = session_cookie(resp)
+  let page =
+    get(env.admin <> "/users", [#("cookie", cookie), #("x-forwarded-for", ip)])
+  let csrf = csrf_token(page.body)
+  let change = fn(current) {
+    post("/account/password", cookie, [
+      #("csrf_token", csrf),
+      #("username", "admin"),
+      #("password", "a-brand-new-password"),
+      #("current_password", current),
+    ])
+  }
+  let statuses =
+    list.map(list.repeat(Nil, 10), fn(_) { change("not my password").status })
+  assert statuses == list.repeat(422, 10)
+  let blocked = change(admin_password)
+  assert blocked.status == 429
+  assert response.get_header(blocked, "retry-after") |> result.is_ok
+  // the login form from that address is blocked for the account too
+  let resp =
+    post("/login", "", [#("username", "admin"), #("password", admin_password)])
+  assert resp.status == 429
+}
+
 pub fn sso_admins_cannot_change_local_passwords_test() {
   let issuer = start_fake_idp("alice@example.com")
   let env = oidc_env(issuer, ["example.com"])

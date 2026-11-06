@@ -483,10 +483,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch); `GET` honours `If-None-Match` (`304`). |
-| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). `ETag` and `If-None-Match` as for the list. |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
 | `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
@@ -507,6 +507,9 @@ tokens from your own authorization server are accepted too:
 - The server is found through OIDC or RFC 8414 discovery on `issuer`.
 - The signature is checked against its JWKS.
 - `iss`, `aud`, `exp` and `nbf` are verified.
+- ID tokens (they carry a `nonce`) are refused: give the API an `audience`
+  of its own rather than the `[auth.oidc]` `client_id` (a startup warning
+  says so).
 - Scopes are read from `scope` or `scp` and mapped through `read_scope`,
   `write_scope` and `ops_scope`.
 
