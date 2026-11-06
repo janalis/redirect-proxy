@@ -49,6 +49,9 @@ pub type Rule {
     /// never).
     expires_at: String,
     note: String,
+    /// Free labels for grouping and filtering (a campaign, a site, a
+    /// migration), lower case, sorted and without duplicates once validated.
+    tags: List(String),
     created_at: String,
     updated_at: String,
     updated_by: String,
@@ -64,6 +67,29 @@ pub const default_priority = 100
 pub const max_source_length = 2048
 
 pub const max_target_length = 4096
+
+pub const max_tags = 20
+
+pub const max_tag_length = 40
+
+/// Tags as validated rules hold them: trimmed, lower case, without empty
+/// ones or duplicates, sorted.
+pub fn normalise_tags(tags: List(String)) -> List(String) {
+  tags
+  |> list.map(fn(t) { string.lowercase(string.trim(t)) })
+  |> list.filter(fn(t) { t != "" })
+  |> list.unique
+  |> list.sort(string.compare)
+}
+
+/// Tags written as text, separated by commas (`campaign, legacy`).
+pub fn tags_from_string(text: String) -> List(String) {
+  string.split(text, ",") |> normalise_tags
+}
+
+pub fn tags_to_string(tags: List(String)) -> String {
+  string.join(tags, ", ")
+}
 
 /// A blank rule with sensible defaults, used by the admin "new" form.
 pub fn blank() -> Rule {
@@ -83,6 +109,7 @@ pub fn blank() -> Rule {
     starts_at: "",
     expires_at: "",
     note: "",
+    tags: [],
     created_at: "",
     updated_at: "",
     updated_by: "",
@@ -160,6 +187,10 @@ pub fn json_fields(rule: Rule) -> List(#(String, Json)) {
         "" -> []
         at -> [#("expires_at", json.string(at))]
       },
+      case rule.tags {
+        [] -> []
+        tags -> [#("tags", json.array(tags, json.string))]
+      },
     ])
   ]
 }
@@ -206,6 +237,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
   use starts_at <- decode.optional_field("starts_at", "", decode.string)
   use expires_at <- decode.optional_field("expires_at", "", decode.string)
   use note <- decode.optional_field("note", "", decode.string)
+  use tags <- decode.optional_field("tags", [], decode.list(decode.string))
   use created_at <- decode.optional_field("created_at", "", decode.string)
   use updated_at <- decode.optional_field("updated_at", "", decode.string)
   use updated_by <- decode.optional_field("updated_by", "", decode.string)
@@ -225,6 +257,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
     starts_at:,
     expires_at:,
     note:,
+    tags:,
     created_at:,
     updated_at:,
     updated_by:,
@@ -296,9 +329,11 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   }
   let starts_at = string.trim(rule.starts_at)
   let expires_at = string.trim(rule.expires_at)
+  let tags = normalise_tags(rule.tags)
   let rule =
     Rule(
       ..rule,
+      tags:,
       host:,
       source:,
       target:,
@@ -344,6 +379,20 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
       "priority: must be between 0 and 1000000",
     )
     |> check(string.length(note) <= 1000, "note: is too long")
+    |> check(
+      list.length(tags) <= max_tags,
+      "tags: at most " <> int.to_string(max_tags) <> " tags",
+    )
+    |> check(
+      list.all(tags, fn(t) {
+        string.length(t) <= max_tag_length
+        && no_control_chars(t)
+        && !string.contains(t, ",")
+      }),
+      "tags: each tag is at most "
+        <> int.to_string(max_tag_length)
+        <> " characters, without commas",
+    )
     |> check(
       !rule.whole_segments || rule.kind == Prefix,
       "whole_segments: only applies to prefix rules",

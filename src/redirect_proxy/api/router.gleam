@@ -426,7 +426,13 @@ fn filtered_rules(
   })
   let #(rules, version) = store.versioned(ctx.store)
   let filter =
-    store_rules.Filter(text: get("q"), host: get("host"), kind:, enabled:)
+    store_rules.Filter(
+      text: get("q"),
+      host: get("host"),
+      kind:,
+      enabled:,
+      tag: get("tag"),
+    )
   Ok(#(store_rules.filter(rules, filter), version))
 }
 

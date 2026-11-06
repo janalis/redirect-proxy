@@ -318,6 +318,7 @@ fn paths(registry: List(Deprecation)) -> Json {
             json.preprocessed_array([
               param("q", "query", string_schema(), "Text search."),
               param("host", "query", string_schema(), "Exact host (or *)."),
+              param("tag", "query", string_schema(), "Rules with this tag."),
               param(
                 "match",
                 "query",
@@ -524,6 +525,7 @@ fn paths(registry: List(Deprecation)) -> Json {
               json.preprocessed_array([
                 param("q", "query", string_schema(), "Text search."),
                 param("host", "query", string_schema(), "Exact host (or *)."),
+                param("tag", "query", string_schema(), "Rules with this tag."),
                 param(
                   "match",
                   "query",
@@ -1083,6 +1085,19 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
       ),
     ),
     #("note", typed("string", "Free text.")),
+    #(
+      "tags",
+      json.object([
+        #("type", json.string("array")),
+        #("items", string_schema()),
+        #(
+          "description",
+          json.string(
+            "Labels to group and filter rules: stored lower case, sorted, without duplicates; at most 20 of at most 40 characters, without commas.",
+          ),
+        ),
+      ]),
+    ),
   ]
   case read_only {
     False -> writable

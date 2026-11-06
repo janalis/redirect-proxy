@@ -30,6 +30,10 @@ pub fn rule_json(r: Rule) -> Json {
         "" -> [#("expires_at", json.string(""))]
         _ -> []
       },
+      case r.tags {
+        [] -> [#("tags", json.preprocessed_array([]))]
+        _ -> []
+      },
     ])
   json.object(
     list.flatten([
@@ -96,6 +100,7 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
   use starts_at <- field("starts_at", decode.string)
   use expires_at <- field("expires_at", decode.string)
   use note <- field("note", decode.string)
+  use tags <- field("tags", decode.list(decode.string))
   decode.success(fn(r: Rule) {
     rule.Rule(
       ..r,
@@ -125,6 +130,7 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
       starts_at: pick(starts_at, r.starts_at, defaults.starts_at),
       expires_at: pick(expires_at, r.expires_at, defaults.expires_at),
       note: pick(note, r.note, defaults.note),
+      tags: pick(tags, r.tags, defaults.tags),
     )
   })
 }
