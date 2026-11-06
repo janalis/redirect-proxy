@@ -749,15 +749,33 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
 }
 
 /// Appends the request query to the target URL, after the target's own
-/// parameters: a target ending in `?` or `&` gets no extra separator.
+/// parameters, which win: a request parameter the target sets (by its
+/// decoded name) is dropped. A target ending in `?` or `&` gets no extra
+/// separator.
 fn merge_query(url: String, query: String) -> String {
-  case string.contains(url, "?") {
-    False -> url <> "?" <> query
-    True ->
-      case string.ends_with(url, "?") || string.ends_with(url, "&") {
-        True -> url <> query
-        False -> url <> "&" <> query
+  case string.split_once(url, "?") {
+    Error(Nil) -> url <> "?" <> query
+    Ok(#(_, target_query)) -> {
+      let kept = case rule.request_query(target_query) {
+        [] -> query
+        target ->
+          query
+          |> string.split("&")
+          |> list.filter(fn(pair) {
+            case rule.request_query(pair) {
+              [#(name, _)] -> !result.is_ok(list.key_find(target, name))
+              // empty or malformed: kept as the request sent it
+              _ -> pair != ""
+            }
+          })
+          |> string.join("&")
       }
+      case kept, string.ends_with(url, "?") || string.ends_with(url, "&") {
+        "", _ -> url
+        _, True -> url <> kept
+        _, False -> url <> "&" <> kept
+      }
+    }
   }
 }
 

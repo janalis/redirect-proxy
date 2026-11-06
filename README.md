@@ -204,7 +204,7 @@ accepted. Ids and timestamps are added automatically.
 | `source` | (required) | The request path without its query string. Regexes are PCRE and are not anchored automatically. |
 | `target` | (required) | An absolute `http(s)://` URL, a protocol-relative `//host/path` or a path `/path`. |
 | `status` | `301` | `301`, `302`, `303`, `307` or `308`. |
-| `preserve_query` | `false` | Append the request query string to the target. |
+| `preserve_query` | `false` | Append the request query string to the target. Parameters the target sets itself win: a request parameter of the same name is dropped (`/new?lang=fr` with `?lang=en&utm=x` gives `/new?lang=fr&utm=x`). |
 | `case_insensitive` | `false` | Match the source without regard to case. |
 | `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed). For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
 | `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`. Written to the file only when `true`. |
