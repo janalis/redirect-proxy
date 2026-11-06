@@ -799,9 +799,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case stamp == state.stamp {
         True -> actor.continue(state)
         False -> {
+          let content = simplifile.read_bits(state.settings.rules_path)
+          // still being written (truncated, then filled): look again at the
+          // next tick, or the content read now would be taken again for a
+          // change once the stamp settles (an invalid file reported twice)
+          use <- bool.lazy_guard(
+            ffi.file_stamp(state.settings.rules_path) != stamp,
+            fn() { actor.continue(state) },
+          )
           let state = State(..state, stamp:)
           // the store's own writes leave the fingerprint unchanged
-          case simplifile.read_bits(state.settings.rules_path) {
+          case content {
             Ok(content) if content != <<>> ->
               case store_file.fingerprint(content) == state.fingerprint {
                 True -> actor.continue(state)
