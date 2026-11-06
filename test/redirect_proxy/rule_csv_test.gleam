@@ -137,3 +137,22 @@ pub fn json_with_a_byte_order_mark_test() {
   let assert Ok([_]) =
     rule_csv.parse_import("\u{FEFF}[{\"source\":\"/a\",\"target\":\"/b\"}]")
 }
+
+/// Cells are split on ASCII bytes: multi-byte characters stay whole, and
+/// line numbers count line breaks inside quoted cells.
+pub fn multibyte_cells_and_line_numbers_test() {
+  let assert Ok([a, b]) =
+    rule_csv.parse("source,target,note\n/café,/naïve,\"日本語,\r\n🎉\"\r/x,/y,ok\n")
+  assert #(a.source, a.target, a.note) == #("/café", "/naïve", "日本語,\r\n🎉")
+  assert #(b.source, b.target, b.note) == #("/x", "/y", "ok")
+  let assert Error([error]) =
+    rule_csv.parse("source,target,note\n/a,/b,\"x\ny\"\n/c,/d,\"z\"q\n")
+  assert string.starts_with(error, "line 4:")
+}
+
+pub fn errors_are_capped_test() {
+  let rows = string.repeat("/a,/b,x\n", 250)
+  let assert Error(errors) = rule_csv.parse("source,target,status\n" <> rows)
+  assert list.length(errors) == 101
+  assert list.last(errors) == Ok("… and 150 more errors")
+}

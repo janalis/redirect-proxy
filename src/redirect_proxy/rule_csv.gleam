@@ -7,6 +7,7 @@
 //// `'` (and a cell starting with `'` too, so that it survives), and the
 //// import removes that one prefix again.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/result
@@ -58,9 +59,23 @@ pub fn parse(content: String) -> Result(List(Rule), List(String)) {
         |> result.partition
       case errors {
         [] -> Ok(list.reverse(rules))
-        _ -> Error(list.reverse(errors))
+        _ -> Error(first_errors(list.reverse(errors)))
       }
     }
+  }
+}
+
+/// Errors reported for one document: a broken file of 100 000 rows does
+/// not give a response of 100 000 lines.
+const max_errors = 100
+
+fn first_errors(errors: List(String)) -> List(String) {
+  case list.length(errors) - max_errors {
+    more if more > 0 ->
+      list.append(list.take(errors, max_errors), [
+        "… and " <> int.to_string(more) <> " more errors",
+      ])
+    _ -> errors
   }
 }
 
@@ -176,42 +191,55 @@ fn guard(condition: Bool, error: String, next: fn() -> Result(a, String)) {
 }
 
 /// The records of a CSV document with the line each starts on; blank lines
-/// are skipped.
+/// are skipped. Works on the bytes (the separators are ASCII, so cells stay
+/// valid UTF-8): a list of graphemes would take many times the size of an
+/// import of several megabytes.
 fn records(content: String) -> Result(List(#(Int, List(String))), String) {
-  parse_loop(string.to_graphemes(content), 1, 1, False, [], [], [])
+  parse_loop(bit_array.from_string(content), 1, 1, False, <<>>, [], [])
   |> result.map(fn(records) { list.filter(records, fn(r) { r.1 != [""] }) })
 }
 
 fn parse_loop(
-  chars: List(String),
+  bytes: BitArray,
   line: Int,
   record_line: Int,
   quoted: Bool,
-  field: List(String),
+  field: BitArray,
   record: List(String),
   done: List(#(Int, List(String))),
 ) -> Result(List(#(Int, List(String))), String) {
-  let field_text = fn() { string.concat(list.reverse(field)) }
+  let field_text = fn() { bit_array.to_string(field) |> result.unwrap("") }
   let end_record = fn() {
     [#(record_line, list.reverse([field_text(), ..record])), ..done]
   }
-  case quoted, chars {
+  case quoted, bytes {
     // end of input
-    True, [] ->
+    True, <<>> ->
       Error(
         "line " <> int.to_string(record_line) <> ": unterminated quoted cell",
       )
-    False, [] ->
+    False, <<>> ->
       case field, record {
-        [], [] -> Ok(list.reverse(done))
+        <<>>, [] -> Ok(list.reverse(done))
         _, _ -> Ok(list.reverse(end_record()))
       }
     // inside quotes: a doubled quote is a quote, a single one ends them
-    True, ["\"", "\"", ..rest] ->
-      parse_loop(rest, line, record_line, True, ["\"", ..field], record, done)
-    True, ["\"", ..rest] ->
+    True, <<"\"\"":utf8, rest:bits>> ->
+      parse_loop(
+        rest,
+        line,
+        record_line,
+        True,
+        <<field:bits, "\"":utf8>>,
+        record,
+        done,
+      )
+    True, <<"\"":utf8, rest:bits>> ->
       case rest {
-        [] | [",", ..] | ["\n", ..] | ["\r\n", ..] | ["\r", ..] ->
+        <<>>
+        | <<",":utf8, _:bits>>
+        | <<"\n":utf8, _:bits>>
+        | <<"\r":utf8, _:bits>> ->
           parse_loop(rest, line, record_line, False, field, record, done)
         _ ->
           Error(
@@ -220,27 +248,57 @@ fn parse_loop(
             <> ": a quoted cell must end at a comma or the end of the line",
           )
       }
-    True, [c, ..rest] if c == "\n" || c == "\r\n" || c == "\r" ->
-      parse_loop(rest, line + 1, record_line, True, [c, ..field], record, done)
-    True, [c, ..rest] ->
-      parse_loop(rest, line, record_line, True, [c, ..field], record, done)
+    True, <<"\r\n":utf8, rest:bits>> ->
+      parse_loop(
+        rest,
+        line + 1,
+        record_line,
+        True,
+        <<field:bits, "\r\n":utf8>>,
+        record,
+        done,
+      )
+    True, <<c, rest:bits>> if c == 10 || c == 13 ->
+      parse_loop(
+        rest,
+        line + 1,
+        record_line,
+        True,
+        <<field:bits, c>>,
+        record,
+        done,
+      )
+    True, <<c, rest:bits>> ->
+      parse_loop(rest, line, record_line, True, <<field:bits, c>>, record, done)
     // outside quotes
-    False, ["\"", ..rest] if field == [] ->
+    False, <<"\"":utf8, rest:bits>> if field == <<>> ->
       parse_loop(rest, line, record_line, True, field, record, done)
-    False, [",", ..rest] ->
+    False, <<",":utf8, rest:bits>> ->
       parse_loop(
         rest,
         line,
         record_line,
         False,
-        [],
+        <<>>,
         [field_text(), ..record],
         done,
       )
-    False, [c, ..rest] if c == "\n" || c == "\r\n" || c == "\r" ->
-      parse_loop(rest, line + 1, line + 1, False, [], [], end_record())
-    False, [c, ..rest] ->
-      parse_loop(rest, line, record_line, False, [c, ..field], record, done)
+    False, <<"\r\n":utf8, rest:bits>> ->
+      parse_loop(rest, line + 1, line + 1, False, <<>>, [], end_record())
+    False, <<c, rest:bits>> if c == 10 || c == 13 ->
+      parse_loop(rest, line + 1, line + 1, False, <<>>, [], end_record())
+    False, <<c, rest:bits>> ->
+      parse_loop(
+        rest,
+        line,
+        record_line,
+        False,
+        <<field:bits, c>>,
+        record,
+        done,
+      )
+    // not reached: a String is whole bytes
+    _, _ -> Error("line " <> int.to_string(line) <> ": invalid input")
   }
 }
 
