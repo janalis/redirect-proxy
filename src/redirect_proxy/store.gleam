@@ -8,8 +8,15 @@
 ////   5. appends an entry to the audit log.
 ////
 //// Reads on the hot path never touch this actor.
+////
+//// Other OS processes (the CLI, editors, scripts) may write the file too.
+//// Every mutation holds the cross-process `<file>.lock` and, when the file
+//// changed on disk since it was last read or written, reloads it first, so
+//// that outside changes are never silently overwritten.
 
+import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dict
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -30,6 +37,9 @@ import redirect_proxy/snapshot
 import simplifile
 
 const timeout = 10_000
+
+/// How long a mutation waits for another process to release the file lock.
+const lock_timeout = 5000
 
 pub type Settings {
   Settings(
@@ -82,7 +92,12 @@ pub opaque type Message {
 }
 
 type State {
-  State(settings: Settings, rules: List(Rule))
+  State(
+    settings: Settings,
+    rules: List(Rule),
+    /// SHA-256 of the file content last read or written.
+    fingerprint: String,
+  )
 }
 
 pub type Store =
@@ -97,8 +112,8 @@ pub fn start(
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
   actor.new_with_initialiser(30_000, fn(subject) {
-    use rules <- result.try(load_file(settings))
-    let state = State(settings:, rules:)
+    use #(rules, fingerprint) <- result.try(load_file(settings))
+    let state = State(settings:, rules:, fingerprint:)
     publish(rules)
     log.info(
       "loaded "
@@ -226,6 +241,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Create(input, actor_name, reply) -> {
+      use state <- mutate(state, reply, fn(e) { [e] })
       let now = ffi.now_rfc3339()
       let new_id = case string.trim(input.id) {
         "" -> id.uuid()
@@ -239,7 +255,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           updated_at: now,
           updated_by: actor_name,
         )
-      let result = {
+      {
         use <- bool.guard(
           list.any(state.rules, fn(r) { r.id == new_id }),
           Error(["id: already exists"]),
@@ -247,7 +263,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use valid <- result.try(rule.validate(candidate))
         let rules = list.append(state.rules, [valid])
         use Nil <- result.try(check_conflicts(rules))
-        use Nil <- result.try(commit(state.settings, rules))
+        use fingerprint <- result.try(commit(state.settings, rules))
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -256,13 +272,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           None,
           Some(rule.to_json(valid)),
         )
-        Ok(#(valid, rules))
+        Ok(#(valid, rules, fingerprint))
       }
-      reply_and_continue(state, reply, result)
     }
 
     Update(input, expected, actor_name, reply) -> {
-      let result = {
+      use state <- mutate(state, reply, fn(e) { Invalid([e]) })
+      {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == input.id })
           |> result.replace_error(NotFound),
@@ -288,7 +304,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use Nil <- result.try(
           check_conflicts(rules) |> result.map_error(Invalid),
         )
-        use Nil <- result.try(
+        use fingerprint <- result.try(
           commit(state.settings, rules) |> result.map_error(Invalid),
         )
         audit.record(
@@ -299,20 +315,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Some(rule.to_json(existing)),
           Some(rule.to_json(valid)),
         )
-        Ok(#(valid, rules))
+        Ok(#(valid, rules, fingerprint))
       }
-      reply_and_continue(state, reply, result)
     }
 
     Delete(rule_id, expected, actor_name, reply) -> {
-      let result = {
+      use state <- mutate(state, reply, fn(e) { Invalid([e]) })
+      {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == rule_id })
           |> result.replace_error(NotFound),
         )
         use Nil <- result.try(check_version(existing, expected))
         let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
-        use Nil <- result.try(
+        use fingerprint <- result.try(
           commit(state.settings, rules) |> result.map_error(Invalid),
         )
         audit.record(
@@ -323,20 +339,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Some(rule.to_json(existing)),
           None,
         )
-        Ok(#(existing, rules))
+        Ok(#(existing, rules, fingerprint))
       }
-      reply_and_continue(state, reply, result)
     }
 
     Import(incoming, mode, actor_name, reply) -> {
-      let result = {
+      use state <- mutate(state, reply, fn(e) { [e] })
+      {
         use prepared <- result.try(prepare_import(incoming, actor_name))
         let rules = case mode {
           Replace -> prepared
           Merge -> merge(state.rules, prepared)
         }
         use Nil <- result.try(check_conflicts(rules))
-        use Nil <- result.try(commit(state.settings, rules))
+        use fingerprint <- result.try(commit(state.settings, rules))
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -348,9 +364,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           None,
           None,
         )
-        Ok(#(list.length(prepared), rules))
+        Ok(#(list.length(prepared), rules, fingerprint))
       }
-      reply_and_continue(state, reply, result)
     }
 
     ReloadInBackground(actor_name) -> {
@@ -363,7 +378,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     Reload(actor_name, reply) ->
       case load_file(state.settings) {
-        Ok(rules) -> {
+        Ok(#(rules, fingerprint)) -> {
           publish(rules)
           metrics.incr(metrics.Reloads)
           audit.record(
@@ -378,7 +393,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             "reloaded " <> int.to_string(list.length(rules)) <> " rule(s)",
           )
           process.send(reply, Ok(list.length(rules)))
-          actor.continue(State(..state, rules:))
+          actor.continue(State(..state, rules:, fingerprint:))
         }
         Error(reason) -> {
           metrics.incr(metrics.ReloadFailures)
@@ -390,21 +405,84 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-fn reply_and_continue(
+/// Runs a mutation holding the cross-process file lock, on rules refreshed
+/// from disk when another process changed the file. `change` returns the
+/// reply, the new rules and the fingerprint of the written file.
+fn mutate(
   state: State,
   reply: Subject(Result(a, e)),
-  result: Result(#(a, List(Rule)), e),
+  to_error: fn(String) -> e,
+  change: fn(State) -> Result(#(a, List(Rule), String), e),
 ) -> actor.Next(State, Message) {
-  case result {
-    Ok(#(value, rules)) -> {
-      process.send(reply, Ok(value))
-      actor.continue(State(..state, rules:))
+  let outcome =
+    ffi.with_file_lock(state.settings.rules_path, lock_timeout, fn() {
+      case refresh(state) {
+        Error(reason) -> #(state, Error(to_error(reason)))
+        Ok(state) ->
+          case change(state) {
+            Ok(#(value, rules, fingerprint)) -> #(
+              State(..state, rules:, fingerprint:),
+              Ok(value),
+            )
+            Error(error) -> #(state, Error(error))
+          }
+      }
+    })
+  case outcome {
+    Ok(#(state, result)) -> {
+      process.send(reply, result)
+      actor.continue(state)
     }
-    Error(error) -> {
-      process.send(reply, Error(error))
+    Error(reason) -> {
+      log.error("redirections not saved: " <> reason)
+      process.send(reply, Error(to_error("storage: " <> reason)))
       actor.continue(state)
     }
   }
+}
+
+/// Reloads the rules when the file was changed by another process since it
+/// was last read or written. A missing file keeps the current rules (they
+/// are written back by the mutation).
+fn refresh(state: State) -> Result(State, String) {
+  case simplifile.read_bits(state.settings.rules_path) {
+    Error(_) -> Ok(state)
+    Ok(content) ->
+      case fingerprint(content) == state.fingerprint {
+        True -> Ok(state)
+        False ->
+          case load_file(state.settings) {
+            Error(reason) ->
+              Error(
+                "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
+                <> reason,
+              )
+            Ok(#(rules, fingerprint)) -> {
+              publish(rules)
+              metrics.incr(metrics.Reloads)
+              audit.record(
+                state.settings.audit_path,
+                "external",
+                "rules.reload",
+                int.to_string(list.length(rules)) <> " rule(s)",
+                None,
+                None,
+              )
+              log.warning(
+                state.settings.rules_path
+                <> " was changed outside the server: reloaded "
+                <> int.to_string(list.length(rules))
+                <> " rule(s) before applying the change",
+              )
+              Ok(State(..state, rules:, fingerprint:))
+            }
+          }
+      }
+  }
+}
+
+fn fingerprint(content: BitArray) -> String {
+  crypto.hash(crypto.Sha256, content) |> bit_array.base16_encode
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -415,11 +493,15 @@ fn publish(rules: List(Rule)) -> Nil {
   ffi.garbage_collect()
 }
 
-fn commit(settings: Settings, rules: List(Rule)) -> Result(Nil, List(String)) {
+/// Writes and publishes the rules. Returns the fingerprint of the file.
+fn commit(
+  settings: Settings,
+  rules: List(Rule),
+) -> Result(String, List(String)) {
   case persist(settings, rules) {
-    Ok(Nil) -> {
+    Ok(fingerprint) -> {
       publish(rules)
-      Ok(Nil)
+      Ok(fingerprint)
     }
     Error(reason) -> {
       log.error("failed to persist redirections: " <> reason)
@@ -545,17 +627,22 @@ fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
   list.append(updated, added)
 }
 
-fn load_file(settings: Settings) -> Result(List(Rule), String) {
+/// Reads, validates and returns the rules with the file fingerprint.
+fn load_file(settings: Settings) -> Result(#(List(Rule), String), String) {
   case simplifile.is_file(settings.rules_path) {
     Ok(True) -> {
-      use content <- result.try(
-        simplifile.read(settings.rules_path)
+      use bits <- result.try(
+        simplifile.read_bits(settings.rules_path)
         |> result.map_error(fn(e) {
           "cannot read "
           <> settings.rules_path
           <> ": "
           <> simplifile.describe_error(e)
         }),
+      )
+      use content <- result.try(
+        bit_array.to_string(bits)
+        |> result.replace_error(settings.rules_path <> ": not valid UTF-8"),
       )
       use rules <- result.try(
         rule.file_from_string(content)
@@ -578,37 +665,38 @@ fn load_file(settings: Settings) -> Result(List(Rule), String) {
         }),
       )
       case missing_ids {
-        True -> persist(settings, rules) |> result.replace(rules)
-        False -> Ok(rules)
+        True ->
+          persist(settings, rules)
+          |> result.map(fn(fingerprint) { #(rules, fingerprint) })
+        False -> Ok(#(rules, fingerprint(bits)))
       }
     }
     _ -> {
       // First start: create an empty file so operators know where it lives.
-      use Nil <- result.try(persist(settings, []))
-      Ok([])
+      use fingerprint <- result.try(persist(settings, []))
+      Ok(#([], fingerprint))
     }
   }
 }
 
-fn persist(settings: Settings, rules: List(Rule)) -> Result(Nil, String) {
+/// Backs up then atomically rewrites the file. Returns its fingerprint.
+fn persist(settings: Settings, rules: List(Rule)) -> Result(String, String) {
   let describe = fn(e) { simplifile.describe_error(e) }
   use Nil <- result.try(
     simplifile.create_directory_all(settings.backups_dir)
     |> result.map_error(describe),
   )
   use Nil <- result.try(backup(settings))
-  ffi.atomic_write(settings.rules_path, rule.file_to_string(rules) <> "\n")
+  let content = rule.file_to_string(rules) <> "\n"
+  use Nil <- result.try(ffi.atomic_write(settings.rules_path, content))
+  Ok(fingerprint(bit_array.from_string(content)))
 }
 
 fn backup(settings: Settings) -> Result(Nil, String) {
   case settings.backups, simplifile.is_file(settings.rules_path) {
     0, _ -> Ok(Nil)
     _, Ok(True) -> {
-      let name =
-        settings.backups_dir
-        <> "/redirects-"
-        <> int.to_string(ffi.now_millis())
-        <> ".json"
+      let name = backup_name(settings.backups_dir, ffi.now_millis())
       use Nil <- result.try(
         simplifile.copy_file(settings.rules_path, name)
         |> result.map_error(simplifile.describe_error),
@@ -617,6 +705,16 @@ fn backup(settings: Settings) -> Result(Nil, String) {
       Ok(Nil)
     }
     _, _ -> Ok(Nil)
+  }
+}
+
+/// `redirects-<ms>.json`, bumping the timestamp while the name is taken (two
+/// writes in the same millisecond) so names stay unique and sortable.
+fn backup_name(dir: String, millis: Int) -> String {
+  let name = dir <> "/redirects-" <> int.to_string(millis) <> ".json"
+  case simplifile.is_file(name) {
+    Ok(True) -> backup_name(dir, millis + 1)
+    _ -> name
   }
 }
 

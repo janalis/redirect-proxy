@@ -170,6 +170,7 @@ fn row(session: Session, row: Row) -> Element(Nil) {
         ],
         [
           layout.csrf_field(session),
+          layout.version_field(rule.version(r)),
           h.button(
             [
               a.type_("submit"),
@@ -272,12 +273,15 @@ fn pagination(filters: Filters, page: Int, pages: Int) -> Element(Nil) {
 
 // --- form -------------------------------------------------------------------
 
+/// `version` is the version of the stored rule the form edits ("" for a new
+/// rule).
 pub fn form(
   session: Session,
   features: layout.Features,
   r: Rule,
   errors: List(String),
   is_new: Bool,
+  version: String,
 ) -> String {
   let title = case is_new {
     True -> "New redirection"
@@ -299,6 +303,7 @@ pub fn form(
       h.form([a.method("post"), a.action(action), a.class("card")], [
         h.div([a.class("card-body")], [
           layout.csrf_field(session),
+          layout.version_field(version),
           h.div([a.class("row g-3")], [
             field_col("md:col-4", [
               label("host", "Host"),
@@ -497,6 +502,7 @@ pub fn confirm_delete(
             ],
             [
               layout.csrf_field(session),
+              layout.version_field(rule.version(r)),
               h.button(
                 [a.type_("submit"), a.class("btn btn-solid theme-danger")],
                 [

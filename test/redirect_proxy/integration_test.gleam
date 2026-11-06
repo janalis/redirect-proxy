@@ -478,6 +478,87 @@ pub fn rule_crud_test() {
   assert string.contains(audit.body, "rule.delete")
 }
 
+/// Two admins edit the same redirection: the second save is refused instead
+/// of silently overwriting the first.
+pub fn concurrent_admin_edits_are_detected_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let assert Ok(content) = simplifile.read(env.dir <> "/redirects.json")
+  let id = find_id(content, "/old")
+  let fields = fn(target, version) {
+    [
+      #("csrf_token", csrf),
+      #("version", version),
+      #("host", "*"),
+      #("match", "exact"),
+      #("status", "301"),
+      #("source", "/old"),
+      #("target", target),
+      #("enabled", "on"),
+    ]
+  }
+  // both open the edit page
+  let page = get(env.admin <> "/rules/" <> id <> "/edit", [#("cookie", cookie)])
+  let version = hidden_value(page.body, "version")
+  assert version != ""
+
+  // the first one saves
+  let resp =
+    post_form(
+      env,
+      "/rules/" <> id,
+      cookie,
+      fields("https://first.test/", version),
+    )
+  assert resp.status == 303
+
+  // the second one, based on the same version, is told and nothing changes
+  let resp =
+    post_form(
+      env,
+      "/rules/" <> id,
+      cookie,
+      fields("https://second.test/", version),
+    )
+  assert resp.status == 409
+  assert string.contains(resp.body, "while you were working on it")
+  assert string.contains(resp.body, "https://second.test/")
+  assert location(get(env.redirect <> "/old", [])) == "https://first.test/"
+
+  // saving the conflict form again (it carries the new version) overwrites
+  let resp =
+    post_form(
+      env,
+      "/rules/" <> id,
+      cookie,
+      fields("https://second.test/", hidden_value(resp.body, "version")),
+    )
+  assert resp.status == 303
+  assert location(get(env.redirect <> "/old", [])) == "https://second.test/"
+
+  // toggling and deleting from a stale page are refused too
+  let resp =
+    post_form(env, "/rules/" <> id <> "/toggle", cookie, [
+      #("csrf_token", csrf),
+      #("version", version),
+    ])
+  assert resp.status == 409
+  let resp =
+    post_form(env, "/rules/" <> id <> "/delete", cookie, [
+      #("csrf_token", csrf),
+      #("version", version),
+    ])
+  assert resp.status == 409
+  assert get(env.redirect <> "/old", []).status == 301
+}
+
+fn hidden_value(html: String, name: String) -> String {
+  let assert Ok(#(_, rest)) =
+    string.split_once(html, "name=\"" <> name <> "\" type=\"hidden\" value=\"")
+  let assert Ok(#(value, _)) = string.split_once(rest, "\"")
+  value
+}
+
 fn find_id(content: String, source: String) -> String {
   // rules are serialised as {"id":"...","host":...,"source":"<source>"...}
   let assert Ok(#(before, _)) =

@@ -179,6 +179,12 @@ pub fn csrf_field(s: Session) -> Element(Nil) {
   h.input([a.type_("hidden"), a.name("csrf_token"), a.value(s.csrf_token)])
 }
 
+/// The version of the rule a form was rendered from, so that a change made
+/// meanwhile by someone else is detected instead of overwritten.
+pub fn version_field(version: String) -> Element(Nil) {
+  h.input([a.type_("hidden"), a.name("version"), a.value(version)])
+}
+
 pub fn heading(title: String, actions: List(Element(Nil))) -> Element(Nil) {
   h.div(
     [
