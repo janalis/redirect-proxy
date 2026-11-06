@@ -503,7 +503,10 @@ fn fingerprint(content: BitArray) -> String {
 // --- helpers ----------------------------------------------------------------
 
 fn publish(rules: List(Rule)) -> Nil {
-  rules |> matcher.build |> snapshot.publish
+  rules
+  |> matcher.build
+  |> matcher.carry_hits(from: snapshot.current())
+  |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
   ffi.garbage_collect()
 }

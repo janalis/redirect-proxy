@@ -211,3 +211,55 @@ pub fn substitutions_cannot_leave_the_host_test() {
   assert location(m, "h", "/u/evil.com%23") == Ok("/users/evil.com%23")
   assert location(m, "h", "/u/evil.com/x") == Ok("/users/evil.com/x")
 }
+
+pub fn hit_counts_are_carried_to_the_next_matcher_test() {
+  let a = r("a", "*", rule.Exact, "/a", "/b")
+  let b = r("b", "*", rule.Exact, "/c", "/d")
+  let first = matcher.build([a, b])
+  matcher.record_hit(first, "a")
+  matcher.record_hit(first, "a")
+  matcher.record_hit(first, "b")
+  matcher.record_hit(first, "unknown")
+  assert matcher.hit_count(first, "a") == 2
+  // b deleted, a disabled: a keeps its count, b is dropped
+  let next =
+    matcher.build([Rule(..a, enabled: False)])
+    |> matcher.carry_hits(from: first)
+  assert matcher.hit_count(next, "a") == 2
+  assert matcher.hit_count(next, "b") == 0
+}
+
+pub fn prefix_index_prefers_longest_then_priority_test() {
+  let m =
+    matcher.build([
+      Rule(..r("1", "*", rule.Prefix, "/a/", "/short/$1"), priority: 1),
+      Rule(..r("2", "*", rule.Prefix, "/a/b/", "/low/$1"), priority: 9),
+      Rule(..r("3", "*", rule.Prefix, "/A/B/", "/ci/$1"), priority: 5)
+        |> fn(x) { Rule(..x, case_insensitive: True) },
+      r("4", "*", rule.Prefix, "/é/", "/accent/$1"),
+    ])
+  let loc = fn(path) {
+    let assert Ok(found) = matcher.lookup(m, "x.test", path)
+    found.location
+  }
+  assert loc("/a/b/c") == "/ci/c"
+  assert loc("/a/x") == "/short/x"
+  assert loc("/é/ü") == "/accent/ü"
+  assert matcher.lookup(m, "x.test", "/") == Error(Nil)
+}
+
+pub fn regex_index_keeps_priority_order_test() {
+  let m =
+    matcher.build([
+      Rule(..r("1", "*", rule.Regex, "^/r/(.*)$", "/indexed/$1"), priority: 5),
+      Rule(..r("2", "*", rule.Regex, "(.*)/z$", "/any/$1"), priority: 1),
+      Rule(..r("3", "*", rule.Regex, "^/r/a?(.*)$", "/opt/$1"), priority: 9),
+    ])
+  let loc = fn(path) {
+    let assert Ok(found) = matcher.lookup(m, "x.test", path)
+    found.location
+  }
+  assert loc("/r/q/z") == "/any//r/q"
+  assert loc("/r/q") == "/indexed/q"
+  assert matcher.lookup(m, "x.test", "/s/q") == Error(Nil)
+}

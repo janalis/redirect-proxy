@@ -1,10 +1,13 @@
 //// Property based tests (qcheck).
 
 import gleam/dict
+import gleam/int
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/string
 import qcheck
+import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 
@@ -124,5 +127,122 @@ pub fn every_exact_rule_is_reachable_test() {
     let assert Ok(found) = matcher.lookup(m, host, r.source)
     // a host-specific rule may shadow a wildcard one for the same path
     assert found.rule.source == r.source
+  })
+}
+
+// --- indexed prefix and regex matching -----------------------------------------
+
+fn mixed_segment() -> qcheck.Generator(String) {
+  qcheck.non_empty_string_from(
+    qcheck.codepoint_from_strings("a", ["b", "A", "B", "é", "É", "-", "1"]),
+  )
+}
+
+fn mixed_path() -> qcheck.Generator(String) {
+  qcheck.generic_list(
+    elements_from: mixed_segment(),
+    length_from: qcheck.bounded_int(0, 3),
+  )
+  |> qcheck.map(fn(segments) { "/" <> string.join(segments, "/") })
+}
+
+/// Prefix and regex rules of the wildcard host, with mixed priorities,
+/// letter case and regex shapes (indexable or not).
+fn pattern_rule() -> qcheck.Generator(rule.Rule) {
+  qcheck.map4(
+    mixed_path(),
+    qcheck.bounded_int(0, 6),
+    qcheck.bounded_int(1, 3),
+    qcheck.bool(),
+    fn(source, shape, priority, case_insensitive) {
+      let #(kind, source) = case shape {
+        0 | 1 -> #(rule.Prefix, source)
+        2 -> #(rule.Prefix, source <> "/")
+        3 -> #(rule.Regex, "^" <> source <> "(.*)$")
+        4 -> #(rule.Regex, "^" <> source <> "?(.*)")
+        5 -> #(rule.Regex, "(.*)" <> source <> "$")
+        _ -> #(rule.Regex, "^" <> source <> "|^/b(.*)")
+      }
+      Rule(
+        ..rule.blank(),
+        id: source,
+        kind:,
+        source:,
+        target: "/t/$1",
+        priority:,
+        case_insensitive:,
+      )
+    },
+  )
+}
+
+/// The resolution order of the matcher, trying every rule in turn.
+fn reference_lookup(
+  rules: List(rule.Rule),
+  path: String,
+) -> Result(String, Nil) {
+  let prefix =
+    rules
+    |> list.filter(fn(r) { r.kind == rule.Prefix })
+    |> list.sort(fn(a, b) {
+      case int.compare(string.length(b.source), string.length(a.source)) {
+        order.Eq -> int.compare(a.priority, b.priority)
+        other -> other
+      }
+    })
+    |> list.find(fn(r) {
+      case r.case_insensitive {
+        False -> string.starts_with(path, r.source)
+        True ->
+          string.starts_with(string.lowercase(path), string.lowercase(r.source))
+      }
+    })
+    |> result.map(fn(r) {
+      rule.expand(r.target, [
+        path,
+        string.drop_start(path, string.length(r.source)),
+      ])
+    })
+  use <- result.lazy_or(prefix)
+  rules
+  |> list.filter(fn(r) { r.kind == rule.Regex })
+  |> list.sort(fn(a, b) { int.compare(a.priority, b.priority) })
+  |> list.find_map(fn(r) {
+    use re <- result.try(
+      ffi.regex_compile(r.source, r.case_insensitive)
+      |> result.replace_error(Nil),
+    )
+    ffi.regex_run(re, path)
+    |> result.replace_error(Nil)
+    |> result.map(fn(captures) { rule.expand(r.target, captures) })
+  })
+}
+
+/// The indexed prefix and regex matching gives the same result as trying
+/// every rule in resolution order.
+pub fn indexed_matching_agrees_with_reference_test() {
+  use #(rules, probe) <- check(qcheck.tuple2(
+    qcheck.generic_list(
+      elements_from: pattern_rule(),
+      length_from: qcheck.bounded_int(0, 10),
+    ),
+    mixed_path(),
+  ))
+  let m = matcher.build(rules)
+  // probe both a random path and paths extending each rule's source
+  let probes = [
+    probe,
+    ..list.map(rules, fn(r) {
+      string.replace(r.source, "^", "")
+      |> string.replace("(.*)$", "")
+      |> string.replace("(.*)", "")
+      <> probe
+    })
+  ]
+  list.each(probes, fn(path) {
+    let actual =
+      matcher.lookup(m, "test.local", path)
+      |> result.map(fn(found) { found.location })
+    assert actual == reference_lookup(rules, path)
   })
 }
