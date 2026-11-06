@@ -216,6 +216,7 @@ pub type ApiOAuthConfig {
     read_scope: String,
     write_scope: String,
     ops_scope: String,
+    audit_scope: String,
   )
 }
 
@@ -304,6 +305,7 @@ pub fn default() -> Config {
         read_scope: "redirects:read",
         write_scope: "redirects:write",
         ops_scope: "redirects:ops",
+        audit_scope: "audit:read",
       ),
     ),
     log: LogConfig(level: "info", format: "text"),

@@ -2381,12 +2381,22 @@ pub fn admins_change_roles_test() {
   assert resp.status == 303
   let users_page = get(env.admin <> "/users", [#("cookie", cookie)]).body
   assert string.contains(users_page, "action=\"/users/newbie/role\"")
+  // newbie signs in as a viewer
+  let newbie =
+    post_form(env, "/login", "", [
+      #("username", "newbie"),
+      #("password", "a-long-enough-password"),
+    ])
+    |> session_cookie
+  assert get(env.admin <> "/import", [#("cookie", newbie)]).status == 403
   let promote =
     post_form(env, "/users/newbie/role", cookie, [
       #("csrf_token", csrf),
       #("role", "editor"),
     ])
   assert promote.status == 303
+  // the same session, with the new role: not signed out
+  assert get(env.admin <> "/import", [#("cookie", newbie)]).status == 200
   let demote_self =
     post_form(env, "/users/admin/role", cookie, [
       #("csrf_token", csrf),

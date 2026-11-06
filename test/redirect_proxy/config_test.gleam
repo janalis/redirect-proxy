@@ -524,3 +524,27 @@ pub fn metrics_token_must_be_long_enough_test() {
   let assert Ok(_) = config_validate.validate(with("sixteen-chars-ok"))
   let assert Ok(_) = config_validate.validate(with(""))
 }
+
+pub fn admin_default_role_with_role_groups_warns_test() {
+  let d = config.default()
+  let with = fn(default_role) {
+    config.Config(
+      ..d,
+      oidc: config.OidcConfig(
+        ..d.oidc,
+        enabled: True,
+        allowed_domains: ["example.com"],
+        editor_groups: ["web"],
+        default_role:,
+      ),
+    )
+  }
+  assert list.any(
+    config_validate.runtime_warnings(with("admin")),
+    string.starts_with(_, "auth.oidc.default_role is admin"),
+  )
+  assert !list.any(
+    config_validate.runtime_warnings(with("viewer")),
+    string.starts_with(_, "auth.oidc.default_role"),
+  )
+}

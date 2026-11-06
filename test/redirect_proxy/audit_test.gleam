@@ -79,3 +79,25 @@ pub fn rotation_and_search_test() {
   assert audit.search(path, audit.Filter(..audit.any, since: 4_102_444_800), 10)
     == []
 }
+
+/// A torn write (a cut UTF-8 sequence) loses that line, not the file.
+pub fn a_broken_line_does_not_hide_the_file_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let path = dir <> "/audit.jsonl"
+  let line = fn(target) {
+    "{\"at\":\"2026-01-01T00:00:00Z\",\"actor\":\"a\",\"action\":\"rule.update\",\"target\":\""
+    <> target
+    <> "\"}\n"
+  }
+  let assert Ok(Nil) =
+    simplifile.write_bits(path, <<
+      line("first"):utf8,
+      "{\"at\":\"é":utf8,
+      0xC3,
+      "\n":utf8,
+      line("last"):utf8,
+    >>)
+  assert audit.search(path, audit.any, 10) |> list.map(fn(e) { e.target })
+    == ["last", "first"]
+}

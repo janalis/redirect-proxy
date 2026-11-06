@@ -77,7 +77,10 @@ Pages and buttons a role cannot use are not shown, and the server answers
   name groups of `groups_claim`. A user gets the highest role their groups
   give, and `default_role` when they are in none of them. `default_role` is
   `admin`, so that nothing changes until you configure roles: set it to
-  `viewer` once the groups are in place.
+  `viewer` once the groups are in place (the server warns at startup while
+  role groups are set and `default_role` is still `admin`). The role is set
+  at sign-in: a change of groups at the provider applies at the next
+  sign-in, at the latest after `admin.session_ttl`.
 - **Trusted proxy headers:** with `role_header` (for example
   `X-Forwarded-Role`), the proxy sets the role of each request; a missing,
   repeated or unknown value gives `viewer`, and the session follows changes

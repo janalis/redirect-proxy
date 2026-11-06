@@ -111,6 +111,16 @@ pub fn formula_cells_test() {
   // a quote that does not protect a formula is kept
   let assert Ok([kept]) = rule_csv.parse("source,target,note\n/a,/b,'quoted\n")
   assert kept.note == "'quoted"
+  // cells that start with a quote, or with a formula character followed by
+  // a combining mark, survive a round trip and are escaped
+  let tricky = ["'=keep", "'plain", "=\u{0301}HYPERLINK(1)", "-tag"]
+  list.each(tricky, fn(note) {
+    let csv = rule_csv.to_string([Rule(..r, note:)])
+    assert string.contains(csv, ",'" <> note)
+      || string.contains(csv, "\"'" <> note)
+    let assert Ok([back]) = rule_csv.parse(csv)
+    assert back.note == note
+  })
 }
 
 pub fn format_detection_test() {
@@ -121,4 +131,9 @@ pub fn format_detection_test() {
     rule_csv.parse_import("[{\"source\":\"/a\",\"target\":\"/b\"}]")
   let assert Ok([_]) = rule_csv.parse_import("source,target\n/a,/b")
   assert list.length(rule_csv.columns) == 16
+}
+
+pub fn json_with_a_byte_order_mark_test() {
+  let assert Ok([_]) =
+    rule_csv.parse_import("\u{FEFF}[{\"source\":\"/a\",\"target\":\"/b\"}]")
 }

@@ -68,6 +68,7 @@ pub const known_keys = [
   "api.oauth.enabled",
   "api.oauth.issuer",
   "api.oauth.ops_scope",
+  "api.oauth.audit_scope",
   "api.oauth.read_scope",
   "api.oauth.scope_claim",
   "api.oauth.write_scope",
@@ -374,6 +375,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["api", "oauth", "ops_scope"],
     ao.ops_scope,
   ))
+  use audit_scope <- result.try(str(
+    t,
+    ["api", "oauth", "audit_scope"],
+    ao.audit_scope,
+  ))
   let al = d.access_log
   let ak = fn(k) { ["access_log", k] }
   use al_enabled <- result.try(boolean(t, ak("enabled"), al.enabled))
@@ -430,6 +436,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
         read_scope:,
         write_scope:,
         ops_scope:,
+        audit_scope:,
       ),
     ),
     server: ServerConfig(

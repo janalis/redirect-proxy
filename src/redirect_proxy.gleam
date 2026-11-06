@@ -11,6 +11,7 @@ import gleam/string
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/app
+import redirect_proxy/audit
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/file as config_file
 import redirect_proxy/config/loader as config_loader
@@ -56,7 +57,8 @@ overridden with RP_* environment variables (see docs/configuration.md).
 Passwords for `user add`/`user passwd` are read from $RP_PASSWORD or
 prompted for.
 Roles: viewer, editor, admin (default for `user add`).
-API client scopes: redirects:read, redirects:write (default), redirects:ops.
+API client scopes: redirects:read, redirects:write (default), redirects:ops,
+audit:read.
 "
 
 pub fn main() -> Nil {
@@ -131,8 +133,13 @@ fn extract_option(
   }
 }
 
+/// The configuration, applied to what every command shares: commands that
+/// change users or clients write audit entries, and must rotate the log as
+/// the server does.
 fn load(config_path: String) -> Result(Config, String) {
-  config_loader.load(config_path)
+  use cfg <- result.map(config_loader.load(config_path))
+  audit.configure(cfg.storage.audit_max_bytes, cfg.storage.audit_files)
+  cfg
 }
 
 fn serve(config_path: String) -> Result(Nil, String) {

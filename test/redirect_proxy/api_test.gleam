@@ -1395,7 +1395,8 @@ pub fn routes_router_and_openapi_agree_test() {
   assert list.sort(documented, compare_pairs) == list.sort(table, compare_pairs)
 
   let env = support.boot(config.default())
-  let token = access_token(env, [scope.Read, scope.Write, scope.Ops])
+  let token =
+    access_token(env, [scope.Read, scope.Write, scope.Ops, scope.Audit])
   let created =
     api(
       env,
@@ -1525,10 +1526,22 @@ pub fn csv_import_and_export_over_the_api_test() {
   assert header(export, "content-type") == "text/csv; charset=utf-8"
   assert string.starts_with(export.body, "id,host,match,source,target")
   assert string.contains(export.body, ",prefix,/csv/,/to/$1,")
-  // the CSV export has its own ETag
+  // the version of the rule set, as the JSON export: usable in If-Match
   let json_tag =
     header(api(env, Get, "/api/redirects/export", token, ""), "etag")
-  assert header(export, "etag") != json_tag
+  assert header(export, "etag") == json_tag
+  let guarded =
+    support.send(
+      Post,
+      env.api <> "/api/redirects/import?mode=replace",
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "text/csv"),
+        #("if-match", header(export, "etag")),
+      ],
+      export.body,
+    )
+  assert guarded.status == 200
   assert api(env, Get, "/api/redirects/export?format=xml", token, "").status
     == 400
   // CSV errors are validation errors with the line
@@ -1539,7 +1552,7 @@ pub fn csv_import_and_export_over_the_api_test() {
 
 pub fn audit_over_the_api_test() {
   let env = support.boot(config.default())
-  let token = access_token(env, [scope.Write, scope.Ops])
+  let token = access_token(env, [scope.Write, scope.Audit])
   list.each(["/a1", "/a2", "/a3"], fn(source) {
     let resp =
       api(
@@ -1575,7 +1588,17 @@ pub fn audit_over_the_api_test() {
     api(env, Get, "/api/audit?action=rule.create&per_page=2&page=2", token, "")
   assert !field(next.body, ["meta", "has_more"], decode.bool)
   assert api(env, Get, "/api/audit?since=yesterday", token, "").status == 400
-  // the ops scope is required
-  let reader = access_token(env, [scope.Read])
-  assert api(env, Get, "/api/audit", reader, "").status == 403
+  // its own scope: not implied by any other (it holds sign-ins)
+  let others = access_token(env, [scope.Read, scope.Write, scope.Ops])
+  assert api(env, Get, "/api/audit", others, "").status == 403
+}
+
+pub fn audit_api_dates_and_paging_limits_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Audit])
+  // an offset sent unencoded: `+` arrives as a space
+  assert api(env, Get, "/api/audit?since=2000-01-01T00:00:00+00:00", token, "").status
+    == 200
+  assert api(env, Get, "/api/audit?page=1000&per_page=500", token, "").status
+    == 400
 }

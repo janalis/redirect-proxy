@@ -276,6 +276,11 @@ pub fn file_to_string(rules: List(Rule)) -> String {
 /// Parses a redirections file. Both the versioned object form
 /// (`{"version": 1, "rules": [...]}`) and a bare array of rules are accepted.
 pub fn file_from_string(content: String) -> Result(List(Rule), String) {
+  // a UTF-8 byte order mark, as some editors write
+  let content = case content {
+    "\u{FEFF}" <> rest -> rest
+    _ -> content
+  }
   let versioned = {
     use version <- decode.optional_field(
       "version",

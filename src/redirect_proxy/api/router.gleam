@@ -137,13 +137,11 @@ fn route(
         case get("format") {
           "" | "json" ->
             Ok(#("application/json", store_rules.export(rules), version))
-          // its own ETag: a cached JSON copy is not a CSV one
+          // the same ETag (the rule set's version), so that it can be sent
+          // back in If-Match on an import; caches tell the formats apart by
+          // their URL
           "csv" ->
-            Ok(#(
-              "text/csv; charset=utf-8",
-              rule_csv.to_string(rules),
-              version <> "-csv",
-            ))
+            Ok(#("text/csv; charset=utf-8", rule_csv.to_string(rules), version))
           _ -> Error(problem.bad_request("format must be json or csv."))
         },
       )
@@ -203,7 +201,7 @@ fn route(
       test_url(req, ctx)
     }
     Get, ["audit"] -> {
-      use <- require(principal, scope.Ops, ctx)
+      use <- require(principal, scope.Audit, ctx)
       audit_log(req, ctx)
     }
     _, _ -> problem.not_found("No such endpoint.")
@@ -414,6 +412,8 @@ fn positive_param(
   }
 }
 
+const max_audit_entries = 100_000
+
 /// `GET /api/audit`: the audit entries as recorded (newest first), filtered,
 /// in pages. `has_more` (and a `Link: rel="next"`) tells whether older
 /// entries match, without counting them all.
@@ -426,7 +426,8 @@ fn audit_log(req: Request, ctx: Context) -> Response {
     case get(name) {
       "" -> Ok(0)
       value ->
-        ffi.parse_rfc3339(value)
+        // `+01:00` sent unencoded arrives as ` 01:00`
+        ffi.parse_rfc3339(string.replace(value, " ", "+"))
         |> result.replace_error(problem.bad_request(
           name <> " must be an RFC 3339 date-time (2026-11-06T12:00:00Z).",
         ))
@@ -439,6 +440,15 @@ fn audit_log(req: Request, ctx: Context) -> Response {
     default_per_page,
   ))
   let per_page = int.min(per_page, max_per_page)
+  // each page reads the files up to it: older entries are for `until`
+  use <- bool.guard(
+    page * per_page > max_audit_entries,
+    problem.bad_request(
+      "page: at most the "
+      <> int.to_string(max_audit_entries)
+      <> " most recent matching entries are paged through; use until for older ones.",
+    ),
+  )
   use since <- result_or_response(time("since"))
   use until <- result_or_response(time("until"))
   let filter =

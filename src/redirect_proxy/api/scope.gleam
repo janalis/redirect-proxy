@@ -13,15 +13,19 @@ pub type Scope {
   Write
   /// Operational actions such as reloading the redirections file.
   Ops
+  /// Read the audit log (sign-ins with client addresses, user and API
+  /// client changes): granted on its own, never implied.
+  Audit
 }
 
-pub const all = [Read, Write, Ops]
+pub const all = [Read, Write, Ops, Audit]
 
 pub fn to_string(scope: Scope) -> String {
   case scope {
     Read -> "redirects:read"
     Write -> "redirects:write"
     Ops -> "redirects:ops"
+    Audit -> "audit:read"
   }
 }
 
@@ -30,6 +34,7 @@ pub fn from_string(value: String) -> Result(Scope, Nil) {
     "redirects:read" -> Ok(Read)
     "redirects:write" -> Ok(Write)
     "redirects:ops" -> Ok(Ops)
+    "audit:read" -> Ok(Audit)
     _ -> Error(Nil)
   }
 }
@@ -59,6 +64,7 @@ pub fn from_external(cfg: ApiOAuthConfig, names: List(String)) -> List(Scope) {
     #(cfg.read_scope, Read),
     #(cfg.write_scope, Write),
     #(cfg.ops_scope, Ops),
+    #(cfg.audit_scope, Audit),
   ]
   |> list.filter(fn(pair) { list.contains(names, pair.0) })
   |> list.map(fn(pair) { pair.1 })
@@ -70,5 +76,6 @@ pub fn external_name(cfg: ApiOAuthConfig, scope: Scope) -> String {
     Read -> cfg.read_scope
     Write -> cfg.write_scope
     Ops -> cfg.ops_scope
+    Audit -> cfg.audit_scope
   }
 }

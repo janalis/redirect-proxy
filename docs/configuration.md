@@ -46,7 +46,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `admin` (see [Roles](administration.md#roles)) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
-| `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |
+| `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE`, `_AUDIT_SCOPE` | disabled |
 | `RP_ACCESS_LOG_ENABLED`, `_FORMAT`, `_ESCAPE`, `_OUTPUT` | `true`, `combined`, `default`, `stdout` |
 | `RP_ACCESS_LOG_ANONYMIZE_IP`, `_LOG_QUERY`, `_TRUSTED_PROXIES` | `truncate`, `false`, (none) |
 | `RP_ACCESS_LOG_MAX_BYTES`, `_MAX_FILES`, `_COMPRESS` | `0` (no rotation), `7`, `true` |

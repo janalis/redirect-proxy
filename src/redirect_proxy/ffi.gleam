@@ -339,3 +339,7 @@ pub fn lowercase_ascii(text: String) -> String
 /// `?` or `#`, after the last `@`.
 @external(erlang, "redirect_proxy_ffi", "url_host")
 pub fn url_host(rest: String) -> String
+
+/// The lines of some bytes, split on `\n`, not decoded.
+@external(erlang, "redirect_proxy_ffi", "split_lines")
+pub fn split_lines(bits: BitArray) -> List(BitArray)
