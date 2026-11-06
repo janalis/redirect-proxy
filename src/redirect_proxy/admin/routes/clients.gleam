@@ -3,6 +3,7 @@
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
@@ -107,5 +108,48 @@ pub fn delete_api_client(
       wisp.redirect("/api-clients?flash=client_deleted")
     }
     Error(reason) -> render_api_clients(ctx, s, 404, None, None, [reason])
+  }
+}
+
+pub fn confirm_client_action(
+  ctx: Context,
+  s: Session,
+  client_id: String,
+  action: String,
+) -> Response {
+  let path = "/api-clients/" <> uri.percent_encode(client_id) <> "/" <> action
+  case action {
+    "rotate" ->
+      html(
+        200,
+        pages.confirm(
+          s,
+          features(ctx),
+          layout.NavClients,
+          "Rotate a client secret",
+          "A new secret is generated for "
+            <> client_id
+            <> ". The current secret stops working at once and the tokens issued with it are revoked.",
+          path,
+          "Rotate the secret",
+          "/api-clients",
+        ),
+      )
+    _ ->
+      html(
+        200,
+        pages.confirm(
+          s,
+          features(ctx),
+          layout.NavClients,
+          "Delete an API client",
+          "The client "
+            <> client_id
+            <> " will be removed and its tokens revoked at once.",
+          path,
+          "Delete " <> client_id,
+          "/api-clients",
+        ),
+      )
   }
 }

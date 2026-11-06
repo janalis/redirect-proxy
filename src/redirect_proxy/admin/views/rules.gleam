@@ -81,13 +81,20 @@ pub fn index(
         ),
       ]),
       filters_form(filters),
-      h.p([a.class("small fg-secondary")], [
+      h.p([a.class("small fg-secondary d-flex gap-2")], [
         h.text(
           int.to_string(matching)
           <> " matching of "
           <> int.to_string(total)
           <> " redirection(s)",
         ),
+        case filters_query(Filters(..filters, sort: "")) {
+          [] -> element.none()
+          query ->
+            h.a([a.href("/export?" <> uri.query_to_string(query))], [
+              h.text("Export these"),
+            ])
+        },
       ]),
       case rows {
         [] -> empty_state(total)
@@ -578,20 +585,31 @@ pub fn form(
           h.div([a.class("row g-3")], [
             field_col("md:col-4", [
               label("host", "Host"),
-              h.input([
-                a.id("host"),
-                a.name("host"),
-                a.class(input_class(errors, "host")),
-                a.value(r.host),
-                a.required(True),
-                a.placeholder("*"),
-              ]),
+              h.input(list.append(
+                [
+                  a.id("host"),
+                  a.name("host"),
+                  a.class(input_class(errors, "host")),
+                  a.value(r.host),
+                  a.required(True),
+                  a.placeholder("*"),
+                ],
+                layout.invalid_attributes(errors, "host"),
+              )),
+              layout.field_feedback(errors, "host"),
               help("Host name to match (port ignored), or * for any host."),
             ]),
             field_col("md:col-4", [
               label("match", "Match type"),
               h.select(
-                [a.id("match"), a.name("match"), a.class("form-control")],
+                list.append(
+                  [
+                    a.id("match"),
+                    a.name("match"),
+                    a.class(input_class(errors, "match")),
+                  ],
+                  layout.invalid_attributes(errors, "match"),
+                ),
                 [
                   option("exact", "Exact path", rule.kind_to_string(r.kind)),
                   option("prefix", "Path prefix", rule.kind_to_string(r.kind)),
@@ -602,12 +620,20 @@ pub fn form(
                   ),
                 ],
               ),
+              layout.field_feedback(errors, "match"),
               help("Exact > prefix (longest first) > regex (by priority)."),
             ]),
             field_col("md:col-4", [
               label("status", "HTTP status"),
               h.select(
-                [a.id("status"), a.name("status"), a.class("form-control")],
+                list.append(
+                  [
+                    a.id("status"),
+                    a.name("status"),
+                    a.class(input_class(errors, "status")),
+                  ],
+                  layout.invalid_attributes(errors, "status"),
+                ),
                 list.map(
                   [
                     #(301, "301 Moved Permanently"),
@@ -621,57 +647,74 @@ pub fn form(
                   },
                 ),
               ),
+              layout.field_feedback(errors, "status"),
             ]),
             field_col("col-12", [
               label("source", "Source"),
-              h.input([
-                a.id("source"),
-                a.name("source"),
-                a.class(input_class(errors, "source") <> " font-monospace"),
-                a.value(r.source),
-                a.required(True),
-                a.placeholder("/old-path or ^/blog/(\\d+)$"),
-              ]),
+              h.input(list.append(
+                [
+                  a.id("source"),
+                  a.name("source"),
+                  a.class(input_class(errors, "source") <> " font-monospace"),
+                  a.value(r.source),
+                  a.required(True),
+                  a.placeholder("/old-path or ^/blog/(\\d+)$"),
+                ],
+                layout.invalid_attributes(errors, "source"),
+              )),
+              layout.field_feedback(errors, "source"),
               help(
                 "Path (without query string). Regexes are not anchored automatically; use ^ and $.",
               ),
             ]),
             field_col("col-12", [
               label("target", "Target"),
-              h.input([
-                a.id("target"),
-                a.name("target"),
-                a.class(input_class(errors, "target") <> " font-monospace"),
-                a.value(r.target),
-                a.required(True),
-                a.placeholder("https://example.com/new-path/$1"),
-              ]),
+              h.input(list.append(
+                [
+                  a.id("target"),
+                  a.name("target"),
+                  a.class(input_class(errors, "target") <> " font-monospace"),
+                  a.value(r.target),
+                  a.required(True),
+                  a.placeholder("https://example.com/new-path/$1"),
+                ],
+                layout.invalid_attributes(errors, "target"),
+              )),
+              layout.field_feedback(errors, "target"),
               help(
                 "Absolute URL or path. $1..$9 / ${n} insert regex captures; for prefix rules $1 is the rest of the path. $$ is a literal $.",
               ),
             ]),
             field_col("md:col-4", [
               label("priority", "Priority"),
-              h.input([
-                a.id("priority"),
-                a.name("priority"),
-                a.type_("number"),
-                a.min("0"),
-                a.max("1000000"),
-                a.class(input_class(errors, "priority")),
-                a.value(int.to_string(r.priority)),
-              ]),
+              h.input(list.append(
+                [
+                  a.id("priority"),
+                  a.name("priority"),
+                  a.type_("number"),
+                  a.min("0"),
+                  a.max("1000000"),
+                  a.class(input_class(errors, "priority")),
+                  a.value(int.to_string(r.priority)),
+                ],
+                layout.invalid_attributes(errors, "priority"),
+              )),
+              layout.field_feedback(errors, "priority"),
               help("Lower runs first among regex and same-length prefix rules."),
             ]),
             field_col("md:col-8", [
               label("note", "Note"),
-              h.input([
-                a.id("note"),
-                a.name("note"),
-                a.class(input_class(errors, "note")),
-                a.value(r.note),
-                a.placeholder("Optional description"),
-              ]),
+              h.input(list.append(
+                [
+                  a.id("note"),
+                  a.name("note"),
+                  a.class(input_class(errors, "note")),
+                  a.value(r.note),
+                  a.placeholder("Optional description"),
+                ],
+                layout.invalid_attributes(errors, "note"),
+              )),
+              layout.field_feedback(errors, "note"),
             ]),
             field_col("col-12", [
               h.div([a.class("d-flex flex-wrap gap-3")], [
@@ -703,6 +746,22 @@ pub fn form(
               "Cancel",
               "btn-outline theme-secondary",
             ),
+            case is_new {
+              True -> element.none()
+              False ->
+                element.fragment([
+                  layout.button_link(
+                    "/rules/new?" <> uri.query_to_string([#("from", r.id)]),
+                    "Duplicate",
+                    "btn-outline theme-secondary ms-auto",
+                  ),
+                  layout.button_link(
+                    "/rules/" <> uri.percent_encode(r.id) <> "/delete",
+                    "Delete",
+                    "btn-outline theme-danger",
+                  ),
+                ])
+            },
           ]),
         ]),
       ]),

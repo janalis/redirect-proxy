@@ -7,7 +7,7 @@ import gleam/uri
 import lustre/attribute as a
 import lustre/element.{type Element}
 import lustre/element/html as h
-import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/admin/auth/session.{type Session} as auth_session
 import redirect_proxy/admin/views/layout.{type Flash}
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
@@ -519,21 +519,17 @@ pub fn users(
                             h.text("you"),
                           ])
                         False ->
-                          h.form(
+                          h.a(
                             [
-                              a.method("post"),
-                              a.action("/users/" <> u.username <> "/delete"),
-                            ],
-                            [
-                              layout.csrf_field(session),
-                              h.button(
-                                [
-                                  a.type_("submit"),
-                                  a.class("btn btn-sm btn-outline theme-danger"),
-                                ],
-                                [h.text("Delete")],
+                              a.href(
+                                "/users/"
+                                <> uri.percent_encode(u.username)
+                                <> "/delete",
                               ),
+                              a.class("btn btn-sm btn-outline theme-danger"),
+                              a.aria_label("Delete user " <> u.username),
                             ],
+                            [h.text("Delete")],
                           )
                       },
                     ]),
@@ -544,15 +540,24 @@ pub fn users(
           ]),
         ]),
         h.div([a.class("col-12 lg:col-5")], [
-          user_form(session, "/users", "Add a user", True, "Create user"),
+          user_form(session, "/users", "Add a user", True, False, "Create user"),
           h.div([a.class("mt-4")], [
-            user_form(
-              session,
-              "/account/password",
-              "Change a password",
-              True,
-              "Change password",
-            ),
+            case session.method {
+              auth_session.Local ->
+                user_form(
+                  session,
+                  "/account/password",
+                  "Change a password",
+                  True,
+                  True,
+                  "Change password",
+                )
+              _ ->
+                layout.alert(
+                  "theme-secondary",
+                  "You signed in with single sign-on or a proxy: only local administrators can change local passwords.",
+                )
+            },
           ]),
         ]),
       ]),
@@ -565,6 +570,7 @@ fn user_form(
   action: String,
   title: String,
   with_username: Bool,
+  with_current: Bool,
   submit: String,
 ) -> Element(Nil) {
   h.form([a.method("post"), a.action(action), a.class("card")], [
@@ -598,15 +604,76 @@ fn user_form(
           a.class("form-control"),
           a.required(True),
           a.autocomplete("new-password"),
-          a.min("12"),
+          a.attribute("minlength", "12"),
         ]),
         h.div([a.class("form-text")], [h.text("At least 12 characters.")]),
       ]),
+      case with_current {
+        False -> element.none()
+        True ->
+          h.div([a.class("mb-3")], [
+            h.label([a.class("form-label"), a.for(action <> "-current")], [
+              h.text("Your current password"),
+            ]),
+            h.input([
+              a.id(action <> "-current"),
+              a.name("current_password"),
+              a.type_("password"),
+              a.class("form-control"),
+              a.required(True),
+              a.autocomplete("current-password"),
+            ]),
+            h.div([a.class("form-text")], [
+              h.text(
+                "Required for any password change, yours or another user's.",
+              ),
+            ]),
+          ])
+      },
       h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
         h.text(submit),
       ]),
     ]),
   ])
+}
+
+/// Confirmation of a destructive action: what will happen, a form to
+/// confirm it, and a way back.
+pub fn confirm(
+  session: Session,
+  features: layout.Features,
+  nav: layout.Nav,
+  title: String,
+  message: String,
+  action: String,
+  button: String,
+  back: String,
+) -> String {
+  layout.page(
+    title:,
+    session: Some(session),
+    nav:,
+    flash: None,
+    features:,
+    content: [
+      layout.heading(title, []),
+      h.div([a.class("card")], [
+        h.div([a.class("card-body")], [
+          h.p([], [h.text(message)]),
+          h.form([a.method("post"), a.action(action), a.class("d-flex gap-2")], [
+            layout.csrf_field(session),
+            h.button(
+              [a.type_("submit"), a.class("btn btn-solid theme-danger")],
+              [
+                h.text(button),
+              ],
+            ),
+            layout.button_link(back, "Cancel", "btn-outline theme-secondary"),
+          ]),
+        ]),
+      ]),
+    ],
+  )
 }
 
 // --- audit ------------------------------------------------------------------
@@ -863,7 +930,7 @@ pub fn api_clients(
                       h.th([a.class("text-end")], [h.text("Actions")]),
                     ]),
                   ]),
-                  h.tbody([], list.map(all, client_row(session, _))),
+                  h.tbody([], list.map(all, client_row)),
                 ]),
               ])
           },
@@ -890,7 +957,7 @@ pub fn api_clients(
   )
 }
 
-fn client_row(session: Session, c: clients.Client) -> Element(Nil) {
+fn client_row(c: clients.Client) -> Element(Nil) {
   h.tr([], [
     h.td([], [
       h.div([], [h.text(c.name)]),
@@ -911,36 +978,26 @@ fn client_row(session: Session, c: clients.Client) -> Element(Nil) {
       }),
     ]),
     h.td([a.class("text-end text-nowrap")], [
-      h.form(
+      // both go through a confirmation page
+      h.a(
         [
-          a.method("post"),
-          a.action("/api-clients/" <> c.client_id <> "/rotate"),
-          a.class("d-inline"),
-        ],
-        [
-          layout.csrf_field(session),
-          h.button(
-            [
-              a.type_("submit"),
-              a.class("btn btn-sm btn-outline theme-secondary me-1"),
-            ],
-            [h.text("Rotate secret")],
+          a.href(
+            "/api-clients/" <> uri.percent_encode(c.client_id) <> "/rotate",
           ),
+          a.class("btn btn-sm btn-outline theme-secondary me-1"),
+          a.aria_label("Rotate the secret of " <> c.client_id),
         ],
+        [h.text("Rotate secret")],
       ),
-      h.form(
+      h.a(
         [
-          a.method("post"),
-          a.action("/api-clients/" <> c.client_id <> "/delete"),
-          a.class("d-inline"),
-        ],
-        [
-          layout.csrf_field(session),
-          h.button(
-            [a.type_("submit"), a.class("btn btn-sm btn-outline theme-danger")],
-            [h.text("Delete")],
+          a.href(
+            "/api-clients/" <> uri.percent_encode(c.client_id) <> "/delete",
           ),
+          a.class("btn btn-sm btn-outline theme-danger"),
+          a.aria_label("Delete " <> c.client_id),
         ],
+        [h.text("Delete")],
       ),
     ]),
   ])

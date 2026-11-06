@@ -5,7 +5,8 @@ import redirect_proxy/admin/routes/auth.{
   login, login_page, logout, oidc_callback, oidc_start, require_session,
 } as _
 import redirect_proxy/admin/routes/clients.{
-  api_clients_page, create_api_client, delete_api_client, rotate_api_client,
+  api_clients_page, confirm_client_action, create_api_client, delete_api_client,
+  rotate_api_client,
 } as _
 import redirect_proxy/admin/routes/rules.{
   audit_page, bulk, confirm_delete, create_rule, delete_rule, edit_rule, export,
@@ -13,7 +14,7 @@ import redirect_proxy/admin/routes/rules.{
   update_rule,
 } as _
 import redirect_proxy/admin/routes/users.{
-  change_password, create_user, delete_user, list_users,
+  change_password, confirm_delete_user, create_user, delete_user, list_users,
 } as _
 import redirect_proxy/admin/web.{
   type Context, limit_body, not_found, plain, security_headers,
@@ -102,16 +103,21 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Post, ["rules", id, "toggle"] -> toggle_rule(req, ctx, s, id)
     Post, ["reload"] -> reload(req, ctx, s)
     Get, ["test"] -> test_url(req, ctx, s)
-    Get, ["export"] -> export(ctx)
+    Get, ["export"] -> export(req, ctx)
     Get, ["import"] -> import_page(req, ctx, s)
     Post, ["import"] -> import_rules(req, ctx, s)
     Get, ["users"] -> list_users(req, ctx, s)
     Post, ["users"] -> create_user(req, ctx, s)
+    Get, ["users", username, "delete"] -> confirm_delete_user(ctx, s, username)
     Post, ["users", username, "delete"] -> delete_user(req, ctx, s, username)
     Post, ["account", "password"] -> change_password(req, ctx, s)
     Get, ["audit"] -> audit_page(req, ctx, s)
     Get, ["api-clients"] -> api_clients_page(req, ctx, s)
     Post, ["api-clients"] -> create_api_client(req, ctx, s)
+    Get, ["api-clients", client_id, "rotate"] ->
+      confirm_client_action(ctx, s, client_id, "rotate")
+    Get, ["api-clients", client_id, "delete"] ->
+      confirm_client_action(ctx, s, client_id, "delete")
     Post, ["api-clients", client_id, "rotate"] ->
       rotate_api_client(req, ctx, s, client_id)
     Post, ["api-clients", client_id, "delete"] ->

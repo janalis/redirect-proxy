@@ -2,6 +2,7 @@
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute as a
 import lustre/element.{type Element}
 import lustre/element/html as h
@@ -57,8 +58,18 @@ pub fn page(
       h.link([a.rel("icon"), a.href("/static/favicon.svg")]),
     ]),
     h.body([], [
+      h.a(
+        [
+          a.href("#main"),
+          a.class("visually-hidden-focusable btn btn-solid theme-primary m-2"),
+        ],
+        [h.text("Skip to content")],
+      ),
       navbar(session, nav, features),
-      h.main([a.class("container py-4")], [flash_view(flash), ..content]),
+      h.main([a.id("main"), a.class("container py-4")], [
+        flash_view(flash),
+        ..content
+      ]),
       h.footer([a.class("container pb-4 small fg-secondary")], [
         h.text(app_name),
       ]),
@@ -161,16 +172,72 @@ pub fn alert(theme: String, message: String) -> Element(Nil) {
   h.div([a.class("alert mb-3 " <> theme), a.role("alert")], [h.text(message)])
 }
 
+/// The errors of a form. A message prefixed with a field name (`source:
+/// ...`) links to that field, where it is repeated (see `field_errors`).
 pub fn errors_view(errors: List(String)) -> Element(Nil) {
   case errors {
     [] -> element.none()
     _ ->
-      h.div([a.class("alert mb-3 theme-danger"), a.role("alert")], [
-        h.strong([], [h.text("Please fix the following:")]),
-        h.ul(
-          [a.class("mb-0")],
-          list.map(errors, fn(e) { h.li([], [h.text(e)]) }),
-        ),
+      h.div(
+        [
+          a.id("errors"),
+          a.class("alert mb-3 theme-danger"),
+          a.role("alert"),
+          a.tabindex(-1),
+        ],
+        [
+          h.strong([], [h.text("Please fix the following:")]),
+          h.ul(
+            [a.class("mb-0")],
+            list.map(errors, fn(e) {
+              case string.split_once(e, ":") {
+                Ok(#(field, _)) if field != "" ->
+                  case string.contains(field, " ") {
+                    True -> h.li([], [h.text(e)])
+                    False ->
+                      h.li([], [h.a([a.href("#" <> field)], [h.text(e)])])
+                  }
+                _ -> h.li([], [h.text(e)])
+              }
+            }),
+          ),
+        ],
+      )
+  }
+}
+
+/// The messages of `errors` about `field`, without the field prefix.
+pub fn field_errors(errors: List(String), field: String) -> List(String) {
+  errors
+  |> list.filter_map(fn(e) {
+    case string.split_once(e, ":") {
+      Ok(#(f, message)) if f == field -> Ok(string.trim(message))
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Attributes of an input with errors: invalid, described by its messages.
+pub fn invalid_attributes(
+  errors: List(String),
+  field: String,
+) -> List(a.Attribute(Nil)) {
+  case field_errors(errors, field) {
+    [] -> []
+    _ -> [
+      a.aria_invalid("true"),
+      a.aria_describedby(field <> "-errors"),
+    ]
+  }
+}
+
+/// The messages about a field, under it.
+pub fn field_feedback(errors: List(String), field: String) -> Element(Nil) {
+  case field_errors(errors, field) {
+    [] -> element.none()
+    messages ->
+      h.div([a.id(field <> "-errors"), a.class("invalid-feedback")], [
+        h.text(string.join(messages, " ")),
       ])
   }
 }

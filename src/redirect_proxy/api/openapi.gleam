@@ -464,9 +464,28 @@ fn paths(registry: List(Deprecation)) -> Json {
         op(
           "get",
           "/api/redirects/export",
-          "Export every redirection",
+          "Export the redirections (all, or those matching the filters)",
           "redirects:read",
           [
+            #(
+              "parameters",
+              json.preprocessed_array([
+                param("q", "query", string_schema(), "Text search."),
+                param("host", "query", string_schema(), "Exact host (or *)."),
+                param(
+                  "match",
+                  "query",
+                  enum_schema(["exact", "prefix", "regex"]),
+                  "exact, prefix or regex.",
+                ),
+                param(
+                  "enabled",
+                  "query",
+                  enum_schema(["true", "false"]),
+                  "true or false.",
+                ),
+              ]),
+            ),
             #(
               "responses",
               json.object([
