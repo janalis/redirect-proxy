@@ -387,15 +387,32 @@ fn next_param(req: Request) -> String {
 }
 
 /// Only allow local, absolute-path redirects after login (no open redirect).
+/// Control characters are refused anywhere: browsers drop tabs and newlines
+/// when they parse a `Location` (`/\t/evil` becomes `//evil`), and CR/LF
+/// would split the response headers. `\` is refused anywhere too, browsers
+/// read it as `/`.
 fn safe_next(next: Result(String, Nil)) -> String {
   case next {
     Ok("/" <> rest) ->
-      case string.starts_with(rest, "/") || string.starts_with(rest, "\\") {
+      case
+        string.starts_with(rest, "/")
+        || string.contains(rest, "\\")
+        || has_control_character(rest)
+      {
         True -> "/rules"
         False -> "/" <> rest
       }
     _ -> "/rules"
   }
+}
+
+/// C0 controls, DEL and C1 controls.
+fn has_control_character(value: String) -> Bool {
+  string.to_utf_codepoints(value)
+  |> list.any(fn(c) {
+    let n = string.utf_codepoint_to_int(c)
+    n < 0x20 || { n >= 0x7f && n <= 0x9f }
+  })
 }
 
 pub fn logout(req: Request, ctx: Context, s: Session) -> Response {
