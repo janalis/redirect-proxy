@@ -1173,10 +1173,12 @@ pub fn conditional_reads_test() {
       "",
     )
   }
+  // a rule always answers 200: its hit counts change without its ETag
   let tag = header(api(env, Get, "/api/redirects/a", token, ""), "etag")
-  assert get("/api/redirects/a", tag).status == 304
-  assert get("/api/redirects/a", "W/" <> tag).status == 304
-  assert get("/api/redirects/a", "\"other\"").status == 200
+  let resp = get("/api/redirects/a", tag)
+  assert resp.status == 200
+  assert header(resp, "etag") == tag
+  assert get("/api/redirects/a", "*").status == 200
   let export = api(env, Get, "/api/redirects/export", token, "")
   assert get("/api/redirects/export", header(export, "etag")).status == 304
 }
