@@ -1441,6 +1441,25 @@ pub fn query_rules_over_http_test() {
 /// documented operation is in the table and the other way round, each one
 /// is routed (neither "no such endpoint" nor 405), and a 405 lists exactly
 /// the table's methods.
+/// Every operation needs the scope of its row in `routes.operations`: a
+/// token with every scope that does not grant it gets a 403, before the
+/// operation runs.
+pub fn every_operation_needs_its_scope_test() {
+  let env = support.boot(config.default())
+  let all = [scope.Read, scope.Write, scope.Ops, scope.Audit]
+  list.each(routes.operations, fn(o) {
+    let token =
+      access_token(env, list.filter(all, fn(s) { !scope.allows([s], o.scope) }))
+    let path = string.replace(o.template, "{id}", "no-such-rule")
+    let resp = api(env, o.method, path, token, "{}")
+    assert resp.status == 403
+    assert string.contains(
+      header(resp, "www-authenticate"),
+      "insufficient_scope",
+    )
+  })
+}
+
 pub fn routes_router_and_openapi_agree_test() {
   let methods = ["get", "post", "put", "patch", "delete"]
   let documented =
@@ -1502,9 +1521,7 @@ pub fn routes_router_and_openapi_agree_test() {
       let path = string.replace(t, "{id}", id)
       let unused =
         [Get, Post, Put, Patch, Delete]
-        |> list.find(fn(m) {
-          !list.contains(routes.operations, routes.Operation(m, t))
-        })
+        |> list.find(fn(m) { result.is_error(routes.find(m, t)) })
       case unused {
         Error(Nil) -> Nil
         Ok(method) -> {
