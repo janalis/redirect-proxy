@@ -1,3 +1,5 @@
+import gleam/erlang/process
+import gleam/list
 import gleam/string
 import redirect_proxy/ffi
 import simplifile
@@ -58,3 +60,59 @@ pub fn file_lock_test() {
   assert string.contains(reason, "4242 cli@host")
   let assert Error(_) = ffi.locked_file(path, 100, fn() { Ok(1) })
 }
+
+pub fn file_lock_release_keeps_a_lock_taken_over_test() {
+  let path = support.temp_dir() <> "/data.json"
+  let lock = path <> ".lock"
+  // held past the stale delay: another process broke the lock and took it
+  let assert Ok(Nil) =
+    ffi.with_file_lock(path, 100, fn() {
+      let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host 1\n")
+      Nil
+    })
+  assert simplifile.read(lock) == Ok("4242 cli@host 1\n")
+}
+
+pub fn stale_file_lock_is_broken_by_one_waiter_at_a_time_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/data.json"
+  let marker = dir <> "/inside"
+  let assert Ok(Nil) = simplifile.write(path <> ".lock", "4242 crashed@host\n")
+  set_mtime(path <> ".lock", 60)
+  let done = process.new_subject()
+  let waiters = 8
+  list.each(list.repeat(Nil, waiters), fn(_) {
+    process.spawn(fn() {
+      let outcome =
+        ffi.with_file_lock(path, 10_000, fn() {
+          // mutual exclusion: nobody else is inside
+          let alone = simplifile.is_file(marker) == Ok(False)
+          let assert Ok(Nil) = simplifile.write(marker, "")
+          process.sleep(10)
+          let assert Ok(Nil) = simplifile.delete(marker)
+          alone
+        })
+      process.send(done, outcome)
+    })
+  })
+  list.each(list.repeat(Nil, waiters), fn(_) {
+    assert process.receive(done, 15_000) == Ok(Ok(True))
+  })
+  assert simplifile.is_file(path <> ".lock") == Ok(False)
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert !list.any(files, fn(f) { string.contains(f, ".break") })
+}
+
+pub fn atomic_write_failure_returns_an_error_test() {
+  let dir = support.temp_dir()
+  // the target is a non-empty directory: the final rename fails
+  let target = dir <> "/target"
+  let assert Ok(Nil) = simplifile.create_directory_all(target <> "/sub")
+  let assert Error(_) = ffi.atomic_write(target, "content")
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert files == ["target"]
+}
+
+/// Sets a file's modification time `seconds_ago` in the past.
+@external(erlang, "test_net_ffi", "set_mtime_ago")
+fn set_mtime(path: String, seconds_ago: Int) -> Nil
