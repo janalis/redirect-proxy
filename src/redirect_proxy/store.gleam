@@ -822,6 +822,7 @@ fn mutate(
       actor.continue(state)
     }
     Error(reason) -> {
+      metrics.incr(metrics.StorageWriteFailures)
       log.error("redirections not saved: " <> reason)
       process.send(reply, Error(to_error("storage: " <> reason)))
       actor.continue(state)
@@ -924,6 +925,7 @@ fn commit(
       Ok(fingerprint)
     }
     Error(reason) -> {
+      metrics.incr(metrics.StorageWriteFailures)
       log.error("failed to persist redirections: " <> reason)
       Error(["storage: " <> reason])
     }

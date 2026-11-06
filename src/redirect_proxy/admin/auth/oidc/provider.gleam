@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
+import redirect_proxy/metrics
 
 pub const table = "redirect_proxy_oidc"
 
@@ -81,6 +82,7 @@ fn guarded_fetch(
           case fetch() {
             Ok(value) -> Ok(value)
             Error(reason) -> {
+              metrics.incr(metrics.IdpFetchFailures)
               ffi.ets_put(table, "failed:" <> key, #(
                 ffi.now_seconds() + failure_ttl,
                 reason,

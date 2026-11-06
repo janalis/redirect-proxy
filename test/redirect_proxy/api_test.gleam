@@ -878,12 +878,20 @@ pub fn api_on_its_own_port_test() {
 
   let resp = support.send(Get, env.api <> "/healthz", [], "")
   assert header(resp, "x-content-type-options") == "nosniff"
+  assert support.send(Get, env.api <> "/readyz", [], "").body == "ready"
+  // the metrics stay on the admin listener
+  assert support.send(Get, env.api <> "/metrics", [], "").status != 200
 }
 
 pub fn api_without_admin_ui_test() {
   let env = own_port(False)
   let token = access_token(env, [scope.Read])
   assert api(env, Get, "/api/redirects", token, "").status == 200
+  // probes and metrics would be nowhere else
+  assert support.send(Get, env.api <> "/readyz", [], "").status == 200
+  let metrics = support.send(Get, env.api <> "/metrics", [], "")
+  assert metrics.status == 200
+  assert string.contains(metrics.body, "redirect_proxy_requests_total")
 }
 
 pub fn api_port_rules_test() {

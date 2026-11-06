@@ -44,6 +44,10 @@ pub type Metric {
   Responses3xx
   Responses4xx
   Responses5xx
+  /// The redirections file could not be written (disk full, permissions).
+  StorageWriteFailures
+  /// Fetches of an identity provider's metadata or keys that failed.
+  IdpFetchFailures
 }
 
 fn index(metric: Metric) -> Int {
@@ -65,6 +69,8 @@ fn index(metric: Metric) -> Int {
     Responses4xx -> 15
     Responses5xx -> 16
     Responses2xx -> 17
+    StorageWriteFailures -> 18
+    IdpFetchFailures -> 19
   }
 }
 
@@ -135,7 +141,7 @@ fn counters() -> ffi.Counters {
   case ffi.snapshot_get(key) {
     Ok(c) -> c
     Error(Nil) -> {
-      let c = ffi.counter_new(17)
+      let c = ffi.counter_new(19)
       ffi.snapshot_put(key, c)
       c
     }
@@ -294,6 +300,18 @@ pub fn render_prometheus() -> String {
       "Rejected reloads of the redirections file.",
       "counter",
       get(ReloadFailures),
+    ),
+    line(
+      "redirect_proxy_storage_write_failures_total",
+      "Changes not saved because the redirections file could not be written.",
+      "counter",
+      get(StorageWriteFailures),
+    ),
+    line(
+      "redirect_proxy_idp_fetch_failures_total",
+      "Failed fetches of an identity provider's metadata or signing keys (SSO and external API tokens).",
+      "counter",
+      get(IdpFetchFailures),
     ),
     line(
       "redirect_proxy_api_requests_total",

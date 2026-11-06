@@ -7,7 +7,8 @@ Thanks for helping improve redirect-proxy!
 You need [Gleam](https://gleam.run/getting-started/installing/) 1.19+ and
 Erlang/OTP 27+ (see `.tool-versions`).
 
-Optional tools, which `make lint` skips when they are missing:
+Optional tools, which `make lint` skips when they are missing (`make check
+STRICT=1` fails instead, so that a local pass means CI will pass):
 
 - shellcheck
 - actionlint

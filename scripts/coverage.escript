@@ -64,7 +64,8 @@ compile(Mod, Ebin) ->
 is_test_module(Mod) ->
     Name = atom_to_list(Mod),
     lists:suffix("_test", Name) orelse Name =:= "support"
-        orelse Name =:= "test_jwt_ffi" orelse Name =:= "test_net_ffi"
+        %% test helpers written in Erlang (test/test_*_ffi.erl)
+        orelse lists:prefix("test_", Name)
         orelse Name =:= "redirect_proxy_test"
         orelse lists:suffix("@@main", Name)
         orelse Name =:= "redirect_proxy@ffi".

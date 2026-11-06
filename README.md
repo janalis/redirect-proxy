@@ -22,7 +22,7 @@ rules. It never proxies traffic to an upstream.
   - Regular expressions are checked for catastrophic backtracking and run
     with a PCRE budget.
   - Processes are supervised by OTP.
-- **Administration backend** (Bootstrap 6):
+- **Administration backend** (Bootstrap 6, a pre-release):
   - Create, read, update and delete rules, with search, filters (host, match
     type, state) and sorting (source, host, hits, last update).
   - Enable, disable or delete a selection of rules, or every rule matching
@@ -292,8 +292,8 @@ the 404 applies.
 
 ## Configuration
 
-Configuration is read from the TOML file given with `--config` or
-`$RP_CONFIG`. [`config.example.toml`](config.example.toml) documents every
+Configuration is read from the TOML file given with `--config` or the
+`RP_CONFIG` environment variable. [`config.example.toml`](config.example.toml) documents every
 option. Each option can be overridden with an environment variable named
 `RP_<SECTION>_<KEY>`; lists are comma separated. A number, a boolean
 (`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`) or a log level that does
@@ -353,6 +353,8 @@ The admin listener serves these pages:
 
 Unauthenticated endpoints: `/healthz` (the process is up), `/readyz` (ready
 for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
+An API on its own port serves `/healthz` and `/readyz` too, and `/metrics`
+when the admin is disabled.
 
 - **Local accounts.**
   - Passwords are hashed with PBKDF2-HMAC-SHA256 (600 000 iterations) and
@@ -572,6 +574,11 @@ for it. `rules import` writes the file; a running server applies it on
   - `redirect_proxy_responses_total{class}`: redirect listener responses by
     status class;
   - `redirect_proxy_rules_by_kind{kind}`: enabled rules by match kind;
+  - `redirect_proxy_storage_write_failures_total`: changes not saved
+    because the redirections file could not be written (disk full,
+    permissions);
+  - `redirect_proxy_idp_fetch_failures_total`: failed fetches of an identity
+    provider's metadata or signing keys (SSO and external API tokens);
   - `redirect_proxy_last_reload_timestamp_seconds` and
     `redirect_proxy_reload_duration_seconds` for the last successful load of
     the redirections file.

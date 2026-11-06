@@ -119,35 +119,8 @@ jobs:
         run: |
           scripts/package-deb.sh "${VERSION}" "${ARCH}" \
             "dist/redirect-proxy-${VERSION}-linux-${ARCH}"
-      - name: Install and run the .deb
-        run: |
-          sudo apt-get install -y "./dist/redirect-proxy_${VERSION}_${ARCH}.deb"
-          redirect-proxy version
-          sudo -u redirect-proxy RP_CONFIG=/etc/redirect-proxy/config.toml redirect-proxy check-config
-          sudo systemctl start redirect-proxy
-          for _ in $(seq 1 50); do curl -fsS http://127.0.0.1:8081/healthz && break; sleep 0.2; done
-          sudo systemctl is-active redirect-proxy
-      - name: Upgrade keeps a disabled service disabled
-        run: |
-          sudo systemctl disable --now redirect-proxy
-          sudo apt-get install -y --reinstall "./dist/redirect-proxy_${VERSION}_${ARCH}.deb"
-          if systemctl is-enabled --quiet redirect-proxy; then
-            echo "::error::the upgrade re-enabled the service"
-            exit 1
-          fi
-      - name: Remove keeps data, purge removes it
-        run: |
-          sudo apt-get remove -y redirect-proxy
-          test -d /var/lib/redirect-proxy || { echo "::error::remove deleted the data"; exit 1; }
-          getent passwd redirect-proxy >/dev/null || { echo "::error::remove deleted the user"; exit 1; }
-          sudo apt-get purge -y redirect-proxy
-          for path in /var/lib/redirect-proxy /var/log/redirect-proxy; do
-            if test -e "$path"; then echo "::error::purge left $path"; exit 1; fi
-          done
-          if getent passwd redirect-proxy >/dev/null; then
-            echo "::error::purge left the redirect-proxy user"
-            exit 1
-          fi
+      - name: Install, upgrade, remove and purge the .deb
+        run: scripts/test-deb.sh "${VERSION}" "${ARCH}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-${{ matrix.arch }}

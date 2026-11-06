@@ -7,6 +7,7 @@ import gleam/order
 import gleam/result
 import gleam/string
 import qcheck
+import redirect_proxy/access_log_format as fmt
 import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
@@ -470,4 +471,132 @@ fn is_scheme(text: String) -> Bool {
       ))
     [] -> False
   }
+}
+
+/// Any text, control characters, quotes and backslashes included.
+fn wild_text() -> qcheck.Generator(String) {
+  qcheck.string_from(
+    qcheck.from_generators(qcheck.bounded_codepoint(0, 127), [
+      qcheck.codepoint_from_strings("\"", [
+        "\\",
+        "\n",
+        "\r",
+        "é",
+        "€",
+        "\u{85}",
+        "\u{9F}",
+        "\u{2028}",
+        "\u{2029}",
+      ]),
+      qcheck.bounded_codepoint(0, 0x10FFFF),
+    ]),
+  )
+}
+
+fn any_rule() -> qcheck.Generator(rule.Rule) {
+  qcheck.map5(
+    qcheck.tuple3(host(), wild_text(), wild_text()),
+    qcheck.from_generators(qcheck.return(rule.Exact), [
+      qcheck.return(rule.Prefix),
+      qcheck.return(rule.Regex),
+    ]),
+    qcheck.tuple3(qcheck.bool(), qcheck.bool(), qcheck.bool()),
+    qcheck.from_generators(qcheck.return(301), [
+      qcheck.return(302),
+      qcheck.return(303),
+      qcheck.return(307),
+      qcheck.return(308),
+    ]),
+    qcheck.tuple2(qcheck.bounded_int(-1000, 1000), wild_text()),
+    fn(text, kind, flags, status, rest) {
+      let #(host, source, target) = text
+      let #(preserve_query, case_insensitive, enabled) = flags
+      let #(priority, note) = rest
+      Rule(
+        ..rule.blank(),
+        id: note <> "-id",
+        host:,
+        source:,
+        kind:,
+        target:,
+        status:,
+        preserve_query:,
+        case_insensitive:,
+        enabled:,
+        priority:,
+        note:,
+      )
+    },
+  )
+}
+
+/// Every field of every kind of rule survives a write and a read of the
+/// rules file, whatever its text.
+pub fn any_rule_file_round_trip_test() {
+  use rules <- check(qcheck.generic_list(
+    elements_from: any_rule(),
+    length_from: qcheck.bounded_int(0, 6),
+  ))
+  assert rule.file_from_string(rule.file_to_string(rules)) == Ok(rules)
+}
+
+/// Whatever a client sends (headers, path, query) or a rule redirects to, an
+/// access log line never contains a raw control character: it could forge
+/// log lines (log injection) or break the log parser.
+pub fn access_log_lines_have_no_control_characters_test() {
+  let formats =
+    [
+      #(fmt.combined, "default"),
+      #(fmt.common, "default"),
+      #(fmt.json, "default"),
+      #("$host $uri?$args $http_x_custom $location", "default"),
+      #("{\"ua\":\"$http_user_agent\",\"uri\":\"$request_uri\"}", "json"),
+    ]
+    |> list.map(fn(f) {
+      let assert Ok(format) = fmt.parse(f.0, f.1)
+      format
+    })
+  use #(request, client, location) <- check_many(
+    300,
+    qcheck.tuple3(
+      qcheck.tuple3(wild_text(), wild_text(), wild_text()),
+      qcheck.tuple3(wild_text(), wild_text(), wild_text()),
+      wild_text(),
+    ),
+  )
+  let #(host, path, query) = request
+  let #(user_agent, referer, custom) = client
+  let entry =
+    fmt.Entry(
+      listener: "redirect",
+      client_ip: "203.0.113.0",
+      method: "GET",
+      host:,
+      path:,
+      query:,
+      protocol: "HTTP/1.1",
+      status: 301,
+      bytes: 0,
+      headers: [
+        #("user-agent", user_agent),
+        #("referer", referer),
+        #("x-custom", custom),
+      ],
+      location:,
+      rule_id: "r",
+      time_us: 0,
+      duration_us: 1,
+    )
+  list.each(formats, fn(format) {
+    list.each([True, False], fn(log_query) {
+      let line = fmt.render(format, log_query, entry)
+      let controls =
+        string.to_utf_codepoints(line)
+        |> list.map(string.utf_codepoint_to_int)
+        |> list.filter(fn(c) {
+          c < 0x20 || { c >= 0x7F && c <= 0x9F } || c == 0x2028 || c == 0x2029
+        })
+      assert controls == []
+    })
+  })
 }
