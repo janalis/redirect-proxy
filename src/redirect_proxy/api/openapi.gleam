@@ -1044,7 +1044,13 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
         #("enum", json.array([301, 302, 303, 307, 308], json.int)),
       ]),
     ),
-    #("preserve_query", typed("boolean", "Append the request query string.")),
+    #(
+      "preserve_query",
+      typed(
+        "boolean",
+        "Append the request query string. Parameters the target sets itself win over the request's of the same name.",
+      ),
+    ),
     #("case_insensitive", typed("boolean", "Match regardless of case.")),
     #(
       "query",

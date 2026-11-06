@@ -168,6 +168,33 @@ pub fn preserved_query_after_an_open_target_query_test() {
   assert loc("/amp", "q=1") == "/d?x=1&q=1#top"
 }
 
+/// The target's own query parameters win over the request's of the same
+/// name; the others are appended.
+pub fn target_query_parameters_win_test() {
+  let keep = fn(source, target) {
+    Rule(..r(source, "*", rule.Exact, source, target), preserve_query: True)
+  }
+  let m =
+    matcher.build([
+      keep("/set", "/d?lang=fr#top"),
+      keep("/encoded", "/d?l%61ng=fr"),
+      keep("/open", "/d?lang=fr&"),
+    ])
+  let loc = fn(path, query) {
+    let assert Ok(found) = matcher.lookup(m, "h", path)
+    matcher.location(found, Ok(query))
+  }
+  assert loc("/set", "lang=en&utm=x") == "/d?lang=fr&utm=x#top"
+  assert loc("/set", "lang=en") == "/d?lang=fr#top"
+  assert loc("/set", "lang=en&lang=de&q=1") == "/d?lang=fr&q=1#top"
+  // names are compared decoded
+  assert loc("/encoded", "lang=en&q=1") == "/d?l%61ng=fr&q=1"
+  assert loc("/set", "l%61ng=en") == "/d?lang=fr#top"
+  assert loc("/open", "lang=en&q=1") == "/d?lang=fr&q=1"
+  // a malformed parameter is passed on as sent
+  assert loc("/set", "x=%zz") == "/d?lang=fr&x=%zz#top"
+}
+
 pub fn location_strips_crlf_test() {
   let m = matcher.build([r("1", "*", rule.Prefix, "/p/", "/x/$1")])
   let assert Ok(found) = matcher.lookup(m, "h", "/p/a\r\nb")

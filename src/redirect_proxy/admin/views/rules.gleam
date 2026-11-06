@@ -752,7 +752,7 @@ pub fn form(
                 checkbox("enabled", "Enabled", r.enabled),
                 checkbox(
                   "preserve_query",
-                  "Preserve query string",
+                  "Preserve query string (the target's own parameters win)",
                   r.preserve_query,
                 ),
                 checkbox(
