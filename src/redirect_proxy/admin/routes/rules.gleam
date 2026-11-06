@@ -10,9 +10,11 @@ import gleam/set
 import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/admin/views/audit as audit_view
+import redirect_proxy/admin/views/import_export as import_export_view
 import redirect_proxy/admin/views/layout
-import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/views/rules as rules_view
+import redirect_proxy/admin/views/tester as tester_view
 import redirect_proxy/admin/web.{
   type Context, error_page, features, flash_from_query, form_value, html,
   not_found, require_csrf_form, return_to,
@@ -476,7 +478,7 @@ pub fn rule_from_form(
 pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
   let result = case string.trim(url) {
-    "" -> pages.NotTested
+    "" -> tester_view.NotTested
     url ->
       case
         matcher.resolve_url(
@@ -485,13 +487,13 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
           config.ignore_trailing_slash(ctx.config),
         )
       {
-        matcher.Redirected(m, location) -> pages.Matched(m.rule, location)
-        matcher.NotMatched -> pages.NoMatch
-        matcher.BadUrl -> pages.InvalidUrl
+        matcher.Redirected(m, location) -> tester_view.Matched(m.rule, location)
+        matcher.NotMatched -> tester_view.NoMatch
+        matcher.BadUrl -> tester_view.InvalidUrl
       }
   }
   let explanation = case result {
-    pages.Matched(..) | pages.NoMatch ->
+    tester_view.Matched(..) | tester_view.NoMatch ->
       explain.explain(
         snapshot.current(),
         store.all(ctx.store),
@@ -501,7 +503,7 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
       |> option.from_result
     _ -> None
   }
-  html(200, pages.test_url(s, features(ctx), url, result, explanation))
+  html(200, tester_view.test_url(s, features(ctx), url, result, explanation))
 }
 
 /// Exports the rules matching the list filters of the query (all of them
@@ -522,7 +524,15 @@ pub fn export(req: Request, ctx: Context) -> Response {
 }
 
 pub fn import_page(req: Request, ctx: Context, s: Session) -> Response {
-  html(200, pages.import_export(s, features(ctx), flash_from_query(req), []))
+  html(
+    200,
+    import_export_view.import_export(
+      s,
+      features(ctx),
+      flash_from_query(req),
+      [],
+    ),
+  )
 }
 
 pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
@@ -543,7 +553,7 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     |> store.import_mode_from_string
     |> result.unwrap(store.Merge)
   let fail = fn(errors) {
-    html(422, pages.import_export(s, features(ctx), None, errors))
+    html(422, import_export_view.import_export(s, features(ctx), None, errors))
   }
   let imported = fn(count) {
     wisp.redirect("/rules?flash=imported&count=" <> int.to_string(count))
@@ -553,7 +563,7 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
       Ok(#(d, version)) ->
         html(
           200,
-          pages.import_preview(
+          import_export_view.import_preview(
             s,
             features(ctx),
             d.added,
@@ -618,7 +628,7 @@ pub fn audit_page(req: Request, ctx: Context, s: Session) -> Response {
     list.key_find(query, key) |> result.unwrap("") |> string.trim
   }
   let filters =
-    pages.AuditFilters(
+    audit_view.AuditFilters(
       actor: get("actor"),
       action: get("action"),
       target: get("target"),
@@ -645,6 +655,6 @@ pub fn audit_page(req: Request, ctx: Context, s: Session) -> Response {
     |> list.take(audit_page_size)
   html(
     200,
-    pages.audit_log(s, features(ctx), entries, filters, page, pages_count),
+    audit_view.audit_log(s, features(ctx), entries, filters, page, pages_count),
   )
 }
