@@ -40,6 +40,8 @@ pub type Field {
   HttpUserAgent
   Location
   RuleId
+  /// `redirect`, `admin` or `api`.
+  ListenerName
   /// Any other request header, `$http_x_request_id` -> `x-request-id`.
   Header(name: String)
 }
@@ -56,6 +58,8 @@ pub type Format {
 /// One request, as seen by the redirect listener.
 pub type Entry {
   Entry(
+    /// Listener that served the request (`redirect`, `admin`, `api`).
+    listener: String,
     /// Client address, already resolved and anonymised.
     client_ip: String,
     method: String,
@@ -86,7 +90,7 @@ pub const common =
   "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent"
 
 pub const json =
-  "{\"time\":\"$time_iso8601\",\"remote_addr\":\"$remote_addr\",\"request_method\":\"$request_method\",\"host\":\"$host\",\"uri\":\"$uri\",\"args\":\"$args\",\"server_protocol\":\"$server_protocol\",\"status\":$status,\"body_bytes_sent\":$body_bytes_sent,\"request_time\":$request_time,\"http_referer\":\"$http_referer\",\"http_user_agent\":\"$http_user_agent\",\"location\":\"$location\",\"rule_id\":\"$rule_id\"}"
+  "{\"time\":\"$time_iso8601\",\"listener\":\"$listener\",\"remote_addr\":\"$remote_addr\",\"request_method\":\"$request_method\",\"host\":\"$host\",\"uri\":\"$uri\",\"args\":\"$args\",\"server_protocol\":\"$server_protocol\",\"status\":$status,\"body_bytes_sent\":$body_bytes_sent,\"request_time\":$request_time,\"http_referer\":\"$http_referer\",\"http_user_agent\":\"$http_user_agent\",\"location\":\"$location\",\"rule_id\":\"$rule_id\"}"
 
 /// Compiles a preset name or a template. `escape` (`default`, `json` or
 /// `none`) only applies to custom templates.
@@ -223,6 +227,9 @@ fn field(name: String) -> Result(Field, String) {
     "http_user_agent" -> Ok(HttpUserAgent)
     "location" | "sent_http_location" -> Ok(Location)
     "rule_id" -> Ok(RuleId)
+    "listener" -> Ok(ListenerName)
+    "http_authorization" | "http_proxy_authorization" | "http_cookie" ->
+      Error("$" <> name <> " is refused: it would write credentials to the log")
     "http_" <> header if header != "" ->
       Ok(Header(string.replace(header, "_", "-")))
     _ -> Error("unknown variable $" <> name)
@@ -271,6 +278,7 @@ fn value(field: Field, log_query: Bool, e: Entry) -> String {
     HttpUserAgent -> header(e, "user-agent")
     Location -> strip_query(log_query, e.location)
     RuleId -> e.rule_id
+    ListenerName -> e.listener
     Header(name) -> header(e, name)
   }
 }

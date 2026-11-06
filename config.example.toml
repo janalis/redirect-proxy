@@ -16,9 +16,13 @@ fallback_url = ""
 not_found_body = "Not Found"
 
 [access_log]
-# Traffic log of the redirect listener, one line per request.
+# Traffic logs, one line per request, of the redirect, admin and API
+# listeners. The settings below are shared; [access_log.redirect],
+# [access_log.admin] and [access_log.api] can override enabled, format and
+# output per listener.
+# Master switch for every listener:
 enabled = true
-# A preset or a template:
+# Default format. A preset or a template:
 #   combined  nginx/Apache Combined Log Format (GoAccess, AWStats, Logstash
 #             COMBINEDAPACHELOG, Fluent Bit "apache2", Datadog, Loki...)
 #   common    NCSA Common Log Format
@@ -27,12 +31,14 @@ enabled = true
 #   format = '$remote_addr "$request" $status $request_time $rule_id'
 # Variables: remote_addr remote_user time_local time_iso8601 msec request
 # request_method request_uri uri args server_protocol status body_bytes_sent
-# request_time host http_referer http_user_agent location rule_id, plus
-# http_<header> for any request header (e.g. $http_x_request_id).
+# request_time host http_referer http_user_agent location rule_id listener,
+# plus http_<header> for any request header (e.g. $http_x_request_id).
+# $http_authorization, $http_proxy_authorization and $http_cookie are refused:
+# they would write credentials to the log.
 format = "combined"
 # Escaping of values in templates: "default" (nginx: \xHH), "json" or "none".
 escape = "default"
-# Where lines go: "stdout", "stderr" or a file path, absolute or relative to
+# Default output: "stdout", "stderr" or a file path, absolute or relative to
 # the working directory (e.g. "/var/log/redirect-proxy/access.log"). Missing
 # directories are created; a renamed file (logrotate) is reopened.
 output = "stdout"
@@ -51,6 +57,24 @@ trusted_proxies = []
 max_bytes = 0
 max_files = 7
 compress = true
+
+[access_log.redirect]
+enabled = true
+# Empty: use access_log.format / access_log.output.
+format = ""
+output = ""
+
+[access_log.admin]
+# Admin UI requests (including /healthz and /metrics probes). When the API
+# shares the admin port, /api and /oauth requests use [access_log.api].
+enabled = true
+format = ""
+output = ""
+
+[access_log.api]
+enabled = true
+format = ""
+output = ""
 
 [admin]
 enabled = true

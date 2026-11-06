@@ -37,9 +37,11 @@ rules. It never proxies traffic to an upstream.
   - Local accounts (PBKDF2-SHA256).
   - Optional OpenID Connect single sign-on.
   - Optional trusted reverse-proxy headers.
-- **Access logs**, enabled by default:
+- **Access logs** for the redirect, admin and API listeners, enabled by
+  default:
   - Combined, Common and JSON formats, or your own nginx-style template.
-  - Written to stdout, stderr or a file, with rotation.
+  - Written to stdout, stderr or files (shared or one per listener), with
+    rotation.
   - GDPR-minded defaults: truncated IP addresses and no query strings.
 - **Plain files.**
   - `redirects.json` can be versioned, generated and edited by hand.
@@ -237,6 +239,7 @@ option. Each option can be overridden with an environment variable named
 | `RP_ACCESS_LOG_ENABLED`, `_FORMAT`, `_ESCAPE`, `_OUTPUT` | `true`, `combined`, `default`, `stdout` |
 | `RP_ACCESS_LOG_ANONYMIZE_IP`, `_LOG_QUERY`, `_TRUSTED_PROXIES` | `truncate`, `false`, (none) |
 | `RP_ACCESS_LOG_MAX_BYTES`, `_MAX_FILES`, `_COMPRESS` | `0` (no rotation), `7`, `true` |
+| `RP_ACCESS_LOG_{REDIRECT,ADMIN,API}_ENABLED`, `_FORMAT`, `_OUTPUT` | `true`, inherited, inherited |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
 | `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`); does not affect the access log |
 | `NO_COLOR` | plain log lines (automatic when output is not a terminal) |
@@ -398,10 +401,11 @@ for it. `rules import` writes the file; a running server applies it on
 
 ## Access logs
 
-The redirect listener writes one line per request. It is configured in the
-`[access_log]` section of the configuration file. By default it uses the
-Combined Log Format on stdout, so `docker logs`, `journalctl -u
-redirect-proxy` and Kubernetes log collectors pick it up:
+The redirect, admin and API listeners write one line per request. Logging
+is configured in the `[access_log]` section of the configuration file. By
+default every listener uses the Combined Log Format on stdout, so
+`docker logs`, `journalctl -u redirect-proxy` and Kubernetes log collectors
+pick it up:
 
 ```text
 203.0.113.0 - - [06/Nov/2026:10:00:00 +0000] "GET /old-page HTTP/1.1" 301 0 "https://www.example.org/" "Mozilla/5.0 ..."
@@ -422,10 +426,36 @@ Templates use nginx variable names (`$var` or `${var}`):
   `server_protocol`, `host`
 - `status`, `body_bytes_sent`, `request_time`
 - `http_referer`, `http_user_agent`, `http_<header>`
-- `location` (the redirect target), `rule_id` (the matched rule)
+- `location` (the redirect target), `rule_id` (the matched rule),
+  `listener` (`redirect`, `admin` or `api`)
+
+`$http_authorization`, `$http_proxy_authorization` and `$http_cookie` are
+refused, so session cookies and bearer tokens cannot end up in a log.
 
 Values are escaped like nginx `escape=default` (`"` becomes `\x22`); set
 `escape = "json"` to build your own JSON lines.
+
+**Per listener.** `[access_log.redirect]`, `[access_log.admin]` and
+`[access_log.api]` override `enabled`, `format` and `output`. For example,
+you can keep redirect traffic in its own file for GoAccess and send admin
+and API requests elsewhere:
+
+```toml
+[access_log]
+output = "/var/log/redirect-proxy/access.log"
+
+[access_log.admin]
+output = "/var/log/redirect-proxy/admin.log"
+
+[access_log.api]
+output = "/var/log/redirect-proxy/admin.log"
+format = "json"
+```
+
+When the API shares the admin port, `/api` and `/oauth` requests still use
+the API settings. Listeners writing to the same output share one handler.
+Admin requests include health checks (`/healthz`) and Prometheus scrapes
+(`/metrics`); disable `[access_log.admin]` if they are only noise for you.
 
 **Files.** Set `output` to any path, for example
 `/var/log/redirect-proxy/access.log` (the Debian package creates that
@@ -434,10 +464,11 @@ renamed file is reopened within a second, so logrotate needs no
 `copytruncate` or signal. You can also use the built-in rotation:
 `max_bytes`, `max_files` and `compress`.
 
-**Performance.** Each request process formats its own line, and a dedicated
-OTP logger handler batches the writes. The handler never blocks or throttles
-redirects. Under extreme overload it drops lines and reports how many were
-dropped in the application log. `RP_LOG_LEVEL` only controls the application
+**Performance.** Each request process formats its own line, and one
+dedicated OTP logger handler per output batches the writes, so the three
+listeners log concurrently without coordinating. The handlers never block
+or throttle requests. Under extreme overload they drop lines and report how
+many were dropped in the application log. `RP_LOG_LEVEL` only controls the application
 log, so access logging stays on with `RP_LOG_LEVEL=warning`. Set
 `enabled = false` to turn it off entirely.
 

@@ -3,24 +3,38 @@
 -module(redirect_proxy_access_ffi).
 
 -export([
-    start/4, stop/0, emit/1, format/2, set_levels/2,
+    start/4, stop/0, emit/2, format/2, filter/2, set_levels/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1,
     now_micros/0, monotonic_micros/0
 ]).
 
--define(HANDLER, redirect_proxy_access).
 -define(DOMAIN, [redirect_proxy, access]).
 
 %% ---------------------------------------------------------------------------
-%% Handler
+%% Handlers
 %% ---------------------------------------------------------------------------
 
-%% Output: <<"stdout">>, <<"stderr">> or a file path.
-start(Output, MaxBytes, MaxFiles, Compress) ->
+%% Groups: [{Output, [Listener]}] with Output <<"stdout">>, <<"stderr">> or a
+%% file path, and Listener an atom (redirect_listener, admin_listener...).
+%% One logger_std_h handler is installed per output.
+start(Groups, MaxBytes, MaxFiles, Compress) ->
     _ = stop(),
     keep_out_of_default_handler(),
     let_info_events_through(),
+    start_groups(Groups, 1, MaxBytes, MaxFiles, Compress).
+
+start_groups([], _N, _MaxBytes, _MaxFiles, _Compress) ->
+    {ok, nil};
+start_groups([{Output, Listeners} | Rest], N, MaxBytes, MaxFiles, Compress) ->
+    case add_handler(handler_id(N), Output, Listeners, MaxBytes, MaxFiles, Compress) of
+        {ok, nil} -> start_groups(Rest, N + 1, MaxBytes, MaxFiles, Compress);
+        Error -> _ = stop(), Error
+    end.
+
+handler_id(N) -> list_to_atom("redirect_proxy_access_" ++ integer_to_list(N)).
+
+add_handler(Id, Output, Listeners, MaxBytes, MaxFiles, Compress) ->
     case handler_type(Output) of
         {error, Reason} ->
             {error, Reason};
@@ -39,8 +53,7 @@ start(Output, MaxBytes, MaxFiles, Compress) ->
             Config = #{
                 level => all,
                 filter_default => stop,
-                filters => [{access, {fun logger_filters:domain/2,
-                                      {log, equal, ?DOMAIN}}}],
+                filters => [{access, {fun ?MODULE:filter/2, Listeners}}],
                 formatter => {?MODULE, #{}},
                 config => Rotation#{
                     type => Type,
@@ -54,11 +67,21 @@ start(Output, MaxBytes, MaxFiles, Compress) ->
                     overload_kill_enable => false
                 }
             },
-            case logger:add_handler(?HANDLER, logger_std_h, Config) of
+            case logger:add_handler(Id, logger_std_h, Config) of
                 ok -> {ok, nil};
                 {error, Error} -> {error, describe(Output, Error)}
             end
     end.
+
+%% Handler filter: only the access events of this handler's listeners.
+filter(#{meta := #{domain := [redirect_proxy, access, Listener]}} = Event,
+       Listeners) ->
+    case lists:member(Listener, Listeners) of
+        true -> Event;
+        false -> stop
+    end;
+filter(_Event, _Listeners) ->
+    stop.
 
 handler_type(<<"stdout">>) -> {ok, standard_io};
 handler_type(<<"stderr">>) -> {ok, standard_error};
@@ -73,12 +96,16 @@ describe(Output, Reason) ->
         io_lib:format("cannot open access log ~ts: ~p", [Output, Reason])).
 
 stop() ->
-    _ = logger:remove_handler(?HANDLER),
+    [logger:remove_handler(Id) || Id <- logger:get_handler_ids(),
+                                  is_access_handler(Id)],
     nil.
 
+is_access_handler(Id) ->
+    lists:prefix("redirect_proxy_access_", atom_to_list(Id)).
+
 keep_out_of_default_handler() ->
-    _ = logger:add_handler_filter(default, ?HANDLER,
-            {fun logger_filters:domain/2, {stop, equal, ?DOMAIN}}),
+    _ = logger:add_handler_filter(default, redirect_proxy_access,
+            {fun logger_filters:domain/2, {stop, sub, ?DOMAIN}}),
     ok.
 
 %% Access events are emitted at `info`. When the primary level is stricter
@@ -103,8 +130,8 @@ let_info_events_through() ->
             logger:set_primary_config(level, info)
     end.
 
-emit(Line) ->
-    logger:log(info, Line, #{domain => ?DOMAIN}),
+emit(Listener, Line) ->
+    logger:log(info, Line, #{domain => [redirect_proxy, access, Listener]}),
     nil.
 
 %% logger formatter: the line is rendered by the request process already.

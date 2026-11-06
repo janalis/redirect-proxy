@@ -11,6 +11,7 @@ const time_us = 1_793_957_405_123_456
 
 fn entry() -> Entry {
   Entry(
+    listener: "redirect",
     client_ip: "203.0.113.0",
     method: "GET",
     host: "old.example.com",
@@ -94,6 +95,18 @@ pub fn empty_values_are_dashes_test() {
   assert line == "[-] [-]"
   let assert Ok(f) = fmt.parse("[$args]", "none")
   assert fmt.render(f, False, entry()) == "[]"
+}
+
+pub fn listener_variable_test() {
+  assert render("$listener $status", False) == "redirect 301"
+  assert string.contains(render("json", False), "\"listener\":\"redirect\"")
+}
+
+pub fn credentials_are_refused_test() {
+  let assert Error(e) = fmt.parse("$http_authorization", "default")
+  assert string.contains(e, "credentials")
+  let assert Error(_) = fmt.parse("$http_cookie", "default")
+  let assert Error(_) = fmt.parse("${http_proxy_authorization}", "default")
 }
 
 pub fn parse_test() {

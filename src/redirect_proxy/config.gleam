@@ -9,6 +9,9 @@ import gleam/result
 import gleam/string
 import redirect_proxy/access_log_format
 import redirect_proxy/ffi
+import redirect_proxy/listener.{
+  type Listener, AdminListener, ApiListener, RedirectListener,
+}
 import simplifile
 import tom.{type Toml}
 
@@ -25,12 +28,13 @@ pub type Config {
   )
 }
 
-/// Access (traffic) log of the redirect listener.
+/// Access (traffic) logs of the listeners.
 pub type AccessLogConfig {
   AccessLogConfig(
+    /// Master switch for every listener.
     enabled: Bool,
-    /// Preset (`combined`, `common`, `json`) or a template with nginx style
-    /// `$variables`.
+    /// Default format of every listener: a preset (`combined`, `common`,
+    /// `json`) or a template with nginx style `$variables`.
     format: String,
     /// Escaping of variable values in custom templates: `default` (nginx
     /// `\xHH`), `json` or `none`. Presets choose their own.
@@ -47,7 +51,48 @@ pub type AccessLogConfig {
     max_bytes: Int,
     max_files: Int,
     compress: Bool,
+    redirect: ListenerLogConfig,
+    admin: ListenerLogConfig,
+    api: ListenerLogConfig,
   )
+}
+
+/// Per listener access log settings. Empty `format` / `output` inherit the
+/// `access_log` defaults.
+pub type ListenerLogConfig {
+  ListenerLogConfig(enabled: Bool, format: String, output: String)
+}
+
+pub fn listener_log(
+  cfg: AccessLogConfig,
+  listener: Listener,
+) -> ListenerLogConfig {
+  case listener {
+    RedirectListener -> cfg.redirect
+    AdminListener -> cfg.admin
+    ApiListener -> cfg.api
+  }
+}
+
+/// Effective format of a listener's access log.
+pub fn access_log_format(cfg: AccessLogConfig, listener: Listener) -> String {
+  case listener_log(cfg, listener).format {
+    "" -> cfg.format
+    format -> format
+  }
+}
+
+/// Effective output of a listener's access log.
+pub fn access_log_output(cfg: AccessLogConfig, listener: Listener) -> String {
+  case listener_log(cfg, listener).output {
+    "" -> cfg.output
+    output -> output
+  }
+}
+
+/// Whether a listener's requests are logged.
+pub fn access_log_enabled(cfg: AccessLogConfig, listener: Listener) -> Bool {
+  cfg.enabled && listener_log(cfg, listener).enabled
 }
 
 pub type ServerConfig {
@@ -207,9 +252,14 @@ pub fn default() -> Config {
       max_bytes: 0,
       max_files: 7,
       compress: True,
+      redirect: inherit,
+      admin: inherit,
+      api: inherit,
     ),
   )
 }
+
+const inherit = ListenerLogConfig(enabled: True, format: "", output: "")
 
 /// Loads the configuration. When `path` is empty only defaults and
 /// environment variables are used.
@@ -406,6 +456,9 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   use al_max_bytes <- result.try(integer(t, ak("max_bytes"), al.max_bytes))
   use al_max_files <- result.try(integer(t, ak("max_files"), al.max_files))
   use al_compress <- result.try(boolean(t, ak("compress"), al.compress))
+  use al_redirect <- result.try(listener_from_toml(t, "redirect", al.redirect))
+  use al_admin <- result.try(listener_from_toml(t, "admin", al.admin))
+  use al_api <- result.try(listener_from_toml(t, "api", al.api))
   Ok(Config(
     access_log: AccessLogConfig(
       enabled: al_enabled,
@@ -418,6 +471,9 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       max_bytes: al_max_bytes,
       max_files: al_max_files,
       compress: al_compress,
+      redirect: al_redirect,
+      admin: al_admin,
+      api: al_api,
     ),
     api: ApiConfig(
       enabled: api_enabled,
@@ -526,6 +582,9 @@ pub fn apply_env(
       max_bytes: i("RP_ACCESS_LOG_MAX_BYTES", access_log.max_bytes),
       max_files: i("RP_ACCESS_LOG_MAX_FILES", access_log.max_files),
       compress: b("RP_ACCESS_LOG_COMPRESS", access_log.compress),
+      redirect: listener_env(access_log.redirect, "REDIRECT", s, b),
+      admin: listener_env(access_log.admin, "ADMIN", s, b),
+      api: listener_env(access_log.api, "API", s, b),
     ),
     api: ApiConfig(
       enabled: b("RP_API_ENABLED", api.enabled),
@@ -677,6 +736,32 @@ pub fn validate(config: Config) -> Result(Config, String) {
   |> result.replace(config)
 }
 
+fn listener_from_toml(
+  t: Dict(String, Toml),
+  name: String,
+  d: ListenerLogConfig,
+) -> Result(ListenerLogConfig, String) {
+  let key = fn(k) { ["access_log", name, k] }
+  use enabled <- result.try(boolean(t, key("enabled"), d.enabled))
+  use format <- result.try(str(t, key("format"), d.format))
+  use output <- result.try(str(t, key("output"), d.output))
+  Ok(ListenerLogConfig(enabled:, format:, output:))
+}
+
+fn listener_env(
+  l: ListenerLogConfig,
+  name: String,
+  s: fn(String, String) -> String,
+  b: fn(String, Bool) -> Bool,
+) -> ListenerLogConfig {
+  let var = fn(k) { "RP_ACCESS_LOG_" <> name <> "_" <> k }
+  ListenerLogConfig(
+    enabled: b(var("ENABLED"), l.enabled),
+    format: s(var("FORMAT"), l.format),
+    output: s(var("OUTPUT"), l.output),
+  )
+}
+
 fn validate_access_log(al: AccessLogConfig) -> Result(Nil, String) {
   use <- bool.guard(
     !list.contains(["truncate", "none"], al.anonymize_ip),
@@ -702,9 +787,21 @@ fn validate_access_log(al: AccessLogConfig) -> Result(Nil, String) {
     al.max_files < 1,
     Error("access_log.max_files must be at least 1"),
   )
-  access_log_format.parse(al.format, al.escape)
-  |> result.map_error(fn(e) { "access_log.format: " <> e })
-  |> result.replace(Nil)
+  use Nil <- result.try(
+    access_log_format.parse(al.format, al.escape)
+    |> result.map_error(fn(e) { "access_log.format: " <> e })
+    |> result.replace(Nil),
+  )
+  list.try_each(listener.all, fn(listener) {
+    let name = "access_log." <> listener.name(listener)
+    use <- bool.guard(
+      string.trim(access_log_output(al, listener)) == "",
+      Error(name <> ".output must be stdout, stderr or a file path"),
+    )
+    access_log_format.parse(access_log_format(al, listener), al.escape)
+    |> result.map_error(fn(e) { name <> ".format: " <> e })
+    |> result.replace(Nil)
+  })
 }
 
 // --- data files -------------------------------------------------------------

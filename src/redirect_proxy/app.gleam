@@ -5,7 +5,6 @@ import gleam/erlang/application
 import gleam/erlang/process
 import gleam/http/request
 import gleam/int
-import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/otp/supervision
@@ -97,10 +96,10 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let store_subject = process.named_subject(store_name)
   let ports = process.new_subject()
 
-  use access <- result.try(start_access_log(cfg))
+  use access <- result.try(access_log.start(cfg.access_log))
 
   let redirect_child =
-    mist.new(server.handler(cfg.server, access))
+    mist.new(server.handler(cfg.server, access.redirect))
     |> mist.bind(cfg.server.listen)
     |> mist.port(cfg.server.port)
     |> mist.after_start(fn(port, _, _) {
@@ -130,6 +129,14 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
+  // The admin listener also serves the API when they share a port.
+  let admin_handler =
+    access_log.wrap(admin_handler, fn(req: request.Request(mist.Connection)) {
+      case config.api_on_admin(cfg) && access_log.is_api_path(req.path) {
+        True -> access.api
+        False -> access.admin
+      }
+    })
 
   let api_handler = fn(req: request.Request(mist.Connection)) {
     let peer_ip = case mist.get_connection_info(req.body) {
@@ -146,6 +153,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
   }
+  let api_handler = access_log.wrap(api_handler, fn(_) { access.api })
 
   let builder =
     supervisor.new(supervisor.OneForOne)
@@ -222,18 +230,6 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     admin_port:,
     api_port:,
   ))
-}
-
-/// Installs the access log handler. Returns the request-time settings, or
-/// `None` when access logging is disabled.
-fn start_access_log(
-  cfg: Config,
-) -> Result(Option(access_log.Settings), String) {
-  use Nil <- result.try(access_log.start(cfg.access_log))
-  case cfg.access_log.enabled {
-    False -> Ok(option.None)
-    True -> access_log.settings(cfg.access_log) |> result.map(option.Some)
-  }
 }
 
 fn wait_port(ports: process.Subject(#(String, Int)), name: String) -> Int {

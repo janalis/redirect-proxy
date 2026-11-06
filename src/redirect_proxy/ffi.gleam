@@ -1,5 +1,7 @@
 //// Typed bindings to the Erlang helpers in `redirect_proxy_ffi.erl`.
 
+import redirect_proxy/listener.{type Listener}
+
 // --- persistent_term --------------------------------------------------------
 
 @external(erlang, "redirect_proxy_ffi", "snapshot_put")
@@ -157,9 +159,11 @@ pub fn garbage_collect() -> Nil
 
 // --- access log -----------------------------------------------------------------
 
+/// Installs one access log handler per output, each accepting the listed
+/// listeners.
 @external(erlang, "redirect_proxy_access_ffi", "start")
 pub fn access_log_start(
-  output: String,
+  groups: List(#(String, List(Listener))),
   max_bytes: Int,
   max_files: Int,
   compress: Bool,
@@ -169,7 +173,7 @@ pub fn access_log_start(
 pub fn access_log_stop() -> Nil
 
 @external(erlang, "redirect_proxy_access_ffi", "emit")
-pub fn access_log_emit(line: String) -> Nil
+pub fn access_log_emit(listener: Listener, line: String) -> Nil
 
 @external(erlang, "redirect_proxy_access_ffi", "escape_default")
 pub fn escape_default(value: String) -> String

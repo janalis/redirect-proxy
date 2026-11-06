@@ -40,10 +40,23 @@ fn boot(cfg: config.Config) -> Env {
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
       storage: config.StorageConfig(data_dir: dir, backups: 3),
-      access_log: config.AccessLogConfig(
-        ..cfg.access_log,
-        output: dir <> "/logs/access.log",
-      ),
+      access_log: {
+        let al = cfg.access_log
+        // tests can point a listener into the data dir with "{dir}"
+        let in_dir = fn(l: config.ListenerLogConfig) {
+          config.ListenerLogConfig(
+            ..l,
+            output: string.replace(l.output, "{dir}", dir),
+          )
+        }
+        config.AccessLogConfig(
+          ..al,
+          output: dir <> "/logs/access.log",
+          redirect: in_dir(al.redirect),
+          admin: in_dir(al.admin),
+          api: in_dir(al.api),
+        )
+      },
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -230,6 +243,31 @@ pub fn access_log_json_test() {
   assert rule_id != ""
 }
 
+pub fn access_log_admin_and_api_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(
+          ..d.access_log,
+          format: "$listener $request_method $uri $status",
+          api: config.ListenerLogConfig(
+            ..d.access_log.api,
+            output: "{dir}/logs/api.log",
+          ),
+        ),
+      ),
+    )
+  let _ = get(env.redirect <> "/old", [])
+  let _ = get(env.admin <> "/login?next=/rules", [])
+  let _ = get(env.admin <> "/api/openapi.json", [])
+  let assert ["redirect GET /old 301", "admin GET /login 200"] =
+    access_lines(env.dir, 2)
+  let assert ["api GET /api/openapi.json 200"] =
+    lines_of(env.dir <> "/logs/api.log", 1)
+}
+
 pub fn access_log_disabled_test() {
   let d = config.default()
   let env =
@@ -248,7 +286,11 @@ pub fn access_log_disabled_test() {
 
 /// Waits for the access log handler to flush `count` lines.
 fn access_lines(dir: String, count: Int) -> List(String) {
-  access_lines_loop(dir <> "/logs/access.log", count, 250)
+  lines_of(dir <> "/logs/access.log", count)
+}
+
+fn lines_of(path: String, count: Int) -> List(String) {
+  access_lines_loop(path, count, 250)
 }
 
 fn access_lines_loop(path: String, count: Int, tries: Int) -> List(String) {
