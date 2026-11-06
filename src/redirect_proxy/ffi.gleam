@@ -1,5 +1,6 @@
 //// Typed bindings to the Erlang helpers in `redirect_proxy_ffi.erl`.
 
+import mist
 import redirect_proxy/listener.{type Listener}
 
 // --- persistent_term --------------------------------------------------------
@@ -232,6 +233,10 @@ pub fn time_iso8601(micros: Int) -> String
 
 @external(erlang, "redirect_proxy_access_ffi", "anonymize_ip")
 pub fn anonymize_ip(ip: String) -> String
+
+/// `anonymize_ip` of a peer address, without the string round trip.
+@external(erlang, "redirect_proxy_access_ffi", "anonymize_peer")
+pub fn anonymize_peer(ip: mist.IpAddress) -> String
 
 @external(erlang, "redirect_proxy_access_ffi", "now_micros")
 pub fn now_micros() -> Int

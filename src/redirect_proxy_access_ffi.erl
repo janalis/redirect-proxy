@@ -5,11 +5,14 @@
 -export([
     start/4, stop/0, emit/2, format/2, filter/2, set_levels/2,
     escape_default/1, escape_json/1, escape_newlines/1,
-    time_local/1, time_iso8601/1, anonymize_ip/1,
+    time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
     now_micros/0, monotonic_micros/0
 ]).
 
 -define(DOMAIN, [redirect_proxy, access]).
+
+%% Rendered timestamps of the current second, shared by request processes.
+-define(TIME_CACHE, redirect_proxy_access_time).
 
 %% ---------------------------------------------------------------------------
 %% Handlers
@@ -20,6 +23,7 @@
 %% One logger_std_h handler is installed per output.
 start(Groups, MaxBytes, MaxFiles, Compress) ->
     _ = stop(),
+    ensure_time_cache(),
     keep_out_of_default_handler(),
     let_info_events_through(),
     start_groups(Groups, 1, MaxBytes, MaxFiles, Compress).
@@ -194,9 +198,49 @@ escape_newlines(Bin) ->
 now_micros() -> erlang:system_time(microsecond).
 monotonic_micros() -> erlang:monotonic_time(microsecond).
 
-%% Common Log Format time: 06/Nov/2026:10:00:00 +0100
+%% Formatting a timestamp (io_lib:format, local time conversion) costs a
+%% few microseconds: it is done once per second and kind, then read from the
+%% cache. Without the cache (it is created by start/4), it is done each time.
 time_local(Micros) ->
-    Seconds = Micros div 1000000,
+    cached(time_local, Micros div 1000000, fun render_time_local/1).
+
+time_iso8601(Micros) ->
+    cached(time_iso8601, Micros div 1000000, fun render_time_iso8601/1).
+
+cached(Kind, Seconds, Render) ->
+    try ets:lookup(?TIME_CACHE, Kind) of
+        [{_, Seconds, Rendered}] -> Rendered;
+        _ ->
+            Rendered = Render(Seconds),
+            ets:insert(?TIME_CACHE, {Kind, Seconds, Rendered}),
+            Rendered
+    catch
+        error:badarg -> Render(Seconds)
+    end.
+
+%% The table belongs to a process that never exits, so that it outlives the
+%% process that started the access log.
+ensure_time_cache() ->
+    case ets:whereis(?TIME_CACHE) of
+        undefined ->
+            Self = self(),
+            Owner = spawn(fun() ->
+                try
+                    _ = ets:new(?TIME_CACHE, [named_table, public, set,
+                                              {read_concurrency, true},
+                                              {write_concurrency, true}])
+                catch
+                    error:badarg -> ok  % created concurrently
+                end,
+                Self ! {?TIME_CACHE, self()},
+                receive after infinity -> ok end
+            end),
+            receive {?TIME_CACHE, Owner} -> ok after 1000 -> ok end;
+        _ -> ok
+    end.
+
+%% Common Log Format time: 06/Nov/2026:10:00:00 +0100
+render_time_local(Seconds) ->
     {{Y, Mo, D}, {H, Mi, S}} = Local =
         calendar:system_time_to_local_time(Seconds, second),
     Utc = calendar:system_time_to_universal_time(Seconds, second),
@@ -207,9 +251,8 @@ time_local(Micros) ->
     iolist_to_binary(io_lib:format("~2..0B/~s/~4..0B:~2..0B:~2..0B:~2..0B ~c~2..0B~2..0B",
         [D, month(Mo), Y, H, Mi, S, Sign, Abs div 60, Abs rem 60])).
 
-time_iso8601(Micros) ->
-    list_to_binary(calendar:system_time_to_rfc3339(Micros div 1000000,
-                                                   [{unit, second}])).
+render_time_iso8601(Seconds) ->
+    list_to_binary(calendar:system_time_to_rfc3339(Seconds, [{unit, second}])).
 
 month(M) ->
     element(M, {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -231,3 +274,12 @@ anonymize_ip(Bin) ->
         _ ->
             <<>>
     end.
+
+%% anonymize_ip/1 of a mist peer address ({ip_v4, ...} or {ip_v6, ...}),
+%% without formatting then parsing it.
+anonymize_peer({ip_v4, A, B, C, _}) ->
+    list_to_binary(inet:ntoa({A, B, C, 0}));
+anonymize_peer({ip_v6, 0, 0, 0, 0, 0, 16#ffff, AB, CD}) ->
+    list_to_binary(inet:ntoa({AB bsr 8, AB band 255, CD bsr 8, 0}));
+anonymize_peer({ip_v6, A, B, C, _, _, _, _, _}) ->
+    list_to_binary(inet:ntoa({A, B, C, 0, 0, 0, 0, 0})).
