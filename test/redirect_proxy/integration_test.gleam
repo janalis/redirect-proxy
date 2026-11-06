@@ -1662,7 +1662,8 @@ pub fn header_auth_test() {
     )
   let resp = get(env.admin <> "/rules", [#("x-forwarded-user", "Proxy-User")])
   assert resp.status == 200
-  assert string.contains(resp.body, ">proxy-user (proxy, admin)<")
+  // without a role header, proxy users get the least role by default
+  assert string.contains(resp.body, ">proxy-user (proxy, viewer)<")
   // names from the proxy cannot pass for a local user in the audit log
   let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
   assert #(login.actor, login.action) == #("proxy:proxy-user", "auth.login")
@@ -1797,6 +1798,7 @@ fn oidc_env(issuer: String, allowed_domains: List(String)) -> Env {
           client_id: "redirect-proxy",
           client_secret: "secret",
           allowed_domains:,
+          default_role: "admin",
         ),
       ),
     )

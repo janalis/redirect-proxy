@@ -278,7 +278,7 @@ pub fn default() -> Config {
       admin_groups: [],
       editor_groups: [],
       viewer_groups: [],
-      default_role: "admin",
+      default_role: "viewer",
       button_label: "Sign in with SSO",
       logout_at_provider: False,
     ),
@@ -288,7 +288,7 @@ pub fn default() -> Config {
       email_header: "x-forwarded-email",
       trusted_proxies: ["127.0.0.1/32", "::1/128"],
       role_header: "",
-      default_role: "admin",
+      default_role: "viewer",
     ),
     api: ApiConfig(
       enabled: True,

@@ -162,7 +162,7 @@ logout_at_provider = false
 admin_groups = []
 editor_groups = []
 viewer_groups = []
-default_role = "admin"
+default_role = "viewer"
 
 [auth.header]
 # Trust an identity header set by an authenticating reverse proxy
@@ -180,7 +180,7 @@ trusted_proxies = ["127.0.0.1/32", "::1/128"]
 # A header the proxy sets to the user's role (viewer, editor or admin). Empty:
 # every proxy user gets default_role. An unknown value gives viewer.
 role_header = ""
-default_role = "admin"
+default_role = "viewer"
 
 [api]
 # REST API under /api (bearer tokens) and OAuth 2.0 token endpoint

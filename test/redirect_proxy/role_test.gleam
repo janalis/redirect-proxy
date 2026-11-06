@@ -2,6 +2,7 @@ import gleam/http
 import gleam/http/request
 import redirect_proxy/admin/auth/header
 import redirect_proxy/admin/auth/oidc
+import redirect_proxy/admin/router
 import redirect_proxy/config
 import redirect_proxy/role
 import wisp/simulate
@@ -39,12 +40,12 @@ pub fn sso_groups_give_roles_test() {
   assert who(["ops", "staff"]) == role.Admin
   assert who(["staff"]) == role.Viewer
   assert who(["other"]) == role.Viewer
-  // nothing configured: everyone is an admin, as before roles
+  // nothing configured: the least role, admins are named on purpose
   assert oidc.role_for(
       d,
       oidc.Identity(subject: "s", username: "u", email: "", groups: []),
     )
-    == role.Admin
+    == role.Viewer
 }
 
 pub fn proxy_role_header_test() {
@@ -52,7 +53,7 @@ pub fn proxy_role_header_test() {
     request.Request(..simulate.request(http.Get, "/"), headers:)
   }
   let d = config.default().header_auth
-  assert header.role(d, req([])) == role.Admin
+  assert header.role(d, req([])) == role.Viewer
   let cfg = config.HeaderAuthConfig(..d, role_header: "x-forwarded-role")
   assert header.role(cfg, req([#("x-forwarded-role", "Editor")])) == role.Editor
   // missing, unknown or repeated: the least, not the default
@@ -63,4 +64,20 @@ pub fn proxy_role_header_test() {
       req([#("x-forwarded-role", "admin"), #("x-forwarded-role", "admin")]),
     )
     == role.Viewer
+}
+
+/// Routes nobody listed need the admin role: a new page is not open to
+/// every role by mistake.
+pub fn unlisted_routes_need_admin_test() {
+  assert router.required_role(http.Get, ["rules"]) == role.Viewer
+  assert router.required_role(http.Get, ["rules", "x", "edit"]) == role.Viewer
+  assert router.required_role(http.Post, ["rules", "x"]) == role.Editor
+  assert router.required_role(http.Post, ["rules", "x", "toggle"])
+    == role.Editor
+  assert router.required_role(http.Post, ["import"]) == role.Editor
+  assert router.required_role(http.Get, ["users"]) == role.Admin
+  assert router.required_role(http.Get, ["audit"]) == role.Admin
+  assert router.required_role(http.Get, ["something", "new"]) == role.Admin
+  assert router.required_role(http.Post, ["rules", "x", "new-action"])
+    == role.Admin
 }
