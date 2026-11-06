@@ -184,7 +184,9 @@ prefix and 500 regex rules. It then load-tests four scenarios with
 - An exact hit.
 - A prefix hit.
 - The last regex.
-- A miss, where every rule is tried.
+- A miss. Prefix and regex rules starting with a literal are indexed, so a
+  miss does not try every rule; regex rules that do not start with `^` and
+  a literal are all run.
 
 It reports throughput, latency percentiles and memory. The access log is
 written to a file during the run, as it is enabled by default
@@ -197,6 +199,15 @@ ran at about 14 000 requests/s.
 Rule lookup itself, measured in-process with the same 11 500 rules, takes
 about 0.4 µs for an exact hit, 1.2 µs for a prefix hit, 1.9 µs for the last
 regex rule and 0.7 µs for a miss.
+
+`make bench-matcher` measures the work of one redirect in-process (lookup,
+hit count and `Location`), in BEAM reductions, for more request shapes:
+many prefix lengths, unindexed regexes, many hosts and wildcard hosts,
+query conditions and trailing slash retries. Reductions do not depend on
+the load of the machine, so CI compares them with
+`scripts/matcher-bench-baseline.json` and fails a change that makes a
+scenario more than 10 % more expensive (`scripts/matcher-bench.py
+--update` writes a new baseline).
 
 Memory:
 
