@@ -125,7 +125,8 @@ The package installs these files:
 - The data directory, `/var/lib/redirect-proxy`.
 
 The unit can bind ports 80 and 443 without root. `systemctl reload
-redirect-proxy` re-reads the redirections file.
+redirect-proxy` re-reads the redirections file only: changes to
+`config.toml` need `systemctl restart redirect-proxy`.
 
 ### Homebrew
 
@@ -551,7 +552,10 @@ for it. `rules import` writes the file; a running server applies it on
 
 - **Reload.** Edit `redirects.json`, then `kill -HUP <pid>` (or
   `systemctl reload redirect-proxy`). An invalid or missing file is rejected,
-  the error is logged and the current rules stay active.
+  the error is logged and the current rules stay active. `SIGHUP` only
+  reloads the rules: the configuration (`config.toml`, environment) is read at
+  start, so changing it needs a restart, which also ends every admin
+  session.
   - With `storage.watch_interval = <seconds>` (`RP_STORAGE_WATCH_INTERVAL`),
     the server checks the file that often and reloads it when it changed,
     without a signal: for a Kubernetes ConfigMap, a GitOps sync or an
@@ -872,13 +876,17 @@ Merging that PR tags `vX.Y.Z` and publishes these artifacts:
 - Linux amd64 and arm64 bundles that include the Erlang runtime.
 - `.deb` packages, install-tested on the runner.
 - A portable Erlang bundle, smoke-tested on macOS.
-- `SHA256SUMS`, an SPDX SBOM and build provenance attestations.
+- `SHA256SUMS`, build provenance attestations and an SPDX SBOM of the Hex
+  packages and the Erlang/OTP runtime they ship (`scripts/sbom.py`, from
+  `manifest.toml`).
 - Multi-arch images `ghcr.io/janalis/redirect-proxy:{X.Y.Z,X.Y,X,latest}`,
   pushed only once every other artifact passed its tests, and scanned with
   Trivy on both platforms before they are pushed. `latest` only moves to the
   newest release: rebuilding an older tag leaves it alone. The published
   `latest` image is rescanned every week, and an issue is opened when a
-  fixable vulnerability turns up.
+  fixable vulnerability turns up. Another weekly job opens an issue when
+  newer versions of the locked Hex packages are available (Dependabot does
+  not support Gleam).
 - An updated Homebrew formula in `janalis/homebrew-tap`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the required repository settings.
