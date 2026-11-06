@@ -99,7 +99,8 @@ pub fn size(matcher: Matcher) -> Int {
 /// gone through `rule.validate`; a regex that fails to compile is skipped.
 pub fn build(rules: List(Rule)) -> Matcher {
   let enabled = list.filter(rules, fn(r) { r.enabled })
-  let grouped = list.group(enabled, fn(r) { r.host })
+  // like request hosts, rule hosts are matched without port or trailing dot
+  let grouped = list.group(enabled, fn(r) { normalise_request_host(r.host) })
   let hosts =
     dict.map_values(grouped, fn(_host, rules) {
       // list.group prepends, restore the original order for stable sorting
@@ -272,9 +273,17 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
   }
 }
 
-/// Strips the port from a Host header value and lower-cases it.
+/// Strips the port and a trailing dot (`example.com.`) from a Host header
+/// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  let host = string.lowercase(host)
+  let host = strip_port(string.lowercase(host))
+  case string.ends_with(host, ".") {
+    True -> string.drop_end(host, 1)
+    False -> host
+  }
+}
+
+fn strip_port(host: String) -> String {
   case string.starts_with(host, "[") {
     // IPv6 literal: [::1]:8080
     True ->
@@ -399,14 +408,20 @@ fn run_regexes(
 }
 
 /// Builds the final `Location` header value: appends the request query
-/// string when the rule asks for it and strips any CR/LF characters.
+/// string when the rule asks for it (before a `#fragment` of the target)
+/// and strips any CR/LF characters.
 pub fn location(m: Match, query: Result(String, Nil)) -> String {
   let base = case m.rule.preserve_query, query {
-    True, Ok(q) if q != "" ->
-      case string.contains(m.location, "?") {
-        True -> m.location <> "&" <> q
-        False -> m.location <> "?" <> q
+    True, Ok(q) if q != "" -> {
+      let #(url, fragment) = case string.split_once(m.location, "#") {
+        Ok(#(url, fragment)) -> #(url, "#" <> fragment)
+        Error(Nil) -> #(m.location, "")
       }
+      case string.contains(url, "?") {
+        True -> url <> "&" <> q <> fragment
+        False -> url <> "?" <> q <> fragment
+      }
+    }
     _, _ -> m.location
   }
   ffi.strip_control(base)
