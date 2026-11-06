@@ -8,3 +8,7 @@ erl_crash.dump
 *.beam
 Dockerfile
 .dockerignore
+.env
+.env.*
+test
+config.toml

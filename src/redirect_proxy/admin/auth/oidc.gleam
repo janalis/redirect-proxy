@@ -8,6 +8,7 @@ import gleam/crypto
 import gleam/dynamic/decode
 import gleam/http
 import gleam/http/request
+import gleam/http/response
 import gleam/httpc
 import gleam/json
 import gleam/list
@@ -186,13 +187,63 @@ pub fn discover(cfg: OidcConfig) -> Result(Provider, String) {
 /// Discovers (and caches for an hour) the metadata of an OpenID Connect
 /// provider or OAuth 2.0 authorization server (RFC 8414).
 pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
-  case ffi.ets_get(table, "provider:" <> issuer) {
-    Ok(#(expires_at, provider)) ->
-      case expires_at > ffi.now_seconds() {
-        True -> Ok(provider)
-        False -> fetch_provider(issuer)
+  let cached = fn() {
+    let now = ffi.now_seconds()
+    case ffi.ets_get(table, "provider:" <> issuer) {
+      Ok(#(expires_at, provider)) if expires_at > now -> Ok(provider)
+      _ -> Error(Nil)
+    }
+  }
+  case cached() {
+    Ok(provider) -> Ok(provider)
+    Error(Nil) ->
+      guarded_fetch("provider:" <> issuer, fn() {
+        // another request may have fetched it while we waited
+        case cached() {
+          Ok(provider) -> Ok(provider)
+          Error(Nil) -> fetch_provider(issuer)
+        }
+      })
+  }
+}
+
+/// How long a failed fetch is remembered: while the provider is down,
+/// requests fail at once instead of each waiting for a timeout.
+const failure_ttl = 30
+
+/// Runs `fetch` for `key` at most once at a time on this node (concurrent
+/// callers wait for it, then find its result in the cache), and remembers a
+/// failure for `failure_ttl` seconds.
+fn guarded_fetch(
+  key: String,
+  fetch: fn() -> Result(a, String),
+) -> Result(a, String) {
+  let recent_failure = fn() {
+    let now = ffi.now_seconds()
+    case ffi.ets_get(table, "failed:" <> key) {
+      Ok(#(expires_at, reason)) if expires_at > now -> Ok(reason)
+      _ -> Error(Nil)
+    }
+  }
+  case recent_failure() {
+    Ok(reason) -> Error(reason)
+    Error(Nil) -> {
+      use <- ffi.with_lock("oidc-fetch:" <> key)
+      case recent_failure() {
+        Ok(reason) -> Error(reason)
+        Error(Nil) ->
+          case fetch() {
+            Ok(value) -> Ok(value)
+            Error(reason) -> {
+              ffi.ets_put(table, "failed:" <> key, #(
+                ffi.now_seconds() + failure_ttl,
+                reason,
+              ))
+              Error(reason)
+            }
+          }
       }
-    Error(Nil) -> fetch_provider(issuer)
+    }
   }
 }
 
@@ -250,29 +301,38 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
 
 fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
   let key = "jwks:" <> provider.jwks_uri
-  let now = ffi.now_seconds()
-  let cached = case ffi.ets_get(table, key) {
-    Ok(#(expires_at, #(fetched_at, body))) -> {
-      // A forced refresh (unknown signing key) is honoured at most once a
-      // minute so that bogus tokens cannot make us hammer the provider.
-      let fresh = case refresh {
-        True -> now - fetched_at < 60
-        False -> expires_at > now
+  let cached = fn() {
+    let now = ffi.now_seconds()
+    case ffi.ets_get(table, key) {
+      Ok(#(expires_at, #(fetched_at, body))) -> {
+        // A forced refresh (unknown signing key) is honoured at most once a
+        // minute so that bogus tokens cannot make us hammer the provider.
+        let fresh = case refresh {
+          True -> now - fetched_at < 60
+          False -> expires_at > now
+        }
+        case fresh {
+          True -> Ok(body)
+          False -> Error(Nil)
+        }
       }
-      case fresh {
-        True -> Ok(body)
-        False -> Error(Nil)
-      }
+      Error(Nil) -> Error(Nil)
     }
-    Error(Nil) -> Error(Nil)
   }
-  case cached {
+  case cached() {
     Ok(body) -> Ok(body)
-    Error(Nil) -> {
-      use body <- result.try(http_get(provider.jwks_uri))
-      ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
-      Ok(body)
-    }
+    Error(Nil) ->
+      guarded_fetch(key, fn() {
+        case cached() {
+          Ok(body) -> Ok(body)
+          Error(Nil) -> {
+            use body <- result.try(http_get(provider.jwks_uri))
+            let now = ffi.now_seconds()
+            ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
+            Ok(body)
+          }
+        }
+      })
   }
 }
 
@@ -305,10 +365,8 @@ fn exchange(
     |> request.set_header("accept", "application/json")
     |> request.set_body(body)
   use resp <- result.try(
-    httpc.configure()
-    |> httpc.timeout(10_000)
-    |> httpc.dispatch(req)
-    |> result.map_error(fn(e) { "token request failed: " <> string.inspect(e) }),
+    dispatch(req)
+    |> result.map_error(fn(e) { "token request failed: " <> e }),
   )
   use <- bool.guard(
     resp.status != 200,
@@ -459,17 +517,28 @@ fn http_get(url: String) -> Result(String, String) {
     request.to(url) |> result.replace_error("invalid URL " <> url),
   )
   use resp <- result.try(
-    httpc.configure()
-    |> httpc.timeout(10_000)
-    |> httpc.dispatch(request.set_header(req, "accept", "application/json"))
-    |> result.map_error(fn(e) {
-      "request to " <> url <> " failed: " <> string.inspect(e)
-    }),
+    dispatch(request.set_header(req, "accept", "application/json"))
+    |> result.map_error(fn(e) { "request to " <> url <> " failed: " <> e }),
   )
   case resp.status {
     200 -> Ok(resp.body)
     status -> Error(url <> " answered HTTP " <> string.inspect(status))
   }
+}
+
+/// Sends a request to the provider with a 10 second timeout. Errors that
+/// gleam_httpc raises instead of returning (a connection closed by the
+/// provider...) are returned too, so that a misbehaving provider fails the
+/// login or the API request instead of crashing it.
+fn dispatch(
+  req: request.Request(String),
+) -> Result(response.Response(String), String) {
+  ffi.rescue(fn() {
+    httpc.configure()
+    |> httpc.timeout(10_000)
+    |> httpc.dispatch(req)
+  })
+  |> result.try(fn(sent) { sent |> result.map_error(string.inspect) })
 }
 
 fn trim_trailing_slash(value: String) -> String {

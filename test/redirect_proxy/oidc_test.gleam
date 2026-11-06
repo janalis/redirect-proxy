@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/json
 import gleam/list
 import redirect_proxy/admin/auth/oidc
@@ -151,3 +152,24 @@ pub fn redirect_uri_test() {
   assert oidc.redirect_uri("https://admin.test")
     == "https://admin.test/auth/oidc/callback"
 }
+
+pub fn provider_failures_are_remembered_test() {
+  // while the provider is down, requests fail at once instead of each one
+  // trying (and waiting for) it again
+  let #(port, counter) = counting_server()
+  let issuer = "http://127.0.0.1:" <> int.to_string(port)
+  let assert Error(_) = oidc.discover_issuer(issuer)
+  let first = accepted(counter)
+  assert first > 0
+  let assert Error(_) = oidc.discover_issuer(issuer)
+  let assert Error(_) = oidc.discover_issuer(issuer)
+  assert accepted(counter) == first
+}
+
+type Counter
+
+@external(erlang, "test_net_ffi", "counting_server")
+fn counting_server() -> #(Int, Counter)
+
+@external(erlang, "test_net_ffi", "accepted")
+fn accepted(counter: Counter) -> Int

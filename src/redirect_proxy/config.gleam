@@ -271,7 +271,13 @@ const inherit = ListenerLogConfig(enabled: True, format: "", output: "")
 /// Loads the configuration. When `path` is empty only defaults and
 /// environment variables are used.
 pub fn load(path: String) -> Result(Config, String) {
-  use toml <- result.try(case path {
+  use toml <- result.try(read_toml(path))
+  load_parsed(toml)
+}
+
+/// Parses a configuration file ("" for none).
+pub fn read_toml(path: String) -> Result(Dict(String, Toml), String) {
+  case path {
     "" -> Ok(dict.new())
     _ -> {
       use content <- result.try(
@@ -285,7 +291,10 @@ pub fn load(path: String) -> Result(Config, String) {
         "invalid TOML in " <> path <> ": " <> string.inspect(e)
       })
     }
-  })
+  }
+}
+
+fn load_parsed(toml: Dict(String, Toml)) -> Result(Config, String) {
   use config <- result.try(from_toml(toml))
   use Nil <- result.try(case env_errors(envoy.get) {
     [] -> Ok(Nil)
@@ -294,6 +303,121 @@ pub fn load(path: String) -> Result(Config, String) {
   let config = apply_env(config, envoy.get)
   use config <- result.try(validate(config))
   Ok(config)
+}
+
+/// Every key `from_toml` reads. Used to warn about unknown keys, such as a
+/// typo'd `[auth.odic]` section, which would otherwise be silently ignored.
+pub const known_keys = [
+  "access_log.admin.enabled",
+  "access_log.admin.format",
+  "access_log.admin.output",
+  "access_log.anonymize_ip",
+  "access_log.api.enabled",
+  "access_log.api.format",
+  "access_log.api.output",
+  "access_log.compress",
+  "access_log.enabled",
+  "access_log.escape",
+  "access_log.format",
+  "access_log.log_query",
+  "access_log.max_bytes",
+  "access_log.max_files",
+  "access_log.output",
+  "access_log.redirect.enabled",
+  "access_log.redirect.format",
+  "access_log.redirect.output",
+  "access_log.trusted_proxies",
+  "admin.enabled",
+  "admin.listen",
+  "admin.port",
+  "admin.public_url",
+  "admin.secret_key_base",
+  "admin.session_idle_timeout",
+  "admin.session_ttl",
+  "api.enabled",
+  "api.listen",
+  "api.max_body_bytes",
+  "api.oauth.audience",
+  "api.oauth.enabled",
+  "api.oauth.issuer",
+  "api.oauth.ops_scope",
+  "api.oauth.read_scope",
+  "api.oauth.scope_claim",
+  "api.oauth.write_scope",
+  "api.port",
+  "api.public_url",
+  "api.token_ttl",
+  "auth.header.email_header",
+  "auth.header.enabled",
+  "auth.header.trusted_proxies",
+  "auth.header.user_header",
+  "auth.local.enabled",
+  "auth.oidc.allowed_domains",
+  "auth.oidc.allowed_emails",
+  "auth.oidc.allowed_groups",
+  "auth.oidc.button_label",
+  "auth.oidc.client_id",
+  "auth.oidc.client_secret",
+  "auth.oidc.enabled",
+  "auth.oidc.groups_claim",
+  "auth.oidc.issuer",
+  "auth.oidc.scopes",
+  "server.cache_max_age",
+  "server.fallback_url",
+  "server.listen",
+  "server.not_found_body",
+  "server.port",
+  "server.shutdown_grace",
+  "storage.backups",
+  "storage.data_dir",
+]
+
+fn is_http_url(url: String) -> Bool {
+  let lower = string.lowercase(url)
+  { string.starts_with(lower, "http://") && string.length(url) > 7 }
+  || { string.starts_with(lower, "https://") && string.length(url) > 8 }
+}
+
+/// Things that are allowed but probably wrong, reported by `check-config`:
+/// unknown keys and an admin listening beyond the loopback interface.
+pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
+  let unknown =
+    unknown_keys(toml)
+    |> list.map(fn(key) { "unknown setting " <> key <> " (ignored)" })
+  let exposed = case config.admin.enabled && !is_loopback(config.admin.listen) {
+    True -> [
+      "the admin listens on "
+      <> config.admin.listen
+      <> ": keep it behind a firewall or a reverse proxy (it also serves /metrics without authentication)",
+    ]
+    False -> []
+  }
+  list.append(unknown, exposed)
+}
+
+fn is_loopback(address: String) -> Bool {
+  address == "localhost"
+  || address == "::1"
+  || string.starts_with(address, "127.")
+}
+
+/// The keys of a parsed configuration file that are not configuration keys.
+pub fn unknown_keys(t: Dict(String, Toml)) -> List(String) {
+  leaf_keys(t, "")
+  |> list.filter(fn(key) { !list.contains(known_keys, key) })
+  |> list.sort(string.compare)
+}
+
+fn leaf_keys(t: Dict(String, Toml), prefix: String) -> List(String) {
+  dict.to_list(t)
+  |> list.flat_map(fn(entry) {
+    let #(name, value) = entry
+    let key = prefix <> name
+    case value {
+      tom.Table(sub) | tom.InlineTable(sub) -> leaf_keys(sub, key <> ".")
+      _ -> [key]
+    }
+  })
 }
 
 pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
@@ -624,7 +748,45 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
       }
     Error(Nil) -> []
   }
-  list.flatten([ints, bools, level])
+  let secrets =
+    list.filter_map(secret_env_vars, fn(name) {
+      case get(name), get(name <> "_FILE") {
+        Ok(_), Ok(_) -> Ok(name <> " and " <> name <> "_FILE are both set")
+        _, Ok(path) ->
+          case read_secret_file(path) {
+            Ok(_) -> Error(Nil)
+            Error(reason) -> Ok(name <> "_FILE: " <> reason)
+          }
+        _, _ -> Error(Nil)
+      }
+    })
+  list.flatten([ints, bools, level, secrets])
+}
+
+/// Secrets that can also be given as a file with `<NAME>_FILE`, so that they
+/// do not appear in the process environment (`docker inspect`,
+/// `/proc/<pid>/environ`).
+pub const secret_env_vars = [
+  "RP_ADMIN_SECRET_KEY_BASE",
+  "RP_AUTH_OIDC_CLIENT_SECRET",
+  "RP_BOOTSTRAP_ADMIN_PASSWORD",
+]
+
+/// The content of a secret file, without its trailing line break.
+pub fn read_secret_file(path: String) -> Result(String, String) {
+  case simplifile.read(path) {
+    Ok(content) ->
+      Ok(case string.ends_with(content, "\r\n") {
+        True -> string.drop_end(content, 2)
+        False ->
+          case string.ends_with(content, "\n") {
+            True -> string.drop_end(content, 1)
+            False -> content
+          }
+      })
+    Error(e) ->
+      Error("cannot read " <> path <> ": " <> simplifile.describe_error(e))
+  }
 }
 
 pub const log_levels = ["debug", "info", "warning", "error", "critical", "none"]
@@ -637,6 +799,14 @@ pub fn apply_env(
   get: fn(String) -> Result(String, Nil),
 ) -> Config {
   let s = fn(name, current) { get(name) |> result.unwrap(current) }
+  // NAME, or the content of the file named by NAME_FILE (Docker and
+  // Kubernetes secrets), without its trailing line break
+  let secret = fn(name, current) {
+    case get(name <> "_FILE") {
+      Ok(path) -> read_secret_file(path) |> result.unwrap(current)
+      Error(Nil) -> s(name, current)
+    }
+  }
   let i = fn(name, current) {
     get(name)
     |> result.try(fn(v) { int.parse(string.trim(v)) })
@@ -718,7 +888,7 @@ pub fn apply_env(
       listen: s("RP_ADMIN_LISTEN", admin.listen),
       port: i("RP_ADMIN_PORT", admin.port),
       public_url: s("RP_ADMIN_PUBLIC_URL", admin.public_url),
-      secret_key_base: s("RP_ADMIN_SECRET_KEY_BASE", admin.secret_key_base),
+      secret_key_base: secret("RP_ADMIN_SECRET_KEY_BASE", admin.secret_key_base),
       session_ttl: i("RP_ADMIN_SESSION_TTL", admin.session_ttl),
       session_idle_timeout: i(
         "RP_ADMIN_SESSION_IDLE_TIMEOUT",
@@ -734,19 +904,23 @@ pub fn apply_env(
       local_auth.enabled,
     )),
     oidc: OidcConfig(
-      ..oidc,
       enabled: b("RP_AUTH_OIDC_ENABLED", oidc.enabled),
       issuer: s("RP_AUTH_OIDC_ISSUER", oidc.issuer),
       client_id: s("RP_AUTH_OIDC_CLIENT_ID", oidc.client_id),
-      client_secret: s("RP_AUTH_OIDC_CLIENT_SECRET", oidc.client_secret),
+      client_secret: secret("RP_AUTH_OIDC_CLIENT_SECRET", oidc.client_secret),
       scopes: l("RP_AUTH_OIDC_SCOPES", oidc.scopes),
       allowed_emails: l("RP_AUTH_OIDC_ALLOWED_EMAILS", oidc.allowed_emails),
       allowed_domains: l("RP_AUTH_OIDC_ALLOWED_DOMAINS", oidc.allowed_domains),
       allowed_groups: l("RP_AUTH_OIDC_ALLOWED_GROUPS", oidc.allowed_groups),
+      groups_claim: s("RP_AUTH_OIDC_GROUPS_CLAIM", oidc.groups_claim),
+      button_label: s("RP_AUTH_OIDC_BUTTON_LABEL", oidc.button_label),
     ),
     header_auth: HeaderAuthConfig(
-      ..header_auth,
       enabled: b("RP_AUTH_HEADER_ENABLED", header_auth.enabled),
+      user_header: s("RP_AUTH_HEADER_USER_HEADER", header_auth.user_header)
+        |> string.lowercase,
+      email_header: s("RP_AUTH_HEADER_EMAIL_HEADER", header_auth.email_header)
+        |> string.lowercase,
       trusted_proxies: l(
         "RP_AUTH_HEADER_TRUSTED_PROXIES",
         header_auth.trusted_proxies,
@@ -782,6 +956,22 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.admin.session_ttl < 60,
     Error("admin.session_ttl must be at least 60 seconds"),
+  )
+  use <- bool.guard(
+    config.admin.session_ttl > 604_800,
+    Error("admin.session_ttl must be at most 7 days (604800 seconds)"),
+  )
+  use <- bool.guard(
+    config.server.cache_max_age < 0,
+    Error("server.cache_max_age must be >= 0"),
+  )
+  use <- bool.guard(
+    config.server.fallback_url != "" && !is_http_url(config.server.fallback_url),
+    Error("server.fallback_url must be an http:// or https:// URL"),
+  )
+  use <- bool.guard(
+    !is_http_url(config.admin.public_url),
+    Error("admin.public_url must be an http:// or https:// URL"),
   )
   use <- bool.guard(
     config.admin.session_idle_timeout != 0

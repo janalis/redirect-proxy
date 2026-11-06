@@ -169,6 +169,15 @@ pub fn render_prometheus() -> String {
       "gauge",
       matcher.size(snapshot.current()),
     ),
+    "# HELP redirect_proxy_build_info Version of the running server.\n# TYPE redirect_proxy_build_info gauge\nredirect_proxy_build_info{version=\""
+      <> ffi.app_version()
+      <> "\"} 1\n",
+    line(
+      "process_start_time_seconds",
+      "Start time of the process since the epoch, in seconds.",
+      "gauge",
+      ffi.start_time_seconds(),
+    ),
     line(
       "redirect_proxy_memory_bytes",
       "Memory allocated by the Erlang VM.",

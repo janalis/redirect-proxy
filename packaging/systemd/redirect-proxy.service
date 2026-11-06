@@ -40,6 +40,15 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ProtectProc=invisible
+RemoveIPC=true
+# Schedulers, dirty schedulers and I/O threads: a few dozen in practice
+TasksMax=4096
+# Not set on purpose:
+# - MemoryDenyWriteExecute: the BEAM JIT writes then executes machine code.
+# - ProcSubset=pid: the VM reads /proc for CPU and memory information.
 ReadWritePaths=/var/lib/redirect-proxy
 StateDirectory=redirect-proxy
 StateDirectoryMode=0750

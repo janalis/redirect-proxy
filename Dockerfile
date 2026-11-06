@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# Keep ALPINE_VERSION equal to the Alpine release of the erlang image: the
-# bundled runtime links against the system OpenSSL of that release.
-ARG ERLANG_VERSION=29.1.2
-ARG ALPINE_VERSION=3.24
+# Base images are pinned by digest and written out (no ARG) so that
+# Dependabot can update them. Keep the runtime Alpine release equal to the
+# one of the erlang image: the bundled runtime links against its OpenSSL.
 
 # --- build ------------------------------------------------------------------
-FROM erlang:${ERLANG_VERSION}-alpine AS build
+FROM erlang:29.1.2-alpine@sha256:0ac9b63db11be156be4e2834546e44aa0d7446aaffb05fedd4aea8c5a33ad998 AS build
 
 ARG GLEAM_VERSION=1.19.2
 ARG VERSION=dev
@@ -31,7 +30,7 @@ RUN scripts/bundle.sh "${VERSION}" container --with-erts \
  && mv "dist/redirect-proxy-${VERSION}-container" /opt/redirect-proxy
 
 # --- runtime ----------------------------------------------------------------
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
 
 RUN apk add --no-cache libstdc++ libgcc ncurses-libs openssl zlib lksctp-tools \
  && addgroup -S -g 10001 redirect-proxy \
