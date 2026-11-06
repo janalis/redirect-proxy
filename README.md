@@ -87,6 +87,11 @@ The redirect listener (`8080`) is meant to be public. The admin listener
 (`8081`) should only be reachable from a trusted network or through an
 authenticating reverse proxy.
 
+The bootstrap password stays readable in the container configuration: once
+the administrator exists, recreate the container without
+`RP_BOOTSTRAP_ADMIN_PASSWORD` (the server warns while it is still set), or
+pass it as a secret file with `RP_BOOTSTRAP_ADMIN_PASSWORD_FILE`.
+
 ## Installation
 
 | Platform | Install with |
@@ -249,6 +254,12 @@ option. Each option can be overridden with an environment variable named
 (`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`) or a log level that does
 not parse stops the start with an error naming the variable.
 
+Secrets can be read from a file instead, so that they do not show in the
+process environment (`docker inspect`, `/proc/<pid>/environ`): set
+`RP_ADMIN_SECRET_KEY_BASE_FILE`, `RP_AUTH_OIDC_CLIENT_SECRET_FILE` or
+`RP_BOOTSTRAP_ADMIN_PASSWORD_FILE` to the path of a file holding the value
+(Docker and Kubernetes secrets). A trailing line break is ignored.
+
 | Variable | Default |
 | --- | --- |
 | `RP_SERVER_LISTEN` / `RP_SERVER_PORT` | `0.0.0.0` / `8080` |
@@ -335,11 +346,14 @@ Security measures:
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),
-  `X-Frame-Options: DENY` and `nosniff`.
+  `X-Frame-Options: DENY` and `nosniff`. When `admin.public_url` is
+  `https://`, responses carry `Strict-Transport-Security` and the session
+  cookie is named `__Host-rp_session`, which a sibling subdomain cannot set
+  or shadow.
 
 > **Behind a reverse proxy.** Keep the `Host` header unchanged so that the
 > origin check passes. Serve the admin over HTTPS so that cookies get the
-> `Secure` flag.
+> `Secure` flag, and send `X-Forwarded-Proto`.
 
 ## REST API
 
@@ -423,7 +437,7 @@ or endpoint works like this:
 
 ```text
 redirect-proxy [serve] [--config FILE]
-redirect-proxy check-config [--config FILE]
+redirect-proxy check-config [--config FILE]   # also warns about unknown keys
 redirect-proxy user add|passwd|delete <username> | user list
 redirect-proxy client add <name> [--scope SCOPE]... | client list | client rotate|delete <client_id>
 redirect-proxy rules validate [FILE] | rules export | rules import <FILE> [--replace]
@@ -456,11 +470,17 @@ for it. `rules import` writes the file; a running server applies it on
 - **Backups.** Each change keeps the previous file as
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule
-  before and after.
+  before and after, and sign-ins: logins, failed logins (with the client
+  address) and logouts, for local, SSO and proxy-header sessions.
 - **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
   fallbacks, login failures, reloads, API requests, issued tokens, API
   authentication failures, regex runs stopped by the backtracking budget,
-  loaded rules, VM memory and process count.
+  loaded rules, VM memory and process count, plus
+  `redirect_proxy_build_info{version}` and `process_start_time_seconds`.
+  The endpoint is not authenticated: like the rest of the admin listener,
+  keep it off the public network. The container image binds the admin to
+  `0.0.0.0` so that it can be published: publish it on `127.0.0.1` only, as
+  in the quick start.
 - **Shutdown.** On `SIGTERM` the node drains for `server.shutdown_grace`
   seconds (default 5, `RP_SERVER_SHUTDOWN_GRACE`): `/readyz` answers 503 and
   the redirect listener closes connections after each response, so load
@@ -653,7 +673,8 @@ Releases are automated with
 
 - `feat:` bumps the minor version.
 - `fix:`, `perf:` and `security:` bump the patch version.
-- `feat!:` or a `BREAKING CHANGE:` footer bumps the major version.
+- `feat!:` or a `BREAKING CHANGE:` footer bumps the minor version while the
+  version is below 1.0 (`bump-minor-pre-major`), then the major version.
 
 Every push to `main` updates a release PR with the next version and changelog.
 Merging that PR tags `vX.Y.Z` and publishes these artifacts:

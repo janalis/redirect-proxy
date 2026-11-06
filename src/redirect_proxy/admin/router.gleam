@@ -3,7 +3,9 @@
 import gleam/bool
 import gleam/bytes_tree
 import gleam/http.{Get, Post}
+import gleam/http/request
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -36,6 +38,29 @@ import simplifile
 import wisp.{type Request, type Response}
 
 pub const session_cookie = "rp_session"
+
+/// With the `__Host-` prefix, browsers only accept the cookie when it is
+/// `Secure`, set by this host (no `Domain`) for every path, so that a
+/// sibling subdomain cannot set or shadow it.
+const secure_session_cookie = "__Host-rp_session"
+
+/// The session cookie name: prefixed when the admin is served over HTTPS and
+/// the cookie is `Secure` (wisp sends it without `Secure` only for plain
+/// HTTP on localhost).
+fn session_cookie_name(req: Request, ctx: Context) -> String {
+  let local_http =
+    req.scheme == http.Http
+    && list.contains(["localhost", "127.0.0.1", "[::1]"], req.host)
+    && result.is_error(request.get_header(req, "x-forwarded-proto"))
+  case https_admin(ctx) && !local_http {
+    True -> secure_session_cookie
+    False -> session_cookie
+  }
+}
+
+fn https_admin(ctx: Context) -> Bool {
+  string.starts_with(string.lowercase(ctx.config.admin.public_url), "https://")
+}
 
 /// Binds an SSO login in progress to the browser that started it.
 const oidc_state_cookie = "rp_oidc_state"
@@ -75,6 +100,7 @@ pub type Context {
 
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.AdminRequests)
+  use <- strict_transport_security(ctx)
   use <- security_headers
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
@@ -135,7 +161,7 @@ fn authenticated(req: Request, ctx: Context) -> Response {
   use s, set_cookie <- require_session(req, ctx)
   let resp = case req.method, wisp.path_segments(req) {
     Get, [] -> wisp.redirect("/rules")
-    Post, ["logout"] -> logout(req, s)
+    Post, ["logout"] -> logout(req, ctx, s)
     Get, ["rules"] -> list_rules(req, ctx, s)
     Get, ["rules", "new"] -> new_rule(req, ctx, s)
     Post, ["rules"] -> create_rule(req, ctx, s)
@@ -182,6 +208,16 @@ fn limit_body(req: Request, ctx: Context) -> Request {
       req
       |> wisp.set_max_body_size(max_form_bytes)
       |> wisp.set_max_files_size(0)
+  }
+}
+
+/// When the admin is served over HTTPS, browsers must not fall back to HTTP.
+fn strict_transport_security(ctx: Context, next: fn() -> Response) -> Response {
+  case https_admin(ctx) {
+    True ->
+      next()
+      |> wisp.set_header("strict-transport-security", "max-age=31536000")
+    False -> next()
   }
 }
 
@@ -239,7 +275,11 @@ fn require_session(
 /// once the user is deleted or changes password, including from the CLI,
 /// which runs in another process and cannot reach this server's sessions.
 fn current_session(req: Request, ctx: Context) -> Result(Session, Nil) {
-  use token <- result.try(wisp.get_cookie(req, session_cookie, wisp.Signed))
+  use token <- result.try(wisp.get_cookie(
+    req,
+    session_cookie_name(req, ctx),
+    wisp.Signed,
+  ))
   use s <- result.try(session.get(token, ctx.config.admin.session_idle_timeout))
   case s.method {
     session.Local ->
@@ -275,6 +315,7 @@ fn start_header_session(
     <> " from "
     <> ctx.peer_ip,
   )
+  audit_auth(ctx, user, "auth.login", "proxy")
   let s = session.create(user, session.Header, ctx.config.admin.session_ttl, "")
   next(s, set_session_cookie(_, req, ctx, s))
 }
@@ -288,7 +329,7 @@ fn set_session_cookie(
   wisp.set_cookie(
     resp,
     req,
-    session_cookie,
+    session_cookie_name(req, ctx),
     s.token,
     wisp.Signed,
     ctx.config.admin.session_ttl,
@@ -404,6 +445,7 @@ fn login(req: Request, ctx: Context) -> Response {
         Ok(user) -> {
           ratelimit.reset(pair_key)
           log.info("login: " <> who)
+          audit_auth(ctx, username, "auth.login", "local")
           let user = rehash_if_needed(ctx, user, pass)
           let s =
             session.create(
@@ -422,6 +464,7 @@ fn login(req: Request, ctx: Context) -> Response {
           ratelimit.record_failure(user_key, login_window)
           metrics.incr(metrics.LoginFailures)
           log.warning("failed login for user=" <> who)
+          audit_auth(ctx, username, "auth.login_failed", "local")
           fail("Invalid username or password.", 401, username)
         }
       }
@@ -440,12 +483,7 @@ fn rehash_if_needed(
     False -> user
     True -> {
       let stored =
-        users.set_password(
-          ctx.users,
-          user.username,
-          password.hash(pass),
-          user.username,
-        )
+        users.rehash_password(ctx.users, user.username, password.hash(pass))
         |> result.try(fn(_) {
           users.get(ctx.users, user.username) |> result.replace_error("")
         })
@@ -463,6 +501,18 @@ fn rehash_if_needed(
       }
     }
   }
+}
+
+/// Records a sign-in event in the audit trail, with the client address.
+fn audit_auth(ctx: Context, actor: String, action: String, method: String) {
+  audit.record(
+    config.audit_path(ctx.config),
+    actor,
+    action,
+    method,
+    None,
+    Some(json.object([#("client_ip", json.string(ctx.client_ip))])),
+  )
 }
 
 /// A user-supplied value in a log line: line breaks are escaped, so that a
@@ -483,12 +533,13 @@ fn safe_next(next: Result(String, Nil)) -> String {
   }
 }
 
-fn logout(req: Request, s: Session) -> Response {
+fn logout(req: Request, ctx: Context, s: Session) -> Response {
   use _form <- require_csrf_form(req, s)
   session.destroy(s.token)
   log.info("logout: " <> s.username)
+  audit_auth(ctx, s.username, "auth.logout", session.method_to_string(s.method))
   wisp.redirect("/login")
-  |> wisp.set_cookie(req, session_cookie, "", wisp.Signed, 0)
+  |> wisp.set_cookie(req, session_cookie_name(req, ctx), "", wisp.Signed, 0)
 }
 
 fn oidc_start(req: Request, ctx: Context) -> Response {
@@ -538,6 +589,7 @@ fn oidc_callback(req: Request, ctx: Context) -> Response {
         <> log_value(identity.subject)
         <> ")",
       )
+      audit_auth(ctx, identity.username, "auth.login", "sso")
       let s =
         session.create(
           identity.username,
@@ -560,6 +612,7 @@ fn oidc_callback(req: Request, ctx: Context) -> Response {
         )
       }
       log.warning("SSO login rejected: " <> log_value(logged))
+      audit_auth(ctx, "", "auth.login_failed", "sso")
       html(
         403,
         pages.login(

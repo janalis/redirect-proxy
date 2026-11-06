@@ -44,6 +44,15 @@ pub fn regex_limit_init() -> Nil
 @external(erlang, "redirect_proxy_ffi", "regex_limit_count")
 pub fn regex_limit_count() -> Int
 
+/// The whole lines within the last `max_bytes` bytes of a file.
+@external(erlang, "redirect_proxy_ffi", "read_tail")
+pub fn read_tail(path: String, max_bytes: Int) -> Result(BitArray, Nil)
+
+/// `compute()` for a file, cached until the file is written again. On an
+/// error, the last successful value is returned when there is one.
+@external(erlang, "redirect_proxy_ffi", "memo_file")
+pub fn memo_file(path: String, compute: fn() -> Result(a, e)) -> Result(a, e)
+
 @external(erlang, "redirect_proxy_ffi", "atomic_write")
 pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 
@@ -147,6 +156,14 @@ pub fn halt(code: Int) -> Nil
 @external(erlang, "redirect_proxy_ffi", "read_password")
 pub fn read_password(prompt: String) -> Result(String, Nil)
 
+/// The version of the redirect_proxy application.
+@external(erlang, "redirect_proxy_ffi", "app_version")
+pub fn app_version() -> String
+
+/// When the VM started, in seconds since the epoch.
+@external(erlang, "redirect_proxy_ffi", "start_time_seconds")
+pub fn start_time_seconds() -> Int
+
 @external(erlang, "redirect_proxy_ffi", "memory_bytes")
 pub fn memory_bytes() -> Int
 
@@ -191,6 +208,10 @@ pub fn locked_file(
     Error(reason) -> Error(reason)
   }
 }
+
+/// Runs `f`, returning an exception as `Error` with its description.
+@external(erlang, "redirect_proxy_ffi", "rescue")
+pub fn rescue(f: fn() -> a) -> Result(a, String)
 
 /// The first `bytes` bytes of a string (all of it when shorter). The result
 /// may end inside a UTF-8 sequence: use it only as a lookup key.

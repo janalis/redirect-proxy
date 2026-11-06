@@ -116,3 +116,25 @@ pub fn atomic_write_failure_returns_an_error_test() {
 /// Sets a file's modification time `seconds_ago` in the past.
 @external(erlang, "test_net_ffi", "set_mtime_ago")
 fn set_mtime(path: String, seconds_ago: Int) -> Nil
+
+pub fn memo_file_test() {
+  let path = support.temp_dir() <> "/clients.json"
+  let parse = fn() {
+    case simplifile.read(path) {
+      Ok("ok:" <> value) -> Ok(value)
+      Ok(other) -> Error("corrupt: " <> other)
+      Error(_) -> Error("missing")
+    }
+  }
+  assert ffi.memo_file(path, parse) == Error("missing")
+  let assert Ok(Nil) = ffi.atomic_write(path, "ok:one")
+  assert ffi.memo_file(path, parse) == Ok("one")
+  // cached: not recomputed while the file is unchanged
+  assert ffi.memo_file(path, fn() { Error("not called") }) == Ok("one")
+  // a write within the same second, of the same size, is still seen
+  let assert Ok(Nil) = ffi.atomic_write(path, "ok:two")
+  assert ffi.memo_file(path, parse) == Ok("two")
+  // a broken file keeps the last good value
+  let assert Ok(Nil) = ffi.atomic_write(path, "garbage")
+  assert ffi.memo_file(path, parse) == Ok("two")
+}

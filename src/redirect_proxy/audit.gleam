@@ -1,5 +1,6 @@
 //// Append-only JSON Lines audit log of administrative changes.
 
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
@@ -8,7 +9,6 @@ import gleam/result
 import gleam/string
 import redirect_proxy/ffi
 import redirect_proxy/log
-import simplifile
 
 pub type Entry {
   Entry(
@@ -47,6 +47,9 @@ pub fn record(
   }
 }
 
+/// Only the end of the file is read: the audit log only grows.
+const tail_bytes = 1_048_576
+
 /// Reads the `limit` most recent entries, newest first.
 pub fn tail(path: String, limit: Int) -> List(Entry) {
   let decoder = {
@@ -56,7 +59,10 @@ pub fn tail(path: String, limit: Int) -> List(Entry) {
     use target <- decode.optional_field("target", "", decode.string)
     decode.success(Entry(at:, actor:, action:, target:, details: ""))
   }
-  case simplifile.read(path) {
+  let content =
+    ffi.read_tail(path, tail_bytes)
+    |> result.try(bit_array.to_string)
+  case content {
     Error(_) -> []
     Ok(content) ->
       content

@@ -283,14 +283,30 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
 }
 
 /// Creates the first administrator from RP_BOOTSTRAP_ADMIN_USERNAME and
-/// RP_BOOTSTRAP_ADMIN_PASSWORD when no local user exists yet.
+/// RP_BOOTSTRAP_ADMIN_PASSWORD (or RP_BOOTSTRAP_ADMIN_PASSWORD_FILE) when no
+/// local user exists yet.
 fn bootstrap_admin(cfg: Config) -> Nil {
   let settings = users_settings(cfg)
+  let from_env = envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD")
+  let bootstrap_password = case envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD_FILE") {
+    Ok(path) -> config.read_secret_file(path) |> result.replace_error(Nil)
+    Error(Nil) -> from_env
+  }
+  let count = users.count(settings)
+  case from_env, count {
+    // the plain-text password stays readable in the container configuration
+    // and /proc/<pid>/environ long after it was used
+    Ok(_), n if n > 0 ->
+      log.warning(
+        "RP_BOOTSTRAP_ADMIN_PASSWORD is still set although administrators exist: remove it, or use RP_BOOTSTRAP_ADMIN_PASSWORD_FILE",
+      )
+    _, _ -> Nil
+  }
   case
     cfg.local_auth.enabled,
-    users.count(settings),
+    count,
     envoy.get("RP_BOOTSTRAP_ADMIN_USERNAME"),
-    envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD")
+    bootstrap_password
   {
     True, 0, Ok(username), Ok(pass) ->
       case password.validate_strength(pass) {

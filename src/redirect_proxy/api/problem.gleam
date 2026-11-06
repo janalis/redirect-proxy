@@ -116,25 +116,44 @@ pub fn etag(version: String) -> String {
   "\"" <> version <> "\""
 }
 
-/// Extracts the version from an `If-Match` header value. `*` is kept as is;
-/// weak validators are accepted (`W/"..."`).
-pub fn parse_if_match(value: String) -> String {
-  let value = string.trim(value)
-  let value = case string.starts_with(value, "W/") {
-    True -> string.drop_start(value, 2)
-    False -> value
+pub type IfMatch {
+  /// `*`: any current version.
+  AnyVersion
+  /// The versions of the strong entity tags listed. Weak tags (`W/"..."`)
+  /// are left out: `If-Match` uses the strong comparison (RFC 9110), so
+  /// they never match.
+  Versions(List(String))
+}
+
+/// Parses an `If-Match` header value.
+pub fn parse_if_match(value: String) -> IfMatch {
+  case string.trim(value) {
+    "*" -> AnyVersion
+    value ->
+      value
+      |> string.split(",")
+      |> list.map(string.trim)
+      |> list.filter_map(fn(tag) {
+        case string.starts_with(tag, "\"") && string.ends_with(tag, "\"") {
+          True if tag != "\"" -> Ok(string.slice(tag, 1, string.length(tag) - 2))
+          _ -> Error(Nil)
+        }
+      })
+      |> Versions
   }
-  value
-  |> string.split(",")
-  |> list.first
-  |> fn(first) {
-    case first {
-      Ok(v) -> v
-      Error(Nil) -> value
-    }
+}
+
+/// The version to require from the store: the current one when `If-Match`
+/// lists it (or is `*`), otherwise one that cannot match (412).
+pub fn expected_version(condition: IfMatch, current: String) -> String {
+  case condition {
+    AnyVersion -> "*"
+    Versions(versions) ->
+      case list.contains(versions, current) {
+        True -> current
+        False -> "\u{0}no matching entity tag"
+      }
   }
-  |> string.trim
-  |> string.replace("\"", "")
 }
 
 fn quote_safe(value: String) -> String {

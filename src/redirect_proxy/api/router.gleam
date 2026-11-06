@@ -491,10 +491,18 @@ fn create_rule(req: Request, ctx: Context, principal: Principal) -> Response {
   |> add_deprecation_headers(deprecated)
 }
 
-fn if_match(req: Request) -> Option(String) {
+/// The version `If-Match` requires of rule `id`, if the header is set. With a
+/// list of tags, any of them may be the current version.
+fn if_match(req: Request, ctx: Context, id: String) -> Option(String) {
   case request.get_header(req, "if-match") {
-    Ok(value) -> Some(problem.parse_if_match(value))
     Error(Nil) -> None
+    Ok(value) -> {
+      let current = case store.get(ctx.store, id) {
+        Ok(r) -> rule.version(r)
+        Error(Nil) -> ""
+      }
+      Some(problem.expected_version(problem.parse_if_match(value), current))
+    }
   }
 }
 
@@ -522,7 +530,7 @@ fn replace_rule(
       store.update_versioned(
         ctx.store,
         rule.Rule(..input, id:),
-        if_match(req),
+        if_match(req, ctx, id),
         principal.actor,
       )
       |> change_response(id)
@@ -544,7 +552,7 @@ fn patch_rule(
     Ok(existing), Ok(apply) -> {
       // When no If-Match is given, still guard against a concurrent change
       // between our read and the update.
-      let expected = case if_match(req) {
+      let expected = case if_match(req, ctx, id) {
         Some(v) -> Some(v)
         None -> Some(rule.version(existing))
       }
@@ -633,7 +641,14 @@ fn delete_rule(
   principal: Principal,
   id: String,
 ) -> Response {
-  case store.delete_versioned(ctx.store, id, if_match(req), principal.actor) {
+  case
+    store.delete_versioned(
+      ctx.store,
+      id,
+      if_match(req, ctx, id),
+      principal.actor,
+    )
+  {
     Ok(_) -> wisp.no_content()
     Error(store.NotFound) -> rule_not_found(id)
     Error(store.Conflict(current)) ->

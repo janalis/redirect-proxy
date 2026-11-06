@@ -41,8 +41,9 @@ pub fn list(settings: Settings) -> Result(List(Client), String) {
   load(settings.path)
 }
 
+/// Read on every API call: served from a cache until the file changes.
 pub fn get(settings: Settings, client_id: String) -> Result(Client, Nil) {
-  load(settings.path)
+  ffi.memo_file(settings.path, fn() { load(settings.path) })
   |> result.unwrap([])
   |> list.find(fn(c) { c.client_id == client_id })
 }

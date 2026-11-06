@@ -1,6 +1,7 @@
 //// Command line entry point.
 
 import envoy
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -143,6 +144,13 @@ fn serve(config_path: String) -> Result(Nil, String) {
 fn check_config(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
   io.println("configuration OK")
+  let toml = config.read_toml(config_path) |> result.unwrap(dict.new())
+  let writable = case data_dir_writable(cfg.storage.data_dir) {
+    Ok(Nil) -> []
+    Error(reason) -> [reason]
+  }
+  list.append(config.warnings(toml, cfg), writable)
+  |> list.each(fn(w) { io.println("  warning: " <> w) })
   io.println("  data directory: " <> cfg.storage.data_dir)
   io.println(
     "  redirect listener: "
@@ -177,6 +185,21 @@ fn check_config(config_path: String) -> Result(Nil, String) {
     |> list.map(fn(m) { m.1 })
   io.println("  authentication: " <> string.join(methods, ", "))
   Ok(Nil)
+}
+
+fn data_dir_writable(dir: String) -> Result(Nil, String) {
+  let probe = dir <> "/.check-config-" <> int.to_string(ffi.now_millis())
+  let written =
+    simplifile.create_directory_all(dir)
+    |> result.try(fn(_) { simplifile.write(probe, "") })
+  let _ = simplifile.delete(probe)
+  written
+  |> result.map_error(fn(e) {
+    "the data directory "
+    <> dir
+    <> " is not writable: "
+    <> simplifile.describe_error(e)
+  })
 }
 
 // --- users ------------------------------------------------------------------

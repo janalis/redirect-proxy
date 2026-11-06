@@ -83,6 +83,32 @@ pub fn set_password(
   password_hash: String,
   by actor: String,
 ) -> Result(Nil, String) {
+  store_password(settings, username, password_hash, actor, "user.password")
+}
+
+/// Stores a stronger hash of the same password (more iterations), recorded
+/// as such in the audit trail rather than as a password change.
+pub fn rehash_password(
+  settings: Settings,
+  username: String,
+  password_hash: String,
+) -> Result(Nil, String) {
+  store_password(
+    settings,
+    username,
+    password_hash,
+    "system",
+    "user.password_rehash",
+  )
+}
+
+fn store_password(
+  settings: Settings,
+  username: String,
+  password_hash: String,
+  actor: String,
+  action: String,
+) -> Result(Nil, String) {
   let username = normalise(username)
   use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
@@ -98,14 +124,7 @@ pub fn set_password(
           }
         })
       use Nil <- result.try(save(settings.path, users))
-      audit.record(
-        settings.audit_path,
-        actor,
-        "user.password",
-        username,
-        None,
-        None,
-      )
+      audit.record(settings.audit_path, actor, action, username, None, None)
       Ok(Nil)
     }
   }

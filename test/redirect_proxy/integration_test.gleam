@@ -19,6 +19,7 @@ import gleam/string
 import gleam/uri
 import mist
 import redirect_proxy/app
+import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/password
@@ -496,6 +497,64 @@ pub fn draining_before_a_stop_test() {
 
 @external(erlang, "redirect_proxy_sigterm", "set_draining")
 fn set_draining(value: Bool) -> Nil
+
+pub fn https_admin_hardening_test() {
+  // the admin behind a TLS-terminating proxy
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        admin: config.AdminConfig(..d.admin, public_url: "https://admin.test"),
+      ),
+    )
+  let resp =
+    send(
+      http.Post,
+      env.admin <> "/login",
+      [
+        #("content-type", "application/x-www-form-urlencoded"),
+        #("origin", env.admin),
+        #("x-forwarded-proto", "https"),
+      ],
+      uri.query_to_string([
+        #("username", "admin"),
+        #("password", admin_password),
+      ]),
+    )
+  assert resp.status == 303
+  assert response.get_header(resp, "strict-transport-security")
+    == Ok("max-age=31536000")
+  let cookie = cookie_of(resp, "__Host-rp_session")
+  assert cookie != ""
+  assert cookie_of(resp, "rp_session") == ""
+  let page =
+    get(env.admin <> "/rules", [
+      #("cookie", cookie),
+      #("x-forwarded-proto", "https"),
+    ])
+  assert page.status == 200
+}
+
+pub fn sign_ins_are_audited_test() {
+  let env = boot(config.default())
+  let assert 401 =
+    post_form(env, "/login", "", [#("username", "admin"), #("password", "no")]).status
+  let #(cookie, csrf) = login(env)
+  let assert 303 =
+    post_form(env, "/logout", cookie, [#("csrf_token", csrf)]).status
+  let actions =
+    audit.tail(env.dir <> "/audit.jsonl", 10)
+    |> list.filter(fn(e) { string.starts_with(e.action, "auth.") })
+    |> list.map(fn(e) { #(e.actor, e.action, e.target) })
+  // newest first
+  assert list.take(actions, 3)
+    == [
+      #("admin", "auth.logout", "local"),
+      #("admin", "auth.login", "local"),
+      #("admin", "auth.login_failed", "local"),
+    ]
+}
 
 pub fn login_rejects_bad_password_test() {
   let env = boot(config.default())

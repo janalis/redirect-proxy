@@ -85,6 +85,32 @@ fn errors(codes: List(#(String, String))) -> List(#(String, Json)) {
   ]
 }
 
+/// Responses of operations that read a request body.
+fn body_errors() -> List(#(String, Json)) {
+  [
+    #("413", plain_response("The body is larger than api.max_body_bytes.")),
+    #("415", problem_response("The body is not of the documented media type.")),
+  ]
+}
+
+fn plain_response(description: String) -> Json {
+  json.object([#("description", json.string(description))])
+}
+
+fn header(description: String) -> Json {
+  json.object([
+    #("description", json.string(description)),
+    #("schema", string_schema()),
+  ])
+}
+
+fn enum_schema(values: List(String)) -> Json {
+  json.object([
+    #("type", json.string("string")),
+    #("enum", json.array(values, json.string)),
+  ])
+}
+
 fn param(name: String, location: String, schema: Json, doc: String) -> Json {
   json.object([
     #("name", json.string(name)),
@@ -182,6 +208,12 @@ fn paths(registry: List(Deprecation)) -> Json {
           "Issue an access token (OAuth 2.0 client credentials grant)",
           "",
           [
+            #(
+              "description",
+              json.string(
+                "Clients authenticate with HTTP Basic (client id and secret) or with client_id and client_secret in the form. `scope` is an optional space separated subset of the client's scopes; the token gets all of them when it is omitted. Failed attempts are throttled (429).",
+              ),
+            ),
             body(
               json.object([
                 #("type", json.string("object")),
@@ -212,6 +244,13 @@ fn paths(registry: List(Deprecation)) -> Json {
                 #(
                   "401",
                   response("Client authentication failed.", ref("OAuthError")),
+                ),
+                #(
+                  "429",
+                  response(
+                    "Too many failed attempts (error slow_down).",
+                    ref("OAuthError"),
+                  ),
                 ),
               ]),
             ),
@@ -252,8 +291,32 @@ fn paths(registry: List(Deprecation)) -> Json {
           #(
             "responses",
             json.object([
-              #("201", response("Created.", ref("Rule"))),
-              ..errors([#("422", "Validation failed.")])
+              #(
+                "201",
+                json.object([
+                  #("description", json.string("Created.")),
+                  #(
+                    "headers",
+                    json.object([
+                      #("Location", header("URL of the new redirection.")),
+                      #("ETag", header("Version of the new redirection.")),
+                    ]),
+                  ),
+                  #(
+                    "content",
+                    json.object([
+                      #(
+                        "application/json",
+                        json.object([#("schema", ref("Rule"))]),
+                      ),
+                    ]),
+                  ),
+                ]),
+              ),
+              ..list.append(
+                body_errors(),
+                errors([#("422", "Validation failed.")]),
+              )
             ]),
           ),
         ]),
@@ -287,11 +350,14 @@ fn paths(registry: List(Deprecation)) -> Json {
               "responses",
               json.object([
                 #("200", response("Updated.", ref("Rule"))),
-                ..errors([
-                  #("404", "Not found."),
-                  #("412", "Version mismatch."),
-                  #("422", "Validation failed."),
-                ])
+                ..list.append(
+                  body_errors(),
+                  errors([
+                    #("404", "Not found."),
+                    #("412", "Version mismatch."),
+                    #("422", "Validation failed."),
+                  ]),
+                )
               ]),
             ),
           ],
@@ -311,11 +377,14 @@ fn paths(registry: List(Deprecation)) -> Json {
               "responses",
               json.object([
                 #("200", response("Updated.", ref("Rule"))),
-                ..errors([
-                  #("404", "Not found."),
-                  #("412", "Version mismatch."),
-                  #("422", "Validation failed."),
-                ])
+                ..list.append(
+                  body_errors(),
+                  errors([
+                    #("404", "Not found."),
+                    #("412", "Version mismatch."),
+                    #("422", "Validation failed."),
+                  ]),
+                )
               ]),
             ),
           ],
@@ -379,7 +448,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                 param(
                   "mode",
                   "query",
-                  string_schema(),
+                  enum_schema(["merge", "replace"]),
                   "merge (default) or replace.",
                 ),
               ]),
@@ -404,7 +473,13 @@ fn paths(registry: List(Deprecation)) -> Json {
                     ]),
                   ),
                 ),
-                ..errors([#("422", "Validation failed.")])
+                ..list.append(
+                  body_errors(),
+                  errors([
+                    #("400", "mode is not merge or replace."),
+                    #("422", "Validation failed."),
+                  ]),
+                )
               ]),
             ),
           ],

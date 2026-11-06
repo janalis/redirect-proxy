@@ -660,10 +660,16 @@ pub fn scope_unit_test() {
 }
 
 pub fn problem_unit_test() {
-  assert problem.parse_if_match("\"abc\"") == "abc"
-  assert problem.parse_if_match("W/\"abc\"") == "abc"
-  assert problem.parse_if_match("\"a\", \"b\"") == "a"
-  assert problem.parse_if_match("*") == "*"
+  assert problem.parse_if_match("\"abc\"") == problem.Versions(["abc"])
+  // weak tags never match with the strong comparison of If-Match
+  assert problem.parse_if_match("W/\"abc\"") == problem.Versions([])
+  assert problem.parse_if_match("\"a\", W/\"w\", \"b\"")
+    == problem.Versions(["a", "b"])
+  assert problem.parse_if_match(" * ") == problem.AnyVersion
+  let listed = problem.parse_if_match("\"old\", \"current\"")
+  assert problem.expected_version(listed, "current") == "current"
+  assert problem.expected_version(listed, "newer") != "newer"
+  assert problem.expected_version(problem.AnyVersion, "v") == "*"
 }
 
 pub fn patch_decoder_unit_test() {

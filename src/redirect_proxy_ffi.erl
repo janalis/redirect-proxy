@@ -3,7 +3,7 @@
 -export([
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
-    atomic_write/2, append_line/2,
+    atomic_write/2, append_line/2, read_tail/2, memo_file/2,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
@@ -12,11 +12,13 @@
     now_seconds/0, now_millis/0, rfc3339/1,
     on_sighup/1,
     plain_arguments/0, halt/1, read_password/1,
-    memory_bytes/0, process_count/0,
+    memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
     with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
-    binary_take/2, binary_drop/2
+    binary_take/2, binary_drop/2, rescue/1
 ]).
+
+-include_lib("kernel/include/file.hrl").
 
 -define(MATCH_LIMIT, 100000).
 
@@ -123,6 +125,77 @@ append_line(Path, Line) ->
     case file:write_file(Path, [Line, $\n], [append, raw]) of
         ok -> {ok, nil};
         {error, Reason} -> {error, atom_to_binary_safe(Reason)}
+    end.
+
+%% Fun() computed from a file, cached until the file changes. Writes replace
+%% the file (atomic_write renames a new one), so the inode tells versions
+%% apart even within the second of mtime. When Fun() fails, the last good
+%% value is kept (a corrupt or half-written file does not break readers).
+memo_file(Path, Fun) ->
+    Stamp = case file:read_file_info(Path, [{time, posix}]) of
+        {ok, #file_info{inode = Inode, mtime = MTime, size = Size}} ->
+            {Inode, MTime, Size};
+        {error, _} -> missing
+    end,
+    Table = memo_table(),
+    Cached = try ets:lookup(Table, Path) catch error:badarg -> [] end,
+    case Cached of
+        [{_, Stamp, Value}] -> Value;
+        _ ->
+            case Fun() of
+                {ok, _} = Ok ->
+                    try ets:insert(Table, {Path, Stamp, Ok})
+                    catch error:badarg -> ok
+                    end,
+                    Ok;
+                Error ->
+                    case Cached of
+                        [{_, _, {ok, _} = Last}] -> Last;
+                        _ -> Error
+                    end
+            end
+    end.
+
+memo_table() ->
+    case ets:whereis(redirect_proxy_memo) of
+        undefined ->
+            Self = self(),
+            Owner = spawn(fun() ->
+                try ets:new(redirect_proxy_memo, [named_table, public, set,
+                                                  {read_concurrency, true}])
+                catch error:badarg -> ok  % created concurrently
+                end,
+                Self ! {redirect_proxy_memo, self()},
+                receive after infinity -> ok end
+            end),
+            receive {redirect_proxy_memo, Owner} -> ok after 1000 -> ok end;
+        _ -> ok
+    end,
+    redirect_proxy_memo.
+
+%% The whole lines within the last MaxBytes bytes of a file (all of it when
+%% smaller): a partial first line, which may start inside a UTF-8 sequence,
+%% is dropped.
+read_tail(Path, MaxBytes) ->
+    case file:open(Path, [read, raw, binary]) of
+        {ok, Fd} ->
+            try
+                {ok, Size} = file:position(Fd, eof),
+                Start = max(0, Size - MaxBytes),
+                case file:pread(Fd, Start, Size - Start) of
+                    {ok, Data} when Start =:= 0 -> {ok, Data};
+                    {ok, Data} ->
+                        case binary:split(Data, <<"\n">>) of
+                            [_Partial, Rest] -> {ok, Rest};
+                            [_] -> {ok, <<>>}
+                        end;
+                    eof -> {ok, <<>>};
+                    {error, _} -> {error, nil}
+                end
+            after
+                file:close(Fd)
+            end;
+        {error, _} -> {error, nil}
     end.
 
 atom_to_binary_safe(A) when is_atom(A) -> atom_to_binary(A);
@@ -287,6 +360,17 @@ read_password(Prompt) ->
 %% ---------------------------------------------------------------------------
 %% Runtime metrics
 %% ---------------------------------------------------------------------------
+
+app_version() ->
+    case application:get_key(redirect_proxy, vsn) of
+        {ok, Vsn} -> unicode:characters_to_binary(Vsn);
+        undefined -> <<"unknown">>
+    end.
+
+%% When the VM started, in seconds since the epoch.
+start_time_seconds() ->
+    {UptimeMs, _} = erlang:statistics(wall_clock),
+    erlang:system_time(second) - UptimeMs div 1000.
 
 memory_bytes() -> erlang:memory(total).
 process_count() -> erlang:system_info(process_count).
@@ -465,6 +549,15 @@ strip_control(Bin) ->
 garbage_collect() ->
     erlang:garbage_collect(),
     nil.
+
+%% Runs Fun, turning an exception into {error, Description}. gleam_httpc
+%% raises on errors it does not know (a peer closing the connection...).
+rescue(Fun) ->
+    try {ok, Fun()}
+    catch Class:Reason ->
+        {error, unicode:characters_to_binary(
+                  io_lib:format("~p: ~0p", [Class, Reason]))}
+    end.
 
 %% Byte-wise slicing for the matcher's prefix index. The first N bytes may
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.
