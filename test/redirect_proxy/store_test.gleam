@@ -322,3 +322,25 @@ pub fn reload_assigns_missing_ids_under_the_lock_test() {
   let assert Ok([r]) = rule.file_from_string(content)
   assert r.id != ""
 }
+
+pub fn creating_a_redirect_loop_is_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let looping = Rule(..new_rule("/a/", "/a/b/$1"), kind: rule.Prefix)
+  let assert Error([reason]) = store.create(s, looping, by: "t")
+  assert string.contains(reason, "redirect loop")
+  let assert Ok(_) =
+    store.create(s, Rule(..looping, target: "/new/$1"), by: "t")
+}
+
+pub fn a_file_with_a_loop_still_loads_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"id\":\"p\",\"match\":\"prefix\",\"source\":\"/a/\",\"target\":\"/a/b/$1\"}]}",
+    )
+  let s = start(settings(dir, 0))
+  assert list.length(store.all(s)) == 1
+}

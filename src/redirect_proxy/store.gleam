@@ -127,7 +127,7 @@ pub fn start(
       start_lock_timeout,
     ))
     let state = State(settings:, rules:, fingerprint:)
-    publish(rules)
+    publish(warn_loops(matcher.build(rules), rules))
     log.info(
       "loaded "
       <> int.to_string(list.length(rules))
@@ -279,7 +279,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use valid <- result.try(rule.validate(candidate))
         let rules = list.append(state.rules, [valid])
         use Nil <- result.try(check_conflicts(rules))
-        use fingerprint <- result.try(commit(state.settings, rules))
+        let built = matcher.build(rules)
+        use Nil <- result.try(check_loop(built, valid))
+        use fingerprint <- result.try(commit(state.settings, rules, built))
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -320,8 +322,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use Nil <- result.try(
           check_conflicts(rules) |> result.map_error(Invalid),
         )
+        let built = matcher.build(rules)
+        use Nil <- result.try(
+          check_loop(built, valid) |> result.map_error(Invalid),
+        )
         use fingerprint <- result.try(
-          commit(state.settings, rules) |> result.map_error(Invalid),
+          commit(state.settings, rules, built) |> result.map_error(Invalid),
         )
         audit.record(
           state.settings.audit_path,
@@ -344,8 +350,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         )
         use Nil <- result.try(check_version(existing, expected))
         let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
+        // removing a rule may uncover a loop it was shadowing
+        let built = warn_loops(matcher.build(rules), rules)
         use fingerprint <- result.try(
-          commit(state.settings, rules) |> result.map_error(Invalid),
+          commit(state.settings, rules, built) |> result.map_error(Invalid),
         )
         audit.record(
           state.settings.audit_path,
@@ -367,7 +375,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Merge -> merge(state.rules, prepared)
         }
         use Nil <- result.try(check_conflicts(rules))
-        use fingerprint <- result.try(commit(state.settings, rules))
+        let built = warn_loops(matcher.build(rules), rules)
+        use fingerprint <- result.try(commit(state.settings, rules, built))
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -394,7 +403,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Reload(actor_name, reply) ->
       case load_locked(state.settings, Reloading, lock_timeout) {
         Ok(#(rules, fingerprint)) -> {
-          publish(rules)
+          publish(warn_loops(matcher.build(rules), rules))
           metrics.incr(metrics.Reloads)
           audit.record(
             state.settings.audit_path,
@@ -473,7 +482,7 @@ fn refresh(state: State) -> Result(State, String) {
                 <> reason,
               )
             Ok(#(rules, fingerprint)) -> {
-              publish(rules)
+              publish(warn_loops(matcher.build(rules), rules))
               metrics.incr(metrics.Reloads)
               audit.record(
                 state.settings.audit_path,
@@ -502,23 +511,71 @@ fn fingerprint(content: BitArray) -> String {
 
 // --- helpers ----------------------------------------------------------------
 
-fn publish(rules: List(Rule)) -> Nil {
-  rules
-  |> matcher.build
+fn publish(built: matcher.Matcher) -> Nil {
+  built
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
   ffi.garbage_collect()
 }
 
-/// Writes and publishes the rules. Returns the fingerprint of the file.
+/// Refuses a change when a request to the changed rule would be redirected
+/// back to it.
+fn check_loop(
+  built: matcher.Matcher,
+  changed: Rule,
+) -> Result(Nil, List(String)) {
+  case changed.enabled, matcher.redirect_loop(built, changed) {
+    True, Ok(cycle) ->
+      Error(["target: redirect loop: " <> describe_cycle(cycle)])
+    _, _ -> Ok(Nil)
+  }
+}
+
+/// Logs the redirect loops of a rule set (loading never fails on them, so
+/// that a file that loaded before keeps loading). Each cycle once.
+fn warn_loops(built: matcher.Matcher, rules: List(Rule)) -> matcher.Matcher {
+  let _ =
+    rules
+    |> list.filter(fn(r) { r.enabled })
+    |> list.fold(set.new(), fn(reported, r) {
+      case matcher.redirect_loop(built, r) {
+        Error(Nil) -> reported
+        Ok(cycle) -> {
+          let key =
+            cycle
+            |> list.map(fn(r) { r.id })
+            |> list.unique
+            |> list.sort(string.compare)
+          case set.contains(reported, key) {
+            True -> reported
+            False -> {
+              log.warning("redirect loop: " <> describe_cycle(cycle))
+              set.insert(reported, key)
+            }
+          }
+        }
+      }
+    })
+  built
+}
+
+fn describe_cycle(cycle: List(Rule)) -> String {
+  cycle
+  |> list.map(fn(r) { r.host <> r.source })
+  |> string.join(" -> ")
+}
+
+/// Writes then publishes the rules (`built` is their matcher). Returns the
+/// fingerprint of the file.
 fn commit(
   settings: Settings,
   rules: List(Rule),
+  built: matcher.Matcher,
 ) -> Result(String, List(String)) {
   case persist(settings, rules) {
     Ok(fingerprint) -> {
-      publish(rules)
+      publish(built)
       Ok(fingerprint)
     }
     Error(reason) -> {

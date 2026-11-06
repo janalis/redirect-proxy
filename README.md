@@ -214,6 +214,11 @@ are sent with `no-store`.
 
 - It duplicates the source of another enabled exact rule on the same host.
 - It redirects to itself.
+- When created or edited, a request to it would be redirected back to it,
+  directly or through other rules (for example `/a/` → `/a/b/$1`). Up to 10
+  redirects are followed, as a browser would. When the rules file is
+  loaded, loops are logged as warnings instead, so a file that loaded before
+  keeps loading.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 

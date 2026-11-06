@@ -290,3 +290,30 @@ pub fn rule_hosts_ignore_port_and_trailing_dot_test() {
   assert location(m, "other.test.:443", "/c") == Ok("/d")
   assert location(m, "[::1]:8080", "/c") == Error(Nil)
 }
+
+pub fn redirect_loop_test() {
+  let prefix = r("p", "*", rule.Prefix, "/a/", "/a/b/$1")
+  let to_c = r("1", "example.com", rule.Exact, "/x", "https://other.test/y")
+  let back = r("2", "other.test", rule.Exact, "/y", "https://example.com/x")
+  let plain = r("3", "*", rule.Prefix, "/old/", "/new/$1")
+  let m = matcher.build([prefix, to_c, back, plain])
+  let ids = fn(result) {
+    case result {
+      Ok(cycle) -> Ok(list.map(cycle, fn(x: rule.Rule) { x.id }))
+      Error(Nil) -> Error(Nil)
+    }
+  }
+  // /a/x -> /a/b/x -> /a/b/b/x ...
+  assert ids(matcher.redirect_loop(m, prefix)) == Ok(["p", "p"])
+  // across hosts
+  assert ids(matcher.redirect_loop(m, to_c)) == Ok(["1", "2", "1"])
+  assert matcher.redirect_loop(m, plain) == Error(Nil)
+}
+
+pub fn shadowed_rule_is_not_a_loop_test() {
+  // /a/b is caught by a more specific exact rule: no loop
+  let prefix = r("p", "*", rule.Prefix, "/a/", "/a/b")
+  let exact = r("e", "*", rule.Exact, "/a/b", "/done")
+  let m = matcher.build([prefix, exact])
+  assert matcher.redirect_loop(m, prefix) == Error(Nil)
+}
