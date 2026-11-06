@@ -4,7 +4,8 @@
 ////
 //// A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return
 //// would run as a formula in a spreadsheet: the export prefixes it with
-//// `'`, and the import removes that prefix again.
+//// `'` (and a cell starting with `'` too, so that it survives), and the
+//// import removes that one prefix again.
 
 import gleam/int
 import gleam/list
@@ -253,7 +254,7 @@ fn strip_bom(content: String) -> String {
 fn unescape_formula(cell: String) -> String {
   case cell {
     "'" <> rest ->
-      case formula_start(rest) {
+      case needs_escape(rest) {
         True -> rest
         False -> cell
       }
@@ -261,11 +262,11 @@ fn unescape_formula(cell: String) -> String {
   }
 }
 
-fn formula_start(cell: String) -> Bool {
-  case string.first(cell) {
-    Ok(c) -> list.contains(["=", "+", "-", "@", "\t", "\r"], c)
-    Error(Nil) -> False
-  }
+/// Whether an exported cell gets a `'` prefix: it would start a formula, or
+/// starts with `'` itself. Bytes are compared, not graphemes: `=` followed
+/// by a combining mark is one grapheme, but a spreadsheet still reads `=`.
+fn needs_escape(cell: String) -> Bool {
+  list.any(["=", "+", "-", "@", "\t", "\r", "'"], string.starts_with(cell, _))
 }
 
 // --- export -----------------------------------------------------------------
@@ -307,7 +308,7 @@ fn bool(value: Bool) -> String {
 }
 
 fn cell(value: String) -> String {
-  let value = case formula_start(value) {
+  let value = case needs_escape(value) {
     True -> "'" <> value
     False -> value
   }

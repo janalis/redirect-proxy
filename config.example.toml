@@ -220,3 +220,5 @@ scope_claim = "scope"
 read_scope = "redirects:read"
 write_scope = "redirects:write"
 ops_scope = "redirects:ops"
+# GET /api/audit: sign-ins with client addresses, user and client changes.
+audit_scope = "audit:read"

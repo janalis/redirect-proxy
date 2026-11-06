@@ -790,7 +790,7 @@ fn paths(registry: List(Deprecation)) -> Json {
           "get",
           "/api/audit",
           "Audit log entries, newest first (current and rotated files)",
-          "redirects:ops",
+          "audit:read",
           [
             #(
               "parameters",
@@ -875,8 +875,12 @@ fn components(registry: List(Deprecation)) -> Json {
                         ),
                         #(
                           "redirects:ops",
+                          json.string("Reload the redirections file."),
+                        ),
+                        #(
+                          "audit:read",
                           json.string(
-                            "Reload the redirections file and read the audit log.",
+                            "Read the audit log (sign-ins with client addresses, user and API client changes). Not implied by any other scope.",
                           ),
                         ),
                       ]),

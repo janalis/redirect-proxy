@@ -194,6 +194,7 @@ fn new_client_form(session: Session) -> Element(Nil) {
         scope_box(scope.Read, False, "read, export, test"),
         scope_box(scope.Write, True, "create, update, delete, import"),
         scope_box(scope.Ops, False, "reload from disk"),
+        scope_box(scope.Audit, False, "read the audit log (sign-ins, users)"),
       ]),
       h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
         h.text("Create client"),

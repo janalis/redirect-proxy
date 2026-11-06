@@ -168,7 +168,10 @@ pub fn set_role(
       let changed =
         list.map(users, fn(u) {
           case u.username == username {
-            True -> User(..u, role: new_role, updated_at: ffi.now_rfc3339())
+            // not `updated_at`: it dates the password, and is part of
+            // the session fingerprint (a role change must not sign out;
+            // sessions read the role again at each request)
+            True -> User(..u, role: new_role)
             False -> u
           }
         })

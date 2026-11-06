@@ -238,6 +238,7 @@ pub fn apply_env(
         read_scope: s("RP_API_OAUTH_READ_SCOPE", api.oauth.read_scope),
         write_scope: s("RP_API_OAUTH_WRITE_SCOPE", api.oauth.write_scope),
         ops_scope: s("RP_API_OAUTH_OPS_SCOPE", api.oauth.ops_scope),
+        audit_scope: s("RP_API_OAUTH_AUDIT_SCOPE", api.oauth.audit_scope),
       ),
     ),
     server: ServerConfig(

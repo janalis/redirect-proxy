@@ -41,7 +41,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
-| `GET /api/audit` | `redirects:ops` | Audit entries as recorded, newest first, from the current and rotated files. Filters `actor` (exact), `action` (prefix: `rule.`), `target` (contains), `since` and `until` (RFC 3339); pages via `page` and `per_page` (max 500), with `meta.has_more` and a `Link` header for the next page. |
+| `GET /api/audit` | `audit:read` | Audit entries as recorded, newest first, from the current and rotated files. Filters `actor` (exact), `action` (prefix: `rule.`), `target` (contains), `since` and `until` (RFC 3339); pages via `page` and `per_page` (max 500), with `meta.has_more` and a `Link` header for the next page. |
 
 **Tokens.**
 
@@ -62,7 +62,7 @@ tokens from your own authorization server are accepted too:
   of its own rather than the `[auth.oidc]` `client_id` (a startup warning
   says so).
 - Scopes are read from `scope` or `scp` and mapped through `read_scope`,
-  `write_scope` and `ops_scope`.
+  `write_scope`, `ops_scope` and `audit_scope`.
 
 **Errors** use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 `application/problem+json`. Validation errors carry an `errors` array of

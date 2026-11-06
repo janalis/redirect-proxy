@@ -68,6 +68,20 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       False -> []
     },
     case
+      oidc.enabled
+      && oidc.default_role == "admin"
+      && {
+        oidc.admin_groups != []
+        || oidc.editor_groups != []
+        || oidc.viewer_groups != []
+      }
+    {
+      True -> [
+        "auth.oidc.default_role is admin while role groups are set: users in none of these groups are administrators; set default_role = \"viewer\" (or editor)",
+      ]
+      False -> []
+    },
+    case
       config.api.oauth.enabled
       && oidc.enabled
       && config.api.oauth.audience == oidc.client_id

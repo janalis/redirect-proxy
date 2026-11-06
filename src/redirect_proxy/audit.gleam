@@ -1,5 +1,6 @@
 //// Append-only JSON Lines audit log of administrative changes.
 
+import gleam/bit_array
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/float
@@ -41,9 +42,10 @@ pub fn record(
       #("after", json.nullable(after, fn(j) { j })),
     ])
     |> json.to_string
-  // one writer at a time: a rotation must not race another one or a write
+  // one writer at a time, across processes (the server and the CLI): a
+  // rotation must not race another one or a write
   let written =
-    ffi.with_lock("audit:" <> path, fn() {
+    ffi.locked_file(path, lock_timeout, fn() {
       rotate_if_full(path)
       ffi.append_line(path, line)
     })
@@ -59,6 +61,9 @@ pub fn record(
 // --- rotation -----------------------------------------------------------------
 
 const rotation_key = "audit_rotation"
+
+/// How long a write waits for another process holding the audit lock.
+const lock_timeout = 5000
 
 /// `storage.audit_max_bytes` (0: never rotate) and `storage.audit_files`
 /// (rotated files kept), set at start.
@@ -156,12 +161,16 @@ fn search_files(
   case files, list.length(found) >= limit {
     [], _ | _, True -> list.take(found, limit)
     [file, ..older], False -> {
+      // bytes, decoded line by line: a torn write (a cut UTF-8 sequence)
+      // loses that line, not the whole file
       let entries =
-        simplifile.read(file)
-        |> result.unwrap("")
-        |> string.split("\n")
+        simplifile.read_bits(file)
+        |> result.unwrap(<<>>)
+        |> ffi.split_lines
         |> list.reverse
-        |> list.filter_map(parse_line)
+        |> list.filter_map(fn(bits) {
+          bit_array.to_string(bits) |> result.try(parse_line)
+        })
         |> list.filter(matches(_, filter))
         |> list.take(limit - list.length(found))
       search_files(older, filter, limit, list.append(found, entries))

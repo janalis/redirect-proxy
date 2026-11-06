@@ -17,6 +17,7 @@
     jwt_verify/2, jwt_peek_header/1,
     with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
+    split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
     normalise_path/1, encode_non_ascii/1
 ]).
@@ -771,6 +772,9 @@ url_host(Rest) ->
             {At, 1} = lists:last(Matches),
             binary:part(End, At + 1, byte_size(End) - At - 1)
     end.
+
+%% The lines of a binary, as binaries (not decoded).
+split_lines(Bin) -> binary:split(Bin, <<"\n">>, [global]).
 
 %% Byte-wise slicing for the matcher's prefix index. The first N bytes may
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.
