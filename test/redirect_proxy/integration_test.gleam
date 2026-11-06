@@ -629,6 +629,43 @@ pub fn health_path_is_off_by_default_test() {
   assert get(env.redirect <> "/_health", []).status == 404
 }
 
+pub fn https_redirect_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(
+          ..d.server,
+          https_redirect: True,
+          health_path: "/_health",
+        ),
+      ),
+    )
+  let resp = get(env.redirect <> "/old?a=1", [#("host", "Shop.Test:80")])
+  assert resp.status == 301
+  assert location(resp) == "https://shop.test/old?a=1"
+  // other methods are repeated as they were
+  let resp =
+    send(http.Post, env.redirect <> "/form", [#("host", "shop.test")], "x=1")
+  assert resp.status == 308
+  assert location(resp) == "https://shop.test/form"
+  // forwarded by a TLS proxy: the rules apply
+  let resp =
+    get(env.redirect <> "/old", [
+      #("host", "shop.test"),
+      #("x-forwarded-proto", "https"),
+    ])
+  assert resp.status == 301
+  assert location(resp) == "https://example.com/new"
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "https")]).status
+    == 404
+  // a host that is not a host name is not redirected anywhere
+  assert get(env.redirect <> "/old", [#("host", "evil.test/@x")]).status == 400
+  // health probes are answered, not upgraded
+  assert get(env.redirect <> "/_health", []).status == 200
+}
+
 pub fn overlong_paths_get_414_test() {
   let d = config.default()
   let env =

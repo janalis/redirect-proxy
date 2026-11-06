@@ -119,6 +119,9 @@ pub type ServerConfig {
     health_path: String,
     /// Requests whose path is longer than this many bytes get a 414.
     max_path_bytes: Int,
+    /// Plain HTTP requests are redirected to the same URL over HTTPS before
+    /// any rule (requests a proxy marks `X-Forwarded-Proto: https` are not).
+    https_redirect: Bool,
   )
 }
 
@@ -221,6 +224,7 @@ pub fn default() -> Config {
       not_found_body: "Not Found",
       health_path: "",
       max_path_bytes: 8192,
+      https_redirect: False,
     ),
     admin: AdminConfig(
       enabled: True,

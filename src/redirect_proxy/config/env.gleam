@@ -41,6 +41,7 @@ pub const bool_env_vars = [
   "RP_AUTH_HEADER_ENABLED",
   "RP_AUTH_LOCAL_ENABLED",
   "RP_AUTH_OIDC_ENABLED",
+  "RP_SERVER_HTTPS_REDIRECT",
 ]
 
 /// An integer override (surrounding spaces ignored).
@@ -247,6 +248,7 @@ pub fn apply_env(
       not_found_body: s("RP_SERVER_NOT_FOUND_BODY", server.not_found_body),
       health_path: s("RP_SERVER_HEALTH_PATH", server.health_path),
       max_path_bytes: i("RP_SERVER_MAX_PATH_BYTES", server.max_path_bytes),
+      https_redirect: b("RP_SERVER_HTTPS_REDIRECT", server.https_redirect),
     ),
     admin: AdminConfig(
       enabled: b("RP_ADMIN_ENABLED", admin.enabled),
