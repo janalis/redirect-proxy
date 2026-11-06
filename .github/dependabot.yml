@@ -14,5 +14,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # a visible changelog type, so that a base image fix (OpenSSL, musl...)
+    # leads to a release instead of waiting for the next feat or fix
     commit-message:
-      prefix: build
+      prefix: deps

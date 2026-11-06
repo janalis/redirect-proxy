@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Two quick pushes to main must not run release-please, nor publish
+# artefacts, side by side. Queued, never cancelled: a cancelled run could
+# leave a release half published.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
@@ -198,8 +205,10 @@ jobs:
 
   container:
     name: Container image
-    needs: meta
-    if: always() && needs.meta.result == 'success'
+    # Only once every artefact built and passed its install test: a failed
+    # release must not leave a pushed image (nor a moved `latest`) behind.
+    needs: [meta, linux, portable, macos]
+    if: always() && needs.meta.result == 'success' && needs.linux.result == 'success' && needs.portable.result == 'success' && needs.macos.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -227,9 +236,10 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.meta.outputs.tag }}
             type=semver,pattern={{major}},value=${{ needs.meta.outputs.tag }}
             type=raw,value=latest,enable=${{ needs.meta.outputs.latest }}
-      # Scan before publishing: a failing scan must not leave a pushed image
-      # (nor a moved `latest`) behind.
-      - name: Build the image for the scan
+      # Scan each platform before publishing: a failing scan must not leave a
+      # pushed image (nor a moved `latest`) behind. The push below reuses the
+      # layers built here.
+      - name: Build the amd64 image for the scan
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -237,11 +247,29 @@ jobs:
           load: true
           push: false
           build-args: VERSION=${{ needs.meta.outputs.version }}
-          tags: redirect-proxy:scan
+          tags: redirect-proxy:scan-amd64
           cache-from: type=gha
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      - name: Scan the amd64 image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: redirect-proxy:scan
+          image-ref: redirect-proxy:scan-amd64
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Build the arm64 image for the scan
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          push: false
+          build-args: VERSION=${{ needs.meta.outputs.version }}
+          tags: redirect-proxy:scan-arm64
+          cache-from: type=gha
+      - name: Scan the arm64 image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: redirect-proxy:scan-arm64
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
