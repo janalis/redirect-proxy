@@ -2,15 +2,18 @@ import gleam/dict
 import gleam/list
 import gleam/string
 import redirect_proxy/config
+import redirect_proxy/config/env as config_env
+import redirect_proxy/config/file as config_file
+import redirect_proxy/config/validate as config_validate
 import redirect_proxy/listener
 import simplifile
 import support
 import tom
 
 pub fn defaults_test() {
-  let assert Ok(cfg) = config.from_toml(dict.new())
+  let assert Ok(cfg) = config_file.from_toml(dict.new())
   assert cfg == config.default()
-  let assert Ok(_) = config.validate(cfg)
+  let assert Ok(_) = config_validate.validate(cfg)
 }
 
 pub fn from_toml_test() {
@@ -42,7 +45,7 @@ trusted_proxies = [\"10.0.0.0/8\"]
 user_header = \"X-Remote-User\"
 ",
     )
-  let assert Ok(cfg) = config.from_toml(t)
+  let assert Ok(cfg) = config_file.from_toml(t)
   assert cfg.server.port == 9000
   assert cfg.server.fallback_url == "https://example.com"
   assert cfg.admin.listen == "0.0.0.0"
@@ -54,13 +57,13 @@ user_header = \"X-Remote-User\"
   assert cfg.oidc.scopes == ["openid", "email", "profile"]
   assert cfg.header_auth.trusted_proxies == ["10.0.0.0/8"]
   assert cfg.header_auth.user_header == "x-remote-user"
-  let assert Ok(_) = config.validate(cfg)
+  let assert Ok(_) = config_validate.validate(cfg)
   assert config.rules_path(cfg) == "/var/lib/rp/redirects.json"
 }
 
 pub fn wrong_type_test() {
   let assert Ok(t) = tom.parse("[server]\nport = \"eighty\"")
-  let assert Error(message) = config.from_toml(t)
+  let assert Error(message) = config_file.from_toml(t)
   assert string.contains(message, "server.port")
 }
 
@@ -73,7 +76,7 @@ pub fn env_overrides_test() {
     #("RP_ADMIN_PORT", "not-a-number"),
   ]
   let cfg =
-    config.apply_env(config.default(), fn(name) { list.key_find(env, name) })
+    config_env.apply_env(config.default(), fn(name) { list.key_find(env, name) })
   assert cfg.server.port == 1234
   assert !cfg.admin.enabled
   assert cfg.oidc.allowed_groups == ["admins", "ops"]
@@ -109,7 +112,7 @@ pub fn validation_errors_test() {
     config.Config(..d, local_auth: config.LocalAuthConfig(enabled: False)),
   ]
   list.each(invalid, fn(cfg) {
-    let assert Error(_) = config.validate(cfg)
+    let assert Error(_) = config_validate.validate(cfg)
   })
 }
 
@@ -140,7 +143,7 @@ format = \"json\"
 enabled = false
 ",
     )
-  let assert Ok(cfg) = config.from_toml(t)
+  let assert Ok(cfg) = config_file.from_toml(t)
   assert cfg.access_log.format == "$remote_addr $status"
   assert cfg.access_log.output == "/var/log/rp/access.log"
   assert cfg.access_log.log_query
@@ -156,7 +159,7 @@ enabled = false
     == "$remote_addr $status"
   assert config.access_log_enabled(al, listener.AdminListener)
   assert !config.access_log_enabled(al, listener.ApiListener)
-  let assert Ok(_) = config.validate(cfg)
+  let assert Ok(_) = config_validate.validate(cfg)
 
   let env = [
     #("RP_ACCESS_LOG_ENABLED", "false"),
@@ -166,7 +169,7 @@ enabled = false
     #("RP_ACCESS_LOG_API_OUTPUT", "/logs/api.log"),
     #("RP_ACCESS_LOG_ADMIN_ENABLED", "false"),
   ]
-  let cfg = config.apply_env(d, fn(name) { list.key_find(env, name) })
+  let cfg = config_env.apply_env(d, fn(name) { list.key_find(env, name) })
   assert !cfg.access_log.enabled
   assert cfg.access_log.format == "json"
   assert cfg.access_log.output == "stderr"
@@ -203,7 +206,7 @@ pub fn access_log_validation_test() {
     }),
   ]
   list.each(invalid, fn(cfg) {
-    let assert Error(message) = config.validate(cfg)
+    let assert Error(message) = config_validate.validate(cfg)
     assert string.starts_with(message, "access_log.")
   })
 }
@@ -216,7 +219,7 @@ pub fn invalid_env_values_are_errors_test() {
     #("RP_API_ENABLED", " TRUE "),
     #("RP_ADMIN_PORT", " 9000 "),
   ]
-  let errors = config.env_errors(fn(name) { list.key_find(env, name) })
+  let errors = config_env.env_errors(fn(name) { list.key_find(env, name) })
   assert errors
     == [
       "RP_SERVER_PORT: expected an integer, got \"80a\"",
@@ -225,7 +228,7 @@ pub fn invalid_env_values_are_errors_test() {
     ]
   // valid values (case and surrounding spaces aside) are applied
   let cfg =
-    config.apply_env(config.default(), fn(name) { list.key_find(env, name) })
+    config_env.apply_env(config.default(), fn(name) { list.key_find(env, name) })
   assert cfg.api.enabled == True
   assert cfg.admin.port == 9000
 }
@@ -233,14 +236,14 @@ pub fn invalid_env_values_are_errors_test() {
 pub fn every_listed_env_var_is_checked_test() {
   // each variable is reported when its value is garbage
   let garbage = fn(_name) { Ok("garbage") }
-  let reported = config.env_errors(garbage)
+  let reported = config_env.env_errors(garbage)
   assert list.length(reported)
-    == list.length(config.int_env_vars)
-    + list.length(config.bool_env_vars)
+    == list.length(config_env.int_env_vars)
+    + list.length(config_env.bool_env_vars)
     + 1
-    + list.length(config.secret_env_vars)
+    + list.length(config_env.secret_env_vars)
   // and every integer or boolean override of apply_env is listed
-  let assert Ok(source) = simplifile.read("src/redirect_proxy/config.gleam")
+  let assert Ok(source) = simplifile.read("src/redirect_proxy/config/env.gleam")
   let assert Ok(#(_, body)) = string.split_once(source, "pub fn apply_env(")
   let used = fn(prefix) {
     body
@@ -260,8 +263,8 @@ pub fn every_listed_env_var_is_checked_test() {
     |> list.unique
     |> list.sort(string.compare)
   }
-  assert used(" i") == config.int_env_vars
-  assert used(" b") == config.bool_env_vars
+  assert used(" i") == config_env.int_env_vars
+  assert used(" b") == config_env.bool_env_vars
 }
 
 pub fn secrets_from_files_test() {
@@ -270,13 +273,14 @@ pub fn secrets_from_files_test() {
   let assert Ok(Nil) = simplifile.write(path, "s3cret\n")
   let env = [#("RP_AUTH_OIDC_CLIENT_SECRET_FILE", path)]
   let get = fn(name) { list.key_find(env, name) }
-  assert config.env_errors(get) == []
-  let cfg = config.apply_env(config.default(), get)
+  assert config_env.env_errors(get) == []
+  let cfg = config_env.apply_env(config.default(), get)
   assert cfg.oidc.client_secret == "s3cret"
 
   // an unreadable file, or both forms at once, are errors
   let missing = [#("RP_ADMIN_SECRET_KEY_BASE_FILE", dir <> "/nope")]
-  let assert [reason] = config.env_errors(fn(n) { list.key_find(missing, n) })
+  let assert [reason] =
+    config_env.env_errors(fn(n) { list.key_find(missing, n) })
   assert string.starts_with(
     reason,
     "RP_ADMIN_SECRET_KEY_BASE_FILE: cannot read",
@@ -285,7 +289,7 @@ pub fn secrets_from_files_test() {
     #("RP_AUTH_OIDC_CLIENT_SECRET", "x"),
     #("RP_AUTH_OIDC_CLIENT_SECRET_FILE", path),
   ]
-  assert config.env_errors(fn(n) { list.key_find(both, n) })
+  assert config_env.env_errors(fn(n) { list.key_find(both, n) })
     == [
       "RP_AUTH_OIDC_CLIENT_SECRET and RP_AUTH_OIDC_CLIENT_SECRET_FILE are both set",
     ]
@@ -299,7 +303,7 @@ pub fn every_setting_has_an_env_override_test() {
     #("RP_AUTH_HEADER_EMAIL_HEADER", "X-Auth-Email"),
   ]
   let cfg =
-    config.apply_env(config.default(), fn(name) { list.key_find(env, name) })
+    config_env.apply_env(config.default(), fn(name) { list.key_find(env, name) })
   assert cfg.oidc.groups_claim == "roles"
   assert cfg.oidc.button_label == "Sign in with Corp"
   assert cfg.header_auth.user_header == "x-auth-user"
@@ -308,18 +312,18 @@ pub fn every_setting_has_an_env_override_test() {
 
 pub fn example_config_has_no_unknown_keys_test() {
   // config.example.toml documents every setting
-  let assert Ok(toml) = config.read_toml("config.example.toml")
-  assert config.unknown_keys(toml) == []
+  let assert Ok(toml) = config_file.read_toml("config.example.toml")
+  assert config_file.unknown_keys(toml) == []
 }
 
 pub fn every_known_key_is_read_test() {
   // a value of the wrong type is reported for every listed key, so none of
   // them is listed by mistake
-  list.each(config.known_keys, fn(key) {
+  list.each(config_file.known_keys, fn(key) {
     let assert Ok(#(section, leaf)) = split_last(key)
     let source = "[" <> section <> "]\n" <> leaf <> " = { nested = 1 }\n"
     let assert Ok(toml) = tom.parse(source)
-    let assert Error(_) = config.from_toml(toml)
+    let assert Error(_) = config_file.from_toml(toml)
   })
 }
 
@@ -334,44 +338,44 @@ fn split_last(key: String) -> Result(#(String, String), Nil) {
 pub fn warnings_test() {
   let assert Ok(toml) =
     tom.parse("[auth.odic]\nenabled = true\n[admin]\nlisten = \"0.0.0.0\"\n")
-  let assert Ok(cfg) = config.from_toml(toml)
-  let assert [typo, exposed] = config.warnings(toml, cfg)
+  let assert Ok(cfg) = config_file.from_toml(toml)
+  let assert [typo, exposed] = config_validate.warnings(toml, cfg)
   assert typo == "unknown setting auth.odic.enabled (ignored)"
   assert string.starts_with(exposed, "the admin listens on 0.0.0.0")
   let assert Ok(fine) = tom.parse("[admin]\nlisten = \"127.0.0.1\"\n")
-  let assert Ok(cfg) = config.from_toml(fine)
-  assert config.warnings(fine, cfg) == []
+  let assert Ok(cfg) = config_file.from_toml(fine)
+  assert config_validate.warnings(fine, cfg) == []
 }
 
 pub fn value_checks_test() {
   let d = config.default()
   let assert Error(_) =
-    config.validate(
+    config_validate.validate(
       config.Config(
         ..d,
         server: config.ServerConfig(..d.server, cache_max_age: -1),
       ),
     )
   let assert Error(_) =
-    config.validate(
+    config_validate.validate(
       config.Config(
         ..d,
         server: config.ServerConfig(..d.server, fallback_url: "javascript:x"),
       ),
     )
   let assert Error(_) =
-    config.validate(
+    config_validate.validate(
       config.Config(..d, admin: config.AdminConfig(..d.admin, public_url: "")),
     )
   let assert Error(_) =
-    config.validate(
+    config_validate.validate(
       config.Config(
         ..d,
         admin: config.AdminConfig(..d.admin, session_ttl: 604_801),
       ),
     )
   let assert Ok(_) =
-    config.validate(
+    config_validate.validate(
       config.Config(
         ..d,
         server: config.ServerConfig(..d.server, fallback_url: "https://x.test/"),

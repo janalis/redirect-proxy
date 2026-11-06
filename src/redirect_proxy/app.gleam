@@ -23,6 +23,7 @@ import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
 import redirect_proxy/config.{type Config}
+import redirect_proxy/config/env as config_env
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/log
@@ -290,7 +291,7 @@ fn bootstrap_admin(cfg: Config) -> Nil {
   let settings = users_settings(cfg)
   let from_env = envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD")
   let bootstrap_password = case envoy.get("RP_BOOTSTRAP_ADMIN_PASSWORD_FILE") {
-    Ok(path) -> config.read_secret_file(path) |> result.replace_error(Nil)
+    Ok(path) -> config_env.read_secret_file(path) |> result.replace_error(Nil)
     Error(Nil) -> from_env
   }
   let count = users.count(settings)

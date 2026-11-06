@@ -20,6 +20,7 @@ import redirect_proxy/api/router
 import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config
+import redirect_proxy/config/validate as config_validate
 import redirect_proxy/ffi
 import redirect_proxy/rule
 import simplifile
@@ -792,7 +793,7 @@ pub fn api_port_rules_test() {
   assert !config.api_on_admin(other)
   assert config.api_listen(other) == d.admin.listen
   assert config.api_public_url(other) == "http://localhost:8082"
-  let assert Ok(_) = config.validate(other)
+  let assert Ok(_) = config_validate.validate(other)
   // admin disabled: the API keeps the admin port on its own listener
   let no_admin =
     config.Config(..d, admin: config.AdminConfig(..d.admin, enabled: False))
@@ -800,11 +801,15 @@ pub fn api_port_rules_test() {
   assert config.api_port(no_admin) == d.admin.port
   // invalid combinations
   let assert Error(_) =
-    config.validate(with_api(config.ApiConfig(..d.api, port: d.server.port)))
+    config_validate.validate(with_api(
+      config.ApiConfig(..d.api, port: d.server.port),
+    ))
   let assert Error(_) =
-    config.validate(with_api(config.ApiConfig(..d.api, listen: "0.0.0.0")))
+    config_validate.validate(with_api(
+      config.ApiConfig(..d.api, listen: "0.0.0.0"),
+    ))
   let assert Ok(_) =
-    config.validate(with_api(
+    config_validate.validate(with_api(
       config.ApiConfig(..d.api, listen: "0.0.0.0", port: 8082),
     ))
 }
