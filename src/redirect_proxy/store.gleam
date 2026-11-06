@@ -25,6 +25,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/set
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
@@ -36,10 +37,17 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import simplifile
 
-const timeout = 10_000
-
 /// How long a mutation waits for another process to release the file lock.
 const lock_timeout = 5000
+
+/// At start the lock is waited for longer than the 10 seconds after which a
+/// lock left by a crashed process is broken, so that start never fails on it.
+const start_lock_timeout = 15_000
+
+/// How long callers wait for the store. Mutations queue behind each other and
+/// each one may wait `lock_timeout` for the file lock, then rebuild the
+/// matcher: a caller timing out would crash while its change still commits.
+const timeout = 30_000
 
 pub type Settings {
   Settings(
@@ -81,6 +89,7 @@ pub opaque type Message {
     actor: String,
     reply: Subject(Result(Rule, ChangeError)),
   )
+  /// `rules` are already prepared and validated by `import_rules`.
   Import(
     rules: List(Rule),
     mode: ImportMode,
@@ -112,7 +121,11 @@ pub fn start(
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
   actor.new_with_initialiser(30_000, fn(subject) {
-    use #(rules, fingerprint) <- result.try(load_file(settings))
+    use #(rules, fingerprint) <- result.try(load_locked(
+      settings,
+      FirstStart,
+      start_lock_timeout,
+    ))
     let state = State(settings:, rules:, fingerprint:)
     publish(rules)
     log.info(
@@ -214,7 +227,10 @@ pub fn import_rules(
   mode: ImportMode,
   by actor_name: String,
 ) -> Result(Int, List(String)) {
-  actor.call(store, 60_000, Import(rules, mode, actor_name, _))
+  // Validation is done here, in the caller's process, so that the store
+  // does not hold the file lock (nor block other callers) while it runs.
+  use prepared <- result.try(prepare_import(rules, actor_name))
+  actor.call(store, 60_000, Import(prepared, mode, actor_name, _))
 }
 
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
@@ -343,10 +359,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
-    Import(incoming, mode, actor_name, reply) -> {
+    Import(prepared, mode, actor_name, reply) -> {
       use state <- mutate(state, reply, fn(e) { [e] })
       {
-        use prepared <- result.try(prepare_import(incoming, actor_name))
         let rules = case mode {
           Replace -> prepared
           Merge -> merge(state.rules, prepared)
@@ -377,7 +392,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Reload(actor_name, reply) ->
-      case load_file(state.settings) {
+      case load_locked(state.settings, Reloading, lock_timeout) {
         Ok(#(rules, fingerprint)) -> {
           publish(rules)
           metrics.incr(metrics.Reloads)
@@ -451,7 +466,7 @@ fn refresh(state: State) -> Result(State, String) {
       case fingerprint(content) == state.fingerprint {
         True -> Ok(state)
         False ->
-          case load_file(state.settings) {
+          case load(state.settings, Reloading) {
             Error(reason) ->
               Error(
                 "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
@@ -621,16 +636,39 @@ fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
     list.map(existing, fn(r) {
       dict.get(incoming_by_id, r.id) |> result.unwrap(r)
     })
-  let existing_ids = list.map(existing, fn(r) { r.id })
-  let added =
-    list.filter(incoming, fn(r) { !list.contains(existing_ids, r.id) })
+  let existing_ids = list.map(existing, fn(r) { r.id }) |> set.from_list
+  let added = list.filter(incoming, fn(r) { !set.contains(existing_ids, r.id) })
   list.append(updated, added)
 }
 
-/// Reads, validates and returns the rules with the file fingerprint.
-fn load_file(settings: Settings) -> Result(#(List(Rule), String), String) {
-  case simplifile.is_file(settings.rules_path) {
-    Ok(True) -> {
+type LoadMode {
+  /// Server start: a missing file is created empty.
+  FirstStart
+  /// Reload: a missing file is an error, so that the current rules stay live
+  /// while the file is being replaced or was moved away.
+  Reloading
+}
+
+/// `load` holding the cross-process file lock, for callers that do not hold
+/// it already: loading may write the file back.
+fn load_locked(
+  settings: Settings,
+  mode: LoadMode,
+  wait: Int,
+) -> Result(#(List(Rule), String), String) {
+  ffi.with_file_lock(settings.rules_path, wait, fn() { load(settings, mode) })
+  |> result.flatten
+}
+
+/// Reads, validates and returns the rules with the file fingerprint. Writes
+/// the file when it is created or when ids were assigned, so the caller must
+/// hold the file lock.
+fn load(
+  settings: Settings,
+  mode: LoadMode,
+) -> Result(#(List(Rule), String), String) {
+  case simplifile.is_file(settings.rules_path), mode {
+    Ok(True), _ -> {
       use bits <- result.try(
         simplifile.read_bits(settings.rules_path)
         |> result.map_error(fn(e) {
@@ -671,11 +709,19 @@ fn load_file(settings: Settings) -> Result(#(List(Rule), String), String) {
         False -> Ok(#(rules, fingerprint(bits)))
       }
     }
-    _ -> {
+    Ok(False), FirstStart -> {
       // First start: create an empty file so operators know where it lives.
       use fingerprint <- result.try(persist(settings, []))
       Ok(#([], fingerprint))
     }
+    Ok(False), Reloading -> Error(settings.rules_path <> ": file not found")
+    Error(e), _ ->
+      Error(
+        "cannot read "
+        <> settings.rules_path
+        <> ": "
+        <> simplifile.describe_error(e),
+      )
   }
 }
 
