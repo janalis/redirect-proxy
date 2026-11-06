@@ -324,9 +324,12 @@ pub fn check_claims(
     use exp <- decode.field("exp", decode.int)
     use nonce <- decode.optional_field("nonce", "", decode.string)
     use email <- decode.optional_field("email", "", decode.string)
+    // A missing claim means unverified: some providers (Entra ID...) never
+    // send it and let users set any address, which would otherwise pass the
+    // e-mail and domain allow-lists.
     use email_verified <- decode.optional_field(
       "email_verified",
-      True,
+      False,
       decode.one_of(decode.bool, [
         decode.string |> decode.map(fn(s) { s == "true" }),
       ]),

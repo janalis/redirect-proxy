@@ -297,12 +297,18 @@ Unauthenticated endpoints: `/healthz`, `/readyz` and `/metrics` (Prometheus).
   - To allow users, set `allowed_emails`, `allowed_domains` (checked against
     verified emails) and/or `allowed_groups` (from `groups_claim`). With all
     three lists empty, every account of the provider is accepted.
+  - An email counts as verified only when the ID token says
+    `email_verified: true`. Providers that never send that claim, such as
+    Entra ID, can only be restricted with `allowed_groups`.
   - Register `<admin.public_url>/auth/oidc/callback` as the redirect URI at the
     provider.
 - **Trusted proxy headers.** With `auth.header` enabled, the user named in
-  `X-Forwarded-User` (or `X-Forwarded-Email`) is signed in. The header is only
-  accepted when the TCP peer is in `trusted_proxies`. Never expose the admin
-  port directly in this mode.
+  `user_header` (`X-Forwarded-User`) is signed in. Set `user_header = ""` to
+  use `email_header` (`X-Forwarded-Email`) instead. The two are never
+  combined. The header is only accepted when the TCP peer is in
+  `trusted_proxies`, and a request carrying several values in it is refused.
+  Configure the proxy to set (not append to) that header, and never expose the
+  admin port directly in this mode.
 
 Security measures:
 
