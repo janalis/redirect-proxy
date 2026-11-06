@@ -17,15 +17,12 @@
 import gleam/bit_array
 import gleam/bool
 import gleam/crypto
-import gleam/dict
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import gleam/set
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
@@ -35,6 +32,9 @@ import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
+import redirect_proxy/store/rules.{
+  check_conflicts, check_loop, merge, prepare_import, validate_all, warn_loops,
+} as _
 import simplifile
 
 /// How long a mutation waits for another process to release the file lock.
@@ -112,8 +112,6 @@ type State {
 pub type Store =
   Subject(Message)
 
-// --- lifecycle --------------------------------------------------------------
-
 /// Starts the store. Fails if the redirections file exists but is invalid, so
 /// that a broken file never silently replaces the configuration.
 pub fn start(
@@ -142,8 +140,6 @@ pub fn start(
   |> actor.named(name)
   |> actor.start
 }
-
-// --- client API -------------------------------------------------------------
 
 pub fn all(store: Store) -> List(Rule) {
   actor.call(store, timeout, All)
@@ -241,8 +237,6 @@ pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
 pub fn reload_async(store: Store) -> Nil {
   process.send(store, ReloadInBackground("signal:SIGHUP"))
 }
-
-// --- message handling -------------------------------------------------------
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
@@ -509,61 +503,12 @@ fn fingerprint(content: BitArray) -> String {
   crypto.hash(crypto.Sha256, content) |> bit_array.base16_encode
 }
 
-// --- helpers ----------------------------------------------------------------
-
 fn publish(built: matcher.Matcher) -> Nil {
   built
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
   ffi.garbage_collect()
-}
-
-/// Refuses a change when a request to the changed rule would be redirected
-/// back to it.
-fn check_loop(
-  built: matcher.Matcher,
-  changed: Rule,
-) -> Result(Nil, List(String)) {
-  case changed.enabled, matcher.redirect_loop(built, changed) {
-    True, Ok(cycle) ->
-      Error(["target: redirect loop: " <> describe_cycle(cycle)])
-    _, _ -> Ok(Nil)
-  }
-}
-
-/// Logs the redirect loops of a rule set (loading never fails on them, so
-/// that a file that loaded before keeps loading). Each cycle once.
-fn warn_loops(built: matcher.Matcher, rules: List(Rule)) -> matcher.Matcher {
-  let _ =
-    rules
-    |> list.filter(fn(r) { r.enabled })
-    |> list.fold(set.new(), fn(reported, r) {
-      case matcher.redirect_loop(built, r) {
-        Error(Nil) -> reported
-        Ok(cycle) -> {
-          let key =
-            cycle
-            |> list.map(fn(r) { r.id })
-            |> list.unique
-            |> list.sort(string.compare)
-          case set.contains(reported, key) {
-            True -> reported
-            False -> {
-              log.warning("redirect loop: " <> describe_cycle(cycle))
-              set.insert(reported, key)
-            }
-          }
-        }
-      }
-    })
-  built
-}
-
-fn describe_cycle(cycle: List(Rule)) -> String {
-  cycle
-  |> list.map(fn(r) { r.host <> r.source })
-  |> string.join(" -> ")
 }
 
 /// Writes then publishes the rules (`built` is their matcher). Returns the
@@ -583,122 +528,6 @@ fn commit(
       Error(["storage: " <> reason])
     }
   }
-}
-
-/// Validates every rule of a file and checks for conflicts.
-pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(String)) {
-  let #(valid, errors) =
-    rules
-    |> list.index_map(fn(r, index) {
-      rule.validate(r)
-      |> result.map_error(fn(errors) {
-        list.map(errors, fn(e) {
-          "rule #"
-          <> int.to_string(index + 1)
-          <> " ("
-          <> r.host
-          <> r.source
-          <> "): "
-          <> e
-        })
-      })
-    })
-    |> result.partition
-  case errors {
-    [] -> {
-      let valid = list.reverse(valid)
-      use Nil <- result.try(check_conflicts(valid))
-      Ok(valid)
-    }
-    _ -> Error(errors |> list.reverse |> list.flatten)
-  }
-}
-
-/// Rejects duplicate ids and duplicate exact sources on the same host, and
-/// exact rules redirecting to themselves.
-pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
-  let duplicate_ids =
-    rules
-    |> list.group(fn(r) { r.id })
-    |> dict.filter(fn(key, group) { key != "" && list.length(group) > 1 })
-    |> dict.keys
-    |> list.map(fn(key) { "id: duplicate id " <> key })
-
-  let exact_key = fn(r: Rule) {
-    case r.case_insensitive {
-      True -> r.host <> " " <> string.lowercase(r.source)
-      False -> r.host <> " " <> r.source
-    }
-  }
-  let duplicate_sources =
-    rules
-    |> list.filter(fn(r) { r.kind == rule.Exact && r.enabled })
-    |> list.group(exact_key)
-    |> dict.filter(fn(_, group) { list.length(group) > 1 })
-    |> dict.keys
-    |> list.map(fn(key) {
-      "source: another enabled exact rule already matches " <> key
-    })
-
-  let loops =
-    rules
-    |> list.filter(fn(r) { r.kind == rule.Exact && r.enabled && is_loop(r) })
-    |> list.map(fn(r) {
-      "target: rule " <> r.host <> r.source <> " redirects to itself"
-    })
-
-  case list.flatten([duplicate_ids, duplicate_sources, loops]) {
-    [] -> Ok(Nil)
-    errors -> Error(errors)
-  }
-}
-
-fn is_loop(r: Rule) -> Bool {
-  r.target == r.source
-  || {
-    r.host != "*"
-    && {
-      r.target == "http://" <> r.host <> r.source
-      || r.target == "https://" <> r.host <> r.source
-      || r.target == "//" <> r.host <> r.source
-    }
-  }
-}
-
-fn prepare_import(
-  incoming: List(Rule),
-  actor_name: String,
-) -> Result(List(Rule), List(String)) {
-  let now = ffi.now_rfc3339()
-  incoming
-  |> list.map(fn(r) {
-    rule.Rule(
-      ..r,
-      id: case string.trim(r.id) {
-        "" -> id.uuid()
-        given -> given
-      },
-      created_at: case r.created_at {
-        "" -> now
-        c -> c
-      },
-      updated_at: now,
-      updated_by: actor_name,
-    )
-  })
-  |> validate_all
-}
-
-fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
-  let incoming_by_id =
-    list.fold(incoming, dict.new(), fn(acc, r) { dict.insert(acc, r.id, r) })
-  let updated =
-    list.map(existing, fn(r) {
-      dict.get(incoming_by_id, r.id) |> result.unwrap(r)
-    })
-  let existing_ids = list.map(existing, fn(r) { r.id }) |> set.from_list
-  let added = list.filter(incoming, fn(r) { !set.contains(existing_ids, r.id) })
-  list.append(updated, added)
 }
 
 type LoadMode {
@@ -841,13 +670,4 @@ fn prune_backups(settings: Settings) -> Nil {
     }
     Error(_) -> Nil
   }
-}
-
-/// Encodes rules for download/export.
-pub fn export(rules: List(Rule)) -> String {
-  json.object([
-    #("version", json.int(rule.file_format_version)),
-    #("rules", json.array(rules, rule.to_json)),
-  ])
-  |> json.to_string
 }

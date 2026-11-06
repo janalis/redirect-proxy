@@ -21,6 +21,7 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
+import redirect_proxy/store/rules as store_rules
 import simplifile
 import wisp.{type Request, type Response}
 
@@ -315,7 +316,7 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
 }
 
 pub fn export(ctx: Context) -> Response {
-  let body = store.export(store.all(ctx.store))
+  let body = store_rules.export(store.all(ctx.store))
   wisp.ok()
   |> wisp.set_header("content-type", "application/json")
   |> wisp.file_download_from_memory(

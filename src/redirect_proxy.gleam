@@ -20,6 +20,7 @@ import redirect_proxy/log
 import redirect_proxy/password
 import redirect_proxy/rule
 import redirect_proxy/store
+import redirect_proxy/store/rules as store_rules
 import redirect_proxy/users
 import simplifile
 
@@ -374,7 +375,7 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   )
   use rules <- result.try(rule.file_from_string(content))
   use valid <- result.try(
-    store.validate_all(rules) |> result.map_error(string.join(_, "\n")),
+    store_rules.validate_all(rules) |> result.map_error(string.join(_, "\n")),
   )
   io.println(
     path <> ": " <> int.to_string(list.length(valid)) <> " valid rule(s)",
@@ -389,7 +390,7 @@ fn rules_export(config_path: String) -> Result(Nil, String) {
     |> result.map_error(simplifile.describe_error),
   )
   use rules <- result.try(rule.file_from_string(content))
-  io.println(store.export(rules))
+  io.println(store_rules.export(rules))
   Ok(Nil)
 }
 

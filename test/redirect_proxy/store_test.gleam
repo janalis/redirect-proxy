@@ -6,6 +6,7 @@ import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
+import redirect_proxy/store/rules as store_rules
 import simplifile
 import support
 
@@ -185,7 +186,7 @@ pub fn import_merge_and_replace_test() {
 
 pub fn validate_all_reports_rule_numbers_test() {
   let assert Error([error]) =
-    store.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
+    store_rules.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
   assert string.starts_with(error, "rule #2")
 }
 

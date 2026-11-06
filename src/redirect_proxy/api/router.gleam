@@ -31,6 +31,7 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store.{type Store}
+import redirect_proxy/store/rules as store_rules
 import wisp.{type Request, type Response}
 
 pub type Context {
@@ -112,7 +113,7 @@ fn route(
       use <- require(principal, scope.Read, ctx)
       wisp.response(200)
       |> wisp.set_header("content-type", "application/json")
-      |> wisp.string_body(store.export(store.all(ctx.store)))
+      |> wisp.string_body(store_rules.export(store.all(ctx.store)))
     }
     Post, ["redirects", "import"] -> {
       use <- require(principal, scope.Write, ctx)
