@@ -52,8 +52,9 @@ Usage:
   redirect-proxy help
 
 The configuration file defaults to $RP_CONFIG. Every setting can be
-overridden with RP_* environment variables (see README). Passwords for
-`user add`/`user passwd` are read from $RP_PASSWORD or prompted for.
+overridden with RP_* environment variables (see docs/configuration.md).
+Passwords for `user add`/`user passwd` are read from $RP_PASSWORD or
+prompted for.
 Roles: viewer, editor, admin (default for `user add`).
 API client scopes: redirects:read, redirects:write (default), redirects:ops.
 "

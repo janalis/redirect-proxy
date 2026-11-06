@@ -72,7 +72,7 @@ lint-docker: ## hadolint the Dockerfile
 
 lint-markdown: ## markdownlint documentation
 	@command -v markdownlint-cli2 >/dev/null || $(call missing,markdownlint-cli2); \
-	markdownlint-cli2 "*.md" ".github/**/*.md"
+	markdownlint-cli2 "*.md" "docs/**/*.md" ".github/**/*.md"
 
 check: lint test ## Lint and test (what CI runs)
 

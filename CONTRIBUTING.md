@@ -26,7 +26,7 @@ make check    # what CI runs: format check, strict build, linters, tests
 `make coverage` fails under `COVERAGE_MIN` percent of covered lines (see
 the `Makefile`). A test in `test/redirect_proxy/docs_test.gleam` fails when
 an `RP_…` variable read in `config/env.gleam` is missing from the
-configuration table of `README.md`.
+configuration table of `docs/configuration.md`.
 
 ## Pull requests
 
@@ -41,8 +41,8 @@ configuration table of `README.md`.
   after.
 - Keep the Erlang FFI minimal and compiled with warnings as errors
   (`make lint-erlang`).
-- Update `README.md` and `config.example.toml` when configuration or
-  behaviour changes.
+- Update the documentation (`README.md`, `docs/`) and `config.example.toml`
+  when configuration or behaviour changes.
 
 ## Releases
 
