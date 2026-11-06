@@ -132,14 +132,22 @@ pub fn record(
   started: Int,
 ) -> Nil {
   let duration_us = ffi.monotonic_micros() - started
-  let peer = case mist.get_connection_info(req.body) {
-    Ok(info) -> mist.ip_address_to_string(info.ip_address)
-    Error(Nil) -> ""
+  let client = case mist.get_connection_info(req.body), settings {
+    // the peer is the client: anonymise its address without formatting it
+    Ok(info), Settings(anonymize_ip: True, trusted_proxies: [], ..) ->
+      ffi.anonymize_peer(info.ip_address)
+    Ok(info), _ ->
+      client_ip(
+        settings,
+        mist.ip_address_to_string(info.ip_address),
+        req.headers,
+      )
+    Error(Nil), _ -> client_ip(settings, "", req.headers)
   }
   let entry =
     fmt.Entry(
       listener: listener.name(settings.listener),
-      client_ip: client_ip(settings, peer, req.headers),
+      client_ip: client,
       method: http.method_to_string(req.method),
       host: request.get_header(req, "host") |> result.unwrap(req.host),
       path: req.path,

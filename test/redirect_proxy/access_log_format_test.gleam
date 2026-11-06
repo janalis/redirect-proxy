@@ -1,10 +1,13 @@
 import gleam/dynamic/decode
 import gleam/json
+import gleam/list
 import gleam/string
+import mist
 import qcheck
 import redirect_proxy/access_log_format.{
   type Entry, Entry, Header, Literal, Status, Var,
 } as fmt
+import redirect_proxy/ffi
 
 // 2026-11-06T09:30:05.123456Z
 const time_us = 1_793_957_405_123_456
@@ -164,4 +167,38 @@ pub fn text_lines_never_break_test() {
   let line = fmt.render(f, True, e)
   assert !string.contains(line, "\n")
   assert !string.contains(line, "\r")
+}
+
+pub fn anonymize_peer_matches_anonymize_test() {
+  [
+    mist.IpV4(192, 168, 17, 42),
+    mist.IpV4(10, 0, 0, 1),
+    mist.IpV6(0x2001, 0xdb8, 0x85a3, 0x1234, 0x8a2e, 0x370, 0x7334, 1),
+    mist.IpV6(0, 0, 0, 0, 0, 0, 0, 1),
+    mist.IpV6(0, 0, 0, 0, 0, 0xffff, 0x0a01, 0x0203),
+  ]
+  |> list.each(fn(ip) {
+    assert ffi.anonymize_peer(ip)
+      == fmt.anonymize(mist.ip_address_to_string(ip))
+  })
+}
+
+pub fn cached_time_follows_the_second_test() {
+  // creates the shared cache (no handler is installed)
+  let assert Ok(Nil) = ffi.access_log_start([], 0, 0, False)
+  let seconds_of = fn(t) {
+    let local = ffi.time_local(t)
+    let iso = ffi.time_iso8601(t)
+    // the seconds do not depend on the time zone: 09:30:05 UTC is xx:x0:05
+    let assert [_, after_minutes] = string.split(local, " ")
+    assert string.length(after_minutes) == 5
+    #(string.slice(local, 18, 2), string.slice(iso, 17, 2))
+  }
+  assert seconds_of(time_us) == #("05", "05")
+  assert seconds_of(time_us + 876_543) == #("05", "05")
+  assert seconds_of(time_us + 1_000_000) == #("06", "06")
+  // an older second (requests logged out of order) is rendered again
+  assert seconds_of(time_us) == #("05", "05")
+  assert ffi.time_local(time_us) != ffi.time_local(time_us + 1_000_000)
+  ffi.access_log_stop()
 }
