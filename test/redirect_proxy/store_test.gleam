@@ -287,3 +287,38 @@ pub fn backups_have_unique_names_test() {
 /// Sets a file's modification time `seconds_ago` in the past.
 @external(erlang, "test_net_ffi", "set_mtime_ago")
 fn set_mtime(path: String, seconds_ago: Int) -> Nil
+
+pub fn reload_keeps_rules_when_the_file_is_missing_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) = store.create(s, new_rule("/a", "/b"), by: "t")
+  // e.g. an editor or a deploy replacing the file non-atomically
+  let assert Ok(Nil) = simplifile.delete(dir <> "/redirects.json")
+  let assert Error(reason) = store.reload(s, by: "t")
+  assert string.contains(reason, "not found")
+  assert redirect("/a") == Ok("/b")
+  assert list.length(store.all(s)) == 1
+  // the file was not recreated empty
+  assert simplifile.is_file(dir <> "/redirects.json") == Ok(False)
+}
+
+pub fn reload_assigns_missing_ids_under_the_lock_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"source\":\"/n\",\"target\":\"/m\"}]}",
+    )
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  process.spawn(fn() {
+    process.sleep(300)
+    let _ = simplifile.delete(lock)
+  })
+  // waits for the lock before writing the ids back
+  let assert Ok(1) = store.reload(s, by: "t")
+  let assert Ok(content) = simplifile.read(dir <> "/redirects.json")
+  let assert Ok([r]) = rule.file_from_string(content)
+  assert r.id != ""
+}
