@@ -164,7 +164,10 @@ fn match_prefix(rules: List(Rule), path: String) -> Result(Match, Nil) {
       case matched {
         True -> {
           let remainder = string.drop_start(path, string.length(r.source))
-          Ok(Match(r, rule.expand(r.target, [path, remainder])))
+          // a substitution leaving the target's host: the rule does not apply
+          rule.expand(r.target, [path, remainder])
+          |> rule.guard_location(rule.target_guard(r.target), _)
+          |> result.map(Match(r, _))
         }
         False -> match_prefix(rest, path)
       }
@@ -180,7 +183,17 @@ fn match_regex(
     [] -> Error(Nil)
     [#(r, regex), ..rest] ->
       case ffi.regex_run(regex, path) {
-        Ok(captures) -> Ok(Match(r, rule.expand(r.target, captures)))
+        Ok(captures) ->
+          case
+            rule.guard_location(
+              rule.target_guard(r.target),
+              rule.expand(r.target, captures),
+            )
+          {
+            Ok(location) -> Ok(Match(r, location))
+            // the substitution would leave the target's host: try the next
+            Error(Nil) -> match_regex(rest, path)
+          }
         Error(_) -> match_regex(rest, path)
       }
   }

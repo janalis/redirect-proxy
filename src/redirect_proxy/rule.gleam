@@ -423,3 +423,185 @@ fn capture(captures: List(String), index: Int) -> String {
   |> list.first
   |> result.unwrap("")
 }
+
+// --- substitution guard ---------------------------------------------------------
+
+/// What a target template allows its substitutions to produce. Captures come
+/// from the request path, so without a guard `/old/(.*)` -> `/$1` would send
+/// `/old//evil.com` to `//evil.com`, and `https://example.com$1` would send
+/// `/go.evil.com` or `/go@evil.com` to another host (open redirects).
+pub type TargetGuard {
+  /// No placeholder: the target is used as is.
+  Static
+  /// A path on the same host: leading `/` and `\` runs are collapsed to one
+  /// `/`, so the result never becomes protocol-relative.
+  SameHostPath
+  /// The result must keep this host (`example.com`, with its port if any).
+  FixedHost(String)
+  /// The result must stay a host ending with this suffix (`.example.com`),
+  /// for templates such as `https://$1.example.com/`.
+  SubdomainOf(String)
+  /// Placeholders inside the host in another shape: never redirect.
+  Unsafe
+}
+
+pub fn target_guard(template: String) -> TargetGuard {
+  case string.contains(template, "$") {
+    False -> Static
+    True ->
+      case authority(template) {
+        Error(Nil) -> SameHostPath
+        Ok(host) ->
+          case string.split_once(host, "$") {
+            Error(Nil) -> FixedHost(host)
+            Ok(#(literal, from_placeholder)) ->
+              case expand("$" <> from_placeholder, []) {
+                // only placeholders after the literal (`example.com$1`): they
+                // must not extend the host
+                "" -> FixedHost(literal)
+                // `$1.example.com`: the host starts with the placeholders
+                _ if literal == "" -> subdomain_guard(host)
+                _ -> Unsafe
+              }
+          }
+      }
+  }
+}
+
+/// `$1.example.com`: placeholders, then a literal domain starting with `.`
+/// of at least two labels (`$1.com` would allow any `.com` domain).
+fn subdomain_guard(host: String) -> TargetGuard {
+  let suffix = case list.last(string.split(host, "$")) {
+    // drop the digits or `{n}` of the last placeholder
+    Ok(last) ->
+      case string.pop_grapheme(last) {
+        Ok(#("{", rest)) ->
+          string.split_once(rest, "}") |> result.map(fn(p) { p.1 })
+        _ -> Ok(drop_digits(last))
+      }
+    Error(Nil) -> Error(Nil)
+  }
+  case suffix {
+    Ok(suffix) -> {
+      let labels = string.split(suffix, ".") |> list.drop(1)
+      case
+        string.starts_with(suffix, ".")
+        && list.length(labels) >= 2
+        && !list.contains(labels, "")
+      {
+        True -> SubdomainOf(suffix)
+        False -> Unsafe
+      }
+    }
+    Error(Nil) -> Unsafe
+  }
+}
+
+fn drop_digits(text: String) -> String {
+  case string.pop_grapheme(text) {
+    Ok(#(c, rest)) ->
+      case int.parse(c) {
+        Ok(_) -> drop_digits(rest)
+        Error(_) -> text
+      }
+    Error(Nil) -> text
+  }
+}
+
+/// Checks an expanded location against the guard of its template. Returns
+/// the location to send, or `Error(Nil)` when it would leave the allowed
+/// host. Tabs and line breaks, which browsers ignore in URLs, are removed.
+pub fn guard_location(
+  guard: TargetGuard,
+  location: String,
+) -> Result(String, Nil) {
+  case guard {
+    Static -> Ok(location)
+    Unsafe -> Error(Nil)
+    SameHostPath -> {
+      let location = strip_url_whitespace(location)
+      case string.pop_grapheme(location) {
+        Ok(#(c, rest)) if c == "/" || c == "\\" -> Ok("/" <> drop_slashes(rest))
+        _ -> Ok(location)
+      }
+    }
+    FixedHost(expected) -> {
+      let location = strip_url_whitespace(location)
+      case authority(location) {
+        Ok(host) if host == expected -> Ok(location)
+        _ -> Error(Nil)
+      }
+    }
+    SubdomainOf(suffix) -> {
+      let location = strip_url_whitespace(location)
+      case authority(location) {
+        Ok(host) ->
+          case string.ends_with(host, suffix) {
+            True -> {
+              let sub = string.drop_end(host, string.length(suffix))
+              case sub != "" && list.all(string.to_graphemes(sub), host_char) {
+                True -> Ok(location)
+                False -> Error(Nil)
+              }
+            }
+            False -> Error(Nil)
+          }
+        Error(Nil) -> Error(Nil)
+      }
+    }
+  }
+}
+
+fn host_char(c: String) -> Bool {
+  string.contains("abcdefghijklmnopqrstuvwxyz0123456789-.", c)
+}
+
+fn drop_slashes(text: String) -> String {
+  case string.pop_grapheme(text) {
+    Ok(#(c, rest)) if c == "/" || c == "\\" -> drop_slashes(rest)
+    _ -> text
+  }
+}
+
+fn strip_url_whitespace(url: String) -> String {
+  case
+    string.contains(url, "\t")
+    || string.contains(url, "\n")
+    || string.contains(url, "\r")
+  {
+    False -> url
+    True ->
+      url
+      |> string.replace("\t", "")
+      |> string.replace("\n", "")
+      |> string.replace("\r", "")
+  }
+}
+
+/// The host (with port, without user info), lower-cased, of an absolute or
+/// protocol-relative URL, parsed the way browsers do for http(s): `\` counts
+/// as `/` and extra slashes after the scheme are ignored. `Error(Nil)` for a
+/// path.
+fn authority(url: String) -> Result(String, Nil) {
+  let lower = string.lowercase(url)
+  let rest = case lower {
+    "http://" <> rest | "http:\\\\" <> rest -> Ok(rest)
+    "https://" <> rest | "https:\\\\" <> rest -> Ok(rest)
+    "//" <> rest | "/\\" <> rest | "\\/" <> rest | "\\\\" <> rest -> Ok(rest)
+    _ -> Error(Nil)
+  }
+  use rest <- result.map(rest)
+  let rest = drop_slashes(rest)
+  let end =
+    ["/", "\\", "?", "#"]
+    |> list.fold(rest, fn(acc, delimiter) {
+      case string.split_once(acc, delimiter) {
+        Ok(#(before, _)) -> before
+        Error(Nil) -> acc
+      }
+    })
+  case string.split(end, "@") |> list.last {
+    Ok(host) -> host
+    Error(Nil) -> end
+  }
+}
