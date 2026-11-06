@@ -1235,3 +1235,55 @@ pub fn whole_segments_over_the_api_test() {
     )
   assert resp.status == 422
 }
+
+pub fn scheduled_rules_over_the_api_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/later\",\"target\":\"/x\",\"starts_at\":\"2999-01-01T00:00:00Z\"}",
+    )
+  assert resp.status == 201
+  assert field(resp.body, ["starts_at"], decode.string)
+    == "2999-01-01T00:00:00Z"
+  assert field(resp.body, ["expires_at"], decode.string) == ""
+  let id = field(resp.body, ["id"], decode.string)
+  assert support.send(Get, env.redirect <> "/later", [], "").status == 404
+  // the tester says why it does not apply
+  let resp =
+    api(env, Get, "/api/test?url=https%3A%2F%2Fx.test%2Flater", token, "")
+  let verdicts =
+    field(
+      resp.body,
+      ["candidates"],
+      decode.list(decode.at(["verdict"], decode.string)),
+    )
+  assert verdicts == ["out_of_schedule"]
+  // null removes the start: it applies at once
+  let resp =
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+      ],
+      "{\"starts_at\": null}",
+    )
+  assert resp.status == 200
+  assert support.send(Get, env.redirect <> "/later", [], "").status == 301
+  // invalid dates are refused
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/bad\",\"target\":\"/x\",\"expires_at\":\"tomorrow\"}",
+    )
+  assert resp.status == 422
+}

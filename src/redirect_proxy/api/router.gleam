@@ -732,5 +732,6 @@ fn verdict_string(verdict: explain.Verdict) -> String {
     explain.Applied -> "applied"
     explain.Shadowed -> "shadowed"
     explain.Disabled -> "disabled"
+    explain.OutOfSchedule -> "out_of_schedule"
   }
 }

@@ -23,6 +23,8 @@ pub type Verdict {
   Shadowed
   /// Would match if it were enabled.
   Disabled
+  /// Enabled and matching, but outside its `starts_at`/`expires_at` window.
+  OutOfSchedule
 }
 
 pub type Candidate {
@@ -66,6 +68,7 @@ pub fn explain(
     }
   }
   let applied = find(host, path)
+  let now = ffi.now_seconds()
   let applied_id = case applied {
     Ok(m) -> m.rule.id
     Error(Nil) -> ""
@@ -81,8 +84,12 @@ pub fn explain(
     |> list.map(fn(r) {
       Candidate(r, case r.id == applied_id, r.enabled {
         True, _ -> Applied
-        False, True -> Shadowed
         False, False -> Disabled
+        False, True ->
+          case rule.is_active(r, now) {
+            True -> Shadowed
+            False -> OutOfSchedule
+          }
       })
     })
   // a trailing slash retry matches another path: still list its rule

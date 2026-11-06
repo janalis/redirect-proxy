@@ -254,3 +254,34 @@ pub fn whole_segments_test() {
   assert rule.version(prefix)
     != rule.version(Rule(..prefix, whole_segments: False))
 }
+
+pub fn schedule_test() {
+  let timed =
+    Rule(
+      ..base(),
+      starts_at: "2026-12-01T00:00:00Z",
+      expires_at: "2026-12-02T00:00:00+01:00",
+    )
+  let assert Ok(_) = rule.validate(timed)
+  let #(from, until) = rule.window(timed)
+  assert until - from == 23 * 3600
+  assert rule.is_active(timed, from)
+  assert !rule.is_active(timed, from - 1)
+  assert !rule.is_active(timed, until)
+  assert !rule.is_active(Rule(..timed, enabled: False), from)
+  assert rule.is_active(base(), 0)
+  // the time zone is required, and the window must not be empty
+  let assert Error([no_zone]) =
+    rule.validate(Rule(..base(), starts_at: "2026-12-01T00:00:00"))
+  assert string.starts_with(no_zone, "starts_at:")
+  let assert Error([order]) =
+    rule.validate(Rule(..timed, expires_at: "2026-11-30T00:00:00Z"))
+  assert order == "expires_at: must be after starts_at"
+  // written only when set
+  assert !string.contains(rule.file_to_string([base()]), "starts_at")
+  assert rule.file_from_string(rule.file_to_string([timed])) == Ok([timed])
+  // crossing a boundary
+  assert rule.crosses_boundary([timed], from - 1, from)
+  assert !rule.crosses_boundary([timed], from, until - 1)
+  assert rule.crosses_boundary([timed], until - 1, until)
+}

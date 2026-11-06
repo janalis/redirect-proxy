@@ -374,6 +374,7 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
               }),
             ],
           ),
+          schedule_badge(r),
         ],
       ),
     ]),
@@ -727,6 +728,8 @@ pub fn form(
               )),
               layout.field_feedback(errors, "note"),
             ]),
+            time_field(errors, "starts_at", "Starts at", r.starts_at),
+            time_field(errors, "expires_at", "Expires at", r.expires_at),
             field_col("col-12", [
               h.div([a.class("d-flex flex-wrap gap-3")], [
                 checkbox("enabled", "Enabled", r.enabled),
@@ -892,4 +895,43 @@ pub fn confirm_delete(
       ]),
     ],
   )
+}
+
+/// An optional RFC 3339 date-time (`starts_at`, `expires_at`). A text field:
+/// `datetime-local` has no time zone.
+fn time_field(
+  errors: List(String),
+  name: String,
+  text: String,
+  value: String,
+) -> Element(Nil) {
+  field_col("md:col-6", [
+    label(name, text),
+    h.input(list.append(
+      [
+        a.id(name),
+        a.name(name),
+        a.class(input_class(errors, name)),
+        a.value(value),
+        a.placeholder("2026-12-01T00:00:00Z (optional)"),
+      ],
+      layout.invalid_attributes(errors, name),
+    )),
+    layout.field_feedback(errors, name),
+    help("RFC 3339 with a time zone. Empty: no limit."),
+  ])
+}
+
+/// "scheduled" before `starts_at`, "expired" from `expires_at`.
+fn schedule_badge(r: rule.Rule) -> Element(Nil) {
+  let now = ffi.now_seconds()
+  let #(from, until) = rule.window(r)
+  let badge = fn(text, title) {
+    h.span([a.class("badge theme-warning ms-1"), a.title(title)], [h.text(text)])
+  }
+  case now < from, now >= until {
+    True, _ -> badge("scheduled", "Applies from " <> r.starts_at)
+    _, True -> badge("expired", "Expired at " <> r.expires_at)
+    _, _ -> element.none()
+  }
 }

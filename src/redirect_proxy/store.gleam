@@ -42,6 +42,9 @@ import redirect_proxy/store/rules.{
 } as store_rules
 import simplifile
 
+/// Milliseconds between checks for rules starting or expiring.
+const schedule_interval = 1000
+
 /// How long a mutation waits for another process to release the file lock.
 const lock_timeout = 5000
 
@@ -156,6 +159,9 @@ pub opaque type Message {
   /// Every second: saves the hit counts when due (`hits_interval`) or when
   /// the node starts draining before a stop.
   SaveHits(self: Subject(Message))
+
+  /// Every second: republishes the rules when one starts or expires.
+  Schedule(self: Subject(Message))
 }
 
 /// What a bulk change does to the rules it names.
@@ -194,6 +200,9 @@ type State {
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
     hits_saved_draining: Bool,
+    /// When the published rules were last checked against the rules'
+    /// `starts_at`/`expires_at` (`Schedule`).
+    checked_at: Int,
   )
 }
 
@@ -235,6 +244,7 @@ pub fn start(
             stamp: ffi.file_stamp(settings.rules_path),
             hits_saved_at: ffi.now_seconds(),
             hits_saved_draining: False,
+            checked_at: ffi.now_seconds(),
           ))
         }
         Error(reason) ->
@@ -259,6 +269,7 @@ pub fn start(
                 stamp: ffi.file_stamp(settings.rules_path),
                 hits_saved_at: ffi.now_seconds(),
                 hits_saved_draining: False,
+                checked_at: ffi.now_seconds(),
               ))
             }
             Error(Nil) -> Error(reason)
@@ -268,6 +279,8 @@ pub fn start(
     schedule_watch(settings, subject)
     load_hits(settings)
     process.send_after(subject, 1000, SaveHits(subject))
+
+    process.send_after(subject, schedule_interval, Schedule(subject))
     actor.initialised(state)
     |> actor.returning(subject)
     |> Ok
@@ -725,6 +738,21 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         }
       }
+    }
+
+    Schedule(self) -> {
+      process.send_after(self, schedule_interval, Schedule(self))
+      let now = ffi.now_seconds()
+      // a change since the last check rebuilt the matcher already: then
+      // this rebuild is redundant, but harmless
+      case rule.crosses_boundary(state.rules, state.checked_at, now) {
+        False -> Nil
+        True -> {
+          log.info("a scheduled rule starts or expires: rules republished")
+          publish(matcher.build(state.rules), state.settings, state.rules)
+        }
+      }
+      actor.continue(State(..state, checked_at: now))
     }
 
     Watch(self) -> {

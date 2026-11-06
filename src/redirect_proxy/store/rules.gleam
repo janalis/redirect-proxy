@@ -139,10 +139,16 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
     rules
     |> list.filter(fn(r) { r.kind == rule.Exact && r.enabled })
     |> list.group(exact_key)
-    |> dict.filter(fn(_, group) { list.length(group) > 1 })
+    // rules for one path may take turns (starts_at/expires_at)
+    |> dict.filter(fn(_, group) {
+      list.combination_pairs(group)
+      |> list.any(fn(pair) { rule.windows_overlap(pair.0, pair.1) })
+    })
     |> dict.keys
     |> list.map(fn(key) {
-      "source: another enabled exact rule already matches " <> key
+      "source: another enabled exact rule already matches "
+      <> key
+      <> " (at the same time)"
     })
 
   let loops =

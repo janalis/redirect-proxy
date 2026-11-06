@@ -906,7 +906,10 @@ fn components(registry: List(Deprecation)) -> Json {
                           json.object([
                             #(
                               "verdict",
-                              enum_schema(["applied", "shadowed", "disabled"]),
+                              enum_schema([
+                                "applied", "shadowed", "disabled",
+                                "out_of_schedule",
+                              ]),
                             ),
                             #("rule", ref("Rule")),
                           ]),
@@ -1047,6 +1050,20 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
     ),
     #("priority", typed("integer", "Lower runs first (default 100).")),
     #("enabled", typed("boolean", "Disabled rules are ignored.")),
+    #(
+      "starts_at",
+      typed(
+        "string",
+        "RFC 3339 date-time from which the rule applies (empty: always).",
+      ),
+    ),
+    #(
+      "expires_at",
+      typed(
+        "string",
+        "RFC 3339 date-time from which the rule no longer applies (empty: never).",
+      ),
+    ),
     #("note", typed("string", "Free text.")),
   ]
   case read_only {

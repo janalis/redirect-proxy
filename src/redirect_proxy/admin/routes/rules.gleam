@@ -440,6 +440,8 @@ pub fn rule_from_form(
       priority: result.unwrap(priority, rule.default_priority),
       enabled: checked("enabled"),
       note: get("note"),
+      starts_at: get("starts_at"),
+      expires_at: get("expires_at"),
     )
   let errors =
     list.flatten([

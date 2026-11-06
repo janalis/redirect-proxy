@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import redirect_proxy/audit
+import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
@@ -592,6 +593,57 @@ fn wait_for_file(path: String, attempts: Int) -> Nil {
     _, _ -> {
       process.sleep(100)
       wait_for_file(path, attempts - 1)
+    }
+  }
+}
+
+/// Two exact rules for one path may take turns; overlapping windows are
+/// refused. The published rules follow `starts_at`/`expires_at` without any
+/// change to the file.
+pub fn scheduled_rules_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/sale", "/summer"), expires_at: "2000-01-01T00:00:00Z"),
+      by: "t",
+    )
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/sale", "/winter"), starts_at: "2000-01-01T00:00:00Z"),
+      by: "t",
+    )
+  assert redirect("/sale") == Ok("/winter")
+  let assert Error([overlap]) =
+    store.create(s, new_rule("/sale", "/always"), by: "t")
+  assert string.contains(overlap, "at the same time")
+
+  // a rule starting in 2 seconds and expiring in 3
+  let now = ffi.now_seconds()
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(
+        ..new_rule("/soon", "/started"),
+        starts_at: ffi.rfc3339(now + 2),
+        expires_at: ffi.rfc3339(now + 3),
+      ),
+      by: "t",
+    )
+  assert redirect("/soon") == Error(Nil)
+  wait_for(fn() { redirect("/soon") == Ok("/started") }, 40)
+  wait_for(fn() { redirect("/soon") == Error(Nil) }, 40)
+}
+
+fn wait_for(condition: fn() -> Bool, attempts: Int) -> Nil {
+  case condition(), attempts {
+    True, _ -> Nil
+    False, 0 -> panic as "condition not met in time"
+    False, _ -> {
+      process.sleep(100)
+      wait_for(condition, attempts - 1)
     }
   }
 }
