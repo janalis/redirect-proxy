@@ -541,6 +541,12 @@ with_file_lock(Path, TimeoutMs, Fun) ->
             try {ok, Fun()}
             after release_lock(Lock, Token)
             end;
+        %% A directory this process cannot create files in is one it cannot
+        %% write the rules to either (writes are a temp file and a rename):
+        %% a replica reading a read-only volume. Run without the lock; the
+        %% writers of other processes replace the file atomically.
+        read_only ->
+            {ok, Fun()};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -562,6 +568,8 @@ acquire_lock(Lock, Token, Deadline) ->
                     {error, <<"cannot write ", Lock/binary, ": ",
                               (atom_to_binary_safe(Reason))/binary>>}
             end;
+        {error, Read} when Read =:= eacces; Read =:= erofs; Read =:= eperm ->
+            read_only;
         {error, eexist} ->
             case break_stale_lock(Lock) of
                 true -> acquire_lock(Lock, Token, Deadline);

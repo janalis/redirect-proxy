@@ -273,8 +273,12 @@ fn describe_start_error(error: actor.StartError) -> String {
 }
 
 /// Uses the configured secret or a random one persisted in the data dir.
+/// Without the admin, nothing is signed for later (the API sets no
+/// cookies): a random secret is enough, and a read-only data dir (a
+/// replica serving a ConfigMap) is not written to.
 fn secret_key_base(cfg: Config) -> Result(String, String) {
   case cfg.admin.secret_key_base {
+    "" if !cfg.admin.enabled -> Ok(id.token(48))
     "" -> {
       let path = config.secret_path(cfg)
       case simplifile.read(path) {
