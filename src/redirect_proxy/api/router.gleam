@@ -19,6 +19,7 @@ import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation.{type Deprecation}
 import redirect_proxy/api/openapi
 import redirect_proxy/api/problem
+import redirect_proxy/api/routes
 import redirect_proxy/api/rule_json.{patch_decoder, rule_json} as _
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
@@ -115,6 +116,8 @@ fn route(
   principal: Principal,
   segments: List(String),
 ) -> Response {
+  let template = routes.template(segments)
+  use <- known_method(req, template)
   let response = case req.method, segments {
     Get, ["redirects"] -> {
       use <- require(principal, scope.Read, ctx)
@@ -182,33 +185,45 @@ fn route(
       use <- require(principal, scope.Read, ctx)
       test_url(req, ctx)
     }
-    _, ["redirects"] -> problem.method_not_allowed(["GET", "POST"])
-    _, ["redirects", "export"] -> problem.method_not_allowed(["GET"])
-    _, ["redirects", "import"] -> problem.method_not_allowed(["POST"])
-    _, ["redirects", "bulk"] -> problem.method_not_allowed(["POST"])
-    _, ["redirects", _] ->
-      problem.method_not_allowed(["GET", "PUT", "PATCH", "DELETE"])
-    _, ["reload"] -> problem.method_not_allowed(["POST"])
-    _, ["test"] -> problem.method_not_allowed(["GET"])
     _, _ -> problem.not_found("No such endpoint.")
   }
-  with_route_deprecations(response, ctx, req, segments)
+  with_route_deprecations(response, ctx, req, template)
+}
+
+/// A known path with a method it does not have is a 405, before the
+/// dispatch: `PUT /api/redirects/export` must not reach `PUT {id}`.
+fn known_method(
+  req: Request,
+  template: Result(String, Nil),
+  next: fn() -> Response,
+) -> Response {
+  case template {
+    Ok(template) ->
+      case
+        list.contains(routes.operations, routes.Operation(req.method, template))
+      {
+        True -> next()
+        False -> problem.method_not_allowed(routes.allowed(template))
+      }
+    // unknown paths are a 404 from the dispatch
+    Error(Nil) -> next()
+  }
 }
 
 fn with_route_deprecations(
   response: Response,
   ctx: Context,
   req: Request,
-  segments: List(String),
+  template: Result(String, Nil),
 ) -> Response {
-  let template = case segments {
-    ["redirects", id] if id != "export" && id != "import" && id != "bulk" ->
-      "/api/redirects/{id}"
-    _ -> "/api/" <> string.join(segments, "/")
+  case template {
+    Error(Nil) -> response
+    Ok(template) -> {
+      let method = string.lowercase(http.method_to_string(req.method))
+      deprecation.for_route(ctx.deprecations, method, template)
+      |> add_deprecation_headers(response, _)
+    }
   }
-  let method = string.lowercase(http.method_to_string(req.method))
-  deprecation.for_route(ctx.deprecations, method, template)
-  |> add_deprecation_headers(response, _)
 }
 
 fn add_deprecation_headers(
