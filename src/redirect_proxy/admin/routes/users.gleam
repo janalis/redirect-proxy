@@ -10,6 +10,7 @@ import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/routes/auth
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
+import redirect_proxy/admin/views/users as users_view
 import redirect_proxy/admin/web.{
   type Context, error_page, features, flash_from_query, form_value, html,
   not_found, require_csrf_form, set_session_cookie, show_users,
@@ -26,7 +27,8 @@ fn users_page(
   errors: List(String),
 ) -> Response {
   case users.list(ctx.users) {
-    Ok(all) -> html(status, pages.users(s, features(ctx), flash, all, errors))
+    Ok(all) ->
+      html(status, users_view.users(s, features(ctx), flash, all, errors))
     Error(reason) -> error_page(ctx, s, 500, "Users unavailable", reason)
   }
 }

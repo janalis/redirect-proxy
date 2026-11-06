@@ -13,7 +13,7 @@ import redirect_proxy/admin/auth/header
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
-import redirect_proxy/admin/views/pages
+import redirect_proxy/admin/views/login as login_view
 import redirect_proxy/admin/web.{
   type Context, form_value, html, log_value, oidc_state_cookie_name,
   require_csrf_form, session_cookie_name, set_session_cookie,
@@ -165,7 +165,7 @@ pub fn login_page(req: Request, ctx: Context) -> Response {
       }
       html(
         200,
-        pages.login(
+        login_view.login(
           error,
           ctx.config.local_auth.enabled,
           sso_label(ctx),
@@ -234,7 +234,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
   let fail = fn(message: String, status: Int, username: String) {
     html(
       status,
-      pages.login(
+      login_view.login(
         Some(message),
         ctx.config.local_auth.enabled,
         sso_label(ctx),
@@ -511,7 +511,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
       ])
       html(
         403,
-        pages.login(
+        login_view.login(
           Some(shown),
           ctx.config.local_auth.enabled,
           sso_label(ctx),
@@ -541,7 +541,7 @@ fn sso_throttle(
       })
       html(
         429,
-        pages.login(
+        login_view.login(
           Some("Too many sign-in attempts. Try again in a few minutes."),
           ctx.config.local_auth.enabled,
           sso_label(ctx),

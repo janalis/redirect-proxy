@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/admin/views/clients as clients_view
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/web.{
@@ -22,14 +23,14 @@ fn render_api_clients(
   s: Session,
   status: Int,
   flash: Option(layout.Flash),
-  issued: Option(pages.IssuedSecret),
+  issued: Option(clients_view.IssuedSecret),
   errors: List(String),
 ) -> Response {
   case clients.list(ctx.clients) {
     Ok(all) ->
       html(
         status,
-        pages.api_clients(
+        clients_view.api_clients(
           s,
           features(ctx),
           flash,
@@ -63,7 +64,7 @@ pub fn create_api_client(req: Request, ctx: Context, s: Session) -> Response {
         s,
         201,
         Some(layout.Success("API client created.")),
-        Some(pages.IssuedSecret(client.client_id, secret)),
+        Some(clients_view.IssuedSecret(client.client_id, secret)),
         [],
       )
     Error(reason) -> render_api_clients(ctx, s, 422, None, None, [reason])
@@ -86,7 +87,7 @@ pub fn rotate_api_client(
         s,
         200,
         Some(layout.Success("Secret rotated; previous tokens are revoked.")),
-        Some(pages.IssuedSecret(client_id, secret)),
+        Some(clients_view.IssuedSecret(client_id, secret)),
         [],
       )
     }
