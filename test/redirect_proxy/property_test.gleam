@@ -600,3 +600,38 @@ pub fn access_log_lines_have_no_control_characters_test() {
     })
   })
 }
+
+/// A target template compiled once expands like `expand_with` reads it,
+/// placeholders, `$$`, `${...}` and stray `$` or `{` included.
+pub fn compiled_template_expands_like_expand_with_test() {
+  let template =
+    qcheck.string_from(
+      qcheck.codepoint_from_strings("$", [
+        "$", "{", "}", "0", "1", "2", "9", "h", "o", "s", "t", "u", "b", "/",
+        "x", "-",
+      ]),
+    )
+  let vars = rule.RequestVars(host: "req.test", sub: "a.b")
+  check_many(1000, template, fn(template) {
+    let captures = ["whole", "one", "two"]
+    assert rule.expand_template(rule.compile_template(template), captures, vars)
+      == rule.expand_with(template, captures, vars)
+  })
+  // the shapes that matter, written out
+  list.each(
+    [
+      "", "/plain", "$1", "/a/$1/b", "$$1", "${1}", "${12}", "${host}",
+      "https://${host}/$1", "${sub}.new.test", "${nope}", "${", "$", "$x", "a$",
+      "$0-$2-$9",
+    ],
+    fn(template) {
+      let captures = ["whole", "one", "two"]
+      assert rule.expand_template(
+          rule.compile_template(template),
+          captures,
+          vars,
+        )
+        == rule.expand_with(template, captures, vars)
+    },
+  )
+}

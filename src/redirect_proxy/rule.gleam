@@ -758,6 +758,86 @@ fn do_expand(
   }
 }
 
+/// A target template parsed once (when the matcher is built), so that a
+/// redirect does not parse it again: the same result as `expand_with`.
+pub opaque type Template {
+  Template(parts: List(Part))
+}
+
+type Part {
+  Literal(String)
+  Capture(Int)
+  RequestHostPart
+  SubPart
+}
+
+/// Parses a target template, the way `expand_with` reads it.
+pub fn compile_template(template: String) -> Template {
+  Template(compile_parts(template, []) |> merge_literals([]))
+}
+
+fn compile_parts(rest: String, parts: List(Part)) -> List(Part) {
+  case string.split_once(rest, "$") {
+    Error(Nil) -> list.reverse([Literal(rest), ..parts])
+    Ok(#(before, after)) -> {
+      let parts = [Literal(before), ..parts]
+      case string.pop_grapheme(after) {
+        Ok(#("$", tail)) -> compile_parts(tail, [Literal("$"), ..parts])
+        Ok(#("{", tail)) ->
+          case string.split_once(tail, "}") {
+            Ok(#(name, tail2)) ->
+              case int.parse(name), name {
+                Ok(n), _ -> compile_parts(tail2, [Capture(n), ..parts])
+                _, "host" -> compile_parts(tail2, [RequestHostPart, ..parts])
+                _, "sub" -> compile_parts(tail2, [SubPart, ..parts])
+                _, _ -> compile_parts(tail, [Literal("${"), ..parts])
+              }
+            Error(_) -> compile_parts(tail, [Literal("${"), ..parts])
+          }
+        Ok(#(c, tail)) ->
+          case int.parse(c) {
+            Ok(n) -> compile_parts(tail, [Capture(n), ..parts])
+            Error(_) -> compile_parts(after, [Literal("$"), ..parts])
+          }
+        Error(Nil) -> list.reverse([Literal("$"), ..parts])
+      }
+    }
+  }
+}
+
+/// Joins neighbouring literals and drops empty ones.
+fn merge_literals(parts: List(Part), merged: List(Part)) -> List(Part) {
+  case parts, merged {
+    [], _ -> list.reverse(merged)
+    [Literal(""), ..rest], _ -> merge_literals(rest, merged)
+    [Literal(a), ..rest], [Literal(b), ..done] ->
+      merge_literals(rest, [Literal(b <> a), ..done])
+    [part, ..rest], _ -> merge_literals(rest, [part, ..merged])
+  }
+}
+
+/// `expand_with` for a compiled template.
+pub fn expand_template(
+  template: Template,
+  captures: List(String),
+  vars: RequestVars,
+) -> String {
+  case template.parts {
+    // no placeholder: nothing to build
+    [] -> ""
+    [Literal(text)] -> text
+    parts ->
+      list.fold(parts, "", fn(acc, part) {
+        case part {
+          Literal(text) -> acc <> text
+          Capture(n) -> acc <> capture(captures, n)
+          RequestHostPart -> acc <> vars.host
+          SubPart -> acc <> vars.sub
+        }
+      })
+  }
+}
+
 fn capture(captures: List(String), index: Int) -> String {
   captures
   |> list.drop(index)
@@ -919,18 +999,7 @@ fn drop_slashes(text: String) -> String {
 }
 
 fn strip_url_whitespace(url: String) -> String {
-  case
-    string.contains(url, "\t")
-    || string.contains(url, "\n")
-    || string.contains(url, "\r")
-  {
-    False -> url
-    True ->
-      url
-      |> string.replace("\t", "")
-      |> string.replace("\n", "")
-      |> string.replace("\r", "")
-  }
+  ffi.strip_url_whitespace(url)
 }
 
 /// The host (with port, without user info), lower-cased, of an absolute or
@@ -938,15 +1007,16 @@ fn strip_url_whitespace(url: String) -> String {
 /// as `/` and extra slashes after the scheme are ignored. `Error(Nil)` for a
 /// path.
 fn authority(url: String) -> Result(String, Nil) {
-  // the scheme and delimiters are ASCII: the host alone needs Unicode case
-  // mapping, if it is not ASCII (`ffi.lowercase_host` below)
-  let lower = ffi.lowercase_ascii(url)
-  let rest = case lower {
-    "http://" <> rest | "http:\\\\" <> rest -> Ok(rest)
-    "https://" <> rest | "https:\\\\" <> rest -> Ok(rest)
-    "//" <> rest | "/\\" <> rest | "\\/" <> rest | "\\\\" <> rest -> Ok(rest)
+  // only the scheme is lowered here (ASCII): the host is lowered below,
+  // with Unicode case mapping if it is not ASCII (`ffi.lowercase_host`)
+  let scheme = ffi.lowercase_ascii(ffi.byte_take(url, 8))
+  let after = case scheme {
+    "http://" <> _ | "http:\\\\" <> _ -> Ok(7)
+    "https://" <> _ | "https:\\\\" <> _ -> Ok(8)
+    "//" <> _ | "/\\" <> _ | "\\/" <> _ | "\\\\" <> _ -> Ok(2)
     _ -> Error(Nil)
   }
-  use rest <- result.map(rest)
+  use after <- result.map(after)
+  let rest = ffi.byte_drop(url, after)
   rest |> drop_slashes |> ffi.url_host |> ffi.lowercase_host
 }
