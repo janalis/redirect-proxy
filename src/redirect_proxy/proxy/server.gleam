@@ -67,7 +67,7 @@ fn route(
   let host = request.get_header(req, "host") |> result.unwrap(req.host)
   case req.method {
     http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch ->
-      case matcher.lookup(snapshot.current(), host, req.path) {
+      case find(config, host, req.path) {
         Ok(m) -> {
           metrics.incr(metrics.Redirects)
           metrics.hit(m.rule.id)
@@ -84,12 +84,13 @@ fn route(
       }
     http.Options -> #(
       response.new(204)
-        |> response.set_header("allow", "GET, HEAD, POST, PUT, DELETE, PATCH")
+        |> response.set_header("allow", allowed_methods)
         |> response.set_body(mist.Bytes(bytes_tree.new())),
       "",
     )
     _ -> #(
       response.new(405)
+        |> response.set_header("allow", allowed_methods)
         |> response.set_body(mist.Bytes(bytes_tree.new())),
       "",
     )
@@ -160,4 +161,17 @@ pub fn start(
     <> ": "
     <> string.inspect(e)
   })
+}
+
+const allowed_methods = "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS"
+
+fn find(
+  config: ServerConfig,
+  host: String,
+  path: String,
+) -> Result(matcher.Match, Nil) {
+  case config.trailing_slash {
+    "ignore" -> matcher.lookup_tolerant(snapshot.current(), host, path)
+    _ -> matcher.lookup(snapshot.current(), host, path)
+  }
 }

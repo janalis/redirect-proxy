@@ -208,3 +208,20 @@ pub fn guard_blocks_open_redirects_test() {
   assert rule.guard_location(sub, "https://.example.com/") == Error(Nil)
   assert rule.guard_location(rule.Unsafe, "/x") == Error(Nil)
 }
+
+pub fn wildcard_and_international_hosts_test() {
+  let with_host = fn(host) {
+    rule.validate(Rule(..rule.blank(), host:, source: "/a", target: "/b"))
+  }
+  let assert Ok(r) = with_host("*.Example.com")
+  assert r.host == "*.example.com"
+  let assert Ok(_) = with_host("*.a.example.com")
+  // a whole top-level domain, or a wildcard elsewhere, is refused
+  let assert Error(_) = with_host("*.com")
+  let assert Error(_) = with_host("a.*.example.com")
+  let assert Error(_) = with_host("*.*.example.com")
+  // international names must be given in punycode
+  let assert Error([reason]) = with_host("café.example")
+  assert string.contains(reason, "punycode")
+  let assert Ok(_) = with_host("xn--caf-dma.example")
+}

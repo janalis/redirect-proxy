@@ -15,12 +15,14 @@
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
     with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
-    binary_take/2, binary_drop/2, rescue/1
+    binary_take/2, binary_drop/2, rescue/1,
+    normalise_path/1, encode_non_ascii/1
 ]).
 
 -include_lib("kernel/include/file.hrl").
 
 -define(MATCH_LIMIT, 100000).
+-define(IS_HEX(C), ((C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $f) orelse (C >= $A andalso C =< $F))).
 
 %% ---------------------------------------------------------------------------
 %% persistent_term snapshot (lock-free reads from every request process)
@@ -558,6 +560,83 @@ rescue(Fun) ->
         {error, unicode:characters_to_binary(
                   io_lib:format("~p: ~0p", [Class, Reason]))}
     end.
+
+%% ---------------------------------------------------------------------------
+%% Path normalisation
+%% ---------------------------------------------------------------------------
+
+%% One form for equivalent paths, applied to request paths and rule sources:
+%% %XX escapes of unreserved characters (A-Z a-z 0-9 - . _ ~) and of valid
+%% UTF-8 sequences are decoded (/caf%C3%A9 -> /café), and the escapes kept
+%% (reserved characters such as %2F, %3F, %23, %25, invalid UTF-8) are
+%% written in upper case. A lone `%` is written %25. Applying it twice gives
+%% the same result.
+normalise_path(Path) ->
+    case has_percent(Path) of
+        false -> Path;
+        true -> iolist_to_binary(normalise(Path))
+    end.
+
+%% On every request: a plain scan, cheaper than binary:match for short paths.
+has_percent(<<$%, _/binary>>) -> true;
+has_percent(<<_, Rest/binary>>) -> has_percent(Rest);
+has_percent(<<>>) -> false.
+
+normalise(<<"%", H1, H2, Rest/binary>>) when ?IS_HEX(H1), ?IS_HEX(H2) ->
+    Byte = hex_value(H1) * 16 + hex_value(H2),
+    if
+        Byte < 16#80 ->
+            case is_unreserved(Byte) of
+                true -> [Byte | normalise(Rest)];
+                false -> [escape(Byte) | normalise(Rest)]
+            end;
+        true ->
+            {Bytes, After} = escaped_bytes(Rest, [Byte]),
+            Sequence = list_to_binary(Bytes),
+            case unicode:characters_to_binary(Sequence) of
+                Sequence -> [Sequence | normalise(After)];
+                _ -> [[escape(B) || B <- Bytes] | normalise(After)]
+            end
+    end;
+%% A `%` that does not start an escape is written %25: left as is, it could
+%% form a new escape with characters decoded next to it (%f%37 -> %f7).
+normalise(<<"%", Rest/binary>>) -> [<<"%25">> | normalise(Rest)];
+normalise(<<C, Rest/binary>>) -> [C | normalise(Rest)];
+normalise(<<>>) -> [].
+
+%% The following %XX escapes of bytes >= 0x80 (a UTF-8 sequence).
+escaped_bytes(<<"%", H1, H2, Rest/binary>> = Bin, Acc)
+  when ?IS_HEX(H1), ?IS_HEX(H2) ->
+    case hex_value(H1) * 16 + hex_value(H2) of
+        Byte when Byte >= 16#80 -> escaped_bytes(Rest, [Byte | Acc]);
+        _ -> {lists:reverse(Acc), Bin}
+    end;
+escaped_bytes(Bin, Acc) -> {lists:reverse(Acc), Bin}.
+
+is_unreserved(C) when C >= $a, C =< $z; C >= $A, C =< $Z; C >= $0, C =< $9 -> true;
+is_unreserved(C) -> lists:member(C, "-._~").
+
+hex_value(C) when C >= $0, C =< $9 -> C - $0;
+hex_value(C) when C >= $a, C =< $f -> C - $a + 10;
+hex_value(C) when C >= $A, C =< $F -> C - $A + 10.
+
+escape(Byte) -> <<"%", (hex(Byte bsr 4)), (hex(Byte band 15))>>.
+
+hex(N) when N < 10 -> $0 + N;
+hex(N) -> $A + N - 10.
+
+%% Percent-encodes the bytes >= 0x80 of a URL, for headers (Location) that
+%% must be ASCII.
+encode_non_ascii(Url) ->
+    case has_non_ascii(Url) of
+        false -> Url;
+        true -> << <<(case C >= 16#80 of true -> escape(C); false -> <<C>> end)/binary>>
+                   || <<C>> <= Url >>
+    end.
+
+has_non_ascii(<<C, _/binary>>) when C >= 16#80 -> true;
+has_non_ascii(<<_, Rest/binary>>) -> has_non_ascii(Rest);
+has_non_ascii(<<>>) -> false.
 
 %% Byte-wise slicing for the matcher's prefix index. The first N bytes may
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.

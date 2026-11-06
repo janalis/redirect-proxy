@@ -222,6 +222,8 @@ pub fn apply_env(
       port: i("RP_SERVER_PORT", server.port),
       cache_max_age: i("RP_SERVER_CACHE_MAX_AGE", server.cache_max_age),
       shutdown_grace: i("RP_SERVER_SHUTDOWN_GRACE", server.shutdown_grace),
+      trailing_slash: s("RP_SERVER_TRAILING_SLASH", server.trailing_slash)
+        |> string.lowercase,
       fallback_url: s("RP_SERVER_FALLBACK_URL", server.fallback_url),
       not_found_body: s("RP_SERVER_NOT_FOUND_BODY", server.not_found_body),
     ),

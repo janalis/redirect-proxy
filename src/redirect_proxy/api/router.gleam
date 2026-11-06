@@ -21,6 +21,7 @@ import redirect_proxy/api/rule_json.{patch_decoder, rule_json} as _
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
+import redirect_proxy/config
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -139,7 +140,7 @@ fn route(
     }
     Get, ["test"] -> {
       use <- require(principal, scope.Read, ctx)
-      test_url(req)
+      test_url(req, ctx)
     }
     _, ["redirects"] -> problem.method_not_allowed(["GET", "POST"])
     _, ["redirects", "export"] -> problem.method_not_allowed(["GET"])
@@ -444,9 +445,15 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
   }
 }
 
-fn test_url(req: Request) -> Response {
+fn test_url(req: Request, ctx: Context) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
-  case matcher.resolve_url(snapshot.current(), url) {
+  case
+    matcher.resolve_url(
+      snapshot.current(),
+      url,
+      config.ignore_trailing_slash(ctx.config),
+    )
+  {
     matcher.BadUrl ->
       problem.bad_request(
         "url must be an absolute URL, e.g. https://host/path.",

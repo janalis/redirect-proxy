@@ -318,3 +318,64 @@ pub fn shadowed_rule_is_not_a_loop_test() {
   let m = matcher.build([prefix, exact])
   assert matcher_loop.redirect_loop(m, prefix) == Error(Nil)
 }
+
+pub fn wildcard_hosts_test() {
+  let m =
+    matcher.build([
+      r("1", "*.example.com", rule.Exact, "/a", "/wild"),
+      r("2", "*.b.example.com", rule.Exact, "/a", "/closer"),
+      r("3", "c.example.com", rule.Exact, "/a", "/exact"),
+      r("4", "*", rule.Exact, "/a", "/any"),
+    ])
+  assert location(m, "x.example.com", "/a") == Ok("/wild")
+  assert location(m, "x.y.example.com", "/a") == Ok("/wild")
+  // the closest wildcard wins, an exact host wins over wildcards
+  assert location(m, "x.b.example.com", "/a") == Ok("/closer")
+  assert location(m, "c.example.com", "/a") == Ok("/exact")
+  // subdomains only: the apex falls through to *
+  assert location(m, "example.com", "/a") == Ok("/any")
+  assert location(m, "X.Example.com:8080", "/a") == Ok("/wild")
+}
+
+pub fn equivalent_paths_match_test() {
+  let m =
+    matcher.build([
+      r("1", "*", rule.Exact, "/café", "/coffee"),
+      r("2", "*", rule.Exact, "/a%2fb", "/slash"),
+      r("3", "*", rule.Prefix, "/docs/", "/manual/$1"),
+      r("4", "*", rule.Exact, "/~user", "/home"),
+    ])
+  assert location(m, "h", "/caf%C3%A9") == Ok("/coffee")
+  assert location(m, "h", "/caf%c3%a9") == Ok("/coffee")
+  assert location(m, "h", "/café") == Ok("/coffee")
+  // an encoded slash stays different from a path separator
+  assert location(m, "h", "/a%2Fb") == Ok("/slash")
+  assert location(m, "h", "/a/b") == Error(Nil)
+  assert location(m, "h", "/%7Euser") == Ok("/home")
+  // captures may hold decoded characters: Location stays ASCII
+  let assert Ok(found) = matcher.lookup(m, "h", "/docs/%C3%A9t%C3%A9")
+  assert matcher.location(found, Error(Nil)) == "/manual/%C3%A9t%C3%A9"
+}
+
+pub fn trailing_slash_tolerance_test() {
+  let m =
+    matcher.build([
+      r("1", "*", rule.Exact, "/a", "/no-slash"),
+      r("2", "*", rule.Exact, "/b/", "/slash"),
+      r("3", "*", rule.Exact, "/c", "/c-exact"),
+      r("4", "*", rule.Exact, "/c/", "/c-slash"),
+    ])
+  let tolerant = fn(path) {
+    case matcher.lookup_tolerant(m, "h", path) {
+      Ok(found) -> Ok(found.location)
+      Error(Nil) -> Error(Nil)
+    }
+  }
+  assert location(m, "h", "/a/") == Error(Nil)
+  assert tolerant("/a/") == Ok("/no-slash")
+  assert tolerant("/b") == Ok("/slash")
+  // an exact match is never replaced by the other form
+  assert tolerant("/c") == Ok("/c-exact")
+  assert tolerant("/c/") == Ok("/c-slash")
+  assert tolerant("/") == Error(Nil)
+}

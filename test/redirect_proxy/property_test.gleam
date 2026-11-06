@@ -246,3 +246,69 @@ pub fn indexed_matching_agrees_with_reference_test() {
     assert actual == reference_lookup(rules, path)
   })
 }
+
+// --- wildcard hosts and path normalisation --------------------------------------
+
+fn wildcard_host() -> qcheck.Generator(String) {
+  qcheck.from_generators(qcheck.return("*"), [
+    qcheck.return("*.x.test"),
+    qcheck.return("*.b.x.test"),
+    qcheck.return("b.x.test"),
+    qcheck.return("a.b.x.test"),
+  ])
+}
+
+/// The hosts a request host is looked up under, in order.
+fn reference_hosts(host: String) -> List(String) {
+  list.flatten([[host], wildcard_parents(host), ["*"]])
+}
+
+fn wildcard_parents(name: String) -> List(String) {
+  case string.split_once(name, ".") {
+    Ok(#(_, parent)) -> ["*." <> parent, ..wildcard_parents(parent)]
+    Error(Nil) -> []
+  }
+}
+
+pub fn wildcard_lookup_agrees_with_reference_test() {
+  use #(rules, probe_host, probe_path) <- check(qcheck.tuple3(
+    qcheck.generic_list(
+      elements_from: qcheck.map2(wildcard_host(), path(), fn(host, source) {
+        Rule(..rule.blank(), id: host <> source, host:, source:, target: host)
+      }),
+      length_from: qcheck.bounded_int(0, 10),
+    ),
+    qcheck.from_generators(qcheck.return("a.b.x.test"), [
+      qcheck.return("b.x.test"),
+      qcheck.return("c.b.x.test"),
+      qcheck.return("x.test"),
+      qcheck.return("other.test"),
+    ]),
+    path(),
+  ))
+  let expected =
+    reference_hosts(probe_host)
+    |> list.find_map(fn(h) {
+      list.find(rules, fn(r) { r.host == h && r.source == probe_path })
+    })
+    |> result.map(fn(r) { r.target })
+  let actual =
+    matcher.lookup(matcher.build(rules), probe_host, probe_path)
+    |> result.map(fn(m) { m.location })
+  assert actual == expected
+}
+
+pub fn path_normalisation_is_idempotent_test() {
+  use path <- qcheck.given(
+    qcheck.string_from(
+      qcheck.codepoint_from_strings("/", [
+        "a", "%", "2", "F", "f", "C", "3", "A", "9", "7", "E", "é", "-",
+      ]),
+    ),
+  )
+  let once = ffi.normalise_path(path)
+  assert ffi.normalise_path(once) == once
+  // an escaped slash or percent sign is never decoded
+  assert !string.contains(ffi.normalise_path("/x%2Fy%25"), "/x/")
+  assert string.contains(ffi.normalise_path("/x%2fy"), "%2F")
+}
