@@ -176,6 +176,13 @@ pub type OidcConfig {
     /// On logout, also end the session at the provider (its
     /// `end_session_endpoint`), then come back to the login page.
     logout_at_provider: Bool,
+    /// Groups (`groups_claim`) given a role: the highest one a user's
+    /// groups give applies.
+    admin_groups: List(String),
+    editor_groups: List(String),
+    viewer_groups: List(String),
+    /// The role of a user in none of these groups: admin, editor or viewer.
+    default_role: String,
   )
 }
 
@@ -218,6 +225,10 @@ pub type HeaderAuthConfig {
     user_header: String,
     email_header: String,
     trusted_proxies: List(String),
+    /// A header with the role of the user (viewer, editor or admin); "":
+    /// every proxy user gets `default_role`.
+    role_header: String,
+    default_role: String,
   )
 }
 
@@ -263,6 +274,10 @@ pub fn default() -> Config {
       allowed_domains: [],
       allowed_groups: [],
       groups_claim: "groups",
+      admin_groups: [],
+      editor_groups: [],
+      viewer_groups: [],
+      default_role: "admin",
       button_label: "Sign in with SSO",
       logout_at_provider: False,
     ),
@@ -271,6 +286,8 @@ pub fn default() -> Config {
       user_header: "x-forwarded-user",
       email_header: "x-forwarded-email",
       trusted_proxies: ["127.0.0.1/32", "::1/128"],
+      role_header: "",
+      default_role: "admin",
     ),
     api: ApiConfig(
       enabled: True,

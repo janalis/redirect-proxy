@@ -445,6 +445,7 @@ pub fn more_value_checks_test() {
   assert string.starts_with(refused(config.Config(..d, api:)), "api.public_url")
   let header =
     config.HeaderAuthConfig(
+      ..config.default().header_auth,
       enabled: True,
       trusted_proxies: ["10.0.0.0/8"],
       user_header: "",

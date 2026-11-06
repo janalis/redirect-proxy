@@ -64,9 +64,14 @@ pub fn require_session(
   let proxy_actor =
     result.map(proxy_user, session.actor(session.Header, _))
     |> result.unwrap("")
+  let proxy_role = header.role(ctx.config.header_auth, req)
   case from_cookie, proxy_user {
-    // Header auth: the proxy is authoritative, the session must follow it.
-    Ok(s), Ok(user) if s.method == session.Header && s.username != proxy_actor -> {
+    // Header auth: the proxy is authoritative, the session must follow it
+    // (the user and their role).
+    Ok(s), Ok(user)
+      if s.method == session.Header
+      && { s.username != proxy_actor || s.role != proxy_role }
+    -> {
       session.destroy(s.token)
       start_header_session(req, ctx, user, next)
     }
@@ -113,7 +118,8 @@ fn current_session(req: Request, ctx: Context) -> Result(Session, Nil) {
             session.user_fingerprint(user.password_hash, user.updated_at)
             == s.fingerprint
           {
-            True -> Ok(s)
+            // the role as stored now: a demotion applies at once
+            True -> Ok(session.Session(..s, role: user.role))
             False -> end_session(s)
           }
         Error(Nil) -> end_session(s)
@@ -140,7 +146,14 @@ fn start_header_session(
     <> ctx.peer_ip,
   )
   audit_auth(ctx, session.actor(session.Header, user), "auth.login", "proxy")
-  let s = session.create(user, session.Header, ctx.config.admin.session_ttl, "")
+  let s =
+    session.create(
+      user,
+      session.Header,
+      ctx.config.admin.session_ttl,
+      "",
+      header.role(ctx.config.header_auth, req),
+    )
   next(s, set_session_cookie(_, req, ctx, s))
 }
 
@@ -297,6 +310,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
               session.Local,
               ctx.config.admin.session_ttl,
               session.user_fingerprint(user.password_hash, user.updated_at),
+              user.role,
             )
           let next = list.key_find(wisp.get_query(req), "next")
           wisp.redirect(safe_next(next))
@@ -482,6 +496,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
           session.Oidc,
           ctx.config.admin.session_ttl,
           "",
+          oidc.role_for(ctx.config.oidc, identity),
         )
       // checked by `safe_next` when the login started
       wisp.redirect(next)

@@ -87,6 +87,12 @@ pub const known_keys = [
   "auth.oidc.client_secret",
   "auth.oidc.enabled",
   "auth.oidc.groups_claim",
+  "auth.oidc.admin_groups",
+  "auth.oidc.editor_groups",
+  "auth.oidc.viewer_groups",
+  "auth.oidc.default_role",
+  "auth.header.role_header",
+  "auth.header.default_role",
   "auth.oidc.issuer",
   "auth.oidc.logout_at_provider",
   "auth.oidc.scopes",
@@ -274,6 +280,26 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["auth", "oidc", "logout_at_provider"],
     o.logout_at_provider,
   ))
+  use admin_groups <- result.try(strings(
+    t,
+    ["auth", "oidc", "admin_groups"],
+    o.admin_groups,
+  ))
+  use editor_groups <- result.try(strings(
+    t,
+    ["auth", "oidc", "editor_groups"],
+    o.editor_groups,
+  ))
+  use viewer_groups <- result.try(strings(
+    t,
+    ["auth", "oidc", "viewer_groups"],
+    o.viewer_groups,
+  ))
+  use oidc_default_role <- result.try(str(
+    t,
+    ["auth", "oidc", "default_role"],
+    o.default_role,
+  ))
   let h = d.header_auth
   use header_enabled <- result.try(boolean(
     t,
@@ -294,6 +320,16 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["auth", "header", "trusted_proxies"],
     h.trusted_proxies,
+  ))
+  use role_header <- result.try(str(
+    t,
+    ["auth", "header", "role_header"],
+    h.role_header,
+  ))
+  use header_default_role <- result.try(str(
+    t,
+    ["auth", "header", "default_role"],
+    h.default_role,
   ))
   let a = d.api
   use api_enabled <- result.try(boolean(t, ["api", "enabled"], a.enabled))
@@ -438,12 +474,18 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       groups_claim:,
       button_label:,
       logout_at_provider:,
+      admin_groups:,
+      editor_groups:,
+      viewer_groups:,
+      default_role: oidc_default_role,
     ),
     header_auth: HeaderAuthConfig(
       enabled: header_enabled,
       user_header: string.lowercase(user_header),
       email_header: string.lowercase(email_header),
       trusted_proxies:,
+      role_header: string.lowercase(role_header),
+      default_role: header_default_role,
     ),
   ))
 }

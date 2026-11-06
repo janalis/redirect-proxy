@@ -20,6 +20,7 @@ import redirect_proxy/admin/auth/oidc/provider.{
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/role.{type Role}
 
 pub const flow_ttl = 600
 
@@ -350,6 +351,24 @@ pub fn check_claims(
     p, _ -> p
   }
   Ok(Identity(subject: sub, username:, email:, groups:))
+}
+
+/// The role of a signed-in user: the highest one their groups give, or
+/// `default_role` when they are in none of the role groups.
+pub fn role_for(cfg: OidcConfig, identity: Identity) -> Role {
+  let in_any = fn(groups) {
+    list.any(identity.groups, list.contains(groups, _))
+  }
+  [
+    #(cfg.admin_groups, role.Admin),
+    #(cfg.editor_groups, role.Editor),
+    #(cfg.viewer_groups, role.Viewer),
+  ]
+  |> list.filter(fn(entry) { in_any(entry.0) })
+  |> list.map(fn(entry) { entry.1 })
+  |> role.highest(
+    role.from_string(cfg.default_role) |> result.unwrap(role.Viewer),
+  )
 }
 
 /// Authorisation: with no allow-list configured every authenticated user is

@@ -24,6 +24,7 @@ import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/users
 import simplifile
 import support
@@ -1576,7 +1577,7 @@ pub fn header_auth_test() {
     )
   let resp = get(env.admin <> "/rules", [#("x-forwarded-user", "Proxy-User")])
   assert resp.status == 200
-  assert string.contains(resp.body, ">proxy-user (proxy)<")
+  assert string.contains(resp.body, ">proxy-user (proxy, admin)<")
   // names from the proxy cannot pass for a local user in the audit log
   let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
   assert #(login.actor, login.action) == #("proxy:proxy-user", "auth.login")
@@ -1740,7 +1741,7 @@ pub fn oidc_login_test() {
   let cookie = session_cookie(resp)
   let page = get(env.admin <> "/rules", [#("cookie", cookie)])
   assert page.status == 200
-  assert string.contains(page.body, ">alice@example.com (sso)<")
+  assert string.contains(page.body, ">alice@example.com (sso, admin)<")
   let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
   assert #(login.actor, login.action)
     == #("sso:alice@example.com", "auth.login")
@@ -2261,4 +2262,164 @@ pub fn admin_csv_import_and_export_test() {
     == Ok("text/csv; charset=utf-8")
   assert string.contains(export.body, "/from-csv,/landing,302")
   assert !string.contains(export.body, "/old,")
+}
+
+/// Signs in a new local user with this role: the session cookie and CSRF
+/// token.
+fn login_with_role(env: Env, name: String, r: role.Role) -> #(String, String) {
+  let assert Ok(_) =
+    users.create_with_role(
+      users.Settings(
+        path: env.dir <> "/users.json",
+        audit_path: env.dir <> "/audit.jsonl",
+      ),
+      name,
+      password.hash_with(admin_password, 1000),
+      r,
+      by: "test",
+    )
+  let resp =
+    post_form(env, "/login", "", [
+      #("username", name),
+      #("password", admin_password),
+    ])
+  assert resp.status == 303
+  let cookie = session_cookie(resp)
+  let page = get(env.admin <> "/account", [#("cookie", cookie)])
+  assert page.status == 200
+  #(cookie, csrf_token(page.body))
+}
+
+pub fn viewer_role_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login_with_role(env, "vera", role.Viewer)
+  let page = fn(path) { get(env.admin <> path, [#("cookie", cookie)]) }
+  // reading
+  let list = page("/rules")
+  assert list.status == 200
+  assert string.contains(list.body, "/old")
+  assert !string.contains(list.body, "New redirection")
+  assert !string.contains(list.body, "/toggle")
+  assert !string.contains(list.body, "Users")
+  assert page("/test?url=https://x.test/old").status == 200
+  assert page("/export").status == 200
+  // the rule details, read only
+  let assert Ok(#(before, _)) = string.split_once(list.body, "/edit\"")
+  let assert Ok(id) = string.split(before, "/rules/") |> list.last
+  let details = page("/rules/" <> id <> "/edit")
+  assert details.status == 200
+  assert string.contains(details.body, "Read only")
+  // no changes
+  let create =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("source", "/nope"),
+      #("target", "/x"),
+    ])
+  assert create.status == 403
+  assert get(env.redirect <> "/nope", []).status == 404
+  assert page("/rules/new").status == 403
+  assert page("/import").status == 403
+  assert post_form(env, "/reload", cookie, [#("csrf_token", csrf)]).status
+    == 403
+  // nor users, API clients or the audit log
+  assert page("/users").status == 403
+  assert page("/audit").status == 403
+  assert page("/api-clients").status == 403
+  // another user's password: no; their own: yes, from the account page
+  let other =
+    post_form(env, "/account/password", cookie, [
+      #("csrf_token", csrf),
+      #("username", "admin"),
+      #("password", "a-brand-new-password"),
+      #("current_password", admin_password),
+    ])
+  assert other.status == 403
+  let own =
+    post_form(env, "/account/password", cookie, [
+      #("csrf_token", csrf),
+      #("password", "a-brand-new-password"),
+      #("current_password", admin_password),
+    ])
+  assert own.status == 303
+  assert location(own) == "/account?flash=password_changed"
+}
+
+pub fn editor_role_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login_with_role(env, "eddie", role.Editor)
+  let create =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("source", "/by-editor"),
+      #("target", "/x"),
+      #("status", "301"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ])
+  assert create.status == 303
+  assert get(env.redirect <> "/by-editor", []).status == 301
+  assert get(env.admin <> "/import", [#("cookie", cookie)]).status == 200
+  assert get(env.admin <> "/users", [#("cookie", cookie)]).status == 403
+  assert get(env.admin <> "/audit", [#("cookie", cookie)]).status == 403
+}
+
+/// An administrator changes roles on the users page; the last
+/// administrator keeps theirs.
+pub fn admins_change_roles_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let resp =
+    post_form(env, "/users", cookie, [
+      #("csrf_token", csrf),
+      #("username", "newbie"),
+      #("password", "a-long-enough-password"),
+      #("role", "viewer"),
+    ])
+  assert resp.status == 303
+  let users_page = get(env.admin <> "/users", [#("cookie", cookie)]).body
+  assert string.contains(users_page, "action=\"/users/newbie/role\"")
+  let promote =
+    post_form(env, "/users/newbie/role", cookie, [
+      #("csrf_token", csrf),
+      #("role", "editor"),
+    ])
+  assert promote.status == 303
+  let demote_self =
+    post_form(env, "/users/admin/role", cookie, [
+      #("csrf_token", csrf),
+      #("role", "viewer"),
+    ])
+  assert demote_self.status == 422
+  assert string.contains(demote_self.body, "last administrator")
+}
+
+/// With a role header, the proxy decides the role of each request, and the
+/// session follows it.
+pub fn proxy_role_header_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        header_auth: config.HeaderAuthConfig(
+          ..d.header_auth,
+          enabled: True,
+          role_header: "x-forwarded-role",
+        ),
+      ),
+    )
+  let as_role = fn(r) {
+    [#("x-forwarded-user", "pat"), #("x-forwarded-role", r)]
+  }
+  let first = get(env.admin <> "/users", as_role("viewer"))
+  assert first.status == 403
+  let cookie = session_cookie(first)
+  assert get(env.admin <> "/users", [#("cookie", cookie), ..as_role("admin")]).status
+    == 200
+  // no header: the least
+  assert get(env.admin <> "/import", [#("x-forwarded-user", "sam")]).status
+    == 403
 }

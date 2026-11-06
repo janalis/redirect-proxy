@@ -367,8 +367,10 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
+| `RP_AUTH_OIDC_ADMIN_GROUPS`, `RP_AUTH_OIDC_EDITOR_GROUPS`, `RP_AUTH_OIDC_VIEWER_GROUPS`, `RP_AUTH_OIDC_DEFAULT_ROLE` | (none), `admin` (see Roles) |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
 | `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
+| `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `admin` (see Roles) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |
@@ -388,7 +390,7 @@ The admin listener serves these pages:
 - Redirections: search, filter, create, edit, enable/disable, delete.
 - A URL tester.
 - JSON import (merge or replace) and export.
-- Local users.
+- Local users, with their roles.
 - The audit log.
 - "Reload from disk".
 
@@ -433,6 +435,36 @@ unless the request has `Authorization: Bearer <token>`: in Prometheus, set
   admin port directly in this mode. The session ends on the first request
   that arrives without the header (signed out at the proxy, or a replayed
   cookie).
+
+**Roles.** Every session has a role, and each includes the one before:
+
+| Role | May |
+| --- | --- |
+| `viewer` | See the rules (with their details), test URLs, export, change their own password. |
+| `editor` | Also create, change, delete, enable and disable rules, import, and reload. |
+| `admin` | Also manage local users and API clients, and read the audit log (which records sign-ins with client addresses). |
+
+Pages and buttons a role cannot use are not shown, and the server answers
+403 to their requests. Roles come from:
+
+- **Local accounts:** the role stored with the user, chosen when the user
+  is created (`redirect-proxy user add <name> --role editor`, or the admin's
+  users page) and changed there or with `redirect-proxy user role <name>
+  <role>`. A change applies to the user's sessions at once. Accounts created
+  before roles are administrators, and the last administrator cannot be
+  demoted or deleted. Every role can change its own password on the
+  account page.
+- **OpenID Connect:** `admin_groups`, `editor_groups` and `viewer_groups`
+  name groups of `groups_claim`. A user gets the highest role their groups
+  give, and `default_role` when they are in none of them. `default_role` is
+  `admin`, so that nothing changes until you configure roles: set it to
+  `viewer` once the groups are in place.
+- **Trusted proxy headers:** with `role_header` (for example
+  `X-Forwarded-Role`), the proxy sets the role of each request; a missing,
+  repeated or unknown value gives `viewer`, and the session follows changes
+  of the header. Without it, every proxy user gets `default_role` (`admin`).
+
+API clients are not affected: they have scopes (see REST API).
 
 Security measures:
 
@@ -558,7 +590,7 @@ or endpoint works like this:
 ```text
 redirect-proxy [serve] [--config FILE]
 redirect-proxy check-config [--config FILE]   # also warns about unknown keys
-redirect-proxy user add|passwd|delete <username> | user list
+redirect-proxy user add <username> [--role ROLE] | user passwd|delete <username> | user role <username> <ROLE> | user list
 redirect-proxy client add <name> [--scope SCOPE]... | client list | client rotate|delete <client_id>
 redirect-proxy rules validate [FILE] | rules export | rules import <FILE> [--replace]
 redirect-proxy version | help

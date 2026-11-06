@@ -226,6 +226,7 @@ pub fn flash_from_query(req: Request) -> Option(layout.Flash) {
     Ok("user_created") -> Some(layout.Success("User created."))
     Ok("user_deleted") -> Some(layout.Success("User deleted."))
     Ok("password_changed") -> Some(layout.Success("Password changed."))
+    Ok("role_changed") -> Some(layout.Success("Role changed."))
     Ok("client_deleted") ->
       Some(layout.Success("API client deleted; its tokens are revoked."))
     _ -> None

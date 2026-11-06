@@ -7,6 +7,7 @@ import lustre/attribute as a
 import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/role
 
 pub const app_name = "Redirect Proxy"
 
@@ -17,6 +18,15 @@ pub type Flash {
 }
 
 /// Optional sections shown in the navigation bar.
+/// Whether the session may change rules (editor or admin).
+pub fn can_edit(s: Session) -> Bool {
+  role.allows(s.role, role.Editor)
+}
+
+pub fn is_admin(s: Session) -> Bool {
+  role.allows(s.role, role.Admin)
+}
+
 pub type Features {
   Features(users: Bool, api: Bool)
 }
@@ -30,6 +40,7 @@ pub type Nav {
   NavUsers
   NavAudit
   NavClients
+  NavAccount
   NavNone
 }
 
@@ -112,29 +123,38 @@ fn navbar(
           element.fragment([
             h.ul(
               [a.class("navbar-nav me-auto")],
+              // only what the session's role may open
               list.flatten([
                 [
                   link(NavRules, "/rules", "Redirections"),
                   link(NavTest, "/test", "Test a URL"),
-                  link(NavImport, "/import", "Import / export"),
                 ],
-                case features.users {
+                case can_edit(s) {
+                  True -> [link(NavImport, "/import", "Import / export")]
+                  False -> []
+                },
+                case features.users && is_admin(s) {
                   True -> [link(NavUsers, "/users", "Users")]
                   False -> []
                 },
-                case features.api {
+                case features.api && is_admin(s) {
                   True -> [link(NavClients, "/api-clients", "API clients")]
                   False -> []
                 },
-                [link(NavAudit, "/audit", "Audit log")],
+                case is_admin(s) {
+                  True -> [link(NavAudit, "/audit", "Audit log")]
+                  False -> []
+                },
               ]),
             ),
             h.div([a.class("d-flex align-items-center gap-2")], [
-              h.span([a.class("navbar-text small")], [
+              h.a([a.class("navbar-text small"), a.href("/account")], [
                 h.text(
                   session.display_name(s)
                   <> " ("
                   <> session.method_to_string(s.method)
+                  <> ", "
+                  <> role.to_string(s.role)
                   <> ")",
                 ),
               ]),

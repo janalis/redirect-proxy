@@ -16,6 +16,7 @@ import redirect_proxy/admin/web.{
   not_found, require_csrf_form, set_session_cookie, show_users,
 } as _
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/users
 import wisp.{type Request, type Response}
 
@@ -45,13 +46,53 @@ pub fn create_user(req: Request, ctx: Context, s: Session) -> Response {
   let pass = form_value(form, "password")
   let result = {
     use Nil <- result.try(users.validate_username(users.normalise(username)))
+    // forms from before roles send none: they created administrators
+    use new_role <- result.try(case form_value(form, "role") {
+      "" -> Ok(role.Admin)
+      value ->
+        role.from_string(value)
+        |> result.replace_error("role: must be viewer, editor or admin")
+    })
     use Nil <- result.try(password.validate_strength(pass))
-    users.create(ctx.users, username, password.hash(pass), s.username)
+    users.create_with_role(
+      ctx.users,
+      username,
+      password.hash(pass),
+      new_role,
+      s.username,
+    )
   }
   case result {
     Ok(_) -> wisp.redirect("/users?flash=user_created")
     Error(reason) -> users_page(ctx, s, 422, None, [reason])
   }
+}
+
+/// Changes the role of a local user (the last administrator keeps theirs).
+pub fn set_user_role(
+  req: Request,
+  ctx: Context,
+  s: Session,
+  username: String,
+) -> Response {
+  use <- bool.lazy_guard(!show_users(ctx), fn() { not_found(ctx, s) })
+  use form <- require_csrf_form(req, s)
+  let result = {
+    use new_role <- result.try(
+      role.from_string(form_value(form, "role"))
+      |> result.replace_error("role: must be viewer, editor or admin"),
+    )
+    users.set_role(ctx.users, username, new_role, s.username)
+  }
+  case result {
+    Ok(Nil) -> wisp.redirect("/users?flash=role_changed")
+    Error(reason) -> users_page(ctx, s, 422, None, [reason])
+  }
+}
+
+/// The account page: every role can change its own password there.
+pub fn account_page(req: Request, ctx: Context, s: Session) -> Response {
+  html(200, users_view.account(s, features(ctx), flash_from_query(req), []))
 }
 
 pub fn delete_user(
@@ -137,6 +178,27 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
     |> result.unwrap(s.username)
     |> users.normalise
   let pass = form_value(form, "password")
+  let admin = role.allows(s.role, role.Admin)
+  use <- bool.lazy_guard(username != s.username && !admin, fn() {
+    error_page(
+      ctx,
+      s,
+      403,
+      "Not allowed",
+      "Only administrators can change another user's password.",
+    )
+  })
+  // where the form was: the users page (administrators) or the account page
+  let back = case admin {
+    True -> "/users"
+    False -> "/account"
+  }
+  let failed = fn(reason) {
+    case admin {
+      True -> users_page(ctx, s, 422, None, [reason])
+      False -> html(422, users_view.account(s, features(ctx), None, [reason]))
+    }
+  }
   use <- throttled(ctx, s)
   let current_ok = case users.get(ctx.users, s.username) {
     Ok(me) ->
@@ -157,7 +219,7 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
       // Every session of that user ends (their fingerprint no longer
       // matches); when it is our own account, continue in a fresh session.
       session.destroy_user(username)
-      let resp = wisp.redirect("/users?flash=password_changed")
+      let resp = wisp.redirect(back <> "?flash=password_changed")
       case username == s.username && s.method == session.Local {
         False -> resp
         True ->
@@ -168,12 +230,13 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
                 session.Local,
                 ctx.config.admin.session_ttl,
                 session.user_fingerprint(user.password_hash, user.updated_at),
+                user.role,
               )
               |> set_session_cookie(resp, req, ctx, _)
             Error(Nil) -> resp
           }
       }
     }
-    Error(reason) -> users_page(ctx, s, 422, None, [reason])
+    Error(reason) -> failed(reason)
   }
 }

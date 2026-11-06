@@ -292,6 +292,10 @@ pub fn apply_env(
         "RP_AUTH_OIDC_LOGOUT_AT_PROVIDER",
         oidc.logout_at_provider,
       ),
+      admin_groups: l("RP_AUTH_OIDC_ADMIN_GROUPS", oidc.admin_groups),
+      editor_groups: l("RP_AUTH_OIDC_EDITOR_GROUPS", oidc.editor_groups),
+      viewer_groups: l("RP_AUTH_OIDC_VIEWER_GROUPS", oidc.viewer_groups),
+      default_role: s("RP_AUTH_OIDC_DEFAULT_ROLE", oidc.default_role),
     ),
     header_auth: HeaderAuthConfig(
       enabled: b("RP_AUTH_HEADER_ENABLED", header_auth.enabled),
@@ -303,6 +307,9 @@ pub fn apply_env(
         "RP_AUTH_HEADER_TRUSTED_PROXIES",
         header_auth.trusted_proxies,
       ),
+      role_header: s("RP_AUTH_HEADER_ROLE_HEADER", header_auth.role_header)
+        |> string.lowercase,
+      default_role: s("RP_AUTH_HEADER_DEFAULT_ROLE", header_auth.default_role),
     ),
   )
 }

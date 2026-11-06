@@ -6,6 +6,7 @@ import gleam/crypto
 import gleam/list
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/role.{type Role}
 
 const table = "redirect_proxy_sessions"
 
@@ -22,6 +23,9 @@ pub type Session {
     /// local username, or `sso:<name>` / `proxy:<name>` (see `actor`).
     username: String,
     method: Method,
+    /// What the session may do. Local sessions follow the user's role as
+    /// stored (see `admin/routes/auth.current_session`).
+    role: Role,
     csrf_token: String,
     expires_at: Int,
     /// For local accounts, `user_fingerprint` of the user when the session
@@ -55,6 +59,7 @@ pub fn create(
   method: Method,
   ttl: Int,
   fingerprint: String,
+  role: Role,
 ) -> Session {
   let now = ffi.now_seconds()
   let session =
@@ -62,6 +67,7 @@ pub fn create(
       token: id.token(32),
       username: actor(method, name),
       method:,
+      role:,
       csrf_token: id.token(32),
       expires_at: now + ttl,
       fingerprint:,

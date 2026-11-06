@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import redirect_proxy/ffi
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/users
 import simplifile
 import support
@@ -69,4 +70,32 @@ pub fn waits_for_another_process_test() {
     users.create(s, "alice", password.hash_with("x", 1000), by: "test")
   assert ffi.now_millis() - started >= 250
   assert users.count(s) == 1
+}
+
+pub fn roles_test() {
+  let s = settings()
+  let assert Ok(admin) = users.create(s, "root", "h", by: "t")
+  assert admin.role == role.Admin
+  let assert Ok(ed) = users.create_with_role(s, "ed", "h", role.Editor, by: "t")
+  assert ed.role == role.Editor
+  let assert Ok(Nil) = users.set_role(s, "ed", role.Viewer, by: "t")
+  let assert Ok(ed) = users.get(s, "ed")
+  assert ed.role == role.Viewer
+  // the last administrator keeps their role and cannot be deleted
+  let assert Error(_) = users.set_role(s, "root", role.Editor, by: "t")
+  let assert Error(_) = users.delete(s, "root", by: "t")
+  let assert Ok(Nil) = users.set_role(s, "ed", role.Admin, by: "t")
+  let assert Ok(Nil) = users.set_role(s, "root", role.Editor, by: "t")
+}
+
+/// Accounts stored before roles existed are administrators.
+pub fn users_without_a_role_are_admins_test() {
+  let s = settings()
+  let assert Ok(Nil) =
+    simplifile.write(
+      s.path,
+      "{\"version\":1,\"users\":[{\"username\":\"old\",\"password_hash\":\"h\"}]}",
+    )
+  let assert Ok(old) = users.get(s, "old")
+  assert old.role == role.Admin
 }

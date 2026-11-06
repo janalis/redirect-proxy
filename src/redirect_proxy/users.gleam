@@ -5,6 +5,7 @@
 //// overwrite each other's changes.
 //// Password hashing is done by callers, outside the lock.
 
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -13,6 +14,7 @@ import gleam/result
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
+import redirect_proxy/role.{type Role}
 import redirect_proxy/rule
 import simplifile
 
@@ -20,6 +22,8 @@ pub type User {
   User(
     username: String,
     password_hash: String,
+    /// What the user may do; `admin` for users stored before roles.
+    role: Role,
     created_at: String,
     updated_at: String,
   )
@@ -47,10 +51,21 @@ pub fn count(settings: Settings) -> Int {
   load(settings.path) |> result.unwrap([]) |> list.length
 }
 
+/// Creates an administrator.
 pub fn create(
   settings: Settings,
   username: String,
   password_hash: String,
+  by actor: String,
+) -> Result(User, String) {
+  create_with_role(settings, username, password_hash, role.Admin, actor)
+}
+
+pub fn create_with_role(
+  settings: Settings,
+  username: String,
+  password_hash: String,
+  role: Role,
   by actor: String,
 ) -> Result(User, String) {
   let username = normalise(username)
@@ -62,7 +77,7 @@ pub fn create(
     False -> {
       let now = ffi.now_rfc3339()
       let user =
-        User(username:, password_hash:, created_at: now, updated_at: now)
+        User(username:, password_hash:, role:, created_at: now, updated_at: now)
       use Nil <- result.try(save(settings.path, list.append(users, [user])))
       audit.record(
         settings.audit_path,
@@ -70,7 +85,12 @@ pub fn create(
         "user.create",
         username,
         None,
-        Some(json.object([#("username", json.string(username))])),
+        Some(
+          json.object([
+            #("username", json.string(username)),
+            #("role", json.string(role.to_string(role))),
+          ]),
+        ),
       )
       Ok(user)
     }
@@ -130,6 +150,50 @@ fn store_password(
   }
 }
 
+/// Changes the role of a user. The last administrator keeps theirs, so that
+/// someone can always manage the users.
+pub fn set_role(
+  settings: Settings,
+  username: String,
+  new_role: Role,
+  by actor: String,
+) -> Result(Nil, String) {
+  let username = normalise(username)
+  use <- ffi.locked_file(settings.path, lock_timeout)
+  use users <- result.try(load(settings.path))
+  case list.find(users, fn(u) { u.username == username }) {
+    Error(Nil) -> Error("user " <> username <> " does not exist")
+    Ok(user) if user.role == new_role -> Ok(Nil)
+    Ok(user) -> {
+      let changed =
+        list.map(users, fn(u) {
+          case u.username == username {
+            True -> User(..u, role: new_role, updated_at: ffi.now_rfc3339())
+            False -> u
+          }
+        })
+      use <- bool.guard(
+        !has_admin(changed),
+        Error("refusing to remove the role of the last administrator"),
+      )
+      use Nil <- result.try(save(settings.path, changed))
+      audit.record(
+        settings.audit_path,
+        actor,
+        "user.role",
+        username,
+        Some(json.object([#("role", json.string(role.to_string(user.role)))])),
+        Some(json.object([#("role", json.string(role.to_string(new_role)))])),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
+fn has_admin(users: List(User)) -> Bool {
+  list.any(users, fn(u) { u.role == role.Admin })
+}
+
 pub fn delete(
   settings: Settings,
   username: String,
@@ -142,6 +206,10 @@ pub fn delete(
     #([], _) -> Error("user " <> username <> " does not exist")
     #(_, []) -> Error("refusing to delete the last local user")
     #(_, remaining) -> {
+      use <- bool.guard(
+        !has_admin(remaining),
+        Error("refusing to delete the last administrator"),
+      )
       use Nil <- result.try(save(settings.path, remaining))
       audit.record(
         settings.audit_path,
@@ -181,9 +249,24 @@ pub fn validate_username(username: String) -> Result(Nil, String) {
 fn user_decoder() -> decode.Decoder(User) {
   use username <- decode.field("username", decode.string)
   use password_hash <- decode.field("password_hash", decode.string)
+  use role <- decode.optional_field("role", role.Admin, role_decoder())
   use created_at <- decode.optional_field("created_at", "", decode.string)
   use updated_at <- decode.optional_field("updated_at", "", decode.string)
-  decode.success(User(username:, password_hash:, created_at:, updated_at:))
+  decode.success(User(
+    username:,
+    password_hash:,
+    role:,
+    created_at:,
+    updated_at:,
+  ))
+}
+
+fn role_decoder() -> decode.Decoder(Role) {
+  use value <- decode.then(decode.string)
+  case role.from_string(value) {
+    Ok(r) -> decode.success(r)
+    Error(Nil) -> decode.failure(role.Admin, "viewer | editor | admin")
+  }
 }
 
 fn load(path: String) -> Result(List(User), String) {
@@ -209,6 +292,7 @@ fn save(path: String, users: List(User)) -> Result(Nil, String) {
           json.object([
             #("username", json.string(u.username)),
             #("password_hash", json.string(u.password_hash)),
+            #("role", json.string(role.to_string(u.role))),
             #("created_at", json.string(u.created_at)),
             #("updated_at", json.string(u.updated_at)),
           ])

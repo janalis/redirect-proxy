@@ -6,6 +6,7 @@ import wisp/simulate
 
 fn cfg(user_header: String) -> config.HeaderAuthConfig {
   config.HeaderAuthConfig(
+    ..config.default().header_auth,
     enabled: True,
     user_header:,
     email_header: "x-forwarded-email",
