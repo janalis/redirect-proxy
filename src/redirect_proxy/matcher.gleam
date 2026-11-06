@@ -425,7 +425,7 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
 /// Strips the port and a trailing dot (`example.com.`) from a Host header
 /// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  let host = strip_port(string.lowercase(host))
+  let host = strip_port(ffi.lowercase_host(host))
   case string.ends_with(host, ".") {
     True -> string.drop_end(host, 1)
     False -> host
@@ -581,15 +581,22 @@ fn match_query(
         dict.get(rules.exact_query, string.lowercase(path))
         |> result.unwrap([])
         |> list.filter(fn(q) { q.rule.case_insensitive })
-      case list.append(exact, folded) {
-        [] -> Error(Nil)
-        found -> {
-          let request = rule.request_query(query)
-          found
+      // each list is in match order already (sorted when built): only
+      // rules from both need sorting again
+      let found = case exact, folded {
+        [], found | found, [] -> found
+        _, _ ->
+          list.append(exact, folded)
           |> list.sort(fn(a, b) {
             int.compare(list.length(b.conditions), list.length(a.conditions))
             |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
           })
+      }
+      case found {
+        [] -> Error(Nil)
+        found -> {
+          let request = rule.request_query(query)
+          found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
           |> result.map(fn(q) { Match(q.rule, q.rule.target) })
         }

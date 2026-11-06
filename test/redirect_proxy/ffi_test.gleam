@@ -166,3 +166,20 @@ pub fn atomic_write_keeps_the_file_mode_test() {
   assert simplifile.file_info_permissions_octal(info) == 0o640
   assert simplifile.read(path) == Ok("two")
 }
+
+pub fn host_helpers_test() {
+  assert ffi.is_host_name("my_app-1.example.com")
+  assert !ffi.is_host_name("")
+  assert !ffi.is_host_name("Example.com")
+  assert !ffi.is_host_name("x@evil.test")
+  assert !ffi.is_host_name("café.example")
+  assert ffi.lowercase_host("Shop.TEST:80") == "shop.test:80"
+  assert ffi.lowercase_host("CAFÉ.Example") == "café.example"
+  // only ASCII letters change; other bytes are kept
+  assert ffi.lowercase_ascii("HTTPS://CAFÉ") == "https://cafÉ"
+  assert ffi.url_host("example.com/a@b") == "example.com"
+  assert ffi.url_host("user:pw@example.com?x") == "example.com"
+  assert ffi.url_host("a@b@example.com#f") == "example.com"
+  assert ffi.url_host("example.com\\x") == "example.com"
+  assert ffi.url_host("") == ""
+}

@@ -567,7 +567,7 @@ pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
 /// Only letters, digits, `-`, `_` and `.` (what a rule host may hold): what
 /// `${host}` and `${sub}` may hold.
 pub fn is_host_name(host: String) -> Bool {
-  host != "" && list.all(string.to_graphemes(host), host_char)
+  ffi.is_host_name(host)
 }
 
 pub fn normalise_host(host: String) -> String {
@@ -844,7 +844,7 @@ pub fn guard_location(
           case string.ends_with(host, suffix) {
             True -> {
               let sub = string.drop_end(host, string.length(suffix))
-              case sub != "" && list.all(string.to_graphemes(sub), host_char) {
+              case ffi.is_host_name(sub) {
                 True -> Ok(location)
                 False -> Error(Nil)
               }
@@ -855,10 +855,6 @@ pub fn guard_location(
       }
     }
   }
-}
-
-fn host_char(c: String) -> Bool {
-  string.contains("abcdefghijklmnopqrstuvwxyz0123456789-_.", c)
 }
 
 fn drop_slashes(text: String) -> String {
@@ -888,7 +884,9 @@ fn strip_url_whitespace(url: String) -> String {
 /// as `/` and extra slashes after the scheme are ignored. `Error(Nil)` for a
 /// path.
 fn authority(url: String) -> Result(String, Nil) {
-  let lower = string.lowercase(url)
+  // the scheme and delimiters are ASCII: the host alone needs Unicode case
+  // mapping, if it is not ASCII (`ffi.lowercase_host` below)
+  let lower = ffi.lowercase_ascii(url)
   let rest = case lower {
     "http://" <> rest | "http:\\\\" <> rest -> Ok(rest)
     "https://" <> rest | "https:\\\\" <> rest -> Ok(rest)
@@ -896,17 +894,5 @@ fn authority(url: String) -> Result(String, Nil) {
     _ -> Error(Nil)
   }
   use rest <- result.map(rest)
-  let rest = drop_slashes(rest)
-  let end =
-    ["/", "\\", "?", "#"]
-    |> list.fold(rest, fn(acc, delimiter) {
-      case string.split_once(acc, delimiter) {
-        Ok(#(before, _)) -> before
-        Error(Nil) -> acc
-      }
-    })
-  case string.split(end, "@") |> list.last {
-    Ok(host) -> host
-    Error(Nil) -> end
-  }
+  rest |> drop_slashes |> ffi.url_host |> ffi.lowercase_host
 }
