@@ -326,3 +326,17 @@ pub fn host_placeholder_lint_test() {
     )
     == "h.test|s|${host}|"
 }
+
+pub fn query_validation_test() {
+  let assert Ok(r) = rule.validate(Rule(..base(), query: "?id=42"))
+  assert r.query == "id=42"
+  assert rule.query_conditions(Rule(..r, query: "b=2&a=1"))
+    == [#("a", "1"), #("b", "2")]
+  let assert Error([kind]) =
+    rule.validate(Rule(..base(), kind: rule.Prefix, query: "id=1"))
+  assert kind == "query: only applies to exact rules"
+  let assert Error([shape]) = rule.validate(Rule(..base(), query: "=x"))
+  assert string.starts_with(shape, "query: must be name=value pairs")
+  assert !string.contains(rule.file_to_string([base()]), "\"query\"")
+  assert rule.file_from_string(rule.file_to_string([r])) == Ok([r])
+}

@@ -206,6 +206,7 @@ accepted. Ids and timestamps are added automatically.
 | `status` | `301` | `301`, `302`, `303`, `307` or `308`. |
 | `preserve_query` | `false` | Append the request query string to the target. |
 | `case_insensitive` | `false` | Match the source without regard to case. |
+| `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed). For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
 | `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`. Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |
@@ -279,9 +280,10 @@ are sent with `no-store`.
   loaded, loops are logged as warnings instead, so a file that loaded before
   keeps loading.
 - When created or edited, it can never apply as written: an exact or prefix
-  source with a query string (`?`) or a fragment (`#`), or starting with
-  `//` (the server reads a request for `//a/b` as the path `/b`), or a host
-  with a port. These are also logged as warnings when the file is loaded or rules
+  source with a query string (`?`: use `query` instead) or a fragment
+  (`#`), or starting with `//` (the server reads a request for `//a/b` as
+  the path `/b`), or a host with a port. These are also logged as warnings
+  when the file is loaded or rules
   are imported. Loop checks follow `server.trailing_slash`.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.

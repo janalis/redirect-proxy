@@ -1042,6 +1042,13 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
     #("preserve_query", typed("boolean", "Append the request query string.")),
     #("case_insensitive", typed("boolean", "Match regardless of case.")),
     #(
+      "query",
+      typed(
+        "string",
+        "Exact rules: query parameters the request must have, with these values (id=42&lang=fr). Other parameters are allowed; rules with more parameters win.",
+      ),
+    ),
+    #(
       "whole_segments",
       typed(
         "boolean",

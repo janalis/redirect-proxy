@@ -1287,3 +1287,33 @@ pub fn scheduled_rules_over_the_api_test() {
     )
   assert resp.status == 422
 }
+
+pub fn query_rules_over_http_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/page.php\",\"query\":\"id=42\",\"target\":\"/article-42\",\"preserve_query\":true}",
+    )
+  assert resp.status == 201
+  assert field(resp.body, ["query"], decode.string) == "id=42"
+  let resp = support.send(Get, env.redirect <> "/page.php?id=42&utm=x", [], "")
+  assert resp.status == 301
+  assert header(resp, "location") == "/article-42?id=42&utm=x"
+  assert support.send(Get, env.redirect <> "/page.php?id=7", [], "").status
+    == 404
+  // refused on prefix rules
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/p\",\"match\":\"prefix\",\"query\":\"a=1\",\"target\":\"/x\"}",
+    )
+  assert resp.status == 422
+}
