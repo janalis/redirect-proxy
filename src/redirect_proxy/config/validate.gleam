@@ -82,6 +82,29 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       False -> []
     },
     case
+      oidc.enabled
+      && !config.local_auth.enabled
+      && oidc.admin_groups == []
+      && oidc.default_role != "admin"
+      && !header_gives_admin(config)
+    {
+      True -> [
+        "auth.oidc gives no one the admin role and local accounts are disabled: nobody can manage users or API clients; set admin_groups (or default_role = \"admin\")",
+      ]
+      False -> []
+    },
+    case
+      config.header_auth.enabled
+      && !config.local_auth.enabled
+      && !oidc_gives_admin(config)
+      && !header_gives_admin(config)
+    {
+      True -> [
+        "auth.header gives no one the admin role and local accounts are disabled: nobody can manage users or API clients; set role_header (or default_role = \"admin\")",
+      ]
+      False -> []
+    },
+    case
       config.api.oauth.enabled
       && oidc.enabled
       && config.api.oauth.audience == oidc.client_id
@@ -346,4 +369,18 @@ fn validate_access_log(al: AccessLogConfig) -> Result(Nil, String) {
     |> result.map_error(fn(e) { name <> ".format: " <> e })
     |> result.replace(Nil)
   })
+}
+
+fn oidc_gives_admin(config: Config) -> Bool {
+  config.oidc.enabled
+  && { config.oidc.admin_groups != [] || config.oidc.default_role == "admin" }
+}
+
+/// A role header can give the admin role; without it, `default_role` does.
+fn header_gives_admin(config: Config) -> Bool {
+  config.header_auth.enabled
+  && {
+    config.header_auth.role_header != ""
+    || config.header_auth.default_role == "admin"
+  }
 }

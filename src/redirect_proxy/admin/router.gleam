@@ -91,12 +91,10 @@ fn api_dispatch(
 
 /// The role a route needs (see `role`). Reading is for every role; changing
 /// rules for editors; users, API clients and the audit log (sign-ins, with
-/// client addresses) for admins.
+/// client addresses) for admins. A route that is not listed needs the admin
+/// role, so that a new page is not open to everyone by mistake.
 pub fn required_role(method: http.Method, segments: List(String)) -> Role {
   case method, segments {
-    Get, ["users", ..] | Post, ["users", ..] -> role.Admin
-    Get, ["api-clients", ..] | Post, ["api-clients", ..] -> role.Admin
-    Get, ["audit"] -> role.Admin
     // own password and session: anyone (other users' passwords: checked in
     // `change_password`)
     Get, ["account"] | Post, ["account", "password"] | Post, ["logout"] ->
@@ -104,8 +102,20 @@ pub fn required_role(method: http.Method, segments: List(String)) -> Role {
     // a rule's details are on its edit page
     Get, [] | Get, ["rules"] | Get, ["rules", _, "edit"] -> role.Viewer
     Get, ["test"] | Get, ["export"] -> role.Viewer
-    // everything else changes rules, or leads to a change
-    _, _ -> role.Editor
+    // changing rules, or the pages that lead to a change
+    Get, ["rules", "new"]
+    | Post, ["rules"]
+    | Post, ["rules", "bulk"]
+    | Post, ["rules", _]
+    | Get, ["rules", _, "delete"]
+    | Post, ["rules", _, "delete"]
+    | Post, ["rules", _, "toggle"]
+    | Post, ["reload"]
+    | Get, ["import"]
+    | Post, ["import"]
+    -> role.Editor
+    // users, API clients, the audit log and anything new
+    _, _ -> role.Admin
   }
 }
 

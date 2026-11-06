@@ -548,3 +548,51 @@ pub fn admin_default_role_with_role_groups_warns_test() {
     string.starts_with(_, "auth.oidc.default_role"),
   )
 }
+
+/// SSO only, and no way to become an admin: the server says so at startup.
+pub fn no_admin_role_warns_test() {
+  let d = config.default()
+  let with = fn(local, admin_groups, default_role) {
+    config.Config(
+      ..d,
+      local_auth: config.LocalAuthConfig(enabled: local),
+      oidc: config.OidcConfig(
+        ..d.oidc,
+        enabled: True,
+        allowed_domains: ["example.com"],
+        admin_groups:,
+        default_role:,
+      ),
+    )
+  }
+  let warns = fn(cfg) {
+    list.any(config_validate.runtime_warnings(cfg), string.starts_with(
+      _,
+      "auth.oidc gives no one the admin role",
+    ))
+  }
+  assert warns(with(False, [], "viewer"))
+  assert !warns(with(True, [], "viewer"))
+  assert !warns(with(False, ["ops"], "viewer"))
+  assert !warns(with(False, [], "admin"))
+  // proxy headers without a role header: the same
+  let proxy = fn(role_header) {
+    config.Config(
+      ..d,
+      local_auth: config.LocalAuthConfig(enabled: False),
+      header_auth: config.HeaderAuthConfig(
+        ..d.header_auth,
+        enabled: True,
+        role_header:,
+      ),
+    )
+  }
+  let proxy_warns = fn(cfg) {
+    list.any(config_validate.runtime_warnings(cfg), string.starts_with(
+      _,
+      "auth.header gives no one the admin role",
+    ))
+  }
+  assert proxy_warns(proxy(""))
+  assert !proxy_warns(proxy("x-forwarded-role"))
+}

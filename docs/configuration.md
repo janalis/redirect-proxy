@@ -40,10 +40,10 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
-| `RP_AUTH_OIDC_ADMIN_GROUPS`, `RP_AUTH_OIDC_EDITOR_GROUPS`, `RP_AUTH_OIDC_VIEWER_GROUPS`, `RP_AUTH_OIDC_DEFAULT_ROLE` | (none), `admin` (see [Roles](administration.md#roles)) |
+| `RP_AUTH_OIDC_ADMIN_GROUPS`, `RP_AUTH_OIDC_EDITOR_GROUPS`, `RP_AUTH_OIDC_VIEWER_GROUPS`, `RP_AUTH_OIDC_DEFAULT_ROLE` | (none), `viewer` (see [Roles](administration.md#roles)) |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
 | `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
-| `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `admin` (see [Roles](administration.md#roles)) |
+| `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `viewer` (see [Roles](administration.md#roles)) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE`, `_AUDIT_SCOPE` | disabled |
