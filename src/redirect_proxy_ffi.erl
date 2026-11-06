@@ -14,7 +14,7 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, strip_control/1, garbage_collect/0
+    with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0
 ]).
 
 -define(MATCH_LIMIT, 100000).
@@ -311,6 +311,70 @@ jwt_peek_header(Token) ->
 
 with_lock(Name, Fun) ->
     global:trans({{redirect_proxy, Name}, self()}, Fun, [node()], infinity).
+
+%% ---------------------------------------------------------------------------
+%% Cross-process file lock (<Path>.lock, created with O_EXCL)
+%% ---------------------------------------------------------------------------
+
+%% A lock older than this is left over by a crashed process: writes hold the
+%% lock for milliseconds.
+-define(STALE_LOCK_SECONDS, 10).
+
+%% Runs Fun while holding <Path>.lock, shared by every OS process (server,
+%% CLI) that writes Path. Returns {ok, Result} or {error, Reason} when the
+%% lock is not acquired within TimeoutMs.
+with_file_lock(Path, TimeoutMs, Fun) ->
+    Lock = <<Path/binary, ".lock">>,
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    %% the data directory may not exist yet (first CLI command)
+    _ = filelib:ensure_dir(Lock),
+    case acquire_lock(Lock, Deadline) of
+        ok ->
+            try {ok, Fun()}
+            after _ = file:delete(Lock)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+acquire_lock(Lock, Deadline) ->
+    case file:open(Lock, [write, exclusive, raw, binary]) of
+        {ok, Fd} ->
+            _ = file:write(Fd, io_lib:format("~s ~s~n", [os:getpid(), node()])),
+            _ = file:close(Fd),
+            ok;
+        {error, eexist} ->
+            case stale_lock(Lock) of
+                true ->
+                    _ = file:delete(Lock),
+                    acquire_lock(Lock, Deadline);
+                false ->
+                    case erlang:monotonic_time(millisecond) >= Deadline of
+                        true ->
+                            {error, <<Lock/binary, " is held by another process (",
+                                      (lock_owner(Lock))/binary, ")">>};
+                        false ->
+                            timer:sleep(5 + rand:uniform(20)),
+                            acquire_lock(Lock, Deadline)
+                    end
+            end;
+        {error, Reason} ->
+            {error, <<"cannot create ", Lock/binary, ": ",
+                      (atom_to_binary_safe(Reason))/binary>>}
+    end.
+
+stale_lock(Lock) ->
+    case file:read_file_info(Lock, [{time, posix}]) of
+        {ok, {file_info, _, _, _, _, MTime, _, _, _, _, _, _, _, _}} ->
+            MTime < erlang:system_time(second) - ?STALE_LOCK_SECONDS;
+        _ -> false
+    end.
+
+lock_owner(Lock) ->
+    case file:read_file(Lock) of
+        {ok, Content} -> string:trim(Content);
+        _ -> <<"unknown">>
+    end.
 
 %% Removes CR, LF and NUL bytes (header injection guard), byte-wise so that
 %% "\r\n" grapheme clusters are handled too.

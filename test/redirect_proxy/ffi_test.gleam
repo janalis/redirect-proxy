@@ -1,4 +1,7 @@
+import gleam/string
 import redirect_proxy/ffi
+import simplifile
+import support
 
 pub fn ip_in_cidr_test() {
   assert ffi.ip_in_cidr("10.1.2.3", "10.0.0.0/8")
@@ -42,4 +45,16 @@ pub fn regex_limit_test() {
     == Error(ffi.LimitExceeded)
   assert ffi.regex_run(re, "aaa") == Ok(["aaa", "aaa"])
   assert ffi.regex_run(re, "b") == Error(ffi.NoMatch)
+}
+
+pub fn file_lock_test() {
+  let path = support.temp_dir() <> "/data.json"
+  let assert Ok(42) = ffi.with_file_lock(path, 100, fn() { 42 })
+  // released afterwards
+  assert simplifile.is_file(path <> ".lock") == Ok(False)
+  // held by another process: times out with the owner in the message
+  let assert Ok(Nil) = simplifile.write(path <> ".lock", "4242 cli@host\n")
+  let assert Error(reason) = ffi.with_file_lock(path, 100, fn() { 1 })
+  assert string.contains(reason, "4242 cli@host")
+  let assert Error(_) = ffi.locked_file(path, 100, fn() { Ok(1) })
 }

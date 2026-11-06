@@ -34,7 +34,8 @@ pub type Settings {
   Settings(path: String, audit_path: String)
 }
 
-const lock = "api_clients"
+/// How long a change waits for another process to release the file.
+const lock_timeout = 5000
 
 pub fn list(settings: Settings) -> Result(List(Client), String) {
   load(settings.path)
@@ -55,7 +56,7 @@ pub fn create(
 ) -> Result(#(Client, String), String) {
   let name = string.trim(name)
   use Nil <- result.try(validate(name, scopes))
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use clients <- result.try(load(settings.path))
   let secret = new_secret()
   let client =
@@ -86,7 +87,7 @@ pub fn rotate(
   client_id: String,
   by actor: String,
 ) -> Result(String, String) {
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use clients <- result.try(load(settings.path))
   use <- guard_exists(clients, client_id)
   let secret = new_secret()
@@ -114,7 +115,7 @@ pub fn delete(
   client_id: String,
   by actor: String,
 ) -> Result(Nil, String) {
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use clients <- result.try(load(settings.path))
   use <- guard_exists(clients, client_id)
   use Nil <- result.try(save(
@@ -162,8 +163,9 @@ fn touch(settings: Settings, client: Client) -> Nil {
   case string.slice(client.last_used_at, 0, 16) == string.slice(now, 0, 16) {
     True -> Nil
     False -> {
+      // Best effort: never make a token request wait for another writer.
       let _ = {
-        use <- ffi.with_lock(lock)
+        use <- ffi.locked_file(settings.path, 100)
         use clients <- result.try(load(settings.path))
         list.map(clients, fn(c) {
           case c.client_id == client.client_id {

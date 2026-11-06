@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/string
 import redirect_proxy/matcher
@@ -187,3 +188,102 @@ pub fn validate_all_reports_rule_numbers_test() {
     store.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
   assert string.starts_with(error, "rule #2")
 }
+
+// --- concurrent writers --------------------------------------------------------
+
+/// Another process (the CLI, an editor) changed the file: the next mutation
+/// reloads it first instead of overwriting it.
+pub fn outside_changes_are_reloaded_before_writing_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 5))
+  let assert Ok(_) = store.create(s, new_rule("/mine", "/a"), by: "server")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\": 1, \"rules\": [{\"source\": \"/theirs\", \"target\": \"/b\"}]}",
+    )
+  let assert Ok(_) = store.create(s, new_rule("/new", "/c"), by: "server")
+  let sources = fn(rules: List(rule.Rule)) {
+    list.map(rules, fn(r) { r.source }) |> list.sort(string.compare)
+  }
+  // the hand edit removed /mine and added /theirs: both are respected
+  assert sources(store.all(s)) == ["/new", "/theirs"]
+  let assert Ok(content) = simplifile.read(dir <> "/redirects.json")
+  let assert Ok(on_disk) = rule.file_from_string(content)
+  assert sources(on_disk) == ["/new", "/theirs"]
+  assert redirect("/theirs") == Ok("/b")
+}
+
+pub fn invalid_outside_changes_are_not_overwritten_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 5))
+  let broken = "{\"version\": 1, \"rules\": [ half written"
+  let assert Ok(Nil) = simplifile.write(dir <> "/redirects.json", broken)
+  let assert Error([reason]) =
+    store.create(s, new_rule("/x", "/y"), by: "server")
+  assert string.contains(reason, "changed outside the server")
+  assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
+}
+
+/// Two stores on the same file stand for two OS processes (server and CLI):
+/// concurrent writes from both are all kept.
+pub fn concurrent_writers_lose_no_update_test() {
+  let dir = support.temp_dir()
+  let a = start(settings(dir, 0))
+  let assert Ok(b) = store.start(settings(dir, 0), process.new_name("other"))
+  let b = b.data
+  let done = process.new_subject()
+  list.each([#("a", a), #("b", b)], fn(writer) {
+    process.spawn(fn() {
+      list.each(int.range(from: 1, to: 16, with: [], run: list.prepend), fn(i) {
+        let source = "/" <> writer.0 <> "/" <> string.inspect(i)
+        let assert Ok(_) = store.create(writer.1, new_rule(source, "/t"), "t")
+      })
+      process.send(done, Nil)
+    })
+  })
+  let assert Ok(Nil) = process.receive(done, 30_000)
+  let assert Ok(Nil) = process.receive(done, 30_000)
+  let assert Ok(content) = simplifile.read(dir <> "/redirects.json")
+  let assert Ok(on_disk) = rule.file_from_string(content)
+  assert list.length(on_disk) == 30
+}
+
+pub fn waits_for_the_file_lock_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  process.spawn(fn() {
+    process.sleep(300)
+    let _ = simplifile.delete(lock)
+  })
+  let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "server")
+  assert simplifile.is_file(lock) == Ok(False)
+}
+
+pub fn stale_lock_is_broken_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 crashed@host\n")
+  set_mtime(lock, 60)
+  let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "server")
+}
+
+pub fn backups_have_unique_names_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 50))
+  let assert Ok(r) = store.create(s, new_rule("/a", "/b"), by: "t")
+  list.each(int.range(from: 1, to: 11, with: [], run: list.prepend), fn(i) {
+    let assert Ok(_) =
+      store.update(s, Rule(..r, target: "/" <> string.inspect(i)), by: "t")
+  })
+  let assert Ok(files) = simplifile.read_directory(dir <> "/backups")
+  // one backup per write after the first one (creation of the empty file)
+  assert list.length(files) == 11
+}
+
+/// Sets a file's modification time `seconds_ago` in the past.
+@external(erlang, "test_net_ffi", "set_mtime_ago")
+fn set_mtime(path: String, seconds_ago: Int) -> Nil

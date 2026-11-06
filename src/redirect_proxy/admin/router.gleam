@@ -500,45 +500,69 @@ fn matches_filters(r: Rule, f: rules_view.Filters) -> Bool {
 }
 
 fn new_rule(_req: Request, ctx: Context, s: Session) -> Response {
-  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True))
+  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True, ""))
 }
 
 fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   case rule_from_form(form.values, rule.blank()) {
     Error(#(r, errors)) ->
-      html(422, rules_view.form(s, features(ctx), r, errors, True))
+      html(422, rules_view.form(s, features(ctx), r, errors, True, ""))
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
         Error(errors) ->
-          html(422, rules_view.form(s, features(ctx), r, errors, True))
+          html(422, rules_view.form(s, features(ctx), r, errors, True, ""))
       }
   }
 }
 
 fn edit_rule(ctx: Context, s: Session, id: String) -> Response {
   case store.get(ctx.store, id) {
-    Ok(r) -> html(200, rules_view.form(s, features(ctx), r, [], False))
+    Ok(r) ->
+      html(
+        200,
+        rules_view.form(s, features(ctx), r, [], False, rule.version(r)),
+      )
     Error(Nil) -> not_found(ctx, s)
   }
 }
 
 fn update_rule(req: Request, ctx: Context, s: Session, id: String) -> Response {
   use form <- require_csrf_form(req, s)
+  let version = form_version(form.values)
   case store.get(ctx.store, id) {
     Error(Nil) -> not_found(ctx, s)
-    Ok(existing) ->
+    Ok(existing) -> {
+      let render = fn(status, r, errors, version) {
+        html(
+          status,
+          rules_view.form(s, features(ctx), r, errors, False, version),
+        )
+      }
+      let submitted_version = option.unwrap(version, rule.version(existing))
       case rule_from_form(form.values, existing) {
-        Error(#(r, errors)) ->
-          html(422, rules_view.form(s, features(ctx), r, errors, False))
+        Error(#(r, errors)) -> render(422, r, errors, submitted_version)
         Ok(r) ->
-          case store.update(ctx.store, r, s.username) {
+          case store.update_versioned(ctx.store, r, version, s.username) {
             Ok(_) -> wisp.redirect("/rules?flash=updated")
-            Error(errors) ->
-              html(422, rules_view.form(s, features(ctx), r, errors, False))
+            Error(store.NotFound) -> not_found(ctx, s)
+            // Keep the submitted values; saving again overwrites knowingly.
+            Error(store.Conflict(current)) ->
+              render(
+                409,
+                r,
+                [
+                  conflict_message(current)
+                  <> " Your changes are shown below; saving again replaces theirs.",
+                ],
+                rule.version(current),
+              )
+            Error(store.Invalid(errors)) ->
+              render(422, r, errors, submitted_version)
           }
       }
+    }
   }
 }
 
@@ -550,26 +574,77 @@ fn confirm_delete(ctx: Context, s: Session, id: String) -> Response {
 }
 
 fn delete_rule(req: Request, ctx: Context, s: Session, id: String) -> Response {
-  use _form <- require_csrf_form(req, s)
-  case store.delete(ctx.store, id, s.username) {
+  use form <- require_csrf_form(req, s)
+  let version = form_version(form.values)
+  case store.delete_versioned(ctx.store, id, version, s.username) {
     Ok(_) -> wisp.redirect("/rules?flash=deleted")
-    Error(reason) -> error_page(ctx, s, 404, "Cannot delete", reason)
+    Error(store.Conflict(current)) ->
+      error_page(
+        ctx,
+        s,
+        409,
+        "Not deleted",
+        conflict_message(current) <> " Review it, then delete it again.",
+      )
+    Error(error) ->
+      error_page(
+        ctx,
+        s,
+        404,
+        "Cannot delete",
+        string.join(store.describe_change_error(error), " "),
+      )
   }
 }
 
 fn toggle_rule(req: Request, ctx: Context, s: Session, id: String) -> Response {
-  use _form <- require_csrf_form(req, s)
+  use form <- require_csrf_form(req, s)
   case store.get(ctx.store, id) {
     Error(Nil) -> not_found(ctx, s)
     Ok(r) ->
       case
-        store.update(ctx.store, rule.Rule(..r, enabled: !r.enabled), s.username)
+        store.update_versioned(
+          ctx.store,
+          rule.Rule(..r, enabled: !r.enabled),
+          form_version(form.values),
+          s.username,
+        )
       {
         Ok(_) -> wisp.redirect("/rules?flash=toggled")
-        Error(errors) ->
-          error_page(ctx, s, 422, "Cannot update", string.join(errors, " "))
+        Error(store.Conflict(current)) ->
+          error_page(
+            ctx,
+            s,
+            409,
+            "Not changed",
+            conflict_message(current) <> " Review it, then try again.",
+          )
+        Error(error) ->
+          error_page(
+            ctx,
+            s,
+            422,
+            "Cannot update",
+            string.join(store.describe_change_error(error), " "),
+          )
       }
   }
+}
+
+/// The rule version a form was rendered from (`None` for old forms).
+fn form_version(values: List(#(String, String))) -> Option(String) {
+  case list.key_find(values, "version") |> result.map(string.trim) {
+    Ok("") | Error(Nil) -> None
+    Ok(version) -> Some(version)
+  }
+}
+
+fn conflict_message(current: Rule) -> String {
+  "This redirection was changed by "
+  <> current.updated_by
+  <> " at "
+  <> current.updated_at
+  <> " while you were working on it, so nothing was saved."
 }
 
 fn reload(req: Request, ctx: Context, s: Session) -> Response {
