@@ -1,6 +1,7 @@
 //// Redirection rules: list, create, edit, delete, toggle, reload, URL
 //// tester, import and export, audit log.
 
+import gleam/bool
 import gleam/bytes_tree
 import gleam/int
 import gleam/list
@@ -46,7 +47,7 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let query = wisp.get_query(req)
   let filters =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
-  let all = store.all(ctx.store)
+  let #(all, version) = store.versioned(ctx.store)
   let found = matching(all, filters)
   let sorted =
     store_rules.sort(found, filters.sort, metrics.hits, metrics.last_hit)
@@ -103,6 +104,7 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
       filters,
       pages,
       here,
+      version,
     ),
   )
 }
@@ -125,13 +127,23 @@ fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
 
 /// Enable, disable or delete the selected rules, or every rule matching the
 /// list filters. Deleting asks for a confirmation first.
+///
+/// The form carries the version of the rules the page showed: when they
+/// changed since (another admin, an import, a reload), nothing is changed,
+/// so that "every matching rule" never takes in rules nobody saw.
 pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   let back = form_value(form, "return_to")
+  let version = form_version(form.values)
+  let #(rules, current) = store.versioned(ctx.store)
+  use <- bool.lazy_guard(
+    option.map(version, fn(v) { v != current }) |> option.unwrap(False),
+    fn() { stale_bulk(ctx, s) },
+  )
   let selected = case form_value(form, "all_matching") {
     "on" -> {
       let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
-      matching(store.all(ctx.store), filters)
+      matching(rules, filters)
       |> list.map(fn(r) { r.id })
     }
     _ ->
@@ -144,12 +156,10 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
     Ok(_), [] -> wisp.redirect(return_to(back, []))
     Ok(store.Remove), ids ->
       case form_value(form, "confirm") {
-        "yes" -> apply_bulk(ctx, s, ids, store.Remove, back)
+        "yes" -> apply_bulk(ctx, s, ids, store.Remove, current, back)
         _ -> {
           let wanted = set.from_list(ids)
-          let rules =
-            store.all(ctx.store)
-            |> list.filter(fn(r) { set.contains(wanted, r.id) })
+          let rules = list.filter(rules, fn(r) { set.contains(wanted, r.id) })
           html(
             200,
             rules_view.confirm_bulk_delete(
@@ -157,11 +167,12 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
               features(ctx),
               rules,
               return_to(back, []),
+              current,
             ),
           )
         }
       }
-    Ok(action), ids -> apply_bulk(ctx, s, ids, action, back)
+    Ok(action), ids -> apply_bulk(ctx, s, ids, action, current, back)
   }
 }
 
@@ -170,16 +181,28 @@ fn apply_bulk(
   s: Session,
   ids: List(String),
   action: store.BulkAction,
+  version: String,
   back: String,
 ) -> Response {
-  case store.bulk(ctx.store, ids, action, s.username) {
+  case store.bulk_versioned(ctx.store, ids, action, Some(version), s.username) {
     Ok(count) ->
       wisp.redirect(
         return_to(back, [#("flash", "bulk"), #("count", int.to_string(count))]),
       )
-    Error(errors) ->
+    Error(store.Stale(_)) -> stale_bulk(ctx, s)
+    Error(store.Rejected(errors)) ->
       error_page(ctx, s, 422, "Not changed", string.join(errors, " "))
   }
+}
+
+fn stale_bulk(ctx: Context, s: Session) -> Response {
+  error_page(
+    ctx,
+    s,
+    409,
+    "Not changed",
+    "The redirections were changed since this page was shown, so nothing was changed. Review the list and apply the action again.",
+  )
 }
 
 /// The form of a new rule, or of a copy of `?from=<id>` (Duplicate).
