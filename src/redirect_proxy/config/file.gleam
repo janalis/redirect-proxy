@@ -100,6 +100,7 @@ pub const known_keys = [
   "server.cache_max_age",
   "server.fallback_url",
   "server.health_path",
+  "server.metrics_path",
   "server.https_redirect",
   "server.max_path_bytes",
   "log.format",
@@ -168,6 +169,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "health_path"],
     d.server.health_path,
+  ))
+  use metrics_path <- result.try(str(
+    t,
+    ["server", "metrics_path"],
+    d.server.metrics_path,
   ))
   use max_path_bytes <- result.try(integer(
     t,
@@ -448,6 +454,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       fallback_url:,
       not_found_body:,
       health_path:,
+      metrics_path:,
       max_path_bytes:,
       https_redirect:,
     ),

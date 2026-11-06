@@ -251,6 +251,7 @@ pub fn apply_env(
       fallback_url: s("RP_SERVER_FALLBACK_URL", server.fallback_url),
       not_found_body: s("RP_SERVER_NOT_FOUND_BODY", server.not_found_body),
       health_path: s("RP_SERVER_HEALTH_PATH", server.health_path),
+      metrics_path: s("RP_SERVER_METRICS_PATH", server.metrics_path),
       max_path_bytes: i("RP_SERVER_MAX_PATH_BYTES", server.max_path_bytes),
       https_redirect: b("RP_SERVER_HTTPS_REDIRECT", server.https_redirect),
     ),

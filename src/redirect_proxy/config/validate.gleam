@@ -216,6 +216,23 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("server.health_path must be empty or start with /"),
   )
   use <- bool.guard(
+    config.server.metrics_path != ""
+      && !string.starts_with(config.server.metrics_path, "/"),
+    Error("server.metrics_path must be empty or start with /"),
+  )
+  use <- bool.guard(
+    config.server.metrics_path != ""
+      && config.server.metrics_path == config.server.health_path,
+    Error("server.metrics_path and server.health_path must differ"),
+  )
+  // the redirect listener is public
+  use <- bool.guard(
+    config.server.metrics_path != "" && config.admin.metrics_token == "",
+    Error(
+      "server.metrics_path needs admin.metrics_token: the redirect listener is public",
+    ),
+  )
+  use <- bool.guard(
     config.server.max_path_bytes < 256,
     Error("server.max_path_bytes must be at least 256"),
   )

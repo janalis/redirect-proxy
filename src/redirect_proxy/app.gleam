@@ -112,7 +112,11 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   use access <- result.try(access_log.start(cfg.access_log))
 
   let redirect_child =
-    mist.new(server.handler(cfg.server, access.redirect))
+    mist.new(server.handler(
+      cfg.server,
+      cfg.admin.metrics_token,
+      access.redirect,
+    ))
     |> mist.bind(cfg.server.listen)
     |> mist.port(cfg.server.port)
     |> mist.after_start(fn(port, _, _) {

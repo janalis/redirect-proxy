@@ -703,6 +703,42 @@ pub fn redirect_listener_health_path_test() {
   assert draining.status == 503
 }
 
+/// `server.metrics_path`: a replica without an admin or API listener
+/// serves its metrics on the redirect listener, before the rules, with the
+/// metrics token.
+pub fn redirect_listener_metrics_path_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        admin: config.AdminConfig(
+          ..d.admin,
+          metrics_token: "a-long-metrics-token",
+        ),
+        server: config.ServerConfig(..d.server, metrics_path: "/_metrics"),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[{\"source\": \"/\", \"match\": \"prefix\", \"target\": \"https://elsewhere.test/\"}]",
+    )
+  let assert Ok(_) = reload_rules(env)
+  let denied = get(env.redirect <> "/_metrics", [])
+  assert denied.status == 401
+  assert !string.contains(denied.body, "redirect_proxy_")
+  let resp =
+    get(env.redirect <> "/_metrics", [
+      #("authorization", "Bearer a-long-metrics-token"),
+    ])
+  assert resp.status == 200
+  assert string.contains(resp.body, "redirect_proxy_requests_total")
+  assert response.get_header(resp, "cache-control") == Ok("no-store")
+  // other paths still go to the rules
+  assert get(env.redirect <> "/_metrics/x", []).status == 301
+}
+
 /// Without a health path, the same path goes to the rules.
 pub fn health_path_is_off_by_default_test() {
   let env = boot(config.default())

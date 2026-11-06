@@ -117,6 +117,10 @@ pub type ServerConfig {
     /// Optional path answered by the redirect listener itself before any
     /// rule: 200 while serving, 503 while draining before a stop ("": off).
     health_path: String,
+    /// Optional path where the redirect listener serves the Prometheus
+    /// metrics before any rule, for replicas without an admin or API
+    /// listener ("": off). Needs `admin.metrics_token`.
+    metrics_path: String,
     /// Requests whose path is longer than this many bytes get a 414.
     max_path_bytes: Int,
     /// Plain HTTP requests are redirected to the same URL over HTTPS before
@@ -244,6 +248,7 @@ pub fn default() -> Config {
       fallback_url: "",
       not_found_body: "Not Found",
       health_path: "",
+      metrics_path: "",
       max_path_bytes: 8192,
       https_redirect: False,
     ),
