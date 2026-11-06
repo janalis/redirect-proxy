@@ -135,6 +135,25 @@ RP_STORAGE_DATA_DIR=$(brew --prefix)/var/lib/redirect-proxy \
 brew services start redirect-proxy
 ```
 
+### Verifying a download
+
+Every release asset comes with a `SHA256SUMS` file and a build provenance
+attestation signed by the release workflow, so you can check that a file was
+built by this repository's CI from the tagged commit:
+
+```sh
+# the files are intact
+sha256sum -c --ignore-missing SHA256SUMS
+# they were built by janalis/redirect-proxy's release workflow (GitHub CLI)
+gh attestation verify redirect-proxy-<version>-linux-amd64.tar.gz \
+  --repo janalis/redirect-proxy
+# the same for the container image
+gh attestation verify oci://ghcr.io/janalis/redirect-proxy:<version> \
+  --repo janalis/redirect-proxy
+```
+
+On macOS, use `shasum -a 256 -c --ignore-missing SHA256SUMS`.
+
 ### From source
 
 You need Gleam 1.19+ and Erlang/OTP 27+.
@@ -289,6 +308,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_SHUTDOWN_GRACE` | `5` (seconds) |
 | `RP_SERVER_TRAILING_SLASH` | `strict` (`ignore`: retry a miss with/without the trailing slash) |
 | `RP_SERVER_FALLBACK_URL` | (none) |
+| `RP_SERVER_NOT_FOUND_BODY` | `Not Found` (body of the 404 when no fallback is set) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |
 | `RP_ADMIN_PUBLIC_URL` | `http://localhost:8081` |
@@ -298,7 +318,9 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
+| `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL` | `groups`, `Sign in with SSO` |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
+| `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |

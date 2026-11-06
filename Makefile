@@ -9,7 +9,7 @@ UNAME_M := $(shell uname -m)
 ARCH := $(if $(filter x86_64 amd64,$(UNAME_M)),amd64,$(if $(filter aarch64 arm64,$(UNAME_M)),arm64,$(UNAME_M)))
 TARGET ?= $(UNAME_S)-$(ARCH)
 CONFIG ?= config.example.toml
-COVERAGE_MIN ?= 80
+COVERAGE_MIN ?= 88
 IMAGE ?= ghcr.io/janalis/redirect-proxy
 MAINTAINER ?= Janalis
 

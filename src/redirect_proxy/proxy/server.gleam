@@ -8,7 +8,6 @@ import gleam/http/response.{type Response}
 import gleam/int
 import gleam/option.{type Option}
 import gleam/result
-import gleam/string
 import mist
 import redirect_proxy/access_log
 import redirect_proxy/config.{type ServerConfig}
@@ -143,28 +142,6 @@ fn unmatched(
       |> response.set_body(mist.Bytes(bytes_tree.new()))
     }
   }
-}
-
-/// Starts the redirect listener under its own supervisor.
-pub fn start(
-  config: ServerConfig,
-  access: Option(access_log.Settings),
-  on_started: fn(Int) -> Nil,
-) -> Result(Nil, String) {
-  mist.new(handler(config, access))
-  |> mist.bind(config.listen)
-  |> mist.port(config.port)
-  |> mist.after_start(fn(port, _scheme, _ip) { on_started(port) })
-  |> mist.start
-  |> result.replace(Nil)
-  |> result.map_error(fn(e) {
-    "cannot start redirect listener on "
-    <> config.listen
-    <> ":"
-    <> int.to_string(config.port)
-    <> ": "
-    <> string.inspect(e)
-  })
 }
 
 const allowed_methods = "GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS"

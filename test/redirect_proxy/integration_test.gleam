@@ -202,6 +202,11 @@ pub fn redirect_listener_test() {
 
   let resp = send(http.Head, env.redirect <> "/old", [], "")
   assert resp.status == 301
+
+  let resp = send(http.Options, env.redirect <> "/old", [], "")
+  assert resp.status == 204
+  assert response.get_header(resp, "allow")
+    == Ok("GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS")
 }
 
 pub fn access_log_test() {
@@ -1446,6 +1451,43 @@ pub fn sighup_with_an_invalid_file_keeps_the_rules_test() {
   )
   assert location(get(env.redirect <> "/old", [])) == "https://example.com/new"
 }
+
+/// A reload callback that crashes is logged; later signals still reach it.
+pub fn sighup_survives_a_crashing_callback_test() {
+  let calls = process.new_subject()
+  ffi.on_sighup(fn() {
+    process.send(calls, Nil)
+    panic as "reload exploded"
+  })
+  let hup = fn() {
+    os_cmd(charlist.from_string("kill -HUP " <> charlist.to_string(os_pid())))
+  }
+  let _ = hup()
+  let first = process.receive(calls, 2000)
+  let _ = hup()
+  let second = process.receive(calls, 2000)
+  // the next boot installs the application's own callback again
+  ffi.on_sighup(fn() { Nil })
+  assert first == Ok(Nil)
+  assert second == Ok(Nil)
+}
+
+/// Signals other than SIGTERM keep OTP's default handling, and the drain
+/// handler stays installed.
+pub fn other_signals_are_left_to_otp_test() {
+  let _ = boot(config.default())
+  notify_signal("sigusr2")
+  notify_signal("sigchld")
+  assert !ffi.draining()
+  assert list.contains(signal_handlers(), "redirect_proxy_sigterm")
+  assert !list.contains(signal_handlers(), "erl_signal_handler")
+}
+
+@external(erlang, "test_signal_ffi", "notify")
+fn notify_signal(signal: String) -> Nil
+
+@external(erlang, "test_signal_ffi", "handlers")
+fn signal_handlers() -> List(String)
 
 pub fn request_counters_test() {
   let env = boot(config.default())

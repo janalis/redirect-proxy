@@ -149,10 +149,21 @@ jobs:
           echo '[{"source": "/smoke", "target": "/ok"}]' > "$data/redirects.json"
           env -i PATH=/usr/bin:/bin HOME="$HOME" "$bundle/bin/redirect-proxy" version
           env -i PATH=/usr/bin:/bin HOME="$HOME" RP_STORAGE_DATA_DIR="$data" RP_SERVER_PORT=18080 \
-            "$bundle/bin/redirect-proxy" serve &
+            RP_SERVER_SHUTDOWN_GRACE=3 "$bundle/bin/redirect-proxy" serve &
+          pid=$!
           for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.2; done
           test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:18080/smoke)" = "301 http://127.0.0.1:18080/ok"
           curl -fsS http://127.0.0.1:8081/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/readyz)" = "200"
+          # a real SIGTERM: /readyz turns 503 while redirects still work, and
+          # the process exits once the grace period is over
+          kill -TERM "$pid"
+          sleep 0.5
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/readyz)" = "503"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/smoke)" = "301"
+          for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.2; done
+          echo "still running 10 s after SIGTERM" >&2
+          exit 1
 
   docker:
     name: Container image
