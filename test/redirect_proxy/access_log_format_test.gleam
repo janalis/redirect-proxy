@@ -154,6 +154,16 @@ pub fn client_ip_test() {
   assert fmt.client_ip("10.0.0.1", [#("x-real-ip", " 198.51.100.8 ")], trusted)
     == "198.51.100.8"
   assert fmt.client_ip("10.0.0.1", [], trusted) == "10.0.0.1"
+  // a header line sent by the client ahead of the proxy's own line
+  assert fmt.client_ip(
+      "10.0.0.1",
+      [
+        #("x-forwarded-for", "192.0.2.66"),
+        #("x-forwarded-for", "198.51.100.7, 10.0.0.2"),
+      ],
+      trusted,
+    )
+    == "198.51.100.7"
 }
 
 pub fn text_lines_never_break_test() {

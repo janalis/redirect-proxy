@@ -5,6 +5,7 @@ import gleam/erlang/application
 import gleam/erlang/process
 import gleam/http/request
 import gleam/int
+import gleam/list
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/otp/supervision
@@ -25,6 +26,7 @@ import redirect_proxy/api/token
 import redirect_proxy/api/web as api_web
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
+import redirect_proxy/config/validate as config_validate
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/listener
@@ -96,6 +98,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   init_tables()
   use secret <- result.try(secret_key_base(cfg))
   bootstrap_admin(cfg)
+  list.each(config_validate.runtime_warnings(cfg), log.warning)
   let static_dir = static_directory()
 
   let store_name = process.new_name("redirect_proxy_store")

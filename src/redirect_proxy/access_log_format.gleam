@@ -343,10 +343,13 @@ pub fn client_ip(
   case trusted != [] && is_trusted(peer) {
     False -> peer
     True ->
-      case list.key_find(headers, "x-forwarded-for") {
-        Ok(xff) -> {
+      // several header lines are one comma-separated list, in order: a
+      // client can send its own line ahead of the proxy's
+      case list.key_filter(headers, "x-forwarded-for") {
+        [_, ..] as lines -> {
           let hops =
-            xff
+            lines
+            |> string.join(",")
             |> string.split(",")
             |> list.map(string.trim)
             |> list.filter(fn(h) { h != "" })
@@ -356,7 +359,7 @@ pub fn client_ip(
             Error(Nil) -> list.last(hops) |> result.unwrap(peer)
           }
         }
-        Error(Nil) ->
+        [] ->
           list.key_find(headers, "x-real-ip")
           |> result.map(string.trim)
           |> result.unwrap(peer)

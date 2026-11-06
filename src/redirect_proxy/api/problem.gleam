@@ -32,6 +32,53 @@ pub fn problem(
   |> wisp.string_body(json.to_string(body))
 }
 
+/// Turns wisp's plain-text error responses (malformed or oversized body,
+/// wrong content type, a crash) into problem details, or into OAuth errors
+/// for the token endpoint, so that every API error has a JSON body.
+pub fn from_plain_error(resp: Response, oauth: Bool) -> Response {
+  case
+    resp.status >= 400,
+    list.key_find(resp.headers, "content-type"),
+    resp.body
+  {
+    True, Ok("text/plain"), wisp.Text(detail) -> {
+      let converted = case oauth {
+        True ->
+          json_response(
+            resp.status,
+            json.object([
+              #(
+                "error",
+                json.string(case resp.status {
+                  500 -> "server_error"
+                  _ -> "invalid_request"
+                }),
+              ),
+              #("error_description", json.string(detail)),
+            ]),
+          )
+        False ->
+          problem(resp.status, status_title(resp.status, detail), detail, [])
+      }
+      // keep what wisp added, such as `accept` on a 415
+      resp.headers
+      |> list.filter(fn(h) { h.0 != "content-type" })
+      |> list.fold(converted, fn(r, h) { wisp.set_header(r, h.0, h.1) })
+    }
+    _, _, _ -> resp
+  }
+}
+
+fn status_title(status: Int, fallback: String) -> String {
+  case status {
+    400 -> "Bad Request"
+    413 -> "Content Too Large"
+    415 -> "Unsupported Media Type"
+    500 -> "Internal Server Error"
+    _ -> fallback
+  }
+}
+
 pub fn not_found(detail: String) -> Response {
   problem(404, "Not Found", detail, [])
 }

@@ -88,13 +88,9 @@ fn errors(codes: List(#(String, String))) -> List(#(String, Json)) {
 /// Responses of operations that read a request body.
 fn body_errors() -> List(#(String, Json)) {
   [
-    #("413", plain_response("The body is larger than api.max_body_bytes.")),
+    #("413", problem_response("The body is larger than api.max_body_bytes.")),
     #("415", problem_response("The body is not of the documented media type.")),
   ]
-}
-
-fn plain_response(description: String) -> Json {
-  json.object([#("description", json.string(description))])
 }
 
 fn header(description: String) -> Json {
@@ -256,7 +252,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                 #(
                   "429",
                   response(
-                    "Too many failed attempts (error slow_down).",
+                    "Too many failed attempts (error slow_down). Retry-After gives the seconds to wait.",
                     ref("OAuthError"),
                   ),
                 ),
