@@ -22,6 +22,11 @@ make dev      # http://localhost:8081, admin / change-me-please
 make check    # what CI runs: format check, strict build, linters, tests
 ```
 
+`make coverage` fails under `COVERAGE_MIN` percent of covered lines (see
+the `Makefile`). A test in `test/redirect_proxy/docs_test.gleam` fails when
+an `RP_…` variable read in `config/env.gleam` is missing from the
+configuration table of `README.md`.
+
 ## Pull requests
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/) for commit
@@ -60,11 +65,19 @@ One-time repository setup:
 5. **Coverage.** Optionally add a `CODECOV_TOKEN` secret.
 6. **Package maintainer.** Optionally set a `PACKAGE_MAINTAINER` repository
    variable (`Name <email>`) for the `.deb` metadata.
-7. **First release.** `0.1.0` is the initial version recorded in
-   `.release-please-manifest.json`. Tag the initial commit `v0.1.0`, create
-   the GitHub release, then run the *Release* workflow manually with
-   `tag: v0.1.0` to build and attach its artifacts. After that, release-please
-   handles every later version.
+7. **First release (new forks only).** release-please starts from the
+   version in `.release-please-manifest.json` and needs a matching tag and
+   GitHub release to compute the next one. On a fresh fork, tag the commit
+   that holds that version `v<version>`, create its GitHub release, then run
+   the *Release* workflow manually with that tag to build and attach its
+   artifacts. After that, release-please handles every later version.
+
+Keep `main`'s history: release-please finds the last release from the
+release commit it merged. If `main` is rewound past a release commit while
+its tag stays, the next release PR proposes that version again, and
+publishing it fails because the tag exists. Restore the release commit on
+`main` (or delete the tag and its GitHub release, if nothing was published)
+before merging more work.
 
 To rebuild the artifacts of an existing release, run the *Release* workflow
 manually with its tag.

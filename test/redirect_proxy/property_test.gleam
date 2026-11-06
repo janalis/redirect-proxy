@@ -43,6 +43,16 @@ fn check(generator: qcheck.Generator(a), property: fn(a) -> Nil) -> Nil {
   |> qcheck.run(generator, property)
 }
 
+fn check_many(
+  count: Int,
+  generator: qcheck.Generator(a),
+  property: fn(a) -> Nil,
+) -> Nil {
+  qcheck.default_config()
+  |> qcheck.with_test_count(count)
+  |> qcheck.run(generator, property)
+}
+
 fn exact_rule() -> qcheck.Generator(rule.Rule) {
   qcheck.map3(host(), path(), path(), fn(host, source, target) {
     Rule(..rule.blank(), id: host <> source, host:, source:, target:)
@@ -311,4 +321,153 @@ pub fn path_normalisation_is_idempotent_test() {
   // an escaped slash or percent sign is never decoded
   assert !string.contains(ffi.normalise_path("/x%2Fy%25"), "/x/")
   assert string.contains(ffi.normalise_path("/x%2fy"), "%2F")
+}
+
+// --- open redirects -----------------------------------------------------------
+
+/// Request path tails built from characters that browsers treat as URL
+/// structure: slashes, backslashes, `@`, `:`, dots, encoded slashes, tabs
+/// and line breaks (which browsers drop), query and fragment markers. Half
+/// of them start with a known attack.
+fn hostile_tail() -> qcheck.Generator(String) {
+  let noise =
+    qcheck.string_from(
+      qcheck.codepoint_from_strings("/", [
+        "\\", "@", ":", ".", "e", "v", "%", "2", "F", "\t", "\n", "?", "#", " ",
+        "é",
+      ]),
+    )
+  let attack =
+    qcheck.from_generators(qcheck.return("//evil.test"), [
+      qcheck.return("/\\evil.test"),
+      qcheck.return("\\\\evil.test"),
+      qcheck.return("@evil.test"),
+      qcheck.return(".evil.test"),
+      qcheck.return(":1@evil.test"),
+      qcheck.return("https://evil.test"),
+      qcheck.return("/\t/evil.test"),
+      qcheck.return("%2F%2Fevil.test"),
+    ])
+  qcheck.from_generators(noise, [
+    qcheck.map2(attack, noise, fn(a, n) { a <> n }),
+  ])
+}
+
+/// Targets whose host is fixed, with the request path substituted in places
+/// where it could try to change the host.
+const absolute_targets = [
+  "https://t.test$1", "https://t.test/$1", "https://t.test:8443$1",
+  "https://t.test/a$1", "https://t.test$1?x=1", "//t.test$1",
+]
+
+/// Same-host targets: the result must stay a path on the request host.
+const relative_targets = ["/$1", "/a$1", "/$1/b"]
+
+/// Whatever the request path, a matched rule never redirects to a host other
+/// than the one written in its target: the `Location` sent by the redirect
+/// listener keeps the target's host, or stays a path on the same host.
+pub fn location_never_leaves_the_target_host_test() {
+  use #(kind, target_index, tail, query) <- check_many(
+    1000,
+    qcheck.tuple4(
+      qcheck.bounded_int(0, 1),
+      qcheck.bounded_int(0, 8),
+      hostile_tail(),
+      qcheck.from_generators(qcheck.return(""), [qcheck.return("q=@evil")]),
+    ),
+  )
+  let targets = list.append(absolute_targets, relative_targets)
+  let assert Ok(target) = list.drop(targets, target_index) |> list.first
+  let r = case kind {
+    0 ->
+      Rule(..rule.blank(), id: "p", kind: rule.Prefix, source: "/go", target:)
+    _ ->
+      Rule(
+        ..rule.blank(),
+        id: "r",
+        kind: rule.Regex,
+        source: "^/go(.*)$",
+        target:,
+      )
+  }
+  let query = case query {
+    "" -> Error(Nil)
+    q -> Ok(q)
+  }
+  case
+    matcher.lookup(
+      matcher.build([Rule(..r, preserve_query: True)]),
+      "x.test",
+      "/go" <> tail,
+    )
+  {
+    // the guard refused a substitution leaving the host
+    Error(Nil) -> Nil
+    Ok(m) -> {
+      let location = matcher.location(m, query)
+      case list.contains(absolute_targets, target) {
+        True -> {
+          assert browser_host(location) == Ok("t.test")
+        }
+        False -> {
+          assert browser_host(location) == Error(Nil)
+        }
+      }
+    }
+  }
+}
+
+/// The host a browser would navigate to for a `Location` value, following
+/// the WHATWG URL parser on the points that matter: tabs and line breaks are
+/// removed, `\` is a `/`, a leading `//` starts an authority, the host is what
+/// follows the last `@` and precedes the port. `Error(Nil)` for a path on the
+/// current host.
+fn browser_host(location: String) -> Result(String, Nil) {
+  let url =
+    location
+    |> string.replace("\t", "")
+    |> string.replace("\n", "")
+    |> string.replace("\r", "")
+    |> string.replace("\\", "/")
+  let authority = case url {
+    "//" <> rest -> Ok(rest)
+    _ ->
+      case string.split_once(url, "://") {
+        Ok(#(scheme, rest)) ->
+          case is_scheme(scheme) {
+            True -> Ok(rest)
+            False -> Error(Nil)
+          }
+        Error(Nil) -> Error(Nil)
+      }
+  }
+  use rest <- result.map(authority)
+  let authority =
+    list.fold(["/", "?", "#"], rest, fn(acc, stop) {
+      case string.split_once(acc, stop) {
+        Ok(#(before, _)) -> before
+        Error(Nil) -> acc
+      }
+    })
+  let host = case string.split(authority, "@") |> list.last {
+    Ok(h) -> h
+    Error(Nil) -> authority
+  }
+  case string.split_once(host, ":") {
+    Ok(#(h, _)) -> h
+    Error(Nil) -> host
+  }
+}
+
+/// A URL scheme: a letter, then letters, digits, `+`, `-` or `.`.
+fn is_scheme(text: String) -> Bool {
+  case string.to_graphemes(string.lowercase(text)) {
+    [first, ..rest] ->
+      string.contains("abcdefghijklmnopqrstuvwxyz", first)
+      && list.all(rest, string.contains(
+        "abcdefghijklmnopqrstuvwxyz0123456789+-.",
+        _,
+      ))
+    [] -> False
+  }
 }
