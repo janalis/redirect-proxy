@@ -209,6 +209,15 @@ pub fn locked_file(
   }
 }
 
+/// One form for equivalent URL paths: escapes of unreserved characters and
+/// of valid UTF-8 are decoded, the others are written in upper case.
+@external(erlang, "redirect_proxy_ffi", "normalise_path")
+pub fn normalise_path(path: String) -> String
+
+/// Percent-encodes the non-ASCII bytes of a URL.
+@external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
+pub fn encode_non_ascii(url: String) -> String
+
 /// Runs `f`, returning an exception as `Error` with its description.
 @external(erlang, "redirect_proxy_ffi", "rescue")
 pub fn rescue(f: fn() -> a) -> Result(a, String)

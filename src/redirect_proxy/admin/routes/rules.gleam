@@ -306,7 +306,13 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let result = case string.trim(url) {
     "" -> pages.NotTested
     url ->
-      case matcher.resolve_url(snapshot.current(), url) {
+      case
+        matcher.resolve_url(
+          snapshot.current(),
+          url,
+          config.ignore_trailing_slash(ctx.config),
+        )
+      {
         matcher.Redirected(m, location) -> pages.Matched(m.rule, location)
         matcher.NotMatched -> pages.NoMatch
         matcher.BadUrl -> pages.InvalidUrl

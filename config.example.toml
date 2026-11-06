@@ -17,6 +17,9 @@ not_found_body = "Not Found"
 # On SIGTERM, seconds during which /readyz answers 503 and connections are
 # closed after each response, before the node stops (0 to 60).
 shutdown_grace = 5
+# "strict": /docs/ and /docs are different paths. "ignore": a request that
+# matches no rule is retried with the trailing slash added or removed.
+trailing_slash = "strict"
 
 [access_log]
 # Traffic logs, one line per request, of the redirect, admin and API

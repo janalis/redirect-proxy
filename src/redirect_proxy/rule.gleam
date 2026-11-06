@@ -246,7 +246,14 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
 
   let errors =
     []
-    |> check(valid_host(host), "host: must be `*` or a valid host name")
+    |> check(
+      is_ascii(host),
+      "host: write international names in punycode (xn--...), e.g. xn--caf-dma.example for café.example",
+    )
+    |> check(
+      !is_ascii(host) || valid_host(host),
+      "host: must be `*`, a host name or `*.` followed by a domain (*.example.com)",
+    )
     |> check(source != "", "source: is required")
     |> check(string.length(source) <= max_source_length, "source: is too long")
     |> check(no_control_chars(source), "source: contains control characters")
@@ -337,9 +344,21 @@ pub fn normalise_host(host: String) -> String {
   }
 }
 
+fn is_ascii(value: String) -> Bool {
+  string.byte_size(value) == string.length(value)
+  && list.all(string.to_utf_codepoints(value), fn(c) {
+    string.utf_codepoint_to_int(c) < 128
+  })
+}
+
 fn valid_host(host: String) -> Bool {
   case host {
     "*" -> True
+    // every subdomain of a domain of at least two labels (not `*.com`)
+    "*." <> domain ->
+      string.contains(domain, ".")
+      && !string.contains(domain, "*")
+      && valid_host(domain)
     _ -> {
       let #(name, port) = case string.split_once(host, ":") {
         Ok(#(name, port)) -> #(name, Ok(port))

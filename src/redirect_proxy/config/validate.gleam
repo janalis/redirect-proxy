@@ -69,6 +69,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("server.shutdown_grace must be between 0 and 60 seconds"),
   )
   use <- bool.guard(
+    !list.contains(["strict", "ignore"], config.server.trailing_slash),
+    Error("server.trailing_slash must be \"strict\" or \"ignore\""),
+  )
+  use <- bool.guard(
     config.admin.session_ttl < 60,
     Error("admin.session_ttl must be at least 60 seconds"),
   )

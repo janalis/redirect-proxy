@@ -104,10 +104,12 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
     |> dict.keys
     |> list.map(fn(key) { "id: duplicate id " <> key })
 
+  // in the form the matcher compares paths: /café and /caf%C3%A9 are one
   let exact_key = fn(r: Rule) {
+    let source = ffi.normalise_path(r.source)
     case r.case_insensitive {
-      True -> r.host <> " " <> string.lowercase(r.source)
-      False -> r.host <> " " <> r.source
+      True -> r.host <> " " <> string.lowercase(source)
+      False -> r.host <> " " <> source
     }
   }
   let duplicate_sources =

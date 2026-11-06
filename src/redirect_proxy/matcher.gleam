@@ -36,6 +36,9 @@ pub opaque type Matcher {
   Matcher(
     hosts: Dict(String, HostRules),
     size: Int,
+    /// Whether some rule has a `*.domain` host: lookups then also try the
+    /// parent domains of the request host.
+    wildcards: Bool,
     /// Rule id to its slot in `hits`, for every rule (disabled ones too, so
     /// that their count survives being disabled then enabled again).
     slots: Dict(String, Int),
@@ -83,7 +86,13 @@ pub type Match {
 }
 
 pub fn empty() -> Matcher {
-  Matcher(hosts: dict.new(), size: 0, slots: dict.new(), hits: new_hits(0))
+  Matcher(
+    hosts: dict.new(),
+    size: 0,
+    wildcards: False,
+    slots: dict.new(),
+    hits: new_hits(0),
+  )
 }
 
 fn new_hits(rules: Int) -> ffi.Counters {
@@ -98,7 +107,16 @@ pub fn size(matcher: Matcher) -> Int {
 /// Builds a matcher. Disabled rules are skipped. Rules are expected to have
 /// gone through `rule.validate`; a regex that fails to compile is skipped.
 pub fn build(rules: List(Rule)) -> Matcher {
-  let enabled = list.filter(rules, fn(r) { r.enabled })
+  let enabled =
+    rules
+    |> list.filter(fn(r) { r.enabled })
+    // paths are compared in one form: see `ffi.normalise_path`
+    |> list.map(fn(r) {
+      case r.kind {
+        Regex -> r
+        Exact | Prefix -> rule.Rule(..r, source: ffi.normalise_path(r.source))
+      }
+    })
   // like request hosts, rule hosts are matched without port or trailing dot
   let grouped = list.group(enabled, fn(r) { normalise_request_host(r.host) })
   let hosts =
@@ -114,7 +132,13 @@ pub fn build(rules: List(Rule)) -> Matcher {
         False -> #(dict.insert(slots, r.id, count + 1), count + 1)
       }
     })
-  Matcher(hosts:, size: list.length(enabled), slots:, hits: new_hits(count))
+  Matcher(
+    hosts:,
+    size: list.length(enabled),
+    wildcards: dict.keys(hosts) |> list.any(string.starts_with(_, "*.")),
+    slots:,
+    hits: new_hits(count),
+  )
 }
 
 /// Counts a hit of a rule. Lock-free: concurrent request processes do not
@@ -298,15 +322,56 @@ fn strip_port(host: String) -> String {
 }
 
 /// Finds the rule that applies to a request and computes the redirect
-/// location (without the query string).
+/// location (without the query string). Rules of the request host win, then
+/// those of `*.parent` domains from the closest one (`a.b.example.com`:
+/// `*.b.example.com`, then `*.example.com`), then those of `*`. The path is
+/// compared in normalised form (`ffi.normalise_path`).
 pub fn lookup(
   matcher: Matcher,
   host: String,
   path: String,
 ) -> Result(Match, Nil) {
   let host = normalise_request_host(host)
+  let path = ffi.normalise_path(path)
   lookup_host(matcher, host, path)
+  |> result.lazy_or(fn() {
+    case matcher.wildcards {
+      True -> lookup_wildcards(matcher, host, path)
+      False -> Error(Nil)
+    }
+  })
   |> result.lazy_or(fn() { lookup_host(matcher, "*", path) })
+}
+
+/// `lookup`, retrying a miss with the trailing slash added or removed
+/// (`/docs/` finds the `/docs` rule and the other way round).
+pub fn lookup_tolerant(
+  matcher: Matcher,
+  host: String,
+  path: String,
+) -> Result(Match, Nil) {
+  use <- result.lazy_or(lookup(matcher, host, path))
+  case path {
+    "/" | "" -> Error(Nil)
+    _ ->
+      case string.ends_with(path, "/") {
+        True -> lookup(matcher, host, string.drop_end(path, 1))
+        False -> lookup(matcher, host, path <> "/")
+      }
+  }
+}
+
+fn lookup_wildcards(
+  matcher: Matcher,
+  host: String,
+  path: String,
+) -> Result(Match, Nil) {
+  case string.split_once(host, ".") {
+    Ok(#(_, parent)) ->
+      lookup_host(matcher, "*." <> parent, path)
+      |> result.lazy_or(fn() { lookup_wildcards(matcher, parent, path) })
+    Error(Nil) -> Error(Nil)
+  }
 }
 
 fn lookup_host(
@@ -422,7 +487,8 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
     }
     _, _ -> m.location
   }
-  ffi.strip_control(base)
+  // a header value must be ASCII: captures may hold decoded characters
+  base |> ffi.strip_control |> ffi.encode_non_ascii
 }
 
 pub type UrlResolution {
@@ -432,15 +498,23 @@ pub type UrlResolution {
 }
 
 /// Resolves an absolute URL the way the redirect listener would (used by the
-/// admin and API URL testers).
-pub fn resolve_url(matcher: Matcher, url: String) -> UrlResolution {
+/// admin and API URL testers), with the same trailing slash handling.
+pub fn resolve_url(
+  matcher: Matcher,
+  url: String,
+  ignore_trailing_slash: Bool,
+) -> UrlResolution {
   case uri.parse(string.trim(url)) {
     Ok(uri.Uri(host: option.Some(host), path:, query:, ..)) -> {
       let path = case path {
         "" -> "/"
         p -> p
       }
-      case lookup(matcher, host, path) {
+      let found = case ignore_trailing_slash {
+        True -> lookup_tolerant(matcher, host, path)
+        False -> lookup(matcher, host, path)
+      }
+      case found {
         Ok(m) -> Redirected(m, location(m, option.to_result(query, Nil)))
         Error(Nil) -> NotMatched
       }

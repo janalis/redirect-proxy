@@ -94,6 +94,7 @@ pub const known_keys = [
   "server.not_found_body",
   "server.port",
   "server.shutdown_grace",
+  "server.trailing_slash",
   "storage.backups",
   "storage.data_dir",
 ]
@@ -130,6 +131,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "shutdown_grace"],
     d.server.shutdown_grace,
+  ))
+  use trailing_slash <- result.try(str(
+    t,
+    ["server", "trailing_slash"],
+    d.server.trailing_slash,
   ))
   use fallback_url <- result.try(str(
     t,
@@ -339,6 +345,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       port: server_port,
       cache_max_age:,
       shutdown_grace:,
+      trailing_slash: string.lowercase(trailing_slash),
       fallback_url:,
       not_found_body:,
     ),

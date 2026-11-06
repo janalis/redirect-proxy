@@ -345,3 +345,10 @@ pub fn a_file_with_a_loop_still_loads_test() {
   let s = start(settings(dir, 0))
   assert list.length(store.all(s)) == 1
 }
+
+pub fn equivalent_exact_sources_conflict_test() {
+  let a = Rule(..rule.blank(), id: "a", source: "/café", target: "/x")
+  let b = Rule(..rule.blank(), id: "b", source: "/caf%C3%A9", target: "/y")
+  let assert Error([reason]) = store_rules.check_conflicts([a, b])
+  assert string.contains(reason, "already matches")
+}

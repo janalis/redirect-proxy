@@ -556,6 +556,61 @@ pub fn sign_ins_are_audited_test() {
     ]
 }
 
+pub fn matching_features_over_http_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(..d.server, trailing_slash: "ignore"),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[
+        {\"source\": \"/café\", \"target\": \"/coffee\"},
+        {\"host\": \"*.example.test\", \"source\": \"/w\", \"target\": \"/wild\"},
+        {\"match\": \"prefix\", \"source\": \"/docs/\", \"target\": \"/manual/$1\"},
+        {\"source\": \"/slash\", \"target\": \"/no-slash\"}
+      ]",
+    )
+  let assert Ok(_) = reload_rules(env)
+  // a browser sends the UTF-8 path percent-encoded
+  let resp = get(env.redirect <> "/caf%C3%A9", [])
+  assert resp.status == 301
+  assert location(resp) == "/coffee"
+  // wildcard hosts match subdomains only
+  assert location(get(env.redirect <> "/w", [#("host", "a.example.test")]))
+    == "/wild"
+  assert get(env.redirect <> "/w", [#("host", "example.test")]).status == 404
+  // Location is ASCII even when the capture holds decoded characters
+  assert location(get(env.redirect <> "/docs/%C3%A9t%C3%A9", []))
+    == "/manual/%C3%A9t%C3%A9"
+  // trailing_slash = "ignore"
+  assert location(get(env.redirect <> "/slash/", [])) == "/no-slash"
+  // unsupported methods name the supported ones (httpc cannot send TRACE)
+  let headers =
+    os_cmd(charlist.from_string(
+      "curl -s -o /dev/null -D - -X TRACE " <> env.redirect <> "/x",
+    ))
+    |> charlist.to_string
+    |> string.lowercase
+  assert string.contains(headers, " 405")
+  assert string.contains(
+    headers,
+    "allow: get, head, post, put, delete, patch, options",
+  )
+}
+
+fn reload_rules(env: Env) -> Result(Nil, Nil) {
+  let #(cookie, csrf) = login(env)
+  case post_form(env, "/reload", cookie, [#("csrf_token", csrf)]).status {
+    303 -> Ok(Nil)
+    _ -> Error(Nil)
+  }
+}
+
 pub fn login_rejects_bad_password_test() {
   let env = boot(config.default())
   let resp =

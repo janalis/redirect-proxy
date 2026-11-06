@@ -174,7 +174,7 @@ accepted. Ids and timestamps are added automatically.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `host` | `*` | Host name to match, case-insensitively and ignoring the port. `*` matches every host. |
+| `host` | `*` | Host name to match, case-insensitively and ignoring the port. `*` matches every host; `*.example.com` matches every subdomain of `example.com` (not `example.com` itself). International names are written in punycode (`xn--caf-dma.example`). |
 | `match` | `exact` | `exact`, `prefix` or `regex`. |
 | `source` | (required) | The request path without its query string. Regexes are PCRE and are not anchored automatically. |
 | `target` | (required) | An absolute `http(s)://` URL, a protocol-relative `//host/path` or a path `/path`. |
@@ -194,8 +194,10 @@ accepted. Ids and timestamps are added automatically.
 | `$1` in a prefix rule | The rest of the path after the prefix. |
 | `$$` | A literal `$`. |
 
-**Resolution order.** Rules for the request's `Host` are tried before the
-`*` rules. Within each host, the first match wins in this order:
+**Resolution order.** Rules for the request's `Host` are tried first, then
+those of wildcard hosts from the closest one (for `a.b.example.com`:
+`*.b.example.com`, then `*.example.com`), then the `*` rules. Within each
+host, the first match wins in this order:
 
 1. Exact rules, which are O(1) lookups.
 2. Prefix rules, longest prefix first.
@@ -207,6 +209,18 @@ access per distinct literal length instead of one test per rule. Only regex
 rules without a leading literal (unanchored, using `|`, or case-insensitive)
 are tried one by one on every request that reaches them. Put a literal
 prefix in your patterns when you can.
+
+**Equivalent paths.** Paths are compared in one form, so a rule written
+`/café` matches the `/caf%C3%A9` browsers send, and `%7e` matches `~`.
+Escapes of unreserved characters and of valid UTF-8 are decoded; the
+others, such as `%2F` (which is not a path separator), are kept and
+compared in upper case. Regex rules see the path in this form too. In the
+`Location` header, non-ASCII characters are percent-encoded.
+
+**Trailing slashes.** By default `/docs` and `/docs/` are different paths.
+With `server.trailing_slash = "ignore"` (`RP_SERVER_TRAILING_SLASH`), a
+request that matches no rule is retried with the trailing slash added or
+removed. A rule for the exact form always wins.
 
 **When nothing matches.** The server answers `404`, or redirects (302) to
 `server.fallback_url` if it is set.
@@ -265,6 +279,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_LISTEN` / `RP_SERVER_PORT` | `0.0.0.0` / `8080` |
 | `RP_SERVER_CACHE_MAX_AGE` | `3600` |
 | `RP_SERVER_SHUTDOWN_GRACE` | `5` (seconds) |
+| `RP_SERVER_TRAILING_SLASH` | `strict` (`ignore`: retry a miss with/without the trailing slash) |
 | `RP_SERVER_FALLBACK_URL` | (none) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |

@@ -100,6 +100,9 @@ pub type ServerConfig {
     /// On SIGTERM, seconds during which /readyz answers 503 and connections
     /// are closed after each response, before the node stops.
     shutdown_grace: Int,
+    /// "strict": `/docs/` and `/docs` are different paths; "ignore": a miss
+    /// is retried with the trailing slash added or removed.
+    trailing_slash: String,
   )
 }
 
@@ -191,6 +194,7 @@ pub fn default() -> Config {
       port: 8080,
       cache_max_age: 3600,
       shutdown_grace: 5,
+      trailing_slash: "strict",
       fallback_url: "",
       not_found_body: "Not Found",
     ),
@@ -319,4 +323,9 @@ pub fn api_clients_path(config: Config) -> String {
 
 pub fn secret_path(config: Config) -> String {
   config.storage.data_dir <> "/secret_key_base"
+}
+
+/// Whether the redirect listener ignores trailing slashes on a miss.
+pub fn ignore_trailing_slash(config: Config) -> Bool {
+  config.server.trailing_slash == "ignore"
 }
