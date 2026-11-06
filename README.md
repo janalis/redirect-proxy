@@ -388,10 +388,12 @@ for it. `rules import` writes the file; a running server applies it on
   `systemctl reload redirect-proxy`). An invalid file is rejected, the error
   is logged and the current rules stay active.
 - **Concurrent writes.** The admin UI, the API and the CLI can change the
-  rules at the same time:
-  - Every write holds `<data_dir>/redirects.json.lock`, shared by every
-    process (server, `redirect-proxy rules import`). A lock older than
-    10 seconds is treated as left over by a crashed process.
+  rules, users and API clients at the same time:
+  - Every write holds a lock file next to the file it changes
+    (`redirects.json.lock`, `users.json.lock`, `api_clients.json.lock`),
+    shared by every process: the server and CLI commands such as
+    `rules import`, `user add` or `client add`. A lock older than 10 seconds
+    is treated as left over by a crashed process.
   - If `redirects.json` was changed by another process or by hand since the
     server last read it, the server reloads it before applying a change, so
     outside edits are never overwritten. If the changed file is invalid, the

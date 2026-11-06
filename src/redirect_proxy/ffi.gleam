@@ -159,6 +159,21 @@ pub fn with_file_lock(
   f: fn() -> a,
 ) -> Result(a, String)
 
+/// Read-modify-write of a data file that other OS processes (the CLI) may
+/// write too: holds the node-wide lock of `path`, then `<path>.lock`, for up
+/// to `timeout_ms`.
+pub fn locked_file(
+  path: String,
+  timeout_ms: Int,
+  f: fn() -> Result(a, String),
+) -> Result(a, String) {
+  use <- with_lock(path)
+  case with_file_lock(path, timeout_ms, f) {
+    Ok(result) -> result
+    Error(reason) -> Error(reason)
+  }
+}
+
 /// Removes CR, LF and NUL bytes.
 @external(erlang, "redirect_proxy_ffi", "strip_control")
 pub fn strip_control(value: String) -> String

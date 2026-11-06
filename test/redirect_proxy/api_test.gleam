@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/http/response
 import gleam/json
@@ -21,6 +22,7 @@ import redirect_proxy/app
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/rule
+import simplifile
 import support.{type App}
 
 // --- helpers ----------------------------------------------------------------
@@ -799,4 +801,28 @@ pub fn api_port_rules_test() {
     config.validate(with_api(
       config.ApiConfig(..d.api, listen: "0.0.0.0", port: 8082),
     ))
+}
+
+/// The CLI holds api_clients.json.lock: client changes wait for it, while
+/// authentication never waits (it only skips the last-use update).
+pub fn clients_wait_for_another_process_test() {
+  let dir = support.temp_dir()
+  let s =
+    clients.Settings(
+      path: dir <> "/api_clients.json",
+      audit_path: dir <> "/audit.jsonl",
+    )
+  let assert Ok(#(client, secret)) =
+    clients.create(s, "ci", [scope.Read], by: "test")
+  let lock = s.path <> ".lock"
+  let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host\n")
+  let started = ffi.now_millis()
+  let assert Ok(_) = clients.authenticate(s, client.client_id, secret)
+  assert ffi.now_millis() - started < 1000
+  process.spawn(fn() {
+    process.sleep(300)
+    let _ = simplifile.delete(lock)
+  })
+  let assert Ok(_) = clients.rotate(s, client.client_id, by: "test")
+  assert ffi.now_millis() - started >= 250
 }

@@ -1,6 +1,9 @@
+import gleam/erlang/process
 import gleam/list
+import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/users
+import simplifile
 import support
 
 fn settings() -> users.Settings {
@@ -48,5 +51,22 @@ pub fn last_user_cannot_be_deleted_test() {
   let assert Ok(Nil) = users.delete(s, "one", by: "t")
   let assert Error(_) = users.delete(s, "two", by: "t")
   let assert Error(_) = users.delete(s, "ghost", by: "t")
+  assert users.count(s) == 1
+}
+
+/// The CLI (another OS process) holds users.json.lock: the server waits for
+/// it instead of writing at the same time.
+pub fn waits_for_another_process_test() {
+  let s = settings()
+  let lock = s.path <> ".lock"
+  let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host\n")
+  process.spawn(fn() {
+    process.sleep(300)
+    let _ = simplifile.delete(lock)
+  })
+  let started = ffi.now_millis()
+  let assert Ok(_) =
+    users.create(s, "alice", password.hash_with("x", 1000), by: "test")
+  assert ffi.now_millis() - started >= 250
   assert users.count(s) == 1
 }

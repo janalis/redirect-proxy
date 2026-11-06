@@ -1,7 +1,8 @@
 //// Local administrator accounts persisted in `users.json`.
 ////
-//// Every operation re-reads the file under a node-wide lock, so changes
-//// made with the CLI while the server runs are picked up immediately.
+//// Every change re-reads the file holding a node-wide lock and the
+//// cross-process `users.json.lock`, so the server and the CLI never
+//// overwrite each other's changes.
 //// Password hashing is done by callers, outside the lock.
 
 import gleam/dynamic/decode
@@ -28,7 +29,8 @@ pub type Settings {
   Settings(path: String, audit_path: String)
 }
 
-const lock = "users"
+/// How long a change waits for another process to release the file.
+const lock_timeout = 5000
 
 pub fn list(settings: Settings) -> Result(List(User), String) {
   load(settings.path)
@@ -53,7 +55,7 @@ pub fn create(
 ) -> Result(User, String) {
   let username = normalise(username)
   use Nil <- result.try(validate_username(username))
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
   case list.any(users, fn(u) { u.username == username }) {
     True -> Error("user " <> username <> " already exists")
@@ -82,7 +84,7 @@ pub fn set_password(
   by actor: String,
 ) -> Result(Nil, String) {
   let username = normalise(username)
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
   case list.any(users, fn(u) { u.username == username }) {
     False -> Error("user " <> username <> " does not exist")
@@ -115,7 +117,7 @@ pub fn delete(
   by actor: String,
 ) -> Result(Nil, String) {
   let username = normalise(username)
-  use <- ffi.with_lock(lock)
+  use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
   case list.partition(users, fn(u) { u.username == username }) {
     #([], _) -> Error("user " <> username <> " does not exist")

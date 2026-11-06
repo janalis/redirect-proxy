@@ -326,6 +326,8 @@ with_lock(Name, Fun) ->
 with_file_lock(Path, TimeoutMs, Fun) ->
     Lock = <<Path/binary, ".lock">>,
     Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    %% the data directory may not exist yet (first CLI command)
+    _ = filelib:ensure_dir(Lock),
     case acquire_lock(Lock, Deadline) of
         ok ->
             try {ok, Fun()}
