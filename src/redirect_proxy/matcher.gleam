@@ -122,12 +122,15 @@ pub fn size(matcher: Matcher) -> Int {
   matcher.size
 }
 
-/// Builds a matcher. Disabled rules are skipped. Rules are expected to have
-/// gone through `rule.validate`; a regex that fails to compile is skipped.
+/// Builds a matcher. Disabled rules, and rules outside their
+/// `starts_at`/`expires_at` window now, are skipped. Rules are expected to
+/// have gone through `rule.validate`; a regex that fails to compile is
+/// skipped.
 pub fn build(rules: List(Rule)) -> Matcher {
+  let now = ffi.now_seconds()
   let enabled =
     rules
-    |> list.filter(fn(r) { r.enabled })
+    |> list.filter(rule.is_active(_, now))
     // paths are compared in one form: see `ffi.normalise_path`
     |> list.map(fn(r) {
       case r.kind {

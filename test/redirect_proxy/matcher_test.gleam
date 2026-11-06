@@ -478,3 +478,27 @@ pub fn hit_records_test() {
   // the most recent last hit wins
   assert matcher.last_hit(next, "a") == record.last
 }
+
+pub fn rules_outside_their_window_are_not_matched_test() {
+  let past =
+    rule.Rule(
+      ..r("1", "*", rule.Exact, "/p", "/past"),
+      expires_at: "2000-01-01T00:00:00Z",
+    )
+  let future =
+    rule.Rule(
+      ..r("2", "*", rule.Exact, "/f", "/future"),
+      starts_at: "2999-01-01T00:00:00Z",
+    )
+  let now =
+    rule.Rule(
+      ..r("3", "*", rule.Exact, "/n", "/now"),
+      starts_at: "2000-01-01T00:00:00Z",
+      expires_at: "2999-01-01T00:00:00Z",
+    )
+  let m = matcher.build([past, future, now])
+  assert location(m, "x.test", "/p") == Error(Nil)
+  assert location(m, "x.test", "/f") == Error(Nil)
+  assert location(m, "x.test", "/n") == Ok("/now")
+  assert matcher.size(m) == 1
+}

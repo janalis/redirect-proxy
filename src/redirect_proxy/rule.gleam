@@ -38,6 +38,11 @@ pub type Rule {
     /// Lower values are evaluated first (prefix ties and regex ordering).
     priority: Int,
     enabled: Bool,
+    /// RFC 3339 date-time from which the rule applies ("" for always).
+    starts_at: String,
+    /// RFC 3339 date-time from which the rule no longer applies ("" for
+    /// never).
+    expires_at: String,
     note: String,
     created_at: String,
     updated_at: String,
@@ -69,6 +74,8 @@ pub fn blank() -> Rule {
     whole_segments: False,
     priority: default_priority,
     enabled: True,
+    starts_at: "",
+    expires_at: "",
     note: "",
     created_at: "",
     updated_at: "",
@@ -130,10 +137,20 @@ pub fn json_fields(rule: Rule) -> List(#(String, Json)) {
     #("updated_at", json.string(rule.updated_at)),
     #("updated_by", json.string(rule.updated_by)),
     // only when set: existing files and rule versions stay as they were
-    ..case rule.whole_segments {
-      True -> [#("whole_segments", json.bool(True))]
-      False -> []
-    }
+    ..list.flatten([
+      case rule.whole_segments {
+        True -> [#("whole_segments", json.bool(True))]
+        False -> []
+      },
+      case rule.starts_at {
+        "" -> []
+        at -> [#("starts_at", json.string(at))]
+      },
+      case rule.expires_at {
+        "" -> []
+        at -> [#("expires_at", json.string(at))]
+      },
+    ])
   ]
 }
 
@@ -175,6 +192,8 @@ pub fn decoder() -> decode.Decoder(Rule) {
     decode.int,
   )
   use enabled <- decode.optional_field("enabled", True, decode.bool)
+  use starts_at <- decode.optional_field("starts_at", "", decode.string)
+  use expires_at <- decode.optional_field("expires_at", "", decode.string)
   use note <- decode.optional_field("note", "", decode.string)
   use created_at <- decode.optional_field("created_at", "", decode.string)
   use updated_at <- decode.optional_field("updated_at", "", decode.string)
@@ -191,6 +210,8 @@ pub fn decoder() -> decode.Decoder(Rule) {
     whole_segments:,
     priority:,
     enabled:,
+    starts_at:,
+    expires_at:,
     note:,
     created_at:,
     updated_at:,
@@ -257,7 +278,16 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   let source = string.trim(rule.source)
   let target = string.trim(rule.target)
   let note = string.trim(rule.note)
-  let rule = Rule(..rule, host:, source:, target:, note:)
+  let starts_at = string.trim(rule.starts_at)
+  let expires_at = string.trim(rule.expires_at)
+  let rule =
+    Rule(..rule, host:, source:, target:, note:, starts_at:, expires_at:)
+  let time = fn(value) {
+    case value {
+      "" -> Ok(Nil)
+      v -> ffi.parse_rfc3339(v) |> result.replace(Nil)
+    }
+  }
 
   let errors =
     []
@@ -293,11 +323,79 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
       !rule.whole_segments || rule.kind == Prefix,
       "whole_segments: only applies to prefix rules",
     )
+    |> check(
+      time(starts_at) == Ok(Nil),
+      "starts_at: must be an RFC 3339 date-time with a time zone, e.g. 2026-12-01T00:00:00Z",
+    )
+    |> check(
+      time(expires_at) == Ok(Nil),
+      "expires_at: must be an RFC 3339 date-time with a time zone, e.g. 2026-12-31T23:59:59Z",
+    )
+    |> check(
+      {
+        let #(from, until) = window(rule)
+        from < until
+      },
+      "expires_at: must be after starts_at",
+    )
 
   case errors {
     [] -> Ok(rule)
     _ -> Error(list.reverse(errors))
   }
+}
+
+// --- schedule ---------------------------------------------------------------
+
+/// Bounds of the time window of a rule, in seconds since the epoch: from
+/// `starts_at` (included) to `expires_at` (excluded). Unset or invalid
+/// bounds are open.
+pub fn window(rule: Rule) -> #(Int, Int) {
+  let bound = fn(value, open) {
+    case value {
+      "" -> open
+      v -> ffi.parse_rfc3339(v) |> result.unwrap(open)
+    }
+  }
+  #(bound(rule.starts_at, min_time), bound(rule.expires_at, max_time))
+}
+
+const min_time = -1_000_000_000_000
+
+const max_time = 1_000_000_000_000
+
+/// Enabled, and `now` is within its window.
+pub fn is_active(rule: Rule, now: Int) -> Bool {
+  rule.enabled
+  && case rule.starts_at, rule.expires_at {
+    // the common case: no parsing
+    "", "" -> True
+    _, _ -> {
+      let #(from, until) = window(rule)
+      from <= now && now < until
+    }
+  }
+}
+
+/// Whether a rule starts or expires after `after` and no later than `now`:
+/// the published rules are then out of date.
+pub fn crosses_boundary(rules: List(Rule), after: Int, now: Int) -> Bool {
+  list.any(rules, fn(r) {
+    r.enabled
+    && { r.starts_at != "" || r.expires_at != "" }
+    && {
+      let #(from, until) = window(r)
+      { from > after && from <= now } || { until > after && until <= now }
+    }
+  })
+}
+
+/// Whether the windows of two rules overlap (two exact rules for one path
+/// may take turns).
+pub fn windows_overlap(a: Rule, b: Rule) -> Bool {
+  let #(a_from, a_until) = window(a)
+  let #(b_from, b_until) = window(b)
+  a_from < b_until && b_from < a_until
 }
 
 /// Parts of a valid rule that can never apply as written. A file with them

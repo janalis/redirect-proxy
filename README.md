@@ -209,7 +209,16 @@ accepted. Ids and timestamps are added automatically.
 | `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`. Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |
+| `starts_at` | `""` | RFC 3339 date-time with a time zone (`2026-12-01T00:00:00Z`) from which the rule applies. Empty: always. |
+| `expires_at` | `""` | RFC 3339 date-time from which the rule no longer applies. Empty: never. |
 | `note` | `""` | Free text shown in the admin. |
+
+**Scheduled rules.** A rule with `starts_at` or `expires_at` only applies
+within that window: the server republishes the rules within a second of a
+boundary, without touching the file, and the admin list marks rules as
+"scheduled" or "expired". Two exact rules for one path may take turns (a
+campaign target, then the usual one) as long as their windows do not
+overlap. Both fields are written to the file only when set.
 
 **Target substitutions:**
 

@@ -10,12 +10,23 @@ import redirect_proxy/rule.{type Rule}
 
 /// `rule.to_json` plus the version (the ETag of the rule) and the hits since
 /// the server started (read only). Every field is present, including
-/// `whole_segments`, which the rules file only holds when set.
+/// those the rules file only holds when set.
 pub fn rule_json(r: Rule) -> Json {
-  let unset = case r.whole_segments {
-    True -> []
-    False -> [#("whole_segments", json.bool(False))]
-  }
+  let unset =
+    list.flatten([
+      case r.whole_segments {
+        True -> []
+        False -> [#("whole_segments", json.bool(False))]
+      },
+      case r.starts_at {
+        "" -> [#("starts_at", json.string(""))]
+        _ -> []
+      },
+      case r.expires_at {
+        "" -> [#("expires_at", json.string(""))]
+        _ -> []
+      },
+    ])
   json.object(
     list.flatten([
       rule.json_fields(r),
@@ -77,6 +88,8 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
   use whole_segments <- field("whole_segments", decode.bool)
   use priority <- field("priority", decode.int)
   use enabled <- field("enabled", decode.bool)
+  use starts_at <- field("starts_at", decode.string)
+  use expires_at <- field("expires_at", decode.string)
   use note <- field("note", decode.string)
   decode.success(fn(r: Rule) {
     rule.Rule(
@@ -103,6 +116,8 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
       ),
       priority: pick(priority, r.priority, defaults.priority),
       enabled: pick(enabled, r.enabled, defaults.enabled),
+      starts_at: pick(starts_at, r.starts_at, defaults.starts_at),
+      expires_at: pick(expires_at, r.expires_at, defaults.expires_at),
       note: pick(note, r.note, defaults.note),
     )
   })

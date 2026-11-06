@@ -142,6 +142,10 @@ pub fn now_millis() -> Int
 @external(erlang, "redirect_proxy_ffi", "rfc3339")
 pub fn rfc3339(seconds: Int) -> String
 
+/// Seconds since the epoch of an RFC 3339 date-time with a time zone.
+@external(erlang, "redirect_proxy_ffi", "parse_rfc3339")
+pub fn parse_rfc3339(value: String) -> Result(Int, Nil)
+
 pub fn now_rfc3339() -> String {
   rfc3339(now_seconds())
 }
