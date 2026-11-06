@@ -51,6 +51,7 @@ anonymize_ip = "truncate"
 log_query = false
 # Take the client address from X-Forwarded-For / X-Real-IP only when the TCP
 # peer is one of these proxies (like nginx real_ip). Empty: the peer address.
+# The same address is used to throttle admin logins and API token requests.
 trusted_proxies = []
 # Built-in size based rotation of file output: rotate at max_bytes (0: never,
 # leave it to logrotate), keep max_files rotated files, gzip them.
@@ -88,6 +89,8 @@ public_url = "http://localhost:8081"
 secret_key_base = ""
 # Session lifetime in seconds.
 session_ttl = 28800
+# A session unused for this many seconds ends (0: never).
+session_idle_timeout = 3600
 
 [storage]
 # Holds redirects.json, users.json, audit.jsonl, backups/ and the cookie secret.

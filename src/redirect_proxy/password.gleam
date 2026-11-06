@@ -3,6 +3,7 @@
 //// with unpadded base64 salt and hash.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto
 import gleam/int
 import gleam/result
@@ -12,6 +13,12 @@ import redirect_proxy/ffi
 pub const default_iterations = 600_000
 
 pub const min_length = 12
+
+/// Iteration counts accepted from a stored hash: 0 would crash the
+/// derivation and a huge count would hang the request.
+const min_iterations = 1
+
+const max_iterations = 10_000_000
 
 const key_length = 32
 
@@ -36,6 +43,10 @@ pub fn verify(password: String, encoded: String) -> Bool {
     ["pbkdf2-sha256", iterations, salt, expected] -> {
       let checked = {
         use iterations <- result.try(int.parse(iterations))
+        use <- bool.guard(
+          iterations < min_iterations || iterations > max_iterations,
+          Error(Nil),
+        )
         use salt <- result.try(bit_array.base64_decode(pad(salt)))
         use expected <- result.try(bit_array.base64_decode(pad(expected)))
         let derived =
@@ -50,6 +61,19 @@ pub fn verify(password: String, encoded: String) -> Bool {
       result.unwrap(checked, False)
     }
     _ -> False
+  }
+}
+
+/// Whether a hash was made with fewer iterations than `default_iterations`
+/// (or in an unknown format): re-hash the password after a successful login.
+pub fn needs_rehash(encoded: String) -> Bool {
+  case string.split(encoded, "$") {
+    ["pbkdf2-sha256", iterations, _, _] ->
+      case int.parse(iterations) {
+        Ok(n) -> n < default_iterations
+        Error(Nil) -> True
+      }
+    _ -> True
   }
 }
 

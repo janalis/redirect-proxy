@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/string
 import redirect_proxy/password
 
@@ -24,4 +25,20 @@ pub fn malformed_hashes_never_verify_test() {
 pub fn strength_test() {
   let assert Error(_) = password.validate_strength("short")
   let assert Ok(Nil) = password.validate_strength("long enough password")
+}
+
+pub fn stored_iteration_counts_are_bounded_test() {
+  // 0 would crash the derivation, a huge count would hang the request
+  assert !password.verify("pw", "pbkdf2-sha256$0$c2FsdA$aGFzaA")
+  assert !password.verify("pw", "pbkdf2-sha256$999999999$c2FsdA$aGFzaA")
+}
+
+pub fn needs_rehash_test() {
+  assert password.needs_rehash(password.hash_with("pw", 1000))
+  assert !password.needs_rehash(
+    "pbkdf2-sha256$"
+    <> int.to_string(password.default_iterations)
+    <> "$c2FsdA$aGFzaA",
+  )
+  assert password.needs_rehash("something else")
 }

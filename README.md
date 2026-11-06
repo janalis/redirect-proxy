@@ -257,6 +257,7 @@ option. Each option can be overridden with an environment variable named
 | `RP_ADMIN_PUBLIC_URL` | `http://localhost:8081` |
 | `RP_ADMIN_SECRET_KEY_BASE` | generated into `<data_dir>/secret_key_base` |
 | `RP_ADMIN_SESSION_TTL` | `28800` (8 hours) |
+| `RP_ADMIN_SESSION_IDLE_TIMEOUT` | `3600` (1 hour, `0`: never) |
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
@@ -314,8 +315,21 @@ Security measures:
 
 - **Sessions.** Server-side and revocable, using signed `HttpOnly`,
   `SameSite=Lax` cookies.
+  - A session ends after `session_ttl`, or after `session_idle_timeout`
+    without a request.
+  - A local account's sessions end when the user is deleted or their
+    password changes, including from the CLI. Changing your own password
+    keeps you signed in, in a new session.
+  - SSO logins are bound to the browser that started them.
 - **CSRF.** Every form carries a token, and `Origin`/`Referer` are checked.
-- **Login throttling.** Limits apply per IP and per account.
+- **Login throttling.** Over 15 minutes, a client may fail 10 times for
+  one account and 20 times in all; an account accepts 100 failures from all
+  clients. A correct password from another client still works, so failures
+  cannot lock a user out. The API token endpoint works the same way with
+  client ids. Behind a proxy, list it in `access_log.trusted_proxies` so
+  that the client address is the forwarded one.
+- **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
+  `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),
   `X-Frame-Options: DENY` and `nosniff`.
 

@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import mist
 import redirect_proxy/access_log
+import redirect_proxy/access_log_format
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
@@ -126,6 +127,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         clients: clients_settings(cfg),
         static_dir:,
         peer_ip:,
+        client_ip: client_ip(cfg, peer_ip, req.headers),
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
@@ -149,6 +151,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         store: store_subject,
         clients: clients_settings(cfg),
         peer_ip:,
+        client_ip: client_ip(cfg, peer_ip, req.headers),
         deprecations: deprecation.registry(),
       )
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
@@ -326,4 +329,15 @@ fn janitor_loop() -> Nil {
   let _ = oidc.purge_expired()
   let _ = token.purge_expired()
   janitor_loop()
+}
+
+/// The client address used for login and token throttling: the TCP peer, or
+/// the address forwarded by one of `access_log.trusted_proxies` (the same
+/// resolution as the access log).
+fn client_ip(
+  cfg: config.Config,
+  peer_ip: String,
+  headers: List(#(String, String)),
+) -> String {
+  access_log_format.client_ip(peer_ip, headers, cfg.access_log.trusted_proxies)
 }

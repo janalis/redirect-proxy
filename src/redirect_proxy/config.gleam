@@ -119,6 +119,8 @@ pub type AdminConfig {
     /// directory when empty.
     secret_key_base: String,
     session_ttl: Int,
+    /// A session unused for this many seconds ends (0: never).
+    session_idle_timeout: Int,
   )
 }
 
@@ -203,6 +205,7 @@ pub fn default() -> Config {
       public_url: "http://localhost:8081",
       secret_key_base: "",
       session_ttl: 28_800,
+      session_idle_timeout: 3600,
     ),
     storage: StorageConfig(data_dir: "./data", backups: 10),
     local_auth: LocalAuthConfig(enabled: True),
@@ -325,6 +328,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["admin", "session_ttl"],
     d.admin.session_ttl,
+  ))
+  use session_idle_timeout <- result.try(integer(
+    t,
+    ["admin", "session_idle_timeout"],
+    d.admin.session_idle_timeout,
   ))
   use data_dir <- result.try(str(t, ["storage", "data_dir"], d.storage.data_dir))
   use backups <- result.try(integer(
@@ -506,6 +514,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       public_url:,
       secret_key_base:,
       session_ttl:,
+      session_idle_timeout:,
     ),
     storage: StorageConfig(data_dir:, backups:),
     local_auth: LocalAuthConfig(enabled: local_enabled),
@@ -617,6 +626,10 @@ pub fn apply_env(
       public_url: s("RP_ADMIN_PUBLIC_URL", admin.public_url),
       secret_key_base: s("RP_ADMIN_SECRET_KEY_BASE", admin.secret_key_base),
       session_ttl: i("RP_ADMIN_SESSION_TTL", admin.session_ttl),
+      session_idle_timeout: i(
+        "RP_ADMIN_SESSION_IDLE_TIMEOUT",
+        admin.session_idle_timeout,
+      ),
     ),
     storage: StorageConfig(
       data_dir: s("RP_STORAGE_DATA_DIR", storage.data_dir),
@@ -671,6 +684,11 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.admin.session_ttl < 60,
     Error("admin.session_ttl must be at least 60 seconds"),
+  )
+  use <- bool.guard(
+    config.admin.session_idle_timeout != 0
+      && config.admin.session_idle_timeout < 60,
+    Error("admin.session_idle_timeout must be 0 (off) or at least 60 seconds"),
   )
   use <- bool.guard(
     config.admin.secret_key_base != ""
