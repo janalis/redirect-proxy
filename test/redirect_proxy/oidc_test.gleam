@@ -24,18 +24,30 @@ const provider =
     jwks_uri: "https://idp.test/jwks",
   )
 
-fn claims(overrides: List(#(String, json.Json))) -> String {
-  let base = [
+/// The base claims without `key`.
+fn claims_without(key: String) -> String {
+  base_claims()
+  |> list.filter(fn(field) { field.0 != key })
+  |> json.object
+  |> json.to_string
+}
+
+fn base_claims() -> List(#(String, json.Json)) {
+  [
     #("iss", json.string("https://idp.test/")),
     #("sub", json.string("42")),
     #("aud", json.array(["rp", "other"], json.string)),
     #("exp", json.int(ffi.now_seconds() + 60)),
     #("nonce", json.string("n")),
     #("email", json.string("Alice@Example.com")),
+    #("email_verified", json.bool(True)),
     #("groups", json.string("admins")),
   ]
+}
+
+fn claims(overrides: List(#(String, json.Json))) -> String {
   let keys = list.map(overrides, fn(field) { field.0 })
-  base
+  base_claims()
   |> list.filter(fn(field) { !list.contains(keys, field.0) })
   |> list.append(overrides)
   |> json.object
@@ -97,6 +109,23 @@ pub fn unverified_email_is_ignored_test() {
   assert identity.username == "42"
   // and so it cannot satisfy a domain allow-list
   let assert Error(_) = oidc.authorise(cfg(["example.com"], []), identity)
+}
+
+pub fn missing_email_verified_means_unverified_test() {
+  // e.g. Entra ID, where users can set any address: it must not pass the
+  // e-mail or domain allow-lists
+  let assert Ok(identity) =
+    oidc.check_claims(
+      cfg(["example.com"], []),
+      provider,
+      claims_without("email_verified"),
+      "n",
+    )
+  assert identity.email == ""
+  let assert Error(_) = oidc.authorise(cfg(["example.com"], []), identity)
+  // groups still work
+  let assert Ok(Nil) =
+    oidc.authorise(cfg(["example.com"], ["admins"]), identity)
 }
 
 pub fn authorise_test() {

@@ -108,7 +108,8 @@ client_id = "redirect-proxy"
 client_secret = ""
 scopes = ["openid", "email", "profile"]
 # Who may sign in. With all three lists empty every user of the provider is
-# accepted. Otherwise a user must match at least one entry.
+# accepted. Otherwise a user must match at least one entry. E-mails and
+# domains only match when the ID token has email_verified = true.
 allowed_emails = []
 allowed_domains = []
 allowed_groups = []
@@ -121,6 +122,10 @@ button_label = "Sign in with SSO"
 # is in trusted_proxies are trusted: never expose the admin port directly
 # when this is enabled.
 enabled = false
+# The identity header. Set user_header = "" to identify users by
+# email_header instead; the two are never combined. A request carrying the
+# header with several values is refused: make the proxy set, not append to,
+# it.
 user_header = "X-Forwarded-User"
 email_header = "X-Forwarded-Email"
 trusted_proxies = ["127.0.0.1/32", "::1/128"]
