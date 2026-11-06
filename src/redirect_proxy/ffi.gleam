@@ -35,6 +35,14 @@ pub fn regex_run(
 
 // --- files ------------------------------------------------------------------
 
+/// Creates the counter of regex runs that exhausted their budget.
+@external(erlang, "redirect_proxy_ffi", "regex_limit_init")
+pub fn regex_limit_init() -> Nil
+
+/// Regex runs that exhausted their budget since boot.
+@external(erlang, "redirect_proxy_ffi", "regex_limit_count")
+pub fn regex_limit_count() -> Int
+
 @external(erlang, "redirect_proxy_ffi", "atomic_write")
 pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 
@@ -67,9 +75,6 @@ pub fn ets_get(table: String, key: k) -> Result(v, Nil)
 
 @external(erlang, "redirect_proxy_ffi", "ets_delete")
 pub fn ets_delete(table: String, key: k) -> Nil
-
-@external(erlang, "redirect_proxy_ffi", "ets_incr")
-pub fn ets_incr(table: String, key: k, amount: Int) -> Int
 
 @external(erlang, "redirect_proxy_ffi", "ets_to_list")
 pub fn ets_to_list(table: String) -> List(#(k, v))
@@ -173,6 +178,16 @@ pub fn locked_file(
     Error(reason) -> Error(reason)
   }
 }
+
+/// The first `bytes` bytes of a string (all of it when shorter). The result
+/// may end inside a UTF-8 sequence: use it only as a lookup key.
+@external(erlang, "redirect_proxy_ffi", "binary_take")
+pub fn byte_take(string: String, bytes: Int) -> String
+
+/// A string without its first `bytes` bytes, which must end on a character
+/// boundary.
+@external(erlang, "redirect_proxy_ffi", "binary_drop")
+pub fn byte_drop(string: String, bytes: Int) -> String
 
 /// Removes CR, LF and NUL bytes.
 @external(erlang, "redirect_proxy_ffi", "strip_control")

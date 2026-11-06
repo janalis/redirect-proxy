@@ -2,10 +2,10 @@
 
 -export([
     snapshot_put/2, snapshot_get/1,
-    regex_compile/2, regex_run/2,
+    regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     atomic_write/2, append_line/2,
     pbkdf2_sha256/4, secure_compare/2,
-    ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_incr/3, ets_to_list/1,
+    ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1,
     ets_delete_older/2,
     counter_new/1, counter_add/3, counter_get/2,
     ip_in_cidr/2, valid_cidr/1,
@@ -14,7 +14,8 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0
+    with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
+    binary_take/2, binary_drop/2
 ]).
 
 -define(MATCH_LIMIT, 100000).
@@ -28,10 +29,9 @@ snapshot_put(Key, Value) ->
     nil.
 
 snapshot_get(Key) ->
-    try
-        {ok, persistent_term:get({redirect_proxy, Key})}
-    catch
-        error:badarg -> {error, nil}
+    case persistent_term:get({redirect_proxy, Key}, '$redirect_proxy_none') of
+        '$redirect_proxy_none' -> {error, nil};
+        Value -> {ok, Value}
     end.
 
 %% ---------------------------------------------------------------------------
@@ -59,7 +59,30 @@ regex_run(MP, Subject) ->
                               report_errors]) of
         {match, Captures} -> {ok, Captures};
         nomatch -> {error, no_match};
-        {error, _} -> {error, limit_exceeded}
+        {error, _} -> count_regex_limit(), {error, limit_exceeded}
+    end.
+
+%% Number of regex runs that exhausted their budget (a metric). The counter
+%% is created at boot by regex_limit_init/0.
+regex_limit_init() ->
+    case persistent_term:get({redirect_proxy, regex_limit}, undefined) of
+        undefined ->
+            persistent_term:put({redirect_proxy, regex_limit},
+                                counters:new(1, [write_concurrency]));
+        _ -> ok
+    end,
+    nil.
+
+regex_limit_count() ->
+    case persistent_term:get({redirect_proxy, regex_limit}, undefined) of
+        undefined -> 0;
+        Ref -> counters:get(Ref, 1)
+    end.
+
+count_regex_limit() ->
+    case persistent_term:get({redirect_proxy, regex_limit}, undefined) of
+        undefined -> ok;
+        Ref -> counters:add(Ref, 1, 1)
     end.
 
 %% ---------------------------------------------------------------------------
@@ -146,9 +169,6 @@ ets_get(Table, Key) ->
 ets_delete(Table, Key) ->
     ets:delete(binary_to_existing_atom(Table), Key),
     nil.
-
-ets_incr(Table, Key, Amount) ->
-    ets:update_counter(binary_to_existing_atom(Table), Key, {2, Amount}, {Key, 0}).
 
 ets_to_list(Table) ->
     ets:tab2list(binary_to_existing_atom(Table)).
@@ -442,3 +462,12 @@ strip_control(Bin) ->
 garbage_collect() ->
     erlang:garbage_collect(),
     nil.
+
+%% Byte-wise slicing for the matcher's prefix index. The first N bytes may
+%% end inside a UTF-8 sequence: they are only used as a dictionary key.
+binary_take(Bin, N) when byte_size(Bin) >= N -> binary:part(Bin, 0, N);
+binary_take(Bin, _N) -> Bin.
+
+binary_drop(Bin, N) when byte_size(Bin) >= N ->
+    binary:part(Bin, N, byte_size(Bin) - N);
+binary_drop(_Bin, _N) -> <<>>.

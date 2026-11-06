@@ -196,6 +196,13 @@ accepted. Ids and timestamps are added automatically.
 2. Prefix rules, longest prefix first.
 3. Regex rules, by priority, then file order.
 
+Prefix rules, and regex rules that start with `^` and a literal (such as
+`^/blog/(\d+)$`), are indexed by that literal. A lookup costs one dictionary
+access per distinct literal length instead of one test per rule. Only regex
+rules without a leading literal (unanchored, using `|`, or case-insensitive)
+are tried one by one on every request that reaches them. Put a literal
+prefix in your patterns when you can.
+
 **When nothing matches.** The server answers `404`, or redirects (302) to
 `server.fallback_url` if it is set.
 
@@ -423,7 +430,8 @@ for it. `rules import` writes the file; a running server applies it on
   before and after.
 - **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
   fallbacks, login failures, reloads, API requests, issued tokens, API
-  authentication failures, loaded rules, VM memory and process count.
+  authentication failures, regex runs stopped by the backtracking budget,
+  loaded rules, VM memory and process count.
 - **Shutdown.** `SIGTERM` stops the VM gracefully, which suits containers and
   systemd.
 - **Tuning.** Pass extra VM flags with `ERL_FLAGS`. For example, on a small
@@ -547,9 +555,12 @@ written to a file during the run, as it is enabled by default
 (`RP_ACCESS_LOG_ENABLED=false` measures without it).
 
 Measured locally on a laptop with the self-contained bundle, using
-ApacheBench (single-threaded, so the client is the bottleneck): exact-rule
-redirects ran at about 14 000 requests/s. Regex-heavy misses ran at about
-7 500 requests/s with 500 regexes evaluated on each request.
+ApacheBench (single-threaded, so the client is the bottleneck): redirects
+ran at about 14 000 requests/s.
+
+Rule lookup itself, measured in-process with the same 11 500 rules, takes
+about 0.4 µs for an exact hit, 1.2 µs for a prefix hit, 1.9 µs for the last
+regex rule and 0.7 µs for a miss.
 
 Memory:
 
