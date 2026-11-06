@@ -9,11 +9,12 @@ pre-commit:
       glob: "*.{gleam,erl}"
       run: gleam build --warnings-as-errors
     shellcheck:
-      glob: "{scripts/*.sh,packaging/bin/*,packaging/deb/post*,packaging/deb/prerm}"
-      run: command -v shellcheck >/dev/null && shellcheck {staged_files} || true
+      glob: "{scripts/*.sh,packaging/bin/*,packaging/deb/post*,packaging/deb/prerm,packaging/docker/*.sh}"
+      # skipped when not installed, but a finding fails the commit
+      run: if command -v shellcheck >/dev/null; then shellcheck {staged_files}; fi
     actionlint:
       glob: ".github/workflows/*.yml"
-      run: command -v actionlint >/dev/null && actionlint || true
+      run: if command -v actionlint >/dev/null; then actionlint; fi
 
 pre-push:
   commands:

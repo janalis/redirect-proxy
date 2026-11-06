@@ -30,10 +30,13 @@ jobs:
       - name: Install oha
         env:
           OHA_VERSION: "1.16.0"
+          # GitHub's digest of the release asset (oha publishes no checksums)
+          OHA_SHA256: 620bb9e16fb53eabc9a3fc45f88bdb41fefa3fee5c05e75892011ce320391716
         run: |
-          curl -fsSL -o /usr/local/bin/oha \
+          curl -fsSL -o /tmp/oha \
             "https://github.com/hatoo/oha/releases/download/v${OHA_VERSION}/oha-linux-amd64"
-          chmod +x /usr/local/bin/oha
+          echo "${OHA_SHA256}  /tmp/oha" | sha256sum -c -
+          install -m 0755 /tmp/oha /usr/local/bin/oha
           oha --version
       - run: gleam deps download
       - name: Run benchmark

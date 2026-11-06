@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help deps build run dev test coverage fmt fmt-check lint lint-erlang \
+.PHONY: help deps build run dev test coverage fmt fmt-check lint lint-versions lint-erlang \
 	lint-shell lint-actions lint-docker lint-markdown check bench bundle \
 	bundle-portable deb docker docker-run release-dry clean
 
@@ -43,7 +43,10 @@ fmt: ## Format sources
 fmt-check: ## Check formatting
 	gleam format --check src test
 
-lint: fmt-check build lint-erlang lint-shell lint-actions lint-docker lint-markdown ## Run every linter available
+lint: fmt-check build lint-versions lint-erlang lint-shell lint-actions lint-docker lint-markdown ## Run every linter available
+
+lint-versions: ## Dockerfile versions and checksums match .tool-versions (needs network)
+	scripts/check-versions.sh --online
 
 lint-erlang: ## Compile Erlang FFI with warnings as errors
 	@mkdir -p build/lint
@@ -51,7 +54,7 @@ lint-erlang: ## Compile Erlang FFI with warnings as errors
 
 lint-shell: ## shellcheck scripts
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed, skipping"; exit 0; }; \
-	shellcheck scripts/*.sh packaging/bin/redirect-proxy packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm
+	shellcheck scripts/*.sh packaging/bin/redirect-proxy packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm packaging/docker/healthcheck.sh
 
 lint-actions: ## actionlint GitHub workflows
 	@command -v actionlint >/dev/null || { echo "actionlint not installed, skipping"; exit 0; }; \

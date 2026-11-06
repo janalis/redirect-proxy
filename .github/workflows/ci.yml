@@ -33,7 +33,7 @@ jobs:
           path: build/packages
           key: gleam-packages-${{ hashFiles('manifest.toml') }}
       - run: gleam deps download
-      - run: scripts/check-versions.sh
+      - run: scripts/check-versions.sh --online
       - run: make fmt-check build lint-erlang lint-shell
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
@@ -62,13 +62,18 @@ jobs:
           configFile: commitlint.config.mjs
 
   test:
-    name: Test (OTP ${{ matrix.otp }})
-    runs-on: ubuntu-24.04
+    name: Test (OTP ${{ matrix.otp }}, ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         # oldest supported releases, then the one of .tool-versions
         otp: ["27.3", "28.1", "tool-versions"]
+        runner: [ubuntu-24.04]
+        include:
+          # arm64 images and bundles are released: test them too
+          - otp: tool-versions
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,10 +85,13 @@ jobs:
           otp-version: ${{ matrix.otp == 'tool-versions' && env.OTP_VERSION || matrix.otp }}
           gleam-version: ${{ env.GLEAM_VERSION }}
           rebar3-version: "3"
+      # compiled dependencies too: Gleam recompiles what changed since
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: build/packages
-          key: gleam-packages-${{ hashFiles('manifest.toml') }}
+          path: |
+            build/packages
+            build/dev
+          key: gleam-build-${{ runner.arch }}-otp-${{ matrix.otp == 'tool-versions' && env.OTP_VERSION || matrix.otp }}-gleam-${{ env.GLEAM_VERSION }}-${{ hashFiles('manifest.toml') }}
       - run: gleam deps download
       - run: gleam test
 

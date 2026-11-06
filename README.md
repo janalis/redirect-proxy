@@ -724,7 +724,8 @@ Releases are automated with
 [Conventional Commits](https://www.conventionalcommits.org/):
 
 - `feat:` bumps the minor version.
-- `fix:`, `perf:` and `security:` bump the patch version.
+- `fix:`, `perf:`, `security:` and `deps:` bump the patch version. Dependabot
+  writes base image updates as `deps:`, so that an OS-level fix is released.
 - `feat!:` or a `BREAKING CHANGE:` footer bumps the minor version while the
   version is below 1.0 (`bump-minor-pre-major`), then the major version.
 
@@ -736,8 +737,11 @@ Merging that PR tags `vX.Y.Z` and publishes these artifacts:
 - A portable Erlang bundle, smoke-tested on macOS.
 - `SHA256SUMS`, an SPDX SBOM and build provenance attestations.
 - Multi-arch images `ghcr.io/janalis/redirect-proxy:{X.Y.Z,X.Y,X,latest}`,
-  scanned with Trivy before they are pushed. `latest` only moves to the
-  newest release: rebuilding an older tag leaves it alone.
+  pushed only once every other artifact passed its tests, and scanned with
+  Trivy on both platforms before they are pushed. `latest` only moves to the
+  newest release: rebuilding an older tag leaves it alone. The published
+  `latest` image is rescanned every week, and an issue is opened when a
+  fixable vulnerability turns up.
 - An updated Homebrew formula in `janalis/homebrew-tap`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the required repository settings.
