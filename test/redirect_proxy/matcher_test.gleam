@@ -524,3 +524,35 @@ pub fn host_placeholders_test() {
   assert location(m, "a.b.old.test", "/p") == Ok("https://a.b.new.test/p")
   assert location(m, "old.test", "/p") == Error(Nil)
 }
+
+/// Exact rules with query conditions: every parameter must be present with
+/// its value (others are allowed); they win over the plain rule for the
+/// path, and more conditions win.
+pub fn query_conditions_test() {
+  let q = fn(id, query, target) {
+    rule.Rule(..r(id, "*", rule.Exact, "/page.php", target), query:)
+  }
+  let m =
+    matcher.build([
+      r("plain", "*", rule.Exact, "/page.php", "/pages"),
+      q("one", "id=42", "/article-42"),
+      q("two", "lang=fr&id=42", "/fr/article-42"),
+    ])
+  let at = fn(query) {
+    case matcher.lookup_query(m, "x.test", "/page.php", query) {
+      Ok(found) -> found.location
+      Error(Nil) -> ""
+    }
+  }
+  assert at("id=42") == "/article-42"
+  assert at("utm=x&id=42") == "/article-42"
+  assert at("id=42&lang=fr") == "/fr/article-42"
+  assert at("id=43") == "/pages"
+  assert at("") == "/pages"
+  // percent-encoding does not matter
+  assert at("id=%34%32") == "/article-42"
+  // the URL tester resolves the query too
+  let assert matcher.Redirected(_, location) =
+    matcher.resolve_url(m, "https://x.test/page.php?id=42", False)
+  assert location == "/article-42"
+}

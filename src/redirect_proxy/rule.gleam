@@ -6,8 +6,10 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/ffi
 
 pub type MatchKind {
@@ -35,6 +37,9 @@ pub type Rule {
     /// Prefix rules: match whole path segments only, so that `/blog` matches
     /// `/blog` and `/blog/…` but not `/blogger`.
     whole_segments: Bool,
+    /// Exact rules: query parameters the request must have, with these
+    /// values (`id=42&lang=fr`; other parameters are allowed). "": none.
+    query: String,
     /// Lower values are evaluated first (prefix ties and regex ordering).
     priority: Int,
     enabled: Bool,
@@ -72,6 +77,7 @@ pub fn blank() -> Rule {
     preserve_query: False,
     case_insensitive: False,
     whole_segments: False,
+    query: "",
     priority: default_priority,
     enabled: True,
     starts_at: "",
@@ -142,6 +148,10 @@ pub fn json_fields(rule: Rule) -> List(#(String, Json)) {
         True -> [#("whole_segments", json.bool(True))]
         False -> []
       },
+      case rule.query {
+        "" -> []
+        q -> [#("query", json.string(q))]
+      },
       case rule.starts_at {
         "" -> []
         at -> [#("starts_at", json.string(at))]
@@ -186,6 +196,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
     False,
     decode.bool,
   )
+  use query <- decode.optional_field("query", "", decode.string)
   use priority <- decode.optional_field(
     "priority",
     default_priority,
@@ -208,6 +219,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
     preserve_query:,
     case_insensitive:,
     whole_segments:,
+    query:,
     priority:,
     enabled:,
     starts_at:,
@@ -278,10 +290,23 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   let source = string.trim(rule.source)
   let target = string.trim(rule.target)
   let note = string.trim(rule.note)
+  let query = case string.trim(rule.query) {
+    "?" <> q -> q
+    q -> q
+  }
   let starts_at = string.trim(rule.starts_at)
   let expires_at = string.trim(rule.expires_at)
   let rule =
-    Rule(..rule, host:, source:, target:, note:, starts_at:, expires_at:)
+    Rule(
+      ..rule,
+      host:,
+      source:,
+      target:,
+      note:,
+      query:,
+      starts_at:,
+      expires_at:,
+    )
   let time = fn(value) {
     case value {
       "" -> Ok(Nil)
@@ -324,6 +349,18 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
       "whole_segments: only applies to prefix rules",
     )
     |> check(
+      query == "" || rule.kind == Exact,
+      "query: only applies to exact rules",
+    )
+    |> check(
+      query == ""
+        || case uri.parse_query(query) {
+        Ok([_, ..] as pairs) -> list.all(pairs, fn(pair) { pair.0 != "" })
+        _ -> False
+      },
+      "query: must be name=value pairs separated by &, e.g. id=42&lang=fr",
+    )
+    |> check(
       time(starts_at) == Ok(Nil),
       "starts_at: must be an RFC 3339 date-time with a time zone, e.g. 2026-12-01T00:00:00Z",
     )
@@ -343,6 +380,29 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
     [] -> Ok(rule)
     _ -> Error(list.reverse(errors))
   }
+}
+
+// --- query conditions -------------------------------------------------------
+
+/// The parameters of `rule.query`, decoded and sorted (for comparisons).
+pub fn query_conditions(rule: Rule) -> List(#(String, String)) {
+  case rule.query {
+    "" -> []
+    q ->
+      uri.parse_query(q)
+      |> result.unwrap([])
+      |> list.sort(fn(a, b) {
+        string.compare(a.0, b.0) |> order.break_tie(string.compare(a.1, b.1))
+      })
+  }
+}
+
+/// Whether a request query string has every condition.
+pub fn query_matches(
+  conditions: List(#(String, String)),
+  request: List(#(String, String)),
+) -> Bool {
+  list.all(conditions, list.contains(request, _))
 }
 
 // --- schedule ---------------------------------------------------------------
@@ -406,7 +466,7 @@ pub fn lint(rule: Rule) -> List(String) {
   []
   |> check(
     !path_rule || !string.contains(rule.source, "?"),
-    "source: cannot contain a query string (?): rules match the request path only",
+    "source: cannot contain a query string (?): put the parameters in `query` (exact rules)",
   )
   |> check(
     !path_rule || !string.contains(rule.source, "#"),

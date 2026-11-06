@@ -647,3 +647,20 @@ fn wait_for(condition: fn() -> Bool, attempts: Int) -> Nil {
     }
   }
 }
+
+/// Exact rules for one path with different query conditions are not in
+/// conflict; the same conditions in another order are. A rule that sends
+/// its own query back to itself is a loop.
+pub fn query_rules_conflicts_and_loops_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) = store.create(s, new_rule("/q", "/plain"), by: "t")
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/q", "/a"), query: "a=1&b=2"), by: "t")
+  let assert Error([same]) =
+    store.create(s, Rule(..new_rule("/q", "/b"), query: "b=2&a=1"), by: "t")
+  assert string.contains(same, "at the same time")
+  let assert Error([loop]) =
+    store.create(s, Rule(..new_rule("/l", "/l?x=1"), query: "x=1"), by: "t")
+  assert string.contains(loop, "redirect loop")
+}

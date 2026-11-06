@@ -61,13 +61,14 @@ pub fn explain(
   use #(host, path, query) <- result.try(parse(url))
   let host = matcher.normalise_request_host(host)
   let path = ffi.normalise_path(path)
-  let find = fn(host, path) {
+  let find = fn(host, path, query) {
     case ignore_trailing_slash {
-      True -> matcher.lookup_tolerant(matcher, host, path)
-      False -> matcher.lookup(matcher, host, path)
+      True -> matcher.lookup_tolerant_query(matcher, host, path, query)
+      False -> matcher.lookup_query(matcher, host, path, query)
     }
   }
-  let applied = find(host, path)
+  let request_query = result.unwrap(query, "")
+  let applied = find(host, path, request_query)
   let now = ffi.now_seconds()
   let applied_id = case applied {
     Ok(m) -> m.rule.id
@@ -79,7 +80,7 @@ pub fn explain(
       rules
       |> list.filter(fn(r) { matcher.normalise_request_host(r.host) == h })
       |> resolution_order
-      |> list.filter(matches(_, path))
+      |> list.filter(matches(_, path, request_query))
     })
     |> list.map(fn(r) {
       Candidate(r, case r.id == applied_id, r.enabled {
@@ -162,7 +163,15 @@ fn int_compare(a: Int, b: Int) -> order.Order {
   }
 }
 
-fn matches(r: Rule, path: String) -> Bool {
+fn matches(r: Rule, path: String, query: String) -> Bool {
+  rule.query_matches(
+    rule.query_conditions(r),
+    uri.parse_query(query) |> result.unwrap([]),
+  )
+  && matches_path(r, path)
+}
+
+fn matches_path(r: Rule, path: String) -> Bool {
   let fold = fn(s) {
     case r.case_insensitive {
       True -> string.lowercase(s)
@@ -192,7 +201,7 @@ fn matches(r: Rule, path: String) -> Bool {
 }
 
 fn follow(
-  find: fn(String, String) -> Result(matcher.Match, Nil),
+  find: fn(String, String, String) -> Result(matcher.Match, Nil),
   host: String,
   location: String,
   current: matcher.Match,
@@ -207,10 +216,10 @@ fn follow(
   }
   case next {
     Error(Nil) -> #(list.reverse(chain), False)
-    Ok(#(next_host, next_path)) -> {
+    Ok(#(next_host, next_path, next_query)) -> {
       let next_host = matcher.normalise_request_host(next_host)
       let key = next_host <> ffi.normalise_path(next_path)
-      case set.contains(seen, key), find(next_host, next_path) {
+      case set.contains(seen, key), find(next_host, next_path, next_query) {
         True, Ok(_) -> #(list.reverse(chain), True)
         _, Error(Nil) -> #(list.reverse(chain), False)
         False, Ok(m) ->

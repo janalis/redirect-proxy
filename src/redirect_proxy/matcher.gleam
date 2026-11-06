@@ -52,6 +52,9 @@ pub opaque type Matcher {
 
 type HostRules {
   HostRules(
+    /// Exact rules with query conditions, keyed by their source (lower-cased
+    /// when case-insensitive), most conditions first.
+    exact_query: Dict(String, List(QueryRule)),
     exact: Dict(String, Rule),
     exact_ci: Dict(String, Rule),
     /// Case-sensitive prefix rules, keyed by their source.
@@ -70,6 +73,10 @@ type HostRules {
 /// distinct key lengths in bytes; entries sharing a key are in rank order.
 type Index(a) {
   Index(lengths: List(Int), entries: Dict(String, List(a)))
+}
+
+type QueryRule {
+  QueryRule(rule: Rule, conditions: List(#(String, String)))
 }
 
 type PrefixRule {
@@ -251,6 +258,24 @@ pub fn carry_hits(next: Matcher, from previous: Matcher) -> Matcher {
 }
 
 fn build_host(rules: List(Rule)) -> HostRules {
+  let #(with_query, rules) =
+    list.partition(rules, fn(r) { r.kind == Exact && r.query != "" })
+  let exact_query =
+    with_query
+    |> list.map(fn(r) { QueryRule(r, rule.query_conditions(r)) })
+    // more conditions are more specific, then priority, then file order
+    |> list.sort(fn(a, b) {
+      int.compare(list.length(b.conditions), list.length(a.conditions))
+      |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+    })
+    |> list.reverse
+    |> list.fold(dict.new(), fn(acc, q) {
+      let key = case q.rule.case_insensitive {
+        True -> string.lowercase(q.rule.source)
+        False -> q.rule.source
+      }
+      dict.upsert(acc, key, fn(group) { [q, ..option.unwrap(group, [])] })
+    })
   let exact =
     rules
     |> list.filter(fn(r) { r.kind == Exact && !r.case_insensitive })
@@ -299,6 +324,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
   let #(regex_unindexed, regex) =
     list.partition(regex, fn(r) { regex_literal(r.rule) == "" })
   HostRules(
+    exact_query:,
     exact:,
     exact_ci:,
     prefix: index(prefix, fn(p) { p.rule.source }),
@@ -432,6 +458,17 @@ pub fn lookup(
   host: String,
   path: String,
 ) -> Result(Match, Nil) {
+  lookup_query(matcher, host, path, "")
+}
+
+/// `lookup`, for a request with a query string (raw, without `?`): exact
+/// rules with query conditions can then match.
+pub fn lookup_query(
+  matcher: Matcher,
+  host: String,
+  path: String,
+  query: String,
+) -> Result(Match, Nil) {
   let host = normalise_request_host(host)
   let path = ffi.normalise_path(path)
   // `${host}` only ever holds a host name
@@ -443,14 +480,14 @@ pub fn lookup(
       },
       sub: "",
     )
-  lookup_host(matcher, host, path, vars)
+  lookup_host(matcher, host, path, query, vars)
   |> result.lazy_or(fn() {
     case matcher.wildcards {
-      True -> lookup_wildcards(matcher, host, path, vars)
+      True -> lookup_wildcards(matcher, host, path, query, vars)
       False -> Error(Nil)
     }
   })
-  |> result.lazy_or(fn() { lookup_host(matcher, "*", path, vars) })
+  |> result.lazy_or(fn() { lookup_host(matcher, "*", path, query, vars) })
 }
 
 /// `lookup`, retrying a miss with the trailing slash added or removed
@@ -460,13 +497,23 @@ pub fn lookup_tolerant(
   host: String,
   path: String,
 ) -> Result(Match, Nil) {
-  use <- result.lazy_or(lookup(matcher, host, path))
+  lookup_tolerant_query(matcher, host, path, "")
+}
+
+/// `lookup_tolerant` with the request query string.
+pub fn lookup_tolerant_query(
+  matcher: Matcher,
+  host: String,
+  path: String,
+  query: String,
+) -> Result(Match, Nil) {
+  use <- result.lazy_or(lookup_query(matcher, host, path, query))
   case path {
     "/" | "" -> Error(Nil)
     _ ->
       case string.ends_with(path, "/") {
-        True -> lookup(matcher, host, string.drop_end(path, 1))
-        False -> lookup(matcher, host, path <> "/")
+        True -> lookup_query(matcher, host, string.drop_end(path, 1), query)
+        False -> lookup_query(matcher, host, path <> "/", query)
       }
   }
 }
@@ -477,6 +524,7 @@ fn lookup_wildcards(
   matcher: Matcher,
   host: String,
   path: String,
+  query: String,
   vars: rule.RequestVars,
 ) -> Result(Match, Nil) {
   case string.split_once(host, ".") {
@@ -485,8 +533,16 @@ fn lookup_wildcards(
         "" -> ""
         full -> string.drop_end(full, string.byte_size(parent) + 1)
       }
-      lookup_host(matcher, "*." <> parent, path, rule.RequestVars(..vars, sub:))
-      |> result.lazy_or(fn() { lookup_wildcards(matcher, parent, path, vars) })
+      lookup_host(
+        matcher,
+        "*." <> parent,
+        path,
+        query,
+        rule.RequestVars(..vars, sub:),
+      )
+      |> result.lazy_or(fn() {
+        lookup_wildcards(matcher, parent, path, query, vars)
+      })
     }
     Error(Nil) -> Error(Nil)
   }
@@ -496,12 +552,50 @@ fn lookup_host(
   matcher: Matcher,
   host: String,
   path: String,
+  query: String,
   vars: rule.RequestVars,
 ) -> Result(Match, Nil) {
   use rules <- result.try(dict.get(matcher.hosts, host))
-  match_exact(rules, path)
+  match_query(rules, path, query)
+  |> result.lazy_or(fn() { match_exact(rules, path) })
   |> result.lazy_or(fn() { match_prefix(rules, path, vars) })
   |> result.lazy_or(fn() { match_regex(rules, path, vars) })
+}
+
+/// Exact rules with query conditions: the first whose conditions the
+/// request query has (most conditions first). The query is only parsed
+/// when the path has such rules.
+fn match_query(
+  rules: HostRules,
+  path: String,
+  query: String,
+) -> Result(Match, Nil) {
+  case dict.size(rules.exact_query), query {
+    0, _ | _, "" -> Error(Nil)
+    _, _ -> {
+      let exact =
+        dict.get(rules.exact_query, path)
+        |> result.unwrap([])
+        |> list.filter(fn(q) { !q.rule.case_insensitive })
+      let folded =
+        dict.get(rules.exact_query, string.lowercase(path))
+        |> result.unwrap([])
+        |> list.filter(fn(q) { q.rule.case_insensitive })
+      case list.append(exact, folded) {
+        [] -> Error(Nil)
+        found -> {
+          let request = uri.parse_query(query) |> result.unwrap([])
+          found
+          |> list.sort(fn(a, b) {
+            int.compare(list.length(b.conditions), list.length(a.conditions))
+            |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+          })
+          |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
+          |> result.map(fn(q) { Match(q.rule, q.rule.target) })
+        }
+      }
+    }
+  }
 }
 
 /// The target is used as written: substitutions are for prefix and regex
@@ -669,9 +763,10 @@ pub fn resolve_url(
         "" -> "/"
         p -> p
       }
+      let request_query = option.unwrap(query, "")
       let found = case ignore_trailing_slash {
-        True -> lookup_tolerant(matcher, host, path)
-        False -> lookup(matcher, host, path)
+        True -> lookup_tolerant_query(matcher, host, path, request_query)
+        False -> lookup_query(matcher, host, path, request_query)
       }
       case found {
         Ok(m) -> Redirected(m, location(m, option.to_result(query, Nil)))

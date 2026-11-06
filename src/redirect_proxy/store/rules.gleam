@@ -10,6 +10,7 @@ import gleam/order
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/uri
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/log
@@ -130,9 +131,14 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
   // in the form the matcher compares paths: /café and /caf%C3%A9 are one
   let exact_key = fn(r: Rule) {
     let source = ffi.normalise_path(r.source)
-    case r.case_insensitive {
+    let path = case r.case_insensitive {
       True -> r.host <> " " <> string.lowercase(source)
       False -> r.host <> " " <> source
+    }
+    // the same query conditions in any order are one key
+    case rule.query_conditions(r) {
+      [] -> path
+      conditions -> path <> "?" <> uri.query_to_string(conditions)
     }
   }
   let duplicate_sources =
@@ -165,13 +171,18 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
 }
 
 fn is_loop(r: Rule) -> Bool {
-  r.target == r.source
-  || {
-    r.host != "*"
-    && {
-      r.target == "http://" <> r.host <> r.source
-      || r.target == "https://" <> r.host <> r.source
-      || r.target == "//" <> r.host <> r.source
+  // a rule with query conditions only loops when its target asks again for
+  // its path with those conditions: left to the redirect loop check
+  r.query == ""
+  && {
+    r.target == r.source
+    || {
+      r.host != "*"
+      && {
+        r.target == "http://" <> r.host <> r.source
+        || r.target == "https://" <> r.host <> r.source
+        || r.target == "//" <> r.host <> r.source
+      }
     }
   }
 }

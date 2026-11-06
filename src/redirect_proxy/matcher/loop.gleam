@@ -8,7 +8,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/matcher.{
-  type Match, type Matcher, location, lookup, lookup_tolerant,
+  type Match, type Matcher, location, lookup_query, lookup_tolerant_query,
   normalise_request_host,
 } as _
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
@@ -30,8 +30,8 @@ pub fn redirect_loop(
   ignore_trailing_slash: Bool,
 ) -> Result(List(Rule), Nil) {
   let lookup = case ignore_trailing_slash {
-    True -> lookup_tolerant
-    False -> lookup
+    True -> lookup_tolerant_query
+    False -> lookup_query
   }
   use path <- result.try(case r.kind {
     Exact -> Ok(r.source)
@@ -47,7 +47,7 @@ pub fn redirect_loop(
     "*" -> loop_check_host
     h -> h
   }
-  case lookup(matcher, host, path) {
+  case lookup(matcher, host, path, r.query) {
     Ok(first) if first.rule.id == r.id ->
       follow(lookup, matcher, host, first, [r], 10)
     _ -> Error(Nil)
@@ -55,7 +55,7 @@ pub fn redirect_loop(
 }
 
 fn follow(
-  lookup: fn(Matcher, String, String) -> Result(Match, Nil),
+  lookup: fn(Matcher, String, String, String) -> Result(Match, Nil),
   matcher: Matcher,
   host: String,
   current: Match,
@@ -63,11 +63,11 @@ fn follow(
   hops: Int,
 ) -> Result(List(Rule), Nil) {
   use <- bool.guard(hops == 0, Error(Nil))
-  use #(host, path) <- result.try(next_request(
+  use #(host, path, query) <- result.try(next_request(
     host,
     location(current, Error(Nil)),
   ))
-  use next <- result.try(lookup(matcher, host, path))
+  use next <- result.try(lookup(matcher, host, path, query))
   let chain = [next.rule, ..chain]
   case list.last(chain) {
     Ok(start) if start.id == next.rule.id -> Ok(list.reverse(chain))
@@ -75,11 +75,12 @@ fn follow(
   }
 }
 
-/// The host and path a browser requests when redirected to `location`.
+/// The host, path and query string a browser requests when redirected to
+/// `location`.
 pub fn next_request(
   host: String,
   location: String,
-) -> Result(#(String, String), Nil) {
+) -> Result(#(String, String, String), Nil) {
   let lower = string.lowercase(location)
   case
     string.starts_with(lower, "http://")
@@ -88,27 +89,29 @@ pub fn next_request(
   {
     True ->
       case uri.parse(location) {
-        Ok(uri.Uri(host: option.Some(next_host), path:, ..)) ->
-          Ok(
-            #(next_host, case path {
+        Ok(uri.Uri(host: option.Some(next_host), path:, query:, ..)) ->
+          Ok(#(
+            next_host,
+            case path {
               "" -> "/"
               p -> p
-            }),
-          )
+            },
+            option.unwrap(query, ""),
+          ))
         _ -> Error(Nil)
       }
     False ->
       case string.starts_with(location, "/") {
         True -> {
-          let path = case string.split_once(location, "?") {
-            Ok(#(path, _)) -> path
+          let without_fragment = case string.split_once(location, "#") {
+            Ok(#(before, _)) -> before
             Error(Nil) -> location
           }
-          let path = case string.split_once(path, "#") {
-            Ok(#(path, _)) -> path
-            Error(Nil) -> path
+          let #(path, query) = case string.split_once(without_fragment, "?") {
+            Ok(#(path, query)) -> #(path, query)
+            Error(Nil) -> #(without_fragment, "")
           }
-          Ok(#(host, path))
+          Ok(#(host, path, query))
         }
         False -> Error(Nil)
       }

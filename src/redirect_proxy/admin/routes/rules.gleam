@@ -440,6 +440,11 @@ pub fn rule_from_form(
       priority: result.unwrap(priority, rule.default_priority),
       enabled: checked("enabled"),
       note: get("note"),
+      // only meaningful for exact rules: ignored for the others
+      query: case kind {
+        Ok(rule.Exact) -> get("query")
+        _ -> ""
+      },
       starts_at: get("starts_at"),
       expires_at: get("expires_at"),
     )

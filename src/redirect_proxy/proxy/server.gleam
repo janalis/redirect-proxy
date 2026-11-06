@@ -173,7 +173,7 @@ fn route_rules(
     http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch -> {
       // one read of the published matcher for both the lookup and the hit
       let current = snapshot.current()
-      case find(current, config, host, req.path) {
+      case find(current, config, host, req.path, option.unwrap(req.query, "")) {
         Ok(m) -> {
           metrics.incr(metrics.Redirects)
           matcher.record_hit(current, m.rule.id)
@@ -255,6 +255,7 @@ fn find(
   config: ServerConfig,
   host: String,
   path: String,
+  query: String,
 ) -> Result(matcher.Match, Nil) {
   // `//` parses as an empty authority and an empty path
   let path = case path {
@@ -262,7 +263,7 @@ fn find(
     p -> p
   }
   case config.trailing_slash {
-    "ignore" -> matcher.lookup_tolerant(current, host, path)
-    _ -> matcher.lookup(current, host, path)
+    "ignore" -> matcher.lookup_tolerant_query(current, host, path, query)
+    _ -> matcher.lookup_query(current, host, path, query)
   }
 }

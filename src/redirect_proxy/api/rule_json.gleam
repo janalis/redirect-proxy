@@ -18,6 +18,10 @@ pub fn rule_json(r: Rule) -> Json {
         True -> []
         False -> [#("whole_segments", json.bool(False))]
       },
+      case r.query {
+        "" -> [#("query", json.string(""))]
+        _ -> []
+      },
       case r.starts_at {
         "" -> [#("starts_at", json.string(""))]
         _ -> []
@@ -86,6 +90,7 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
   use preserve_query <- field("preserve_query", decode.bool)
   use case_insensitive <- field("case_insensitive", decode.bool)
   use whole_segments <- field("whole_segments", decode.bool)
+  use query <- field("query", decode.string)
   use priority <- field("priority", decode.int)
   use enabled <- field("enabled", decode.bool)
   use starts_at <- field("starts_at", decode.string)
@@ -114,6 +119,7 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
         r.whole_segments,
         defaults.whole_segments,
       ),
+      query: pick(query, r.query, defaults.query),
       priority: pick(priority, r.priority, defaults.priority),
       enabled: pick(enabled, r.enabled, defaults.enabled),
       starts_at: pick(starts_at, r.starts_at, defaults.starts_at),

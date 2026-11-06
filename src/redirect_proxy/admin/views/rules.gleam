@@ -728,6 +728,23 @@ pub fn form(
               )),
               layout.field_feedback(errors, "note"),
             ]),
+            field_col("col-12", [
+              label("query", "Query parameters (exact rules)"),
+              h.input(list.append(
+                [
+                  a.id("query"),
+                  a.name("query"),
+                  a.class(input_class(errors, "query")),
+                  a.value(r.query),
+                  a.placeholder("id=42&lang=fr (optional)"),
+                ],
+                layout.invalid_attributes(errors, "query"),
+              )),
+              layout.field_feedback(errors, "query"),
+              help(
+                "The request must have these parameters with these values; others are allowed.",
+              ),
+            ]),
             time_field(errors, "starts_at", "Starts at", r.starts_at),
             time_field(errors, "expires_at", "Expires at", r.expires_at),
             field_col("col-12", [
