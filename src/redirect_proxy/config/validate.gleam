@@ -4,8 +4,10 @@ import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/access_log_format
 import redirect_proxy/config.{
   type AccessLogConfig, type Config, access_log_format, access_log_output,
@@ -22,6 +24,15 @@ fn is_http_url(url: String) -> Bool {
   let lower = string.lowercase(url)
   { string.starts_with(lower, "http://") && string.length(url) > 7 }
   || { string.starts_with(lower, "https://") && string.length(url) > 8 }
+}
+
+/// An `http://` URL whose host is not the loopback interface.
+fn plain_http_remote(url: String) -> Bool {
+  case uri.parse(url) {
+    Ok(uri.Uri(scheme: Some(scheme), host: Some(host), ..)) ->
+      string.lowercase(scheme) == "http" && !ffi.is_loopback_address(host)
+    _ -> False
+  }
 }
 
 /// Things that are allowed but probably wrong, reported by `check-config`:
@@ -78,6 +89,20 @@ pub fn runtime_warnings(config: Config) -> List(String) {
     {
       True -> [
         "auth.oidc.default_role is admin while role groups are set: users in none of these groups are administrators; set default_role = \"viewer\" (or editor)",
+      ]
+      False -> []
+    },
+    case oidc.enabled && plain_http_remote(oidc.issuer) {
+      True -> [
+        "auth.oidc.issuer is plain http:// on another host: its signing keys and tokens can be changed in transit; use https://",
+      ]
+      False -> []
+    },
+    case
+      config.api.oauth.enabled && plain_http_remote(config.api.oauth.issuer)
+    {
+      True -> [
+        "api.oauth.issuer is plain http:// on another host: its signing keys can be changed in transit, letting anyone on the path forge access tokens; use https://",
       ]
       False -> []
     },

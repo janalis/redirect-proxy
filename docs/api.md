@@ -56,7 +56,12 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 tokens from your own authorization server are accepted too:
 
 - The server is found through OIDC or RFC 8414 discovery on `issuer`.
-- The signature is checked against its JWKS.
+- The signature is checked against its JWKS. The discovery document and
+  the JWKS are cached for an hour. While the server cannot be reached, the
+  last good ones are used for up to a day more (each failed fetch is
+  counted in `redirect_proxy_idp_fetch_failures_total`). A JWKS without a
+  `keys` list is refused. A plain `http://` issuer on another host gets a
+  startup warning, since its keys could be changed in transit.
 - `iss`, `aud`, `exp` and `nbf` are verified.
 - ID tokens (they carry a `nonce`) are refused: give the API an `audience`
   of its own rather than the `[auth.oidc]` `client_id` (a startup warning

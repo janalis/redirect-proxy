@@ -28,6 +28,10 @@ unless the request has `Authorization: Bearer <token>`: in Prometheus, set
   - Uses the authorization code flow with PKCE, `state` and `nonce`.
   - The ID token signature is verified against the provider JWKS, and `iss`,
     `aud`, `exp`, `nbf` and (when present) `azp` are checked.
+  - The provider metadata and JWKS are cached for an hour, and the last
+    good ones are used for up to a day more while the provider cannot be
+    reached. A plain `http://` issuer on another host gets a startup
+    warning.
   - To allow users, set `allowed_emails`, `allowed_domains` (checked against
     verified emails) and/or `allowed_groups` (from `groups_claim`). With all
     three lists empty, every account of the provider is accepted, and the

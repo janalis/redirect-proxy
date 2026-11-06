@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
+import redirect_proxy/log
 import redirect_proxy/metrics
 
 pub const table = "redirect_proxy_oidc"
@@ -40,7 +41,7 @@ pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
   let cached = fn() {
     let now = ffi.now_seconds()
     case ffi.ets_get(table, "provider:" <> issuer) {
-      Ok(#(expires_at, provider)) if expires_at > now -> Ok(provider)
+      Ok(#(expires_at, #(_, provider))) if expires_at > now -> Ok(provider)
       _ -> Error(Nil)
     }
   }
@@ -51,9 +52,33 @@ pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
         // another request may have fetched it while we waited
         case cached() {
           Ok(provider) -> Ok(provider)
-          Error(Nil) -> fetch_provider(issuer)
+          Error(Nil) ->
+            case fetch_provider(issuer) {
+              Ok(provider) -> Ok(provider)
+              Error(reason) -> stale_provider(issuer, reason)
+            }
         }
       })
+  }
+}
+
+/// The metadata fetched before, while the provider cannot be reached (up to
+/// `stale_ttl` past its hour), retried in `failure_ttl` seconds.
+fn stale_provider(issuer: String, reason: String) -> Result(Provider, String) {
+  let now = ffi.now_seconds()
+  case ffi.ets_get(table, "provider:" <> issuer) {
+    Ok(#(_, #(fetched_at, provider)))
+      if now - fetched_at < cache_ttl + stale_ttl
+    -> {
+      metrics.incr(metrics.IdpFetchFailures)
+      log.warning(reason <> "; using the provider metadata fetched before")
+      ffi.ets_put(table, "provider:" <> issuer, #(
+        now + failure_ttl,
+        #(fetched_at, provider),
+      ))
+      Ok(provider)
+    }
+    _ -> Error(reason)
   }
 }
 
@@ -149,12 +174,18 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
       <> configured_issuer,
     ),
   )
+  let now = ffi.now_seconds()
   ffi.ets_put(table, "provider:" <> configured_issuer, #(
-    ffi.now_seconds() + cache_ttl,
-    provider,
+    now + cache_ttl,
+    #(now, provider),
   ))
   Ok(provider)
 }
+
+/// How long past its hour the last good key set is still used while the
+/// provider cannot be reached: an outage of the provider does not stop
+/// tokens signed with keys it already published from being checked.
+const stale_ttl = 86_400
 
 fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
   let key = "jwks:" <> provider.jwks_uri
@@ -183,14 +214,53 @@ fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
         case cached() {
           Ok(body) -> Ok(body)
           Error(Nil) -> {
-            use body <- result.try(http_get(provider.jwks_uri))
             let now = ffi.now_seconds()
-            ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
-            Ok(body)
+            case http_get(provider.jwks_uri) |> result.try(check_jwks) {
+              Ok(body) -> {
+                ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
+                Ok(body)
+              }
+              Error(reason) ->
+                case ffi.ets_get(table, key) {
+                  Ok(#(_, #(fetched_at, body)))
+                    if now - fetched_at < cache_ttl + stale_ttl
+                  -> {
+                    metrics.incr(metrics.IdpFetchFailures)
+                    log.warning(
+                      reason <> "; using the signing keys fetched before",
+                    )
+                    // try again in a while, not at every request: the
+                    // stale keys answer until then, and a forced refresh
+                    // (unknown key) fails at once instead of fetching
+                    ffi.ets_put(table, key, #(
+                      now + failure_ttl,
+                      #(fetched_at, body),
+                    ))
+                    ffi.ets_put(table, "failed:" <> key, #(
+                      now + failure_ttl,
+                      reason,
+                    ))
+                    Ok(body)
+                  }
+                  _ -> Error(reason)
+                }
+            }
           }
         }
       })
   }
+}
+
+/// A key set must be a JSON object with a `keys` list: an error page
+/// answered with a 200 is not cached for an hour.
+fn check_jwks(body: String) -> Result(String, String) {
+  let decoder = {
+    use _ <- decode.field("keys", decode.list(decode.dynamic))
+    decode.success(Nil)
+  }
+  json.parse(body, decoder)
+  |> result.replace(body)
+  |> result.replace_error("invalid signing key set (JWKS): no keys list")
 }
 
 /// Verifies the signature of a JWT against the provider's JWKS and returns
