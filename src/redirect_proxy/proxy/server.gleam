@@ -6,6 +6,7 @@ import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/int
+import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
@@ -84,7 +85,11 @@ fn route(
       metrics.incr(metrics.Requests)
       case string.byte_size(req.path) > config.max_path_bytes {
         True -> #(empty(414), "")
-        False -> route_rules(config, req, not_found_body, permanent_cache)
+        False ->
+          case config.https_redirect && !forwarded_https(req) {
+            True -> #(to_https(req, permanent_cache), "")
+            False -> route_rules(config, req, not_found_body, permanent_cache)
+          }
       }
     }
   }
@@ -101,6 +106,54 @@ fn health() -> Response(mist.ResponseData) {
   |> response.set_header("content-type", "text/plain; charset=utf-8")
   |> response.set_header("cache-control", "no-store")
   |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+}
+
+/// A TLS proxy in front forwarded an HTTPS request.
+fn forwarded_https(req: Request(mist.Connection)) -> Bool {
+  case request.get_header(req, "x-forwarded-proto") {
+    Ok(proto) ->
+      // the first value: the client side of the first proxy
+      case string.split(proto, ",") {
+        [first, ..] -> string.lowercase(string.trim(first)) == "https"
+        [] -> False
+      }
+    Error(Nil) -> False
+  }
+}
+
+/// The same URL over HTTPS: 301, or 308 so that other methods than GET and
+/// HEAD are repeated as they were. A request without a usable host name
+/// gets a 400.
+fn to_https(
+  req: Request(mist.Connection),
+  permanent_cache: String,
+) -> Response(mist.ResponseData) {
+  let host =
+    request.get_header(req, "host")
+    |> result.unwrap(req.host)
+    |> matcher.normalise_request_host
+  case is_host_name(host) {
+    False -> empty(400)
+    True -> {
+      let query = case req.query {
+        option.Some(q) if q != "" -> "?" <> q
+        _ -> ""
+      }
+      let status = case req.method {
+        http.Get | http.Head -> 301
+        _ -> 308
+      }
+      metrics.incr(metrics.Redirects)
+      redirect(status, "https://" <> host <> req.path <> query, permanent_cache)
+    }
+  }
+}
+
+fn is_host_name(host: String) -> Bool {
+  host != ""
+  && list.all(string.to_graphemes(host), fn(c) {
+    string.contains("abcdefghijklmnopqrstuvwxyz0123456789-.", c)
+  })
 }
 
 fn empty(status: Int) -> Response(mist.ResponseData) {

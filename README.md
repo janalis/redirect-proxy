@@ -316,6 +316,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_NOT_FOUND_BODY` | `Not Found` (body of the 404 when no fallback is set) |
 | `RP_SERVER_HEALTH_PATH` | (none: off) |
 | `RP_SERVER_MAX_PATH_BYTES` | `8192` (longer paths get a 414) |
+| `RP_SERVER_HTTPS_REDIRECT` | `false` (redirect plain HTTP requests to HTTPS before any rule) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |
 | `RP_ADMIN_PUBLIC_URL` | `http://localhost:8081` |
@@ -603,6 +604,14 @@ for it. `rules import` writes the file; a running server applies it on
   during the shutdown grace. Probes are not counted in
   `redirect_proxy_requests_total`. Off by default, so that every path stays
   available to rules.
+- **HTTP to HTTPS.** With `server.https_redirect` (`RP_SERVER_HTTPS_REDIRECT`),
+  plain HTTP requests are redirected to the same host, path and query over
+  HTTPS before any rule: 301 for `GET` and `HEAD`, 308 for other methods so
+  that they are repeated as they were. Requests that a TLS proxy forwards
+  with `X-Forwarded-Proto: https` go to the rules as usual. A client sending
+  that header itself only skips the upgrade. Rules cannot do this
+  themselves: the server cannot tell the schemes apart, so a rule to the
+  same host over HTTPS is refused as a redirect loop.
 - **Long paths.** Requests whose path is longer than `server.max_path_bytes`
   (default 8192, `RP_SERVER_MAX_PATH_BYTES`) get a 414 without rule lookup.
 - **Container health check.** The image probes the admin listener's

@@ -91,6 +91,7 @@ pub const known_keys = [
   "server.cache_max_age",
   "server.fallback_url",
   "server.health_path",
+  "server.https_redirect",
   "server.max_path_bytes",
   "log.format",
   "log.level",
@@ -161,6 +162,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "max_path_bytes"],
     d.server.max_path_bytes,
+  ))
+  use https_redirect <- result.try(boolean(
+    t,
+    ["server", "https_redirect"],
+    d.server.https_redirect,
   ))
   use watch_interval <- result.try(integer(
     t,
@@ -376,6 +382,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       not_found_body:,
       health_path:,
       max_path_bytes:,
+      https_redirect:,
     ),
     admin: AdminConfig(
       enabled: admin_enabled,
