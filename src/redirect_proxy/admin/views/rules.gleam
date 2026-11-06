@@ -17,7 +17,9 @@ pub type Filters {
   Filters(
     query: String,
     host: String,
+    /// `match` in the URL, as in the API: exact, prefix, regex or "".
     kind: String,
+    /// `enabled` in the URL, as in the API: true, false or "".
     status: String,
     sort: String,
     page: Int,
@@ -35,8 +37,8 @@ pub fn filters_query(filters: Filters) -> List(#(String, String)) {
   [
     #("q", filters.query),
     #("host", filters.host),
-    #("kind", filters.kind),
-    #("status", filters.status),
+    #("match", filters.kind),
+    #("enabled", filters.status),
     #("sort", filters.sort),
   ]
   |> list.filter(fn(kv) { kv.1 != "" })
@@ -159,8 +161,8 @@ fn filters_form(filters: Filters) -> Element(Nil) {
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
-      h.label([a.for("kind"), a.class("visually-hidden")], [h.text("Match")]),
-      h.select([a.id("kind"), a.name("kind"), a.class("form-control")], [
+      h.label([a.for("match"), a.class("visually-hidden")], [h.text("Match")]),
+      h.select([a.id("match"), a.name("match"), a.class("form-control")], [
         option("", "All match types", filters.kind),
         option("exact", "Exact", filters.kind),
         option("prefix", "Prefix", filters.kind),
@@ -168,11 +170,11 @@ fn filters_form(filters: Filters) -> Element(Nil) {
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
-      h.label([a.for("status"), a.class("visually-hidden")], [h.text("State")]),
-      h.select([a.id("status"), a.name("status"), a.class("form-control")], [
+      h.label([a.for("enabled"), a.class("visually-hidden")], [h.text("State")]),
+      h.select([a.id("enabled"), a.name("enabled"), a.class("form-control")], [
         option("", "Enabled and disabled", filters.status),
-        option("enabled", "Enabled only", filters.status),
-        option("disabled", "Disabled only", filters.status),
+        option("true", "Enabled only", filters.status),
+        option("false", "Disabled only", filters.status),
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
