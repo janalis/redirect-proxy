@@ -12,6 +12,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/auth
 import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
@@ -146,6 +147,8 @@ pub fn token_endpoint_test() {
 
 pub fn token_requests_are_audited_test() {
   let env = support.boot(config.default())
+  // other tests spend the audit log's budget for failures
+  ratelimit.reset("audit-failures")
   let #(id, secret) = new_client(env, [scope.Read])
   let ok =
     token_request(env, [basic(id, secret)], [

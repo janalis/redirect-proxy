@@ -347,7 +347,16 @@ pub fn login(req: Request, ctx: Context) -> Response {
         Error(Nil) -> {
           record_login_failure(ctx.client_ip, username)
           log.warning("failed login for user=" <> who)
-          audit_auth(ctx, username, "auth.login_failed", "local")
+          audit_login_failure(
+            ctx,
+            "local",
+            case users.validate_username(username) {
+              Ok(Nil) -> #(username, [])
+              // not a possible account: the name typed goes in the details,
+              // so that it cannot pass for an actor (`system`, `sso:...`)
+              Error(_) -> #("", [#("username", json.string(username))])
+            },
+          )
           fail("Invalid username or password.", 401, username)
         }
       }
@@ -389,6 +398,23 @@ fn rehash_if_needed(
 /// Records a sign-in event in the audit trail, with the client address.
 fn audit_auth(ctx: Context, actor: String, action: String, method: String) {
   audit_auth_with(ctx, actor, action, method, [])
+}
+
+/// A failed sign-in: needs no credentials, so it goes through the audit
+/// log's budget for failures (`audit.record_failure`).
+fn audit_login_failure(
+  ctx: Context,
+  method: String,
+  who: #(String, List(#(String, json.Json))),
+) -> Nil {
+  let #(actor, details) = who
+  audit.record_failure(
+    config.audit_path(ctx.config),
+    actor,
+    "auth.login_failed",
+    method,
+    json.object([#("client_ip", json.string(ctx.client_ip)), ..details]),
+  )
 }
 
 fn audit_auth_with(
@@ -560,15 +586,19 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         )
       }
       log.warning("SSO login rejected: " <> log_value(logged))
-      audit_auth_with(ctx, "", "auth.login_failed", "sso", [
-        #(
-          "reason",
-          json.string(case failure {
-            oidc.Denied(reason) -> reason
-            oidc.Failed(_) -> "provider error (see the server log)"
-          }),
-        ),
-      ])
+      audit_login_failure(
+        ctx,
+        "sso",
+        #("", [
+          #(
+            "reason",
+            json.string(case failure {
+              oidc.Denied(reason) -> reason
+              oidc.Failed(_) -> "provider error (see the server log)"
+            }),
+          ),
+        ]),
+      )
       html(
         403,
         login_view.login(

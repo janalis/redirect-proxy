@@ -839,6 +839,8 @@ pub fn sso_state_cookie_is_host_prefixed_over_https_test() {
 
 pub fn sign_ins_are_audited_test() {
   let env = boot(config.default())
+  // other tests spend the audit log's budget for failures
+  ratelimit.reset("audit-failures")
   let assert 401 =
     post_form(env, "/login", "", [#("username", "admin"), #("password", "no")]).status
   let #(cookie, csrf) = login(env)
@@ -855,6 +857,15 @@ pub fn sign_ins_are_audited_test() {
       #("admin", "auth.login", "local"),
       #("admin", "auth.login_failed", "local"),
     ]
+  // a name no account can have is not recorded as the actor
+  let assert 401 =
+    post_form(env, "/login", "", [
+      #("username", "sso:alice"),
+      #("password", "no"),
+    ]).status
+  let assert [failed, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
+  assert #(failed.actor, failed.action) == #("", "auth.login_failed")
+  assert string.contains(failed.details, "sso:alice")
 }
 
 pub fn matching_features_over_http_test() {
