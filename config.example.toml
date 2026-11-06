@@ -15,6 +15,43 @@ cache_max_age = 3600
 fallback_url = ""
 not_found_body = "Not Found"
 
+[access_log]
+# Traffic log of the redirect listener, one line per request.
+enabled = true
+# A preset or a template:
+#   combined  nginx/Apache Combined Log Format (GoAccess, AWStats, Logstash
+#             COMBINEDAPACHELOG, Fluent Bit "apache2", Datadog, Loki...)
+#   common    NCSA Common Log Format
+#   json      one JSON object per line (Elasticsearch, Loki, Vector, Splunk...)
+# A template mixes text and nginx-style variables ($var or ${var}), e.g.
+#   format = '$remote_addr "$request" $status $request_time $rule_id'
+# Variables: remote_addr remote_user time_local time_iso8601 msec request
+# request_method request_uri uri args server_protocol status body_bytes_sent
+# request_time host http_referer http_user_agent location rule_id, plus
+# http_<header> for any request header (e.g. $http_x_request_id).
+format = "combined"
+# Escaping of values in templates: "default" (nginx: \xHH), "json" or "none".
+escape = "default"
+# Where lines go: "stdout", "stderr" or a file path, absolute or relative to
+# the working directory (e.g. "/var/log/redirect-proxy/access.log"). Missing
+# directories are created; a renamed file (logrotate) is reopened.
+output = "stdout"
+# GDPR: client addresses are truncated by default (IPv4 /24, IPv6 /48).
+# "none" logs full addresses.
+anonymize_ip = "truncate"
+# GDPR: query strings often carry personal data (e-mails, tokens, tracking
+# ids). By default they are left out of the request, the referer and the
+# redirect location.
+log_query = false
+# Take the client address from X-Forwarded-For / X-Real-IP only when the TCP
+# peer is one of these proxies (like nginx real_ip). Empty: the peer address.
+trusted_proxies = []
+# Built-in size based rotation of file output: rotate at max_bytes (0: never,
+# leave it to logrotate), keep max_files rotated files, gzip them.
+max_bytes = 0
+max_files = 7
+compress = true
+
 [admin]
 enabled = true
 # Keep the administration on a private interface (or behind a reverse proxy).

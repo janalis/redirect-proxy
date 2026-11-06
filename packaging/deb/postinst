@@ -12,6 +12,7 @@ if [ "$1" = "configure" ]; then
       --comment "redirect-proxy" redirect-proxy
   fi
   install -d -o redirect-proxy -g redirect-proxy -m 0750 /var/lib/redirect-proxy
+  install -d -o redirect-proxy -g redirect-proxy -m 0750 /var/log/redirect-proxy
   chown root:redirect-proxy /etc/redirect-proxy/config.toml
   chmod 0640 /etc/redirect-proxy/config.toml
 

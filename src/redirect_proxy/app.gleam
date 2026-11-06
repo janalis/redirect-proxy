@@ -5,12 +5,14 @@ import gleam/erlang/application
 import gleam/erlang/process
 import gleam/http/request
 import gleam/int
+import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/static_supervisor as supervisor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import mist
+import redirect_proxy/access_log
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
@@ -95,8 +97,10 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let store_subject = process.named_subject(store_name)
   let ports = process.new_subject()
 
+  use access <- result.try(start_access_log(cfg))
+
   let redirect_child =
-    mist.new(server.handler(cfg.server))
+    mist.new(server.handler(cfg.server, access))
     |> mist.bind(cfg.server.listen)
     |> mist.port(cfg.server.port)
     |> mist.after_start(fn(port, _, _) {
@@ -218,6 +222,18 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     admin_port:,
     api_port:,
   ))
+}
+
+/// Installs the access log handler. Returns the request-time settings, or
+/// `None` when access logging is disabled.
+fn start_access_log(
+  cfg: Config,
+) -> Result(Option(access_log.Settings), String) {
+  use Nil <- result.try(access_log.start(cfg.access_log))
+  case cfg.access_log.enabled {
+    False -> Ok(option.None)
+    True -> access_log.settings(cfg.access_log) |> result.map(option.Some)
+  }
 }
 
 fn wait_port(ports: process.Subject(#(String, Int)), name: String) -> Int {

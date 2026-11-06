@@ -6,7 +6,7 @@ if [ -d /run/systemd/system ]; then
 fi
 
 if [ "$1" = "purge" ]; then
-  rm -rf /var/lib/redirect-proxy
+  rm -rf /var/lib/redirect-proxy /var/log/redirect-proxy
   if getent passwd redirect-proxy >/dev/null; then
     userdel redirect-proxy >/dev/null 2>&1 || true
   fi

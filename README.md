@@ -37,6 +37,10 @@ rules. It never proxies traffic to an upstream.
   - Local accounts (PBKDF2-SHA256).
   - Optional OpenID Connect single sign-on.
   - Optional trusted reverse-proxy headers.
+- **Access logs**, enabled by default:
+  - Combined, Common and JSON formats, or your own nginx-style template.
+  - Written to stdout, stderr or a file, with rotation.
+  - GDPR-minded defaults: truncated IP addresses and no query strings.
 - **Plain files.**
   - `redirects.json` can be versioned, generated and edited by hand.
   - Reload it with `SIGHUP` or a button in the admin.
@@ -51,6 +55,7 @@ rules. It never proxies traffic to an upstream.
 - [REST API](#rest-api)
 - [Command line](#command-line)
 - [Operations](#operations)
+- [Access logs](#access-logs)
 - [Performance](#performance)
 - [Development](#development)
 - [Releasing](#releasing)
@@ -229,8 +234,11 @@ option. Each option can be overridden with an environment variable named
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE` | disabled |
+| `RP_ACCESS_LOG_ENABLED`, `_FORMAT`, `_ESCAPE`, `_OUTPUT` | `true`, `combined`, `default`, `stdout` |
+| `RP_ACCESS_LOG_ANONYMIZE_IP`, `_LOG_QUERY`, `_TRUSTED_PROXIES` | `truncate`, `false`, (none) |
+| `RP_ACCESS_LOG_MAX_BYTES`, `_MAX_FILES`, `_COMPRESS` | `0` (no rotation), `7`, `true` |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
-| `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`) |
+| `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`); does not affect the access log |
 | `NO_COLOR` | plain log lines (automatic when output is not a terminal) |
 
 ## Administration and authentication
@@ -388,6 +396,80 @@ for it. `rules import` writes the file; a running server applies it on
 - **Tuning.** Pass extra VM flags with `ERL_FLAGS`. For example, on a small
   host `ERL_FLAGS="+S 2:2 +SDio 2"` limits schedulers and lowers memory use.
 
+## Access logs
+
+The redirect listener writes one line per request. It is configured in the
+`[access_log]` section of the configuration file. By default it uses the
+Combined Log Format on stdout, so `docker logs`, `journalctl -u
+redirect-proxy` and Kubernetes log collectors pick it up:
+
+```text
+203.0.113.0 - - [06/Nov/2026:10:00:00 +0000] "GET /old-page HTTP/1.1" 301 0 "https://www.example.org/" "Mozilla/5.0 ..."
+```
+
+| `format` | Use with |
+| --- | --- |
+| `combined` (default) | GoAccess (`--log-format=COMBINED`), AWStats, Logstash (`%{COMBINEDAPACHELOG}`), Fluent Bit (`apache2` parser), Datadog and Loki nginx pipelines |
+| `common` | Tools expecting the NCSA Common Log Format |
+| `json` | Elasticsearch/OpenSearch, Loki (`json` stage), Vector, Splunk, Datadog |
+| a template | Anything else, e.g. `'$time_iso8601 $remote_addr $status $request_time $rule_id'` |
+
+Templates use nginx variable names (`$var` or `${var}`):
+
+- `remote_addr`, `remote_user`
+- `time_local`, `time_iso8601`, `msec`
+- `request`, `request_method`, `request_uri`, `uri`, `args`,
+  `server_protocol`, `host`
+- `status`, `body_bytes_sent`, `request_time`
+- `http_referer`, `http_user_agent`, `http_<header>`
+- `location` (the redirect target), `rule_id` (the matched rule)
+
+Values are escaped like nginx `escape=default` (`"` becomes `\x22`); set
+`escape = "json"` to build your own JSON lines.
+
+**Files.** Set `output` to any path, for example
+`/var/log/redirect-proxy/access.log` (the Debian package creates that
+directory and ships a logrotate policy). Missing directories are created. A
+renamed file is reopened within a second, so logrotate needs no
+`copytruncate` or signal. You can also use the built-in rotation:
+`max_bytes`, `max_files` and `compress`.
+
+**Performance.** Each request process formats its own line, and a dedicated
+OTP logger handler batches the writes. The handler never blocks or throttles
+redirects. Under extreme overload it drops lines and reports how many were
+dropped in the application log. `RP_LOG_LEVEL` only controls the application
+log, so access logging stays on with `RP_LOG_LEVEL=warning`. Set
+`enabled = false` to turn it off entirely.
+
+**Client address behind a proxy.** List your load balancers in
+`trusted_proxies` (CIDRs). The address is then taken from `X-Forwarded-For`
+(the rightmost hop that is not trusted) or `X-Real-IP`. Headers sent by any
+other peer are ignored.
+
+### GDPR
+
+Access logs contain personal data, IP addresses in particular. The defaults
+follow data minimisation (GDPR art. 5(1)(c)):
+
+- **IP addresses are truncated** (`anonymize_ip = "truncate"`): IPv4 to /24
+  (`203.0.113.0`) and IPv6 to /48. This is done before the line is written,
+  so full addresses never reach the disk.
+- **Query strings are not logged** (`log_query = false`). They are left out
+  of the request line, the referer and the redirect location, because they
+  often carry e-mail addresses, tokens or tracking identifiers.
+- No cookies, credentials or request bodies are ever logged.
+- The `User-Agent` and the referer (without its query) are kept, as in the
+  standard formats. Use the `common` preset or a template to drop them.
+
+You remain the data controller:
+
+- **Retention.** Set a retention period: `max_files`, a logrotate `rotate`
+  count, or your log platform's retention.
+- **Records.** Document access logging (security, abuse prevention,
+  statistics) in your record of processing activities.
+- **Full data.** Only set `anonymize_ip = "none"` or `log_query = true` when
+  you have a lawful basis for keeping that data.
+
 ## Performance
 
 `make bench` (or the *Benchmark* workflow) generates 10 000 exact, 1 000
@@ -399,7 +481,9 @@ prefix and 500 regex rules. It then load-tests four scenarios with
 - The last regex.
 - A miss, where every rule is tried.
 
-It reports throughput, latency percentiles and memory.
+It reports throughput, latency percentiles and memory. The access log is
+written to a file during the run, as it is enabled by default
+(`RP_ACCESS_LOG_ENABLED=false` measures without it).
 
 Measured locally on a laptop with the self-contained bundle, using
 ApacheBench (single-threaded, so the client is the bottleneck): exact-rule

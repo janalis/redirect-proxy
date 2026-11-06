@@ -1,0 +1,13 @@
+# Used when access_log.output points to /var/log/redirect-proxy/.
+# redirect-proxy reopens a renamed file by itself: no copytruncate, signal or
+# create needed. Rotation runs as the service user, which owns the directory.
+/var/log/redirect-proxy/*.log {
+    su redirect-proxy redirect-proxy
+    daily
+    rotate 14
+    missingok
+    notifempty
+    nocreate
+    compress
+    delaycompress
+}

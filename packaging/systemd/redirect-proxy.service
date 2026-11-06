@@ -43,6 +43,8 @@ SystemCallArchitectures=native
 ReadWritePaths=/var/lib/redirect-proxy
 StateDirectory=redirect-proxy
 StateDirectoryMode=0750
+LogsDirectory=redirect-proxy
+LogsDirectoryMode=0750
 UMask=0027
 
 [Install]

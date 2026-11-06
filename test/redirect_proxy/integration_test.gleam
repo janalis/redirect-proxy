@@ -3,6 +3,7 @@
 
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/dynamic/decode
 import gleam/erlang/charlist
 import gleam/erlang/process
 import gleam/http
@@ -39,6 +40,10 @@ fn boot(cfg: config.Config) -> Env {
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
       storage: config.StorageConfig(data_dir: dir, backups: 3),
+      access_log: config.AccessLogConfig(
+        ..cfg.access_log,
+        output: dir <> "/logs/access.log",
+      ),
     )
   let assert Ok(Nil) =
     simplifile.write(
@@ -173,6 +178,92 @@ pub fn redirect_listener_test() {
 
   let resp = send(http.Head, env.redirect <> "/old", [], "")
   assert resp.status == 301
+}
+
+pub fn access_log_test() {
+  let env = boot(config.default())
+  let _ =
+    get(env.redirect <> "/old?email=someone@example.com", [
+      #("referer", "https://ref.test/page?token=secret"),
+      #("user-agent", "tester \"1\""),
+    ])
+  let _ = get(env.redirect <> "/missing", [])
+  let lines = access_lines(env.dir, 2)
+  let assert [hit, miss] = lines
+  assert string.starts_with(hit, "127.0.0.0 - - [")
+  assert string.contains(hit, "] \"GET /old HTTP/1.1\" 301 0 ")
+  assert string.ends_with(
+    hit,
+    "\"https://ref.test/page\" \"tester \\x221\\x22\"",
+  )
+  assert !string.contains(hit, "someone")
+  assert !string.contains(hit, "secret")
+  assert string.contains(miss, "\"GET /missing HTTP/1.1\" 404 9 \"-\"")
+}
+
+pub fn access_log_json_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(
+          ..d.access_log,
+          format: "json",
+          log_query: True,
+          anonymize_ip: "none",
+        ),
+      ),
+    )
+  let _ = get(env.redirect <> "/blog/7?a=1", [])
+  let assert [line] = access_lines(env.dir, 1)
+  let decoder = {
+    use addr <- decode.field("remote_addr", decode.string)
+    use status <- decode.field("status", decode.int)
+    use args <- decode.field("args", decode.string)
+    use location <- decode.field("location", decode.string)
+    use rule_id <- decode.field("rule_id", decode.string)
+    decode.success(#(addr, status, args, location, rule_id))
+  }
+  let assert Ok(#("127.0.0.1", 308, "a=1", "/articles/7", rule_id)) =
+    json.parse(line, decoder)
+  assert rule_id != ""
+}
+
+pub fn access_log_disabled_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, enabled: False),
+      ),
+    )
+  let _ = get(env.redirect <> "/old", [])
+  process.sleep(100)
+  assert simplifile.read(env.dir <> "/logs/access.log")
+    |> result.unwrap("")
+    == ""
+}
+
+/// Waits for the access log handler to flush `count` lines.
+fn access_lines(dir: String, count: Int) -> List(String) {
+  access_lines_loop(dir <> "/logs/access.log", count, 250)
+}
+
+fn access_lines_loop(path: String, count: Int, tries: Int) -> List(String) {
+  let lines =
+    simplifile.read(path)
+    |> result.unwrap("")
+    |> string.split("\n")
+    |> list.filter(fn(l) { l != "" })
+  case list.length(lines) >= count || tries == 0 {
+    True -> lines
+    False -> {
+      process.sleep(20)
+      access_lines_loop(path, count, tries - 1)
+    }
+  }
 }
 
 pub fn fallback_url_test() {
