@@ -15,11 +15,13 @@ import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/login as login_view
 import redirect_proxy/admin/web.{
-  type Context, form_value, html, log_value, oidc_state_cookie_name,
-  require_csrf_form, session_cookie_name, set_session_cookie,
+  type Context, form_value, html, known_device, log_value,
+  oidc_state_cookie_name, require_csrf_form, session_cookie_name,
+  set_device_cookie, set_session_cookie,
 } as _
 import redirect_proxy/audit
 import redirect_proxy/config
+import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
@@ -195,10 +197,15 @@ pub fn login_page(req: Request, ctx: Context) -> Response {
 /// session gets no more guesses than the login form gives. The seconds to
 /// wait while blocked.
 pub fn password_check_blocked(
+  req: Request,
   ctx: Context,
   username: String,
 ) -> Result(Int, Nil) {
-  ratelimit.retry_after(login_checks(ctx.client_ip, username))
+  ratelimit.retry_after(login_checks(
+    ctx.client_ip,
+    username,
+    known_device(req, ctx, username),
+  ))
 }
 
 pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
@@ -217,19 +224,37 @@ pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
 }
 
 fn login_pair_key(ip: String, username: String) -> String {
-  "login:" <> ip <> " " <> username
+  "login:" <> ffi.throttle_address(ip) <> " " <> username
 }
 
-fn login_checks(ip: String, username: String) -> List(#(String, Int)) {
-  [
+fn login_ip_key(ip: String) -> String {
+  "login-ip:" <> ffi.throttle_address(ip)
+}
+
+/// The limits a login attempt is checked against. A browser where the
+/// account signed in before (`known_device`) is not held back by the
+/// account's limit, which failures from anywhere count towards.
+fn login_checks(
+  ip: String,
+  username: String,
+  known_device: Bool,
+) -> List(#(String, Int)) {
+  let checks = [
     #(login_pair_key(ip, username), login_pair_limit),
-    #("login-ip:" <> ip, login_ip_limit),
-    #("login-user:" <> username, login_user_limit),
+    #(login_ip_key(ip), login_ip_limit),
   ]
+  case known_device {
+    True -> checks
+    False -> [login_user_check(username), ..checks]
+  }
+}
+
+fn login_user_check(username: String) -> #(String, Int) {
+  #("login-user:" <> username, login_user_limit)
 }
 
 fn record_login_failure(ip: String, username: String) -> Nil {
-  list.each(login_checks(ip, username), fn(check) {
+  list.each(login_checks(ip, username, False), fn(check) {
     ratelimit.record_failure(check.0, login_window)
   })
   metrics.incr(metrics.LoginFailures)
@@ -256,7 +281,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
       ),
     )
   }
-  let ip_key = "login-ip:" <> ctx.client_ip
+  let ip_key = login_ip_key(ctx.client_ip)
   use <- bool.lazy_guard(string.byte_size(username) > max_username_bytes, fn() {
     ratelimit.record_failure(ip_key, login_window)
     fail("Invalid username or password.", 401, "")
@@ -264,7 +289,9 @@ pub fn login(req: Request, ctx: Context) -> Response {
   let pair_key = login_pair_key(ctx.client_ip, username)
   let who = log_value(username) <> " ip=" <> ctx.client_ip
 
-  case ratelimit.retry_after(login_checks(ctx.client_ip, username)) {
+  let checks =
+    login_checks(ctx.client_ip, username, known_device(req, ctx, username))
+  case ratelimit.retry_after(checks) {
     Ok(seconds) -> {
       log.warning("login throttled for user=" <> who)
       audit_once_per_window(ctx.client_ip, seconds, fn() {
@@ -315,6 +342,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
           let next = list.key_find(wisp.get_query(req), "next")
           wisp.redirect(safe_next(next))
           |> set_session_cookie(req, ctx, s)
+          |> set_device_cookie(req, ctx, user.username)
         }
         Error(Nil) -> {
           record_login_failure(ctx.client_ip, username)
@@ -445,7 +473,7 @@ fn after_logout(ctx: Context, s: Session) -> String {
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
-  let start_key = "sso-start-ip:" <> ctx.client_ip
+  let start_key = "sso-start-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
   ratelimit.record_failure(start_key, login_window)
   let next = safe_next(list.key_find(wisp.get_query(req), "next"))
@@ -470,7 +498,7 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
 
 pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
-  let failure_key = "sso-callback-ip:" <> ctx.client_ip
+  let failure_key = "sso-callback-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
   let outcome =
     oidc.complete(
@@ -589,7 +617,7 @@ fn sso_throttle(
 /// Runs `write` (an audit entry about throttling) at most once per address
 /// while it stays throttled.
 fn audit_once_per_window(client_ip: String, seconds: Int, write: fn() -> Nil) {
-  let key = "throttle-audited:" <> client_ip
+  let key = "throttle-audited:" <> ffi.throttle_address(client_ip)
   case ratelimit.is_blocked(key, 1) {
     True -> Nil
     False -> {

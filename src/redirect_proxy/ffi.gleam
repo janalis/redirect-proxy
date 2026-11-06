@@ -129,6 +129,10 @@ pub fn counter_put(ref: Counters, index: Int, value: Int) -> Nil
 
 // --- network ----------------------------------------------------------------
 
+/// The address throttling counts failures for: IPv6 addresses by /64.
+@external(erlang, "redirect_proxy_ffi", "throttle_address")
+pub fn throttle_address(ip: String) -> String
+
 @external(erlang, "redirect_proxy_ffi", "ip_in_cidr")
 pub fn ip_in_cidr(ip: String, cidr: String) -> Bool
 

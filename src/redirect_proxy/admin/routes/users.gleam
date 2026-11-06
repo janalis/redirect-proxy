@@ -146,8 +146,13 @@ pub fn confirm_delete_user(
 /// and your current password: a stolen session or an SSO account cannot take
 /// over local accounts.
 /// Too many wrong current passwords: 429 until the window ends.
-fn throttled(ctx: Context, s: Session, next: fn() -> Response) -> Response {
-  case auth.password_check_blocked(ctx, s.username) {
+fn throttled(
+  req: Request,
+  ctx: Context,
+  s: Session,
+  next: fn() -> Response,
+) -> Response {
+  case auth.password_check_blocked(req, ctx, s.username) {
     Error(Nil) -> next()
     Ok(seconds) ->
       error_page(
@@ -199,7 +204,7 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
       False -> html(422, users_view.account(s, features(ctx), None, [reason]))
     }
   }
-  use <- throttled(ctx, s)
+  use <- throttled(req, ctx, s)
   let current_ok = case users.get(ctx.users, s.username) {
     Ok(me) ->
       password.verify(form_value(form, "current_password"), me.password_hash)

@@ -194,3 +194,14 @@ pub fn file_lock_in_a_read_only_directory_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   assert result == Ok(7)
 }
+
+/// IPv6 addresses are throttled by /64: a host usually holds a whole one.
+pub fn throttle_address_test() {
+  assert ffi.throttle_address("192.0.2.7") == "192.0.2.7"
+  assert ffi.throttle_address("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
+  assert ffi.throttle_address("2001:db8:1:2:bbbb::9") == "2001:db8:1:2::/64"
+  assert ffi.throttle_address("2001:db8:1:3::1") == "2001:db8:1:3::/64"
+  assert ffi.throttle_address("::ffff:192.0.2.7") == "192.0.2.7"
+  assert ffi.throttle_address("not an address") == "not an address"
+  assert ffi.throttle_address("") == ""
+}

@@ -9,7 +9,7 @@
     ets_delete_older/2,
          window_record/4, window_get/2, window_purge/2,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
+    ip_in_cidr/2, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
     on_sighup/1,
     plain_arguments/0, halt/1, read_password/1,
@@ -340,6 +340,20 @@ ip_in_cidr(IpBin, CidrBin) ->
             V4 = {A bsr 8, A band 255, B bsr 8, B band 255},
             ip_in_cidr(list_to_binary(inet:ntoa(V4)), CidrBin);
         _ -> false
+    end.
+
+%% The address that throttling counts failures for: IPv4 addresses as they
+%% are, IPv6 addresses by /64 (one host usually holds a whole /64, so
+%% counting single addresses would give it unlimited attempts). IPv4-mapped
+%% IPv6 addresses count as IPv4. Anything else is returned unchanged.
+throttle_address(IpBin) ->
+    case parse_ip(IpBin) of
+        {ok, {0, 0, 0, 0, 0, 16#ffff, A, B}} ->
+            list_to_binary(inet:ntoa({A bsr 8, A band 255, B bsr 8, B band 255}));
+        {ok, {A, B, C, D, _, _, _, _}} ->
+            <<(list_to_binary(inet:ntoa({A, B, C, D, 0, 0, 0, 0})))/binary, "/64">>;
+        {ok, Ip} when tuple_size(Ip) =:= 4 -> list_to_binary(inet:ntoa(Ip));
+        _ -> IpBin
     end.
 
 valid_cidr(CidrBin) ->

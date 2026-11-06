@@ -24,7 +24,21 @@ import redirect_proxy/log
 import redirect_proxy/metrics
 import wisp.{type Request, type Response}
 
+/// Failed token requests allowed per window for one client id from one
+/// address, and from one address (all client ids). There is no limit per
+/// client id alone: secrets are 256 random bits, so it would not slow down
+/// guessing, only let anyone lock a deployment pipeline out.
+const pair_limit = 10
+
+const ip_limit = 30
+
+const window = 900
+
 pub fn token_endpoint(req: Request, ctx: Context) -> Response {
+  let ip = ffi.throttle_address(ctx.client_ip)
+  let ip_key = "token-ip:" <> ip
+  // before the body is read: a blocked address costs no parsing
+  use <- throttled([#(ip_key, ip_limit)])
   use form <- wisp.require_form(req)
   let field = fn(name) { list.key_find(form.values, name) |> result.unwrap("") }
   let basic = basic_credentials(req)
@@ -32,25 +46,12 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
     Ok(credentials) -> credentials
     Error(Nil) -> #(field("client_id"), field("client_secret"))
   }
-  // Same scheme as admin logins: per client address and client id, per
-  // address, and per client id (high, so that failures from elsewhere cannot
-  // cheaply lock a deployment pipeline out).
   let client_id = case string.byte_size(client_id) > 128 {
     True -> ""
     False -> client_id
   }
-  let pair_key = "token:" <> ctx.client_ip <> " " <> client_id
-  let ip_key = "token-ip:" <> ctx.client_ip
-  let client_key = "token-client:" <> client_id
-  let throttled =
-    ratelimit.retry_after([#(pair_key, 10), #(ip_key, 30), #(client_key, 100)])
-  use <- bool.lazy_guard(result.is_ok(throttled), fn() {
-    oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
-    |> wisp.set_header(
-      "retry-after",
-      int.to_string(result.unwrap(throttled, 1)),
-    )
-  })
+  let pair_key = "token:" <> ip <> " " <> client_id
+  use <- throttled([#(pair_key, pair_limit)])
   use <- bool.lazy_guard(field("grant_type") != "client_credentials", fn() {
     oauth_error(
       400,
@@ -60,9 +61,8 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
   })
   case client_id, clients.authenticate(ctx.clients, client_id, secret) {
     "", _ | _, Error(Nil) -> {
-      ratelimit.record_failure(pair_key, 900)
-      ratelimit.record_failure(ip_key, 900)
-      ratelimit.record_failure(client_key, 900)
+      ratelimit.record_failure(pair_key, window)
+      ratelimit.record_failure(ip_key, window)
       metrics.incr(metrics.ApiAuthFailures)
       audit_token(ctx, client_id, "api.token_rejected", [])
       log.warning(
@@ -176,4 +176,13 @@ fn oauth_error(status: Int, error: String, description: String) -> Response {
     ]),
   )
   |> wisp.set_header("pragma", "no-cache")
+}
+
+fn throttled(checks: List(#(String, Int)), next: fn() -> Response) -> Response {
+  case ratelimit.retry_after(checks) {
+    Error(Nil) -> next()
+    Ok(seconds) ->
+      oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
+      |> wisp.set_header("retry-after", int.to_string(seconds))
+  }
 }
