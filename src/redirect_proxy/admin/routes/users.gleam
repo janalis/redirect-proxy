@@ -1,11 +1,13 @@
 //// Local administrator accounts.
 
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None}
 import gleam/result
 import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/admin/routes/auth
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/web.{
@@ -100,6 +102,22 @@ pub fn confirm_delete_user(
 /// Changing a local password, yours or another user's, needs a local session
 /// and your current password: a stolen session or an SSO account cannot take
 /// over local accounts.
+/// Too many wrong current passwords: 429 until the window ends.
+fn throttled(ctx: Context, s: Session, next: fn() -> Response) -> Response {
+  case auth.password_check_blocked(ctx, s.username) {
+    Error(Nil) -> next()
+    Ok(seconds) ->
+      error_page(
+        ctx,
+        s,
+        429,
+        "Too many attempts",
+        "Too many wrong passwords. Try again in a few minutes.",
+      )
+      |> wisp.set_header("retry-after", int.to_string(seconds))
+  }
+}
+
 pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
   use <- bool.lazy_guard(!show_users(ctx), fn() { not_found(ctx, s) })
   use form <- require_csrf_form(req, s)
@@ -117,11 +135,13 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
     |> result.unwrap(s.username)
     |> users.normalise
   let pass = form_value(form, "password")
+  use <- throttled(ctx, s)
   let current_ok = case users.get(ctx.users, s.username) {
     Ok(me) ->
       password.verify(form_value(form, "current_password"), me.password_hash)
     Error(Nil) -> False
   }
+  auth.record_password_check(ctx, s.username, current_ok)
   let result = {
     use <- bool.guard(
       !current_ok,

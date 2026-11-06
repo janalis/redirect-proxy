@@ -177,6 +177,51 @@ pub fn login_page(req: Request, ctx: Context) -> Response {
   }
 }
 
+/// The change-password form checks the current password: a wrong one
+/// counts as a failed login for that account and client, so a stolen
+/// session gets no more guesses than the login form gives. The seconds to
+/// wait while blocked.
+pub fn password_check_blocked(
+  ctx: Context,
+  username: String,
+) -> Result(Int, Nil) {
+  ratelimit.retry_after(login_checks(ctx.client_ip, username))
+}
+
+pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
+  case ok {
+    True -> ratelimit.reset(login_pair_key(ctx.client_ip, username))
+    False -> {
+      record_login_failure(ctx.client_ip, username)
+      log.warning(
+        "wrong current password for user="
+        <> log_value(username)
+        <> " ip="
+        <> ctx.client_ip,
+      )
+    }
+  }
+}
+
+fn login_pair_key(ip: String, username: String) -> String {
+  "login:" <> ip <> " " <> username
+}
+
+fn login_checks(ip: String, username: String) -> List(#(String, Int)) {
+  [
+    #(login_pair_key(ip, username), login_pair_limit),
+    #("login-ip:" <> ip, login_ip_limit),
+    #("login-user:" <> username, login_user_limit),
+  ]
+}
+
+fn record_login_failure(ip: String, username: String) -> Nil {
+  list.each(login_checks(ip, username), fn(check) {
+    ratelimit.record_failure(check.0, login_window)
+  })
+  metrics.incr(metrics.LoginFailures)
+}
+
 pub fn login(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.local_auth.enabled, fn() {
     wisp.not_found()
@@ -203,17 +248,10 @@ pub fn login(req: Request, ctx: Context) -> Response {
     ratelimit.record_failure(ip_key, login_window)
     fail("Invalid username or password.", 401, "")
   })
-  let pair_key = "login:" <> ctx.client_ip <> " " <> username
-  let user_key = "login-user:" <> username
+  let pair_key = login_pair_key(ctx.client_ip, username)
   let who = log_value(username) <> " ip=" <> ctx.client_ip
 
-  case
-    ratelimit.retry_after([
-      #(pair_key, login_pair_limit),
-      #(ip_key, login_ip_limit),
-      #(user_key, login_user_limit),
-    ])
-  {
+  case ratelimit.retry_after(login_checks(ctx.client_ip, username)) {
     Ok(seconds) -> {
       log.warning("login throttled for user=" <> who)
       audit_once_per_window(ctx.client_ip, seconds, fn() {
@@ -265,10 +303,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
           |> set_session_cookie(req, ctx, s)
         }
         Error(Nil) -> {
-          ratelimit.record_failure(pair_key, login_window)
-          ratelimit.record_failure(ip_key, login_window)
-          ratelimit.record_failure(user_key, login_window)
-          metrics.incr(metrics.LoginFailures)
+          record_login_failure(ctx.client_ip, username)
           log.warning("failed login for user=" <> who)
           audit_auth(ctx, username, "auth.login_failed", "local")
           fail("Invalid username or password.", 401, username)

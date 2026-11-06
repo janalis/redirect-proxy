@@ -19,7 +19,7 @@ pub fn is_blocked(key: String, limit: Int) -> Bool {
 /// The seconds left until `key` is no longer blocked.
 pub fn blocked_for(key: String, limit: Int) -> Result(Int, Nil) {
   let now = ffi.now_seconds()
-  case ffi.ets_get(table, key) {
+  case ffi.window_get(table, key) {
     Ok(#(window_end, count)) if window_end > now && count >= limit ->
       Ok(window_end - now)
     _ -> Error(Nil)
@@ -34,13 +34,9 @@ pub fn retry_after(checks: List(#(String, Int))) -> Result(Int, Nil) {
   |> list.max(int.compare)
 }
 
+/// Counts a failure, atomically: concurrent failures are all counted.
 pub fn record_failure(key: String, window: Int) -> Nil {
-  let now = ffi.now_seconds()
-  let entry = case ffi.ets_get(table, key) {
-    Ok(#(window_end, count)) if window_end > now -> #(window_end, count + 1)
-    _ -> #(now + window, 1)
-  }
-  ffi.ets_put(table, key, entry)
+  ffi.window_record(table, key, ffi.now_seconds(), window)
 }
 
 pub fn reset(key: String) -> Nil {
@@ -48,5 +44,5 @@ pub fn reset(key: String) -> Nil {
 }
 
 pub fn purge_expired() -> Int {
-  ffi.ets_delete_older(table, ffi.now_seconds())
+  ffi.window_purge(table, ffi.now_seconds())
 }

@@ -292,11 +292,14 @@ fn rule_not_found(id: String) -> Response {
 fn list_rules(req: Request, ctx: Context) -> Response {
   let query = wisp.get_query(req)
   let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
-  let page = int.parse(get("page")) |> result.unwrap(1) |> int.max(1)
-  let per_page =
-    int.parse(get("per_page"))
-    |> result.unwrap(default_per_page)
-    |> int.clamp(1, max_per_page)
+  use page <- result_or_response(positive_param(get, "page", 1))
+  use per_page <- result_or_response(positive_param(
+    get,
+    "per_page",
+    default_per_page,
+  ))
+  // larger pages are capped rather than refused
+  let per_page = int.min(per_page, max_per_page)
   use #(matching, version) <- result_or_response(filtered_rules(ctx, get))
   case store_rules.sort(matching, get("sort"), metrics.hits, metrics.last_hit) {
     Error(Nil) ->
@@ -356,6 +359,22 @@ fn list_rules(req: Request, ctx: Context) -> Response {
         _ -> wisp.set_header(resp, "link", string.join(links, ", "))
       }
     }
+  }
+}
+
+/// A positive integer query parameter, or `default` when it is not set.
+fn positive_param(
+  get: fn(String) -> String,
+  name: String,
+  default: Int,
+) -> Result(Int, Response) {
+  case get(name) {
+    "" -> Ok(default)
+    value ->
+      case int.parse(value) {
+        Ok(n) if n >= 1 -> Ok(n)
+        _ -> Error(problem.bad_request(name <> " must be a positive integer."))
+      }
   }
 }
 
@@ -672,14 +691,16 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
 fn test_url(req: Request, ctx: Context) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
   let tolerant = config.ignore_trailing_slash(ctx.config)
-  case matcher.resolve_url(snapshot.current(), url, tolerant) {
+  // one read of the published rules for the result and its explanation
+  let current = snapshot.current()
+  case matcher.resolve_url(current, url, tolerant) {
     matcher.BadUrl ->
       problem.bad_request(
         "url must be an absolute URL, e.g. https://host/path.",
       )
     resolution -> {
       let explanation =
-        explain.explain(snapshot.current(), store.all(ctx.store), url, tolerant)
+        explain.explain(current, store.all(ctx.store), url, tolerant)
       let details = case explanation {
         Ok(e) -> [
           #(

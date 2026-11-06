@@ -7,6 +7,7 @@
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
+         window_record/4, window_get/2, window_purge/2,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
     ip_in_cidr/2, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
@@ -290,6 +291,29 @@ ets_delete_older(Table, Now) ->
                            [{'andalso', {is_tuple, '$1'},
                              {'<', {element, 1, '$1'}, Now}}],
                            [true]}]).
+
+%% ---------------------------------------------------------------------------
+%% Failure windows (login throttling): rows are {Key, WindowEnd, Count} so
+%% that concurrent failures are counted atomically (ets:update_counter).
+%% ---------------------------------------------------------------------------
+
+window_record(Table, Key, Now, Window) ->
+    T = binary_to_existing_atom(Table),
+    %% an ended window starts over (each call is atomic on its own; two
+    %% failures racing here both count in the new window)
+    _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
+    _ = ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}),
+    nil.
+
+window_get(Table, Key) ->
+    case ets:lookup(binary_to_existing_atom(Table), Key) of
+        [{_, WindowEnd, Count}] -> {ok, {WindowEnd, Count}};
+        [] -> {error, nil}
+    end.
+
+window_purge(Table, Now) ->
+    ets:select_delete(binary_to_existing_atom(Table),
+                      [{{'_', '$1', '_'}, [{'=<', '$1', Now}], [true]}]).
 
 %% ---------------------------------------------------------------------------
 %% Atomic counters (metrics)
