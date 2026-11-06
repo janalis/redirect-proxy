@@ -153,6 +153,21 @@ pub fn query_string_handling_test() {
   assert loc("/e", Ok("q=1")) == "/f"
 }
 
+/// A target ending in `?` or `&` gets the preserved query without an extra
+/// separator.
+pub fn preserved_query_after_an_open_target_query_test() {
+  let keep = fn(source, target) {
+    Rule(..r(source, "*", rule.Exact, source, target), preserve_query: True)
+  }
+  let m = matcher.build([keep("/open", "/d?"), keep("/amp", "/d?x=1&#top")])
+  let loc = fn(path, query) {
+    let assert Ok(found) = matcher.lookup(m, "h", path)
+    matcher.location(found, Ok(query))
+  }
+  assert loc("/open", "q=1") == "/d?q=1"
+  assert loc("/amp", "q=1") == "/d?x=1&q=1#top"
+}
+
 pub fn location_strips_crlf_test() {
   let m = matcher.build([r("1", "*", rule.Prefix, "/p/", "/x/$1")])
   let assert Ok(found) = matcher.lookup(m, "h", "/p/a\r\nb")
@@ -523,6 +538,10 @@ pub fn host_placeholders_test() {
     ])
   assert location(m, "a.b.old.test", "/p") == Ok("https://a.b.new.test/p")
   assert location(m, "old.test", "/p") == Error(Nil)
+  // `_` is allowed in rule hosts, so in ${host} and ${sub} too
+  assert location(m, "my_app.old.test", "/p") == Ok("https://my_app.new.test/p")
+  let m = matcher.build([https])
+  assert location(m, "my_app.test", "/p") == Ok("https://my_app.test/p")
 }
 
 /// Exact rules with query conditions: every parameter must be present with
@@ -551,6 +570,9 @@ pub fn query_conditions_test() {
   assert at("") == "/pages"
   // percent-encoding does not matter
   assert at("id=%34%32") == "/article-42"
+  // a malformed parameter does not hide the others
+  assert at("id=42&x=%zz") == "/article-42"
+  assert at("x=%zz&lang=fr&id=42") == "/fr/article-42"
   // the URL tester resolves the query too
   let assert matcher.Redirected(_, location) =
     matcher.resolve_url(m, "https://x.test/page.php?id=42", False)

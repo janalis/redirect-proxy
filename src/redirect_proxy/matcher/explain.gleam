@@ -164,10 +164,7 @@ fn int_compare(a: Int, b: Int) -> order.Order {
 }
 
 fn matches(r: Rule, path: String, query: String) -> Bool {
-  rule.query_matches(
-    rule.query_conditions(r),
-    uri.parse_query(query) |> result.unwrap([]),
-  )
+  rule.query_matches(rule.query_conditions(r), rule.request_query(query))
   && matches_path(r, path)
 }
 

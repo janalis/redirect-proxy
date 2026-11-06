@@ -578,9 +578,10 @@ for it. `rules import` writes the file; a running server applies it on
     rules changed meanwhile, nothing is written and the updated preview is
     shown again. The API does the same with the `ETag` of a dry run.
 - **Hit counts.** `<data_dir>/hits.json` keeps each rule's hit count and
-  last hit time across restarts. It is written every minute and when a stop
-  begins (`SIGTERM`), so a crash loses at most a minute of counts. Deleting
-  it resets the counts.
+  last hit time across restarts. It is written every minute, when a stop
+  begins (`SIGTERM`) and right before the VM stops, so the requests served
+  while draining are counted and a crash loses at most a minute of counts.
+  Deleting it resets the counts.
 - **Backups.** Each change keeps the previous file as
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule

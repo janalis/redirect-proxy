@@ -38,7 +38,7 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store/rules.{
   check_conflicts, check_lint, check_loop, merge, prepare_import, validate_all,
-  warn_problems,
+  warn_loops, warn_problems,
 } as store_rules
 import simplifile
 
@@ -159,6 +159,8 @@ pub opaque type Message {
   /// Every second: saves the hit counts when due (`hits_interval`) or when
   /// the node starts draining before a stop.
   SaveHits(self: Subject(Message))
+  /// Saves the hit counts now: right before the node stops.
+  FlushHits(reply: Subject(Nil))
 
   /// Every second: republishes the rules when one starts or expires.
   Schedule(self: Subject(Message))
@@ -459,6 +461,12 @@ pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
   actor.call(store, 60_000, Reload(actor_name, _))
 }
 
+/// Saves the hit counts and waits for the write, so that the hits counted
+/// while draining before a stop are kept.
+pub fn flush_hits(store: Store) -> Nil {
+  actor.call(store, 10_000, FlushHits)
+}
+
 /// Reload without waiting for the result (used by the SIGHUP handler).
 pub fn reload_async(store: Store) -> Nil {
   process.send(store, ReloadInBackground("signal:SIGHUP"))
@@ -558,6 +566,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           check_loop(built, valid, state.settings.ignore_trailing_slash)
           |> result.map_error(Invalid),
         )
+        // the old version may have shadowed a rule that loops
+        let built =
+          warn_loops(built, rules, state.settings.ignore_trailing_slash)
         use fingerprint <- result.try(
           commit(state.settings, rules, built) |> result.map_error(Invalid),
         )
@@ -722,6 +733,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       })
     }
 
+    FlushHits(reply) -> {
+      save_hits(state)
+      process.send(reply, Nil)
+      actor.continue(State(..state, hits_saved_at: ffi.now_seconds()))
+    }
     SaveHits(self) -> {
       process.send_after(self, 1000, SaveHits(self))
       let now = ffi.now_seconds()
@@ -749,7 +765,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
-          publish(matcher.build(state.rules), state.settings, state.rules)
+          let built =
+            warn_loops(
+              matcher.build(state.rules),
+              state.rules,
+              state.settings.ignore_trailing_slash,
+            )
+          publish(built, state.settings, state.rules)
         }
       }
       actor.continue(State(..state, checked_at: now))

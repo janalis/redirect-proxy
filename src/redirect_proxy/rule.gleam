@@ -397,6 +397,18 @@ pub fn query_conditions(rule: Rule) -> List(#(String, String)) {
   }
 }
 
+/// The parameters of a request query string. A malformed parameter (a bad
+/// percent escape such as `%zz`) is skipped instead of discarding the whole
+/// query, so that it cannot hide the parameters a rule matches on.
+pub fn request_query(query: String) -> List(#(String, String)) {
+  case uri.parse_query(query) {
+    Ok(params) -> params
+    Error(Nil) ->
+      string.split(query, "&")
+      |> list.flat_map(fn(pair) { uri.parse_query(pair) |> result.unwrap([]) })
+  }
+}
+
 /// Whether a request query string has every condition.
 pub fn query_matches(
   conditions: List(#(String, String)),
@@ -552,7 +564,8 @@ pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
   }
 }
 
-/// Only letters, digits, `-` and `.`: what `${host}` may hold.
+/// Only letters, digits, `-`, `_` and `.` (what a rule host may hold): what
+/// `${host}` and `${sub}` may hold.
 pub fn is_host_name(host: String) -> Bool {
   host != "" && list.all(string.to_graphemes(host), host_char)
 }
@@ -845,7 +858,7 @@ pub fn guard_location(
 }
 
 fn host_char(c: String) -> Bool {
-  string.contains("abcdefghijklmnopqrstuvwxyz0123456789-.", c)
+  string.contains("abcdefghijklmnopqrstuvwxyz0123456789-_.", c)
 }
 
 fn drop_slashes(text: String) -> String {

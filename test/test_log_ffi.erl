@@ -1,5 +1,6 @@
 -module(test_log_ffi).
 -export([handler_level/0, primary_level/0, formatter_module/0, format_json/2]).
+-export([capture_start/0, capture_stop/0, log/2]).
 
 handler_level() ->
     {ok, #{level := Level}} = logger:get_handler_config(default),
@@ -28,3 +29,32 @@ format_json(Kind, WithDomain) ->
     end,
     iolist_to_binary(redirect_proxy_log_json:format(
         #{level => warning, msg => Msg, meta => Meta}, #{})).
+
+%% Captures the messages logged by this process tree until capture_stop/0,
+%% which returns them oldest first.
+capture_start() ->
+    Self = self(),
+    _ = logger:remove_handler(test_capture),
+    ok = logger:add_handler(test_capture, ?MODULE,
+                            #{level => all, config => #{pid => Self}}),
+    nil.
+
+capture_stop() ->
+    _ = logger:remove_handler(test_capture),
+    collect([]).
+
+collect(Acc) ->
+    receive
+        {test_captured_log, Msg} -> collect([Msg | Acc])
+    after 0 -> lists:reverse(Acc)
+    end.
+
+%% logger handler callback
+log(#{msg := Msg}, #{config := #{pid := Pid}}) ->
+    Text = case Msg of
+        {string, S} -> unicode:characters_to_binary(S);
+        {report, R} -> iolist_to_binary(io_lib:format("~0p", [R]));
+        {Format, Args} -> unicode:characters_to_binary(io_lib:format(Format, Args))
+    end,
+    Pid ! {test_captured_log, Text},
+    ok.

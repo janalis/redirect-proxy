@@ -662,6 +662,10 @@ pub fn https_redirect_test() {
     == 404
   // a host that is not a host name is not redirected anywhere
   assert get(env.redirect <> "/old", [#("host", "evil.test/@x")]).status == 400
+  // `_` is allowed, as in rule hosts
+  let resp = get(env.redirect <> "/p", [#("host", "my_app.test")])
+  assert resp.status == 301
+  assert location(resp) == "https://my_app.test/p"
   // health probes are answered, not upgraded
   assert get(env.redirect <> "/_health", []).status == 200
 }
