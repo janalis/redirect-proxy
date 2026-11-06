@@ -228,6 +228,40 @@ pub fn bearer_required_test() {
   assert resp.status == 401
 }
 
+/// Checking a token signature costs CPU: an address sending invalid tokens
+/// is throttled before its tokens are checked.
+pub fn invalid_tokens_are_throttled_per_address_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let from = fn(ip, token) {
+    support.send(
+      Get,
+      env.api <> "/api/redirects",
+      [#("authorization", "Bearer " <> token), #("x-forwarded-for", ip)],
+      "",
+    )
+  }
+  let statuses =
+    list.map(list.repeat(Nil, 101), fn(_) {
+      from("198.51.100.20", "rpat_garbage").status
+    })
+  assert list.take(statuses, 100) == list.repeat(401, 100)
+  assert list.last(statuses) == Ok(429)
+  let blocked = from("198.51.100.20", "rpat_garbage")
+  assert header(blocked, "retry-after") != ""
+  assert header(blocked, "content-type") == "application/problem+json"
+  // other addresses are not affected
+  assert from("203.0.113.20", "rpat_garbage").status == 401
+}
+
 pub fn admin_session_cookie_does_not_authorize_api_test() {
   let env = support.boot(config.default())
   // a session cookie (even a forged one) is ignored by the API

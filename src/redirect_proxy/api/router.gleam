@@ -14,6 +14,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation.{type Deprecation}
 import redirect_proxy/api/openapi
@@ -206,6 +207,9 @@ fn authenticated(
   ctx: Context,
   next: fn(Principal) -> Response,
 ) -> Response {
+  // checked before the token: verifying a signature costs CPU
+  let ip_key = "api-ip:" <> ctx.client_ip
+  use <- api_throttle(ip_key)
   case auth.authenticate(req, ctx.config.api.oauth, ctx.clients) {
     Ok(principal) -> next(principal)
     Error(auth.MissingToken) -> {
@@ -214,9 +218,29 @@ fn authenticated(
     }
     Error(auth.InvalidToken(reason)) -> {
       metrics.incr(metrics.ApiAuthFailures)
-      log.warning("API token rejected from " <> ctx.peer_ip <> ": " <> reason)
+      ratelimit.record_failure(ip_key, invalid_token_window)
+      log.warning("API token rejected from " <> ctx.client_ip <> ": " <> reason)
       problem.unauthorized("invalid_token", reason)
     }
+  }
+}
+
+/// Invalid tokens accepted from one address in a window before it gets 429.
+const invalid_token_limit = 100
+
+const invalid_token_window = 900
+
+fn api_throttle(key: String, next: fn() -> Response) -> Response {
+  case ratelimit.blocked_for(key, invalid_token_limit) {
+    Error(Nil) -> next()
+    Ok(seconds) ->
+      problem.problem(
+        429,
+        "Too Many Requests",
+        "Too many invalid access tokens from this address, retry later.",
+        [],
+      )
+      |> wisp.set_header("retry-after", int.to_string(seconds))
   }
 }
 

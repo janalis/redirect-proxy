@@ -1,6 +1,7 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
--export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2]).
+-export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
+         raw_exchange/2]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -43,3 +44,19 @@ format_json_log(Level, Message) ->
               meta => #{time => logger:timestamp(), domain => [redirect_proxy, test]}},
     Line = iolist_to_binary(redirect_proxy_log_json:format(Event, #{})),
     binary:part(Line, 0, byte_size(Line) - 1).
+
+%% Sends each chunk on one TCP connection to 127.0.0.1:Port, 100 ms apart (so
+%% that they arrive as separate packets), then returns every byte received
+%% until the server closes the connection or 1 s of silence.
+raw_exchange(Port, Chunks) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    lists:foreach(fun(C) -> gen_tcp:send(S, C), timer:sleep(100) end, Chunks),
+    Received = read_all(S, <<>>),
+    gen_tcp:close(S),
+    Received.
+
+read_all(S, Acc) ->
+    case gen_tcp:recv(S, 0, 1000) of
+        {ok, Data} -> read_all(S, <<Acc/binary, Data/binary>>);
+        {error, _} -> Acc
+    end.

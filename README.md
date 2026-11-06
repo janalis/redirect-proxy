@@ -262,8 +262,9 @@ are sent with `no-store`.
   loaded, loops are logged as warnings instead, so a file that loaded before
   keeps loading.
 - When created or edited, it can never apply as written: an exact or prefix
-  source with a query string (`?`) or a fragment (`#`), or a host with a
-  port. These are also logged as warnings when the file is loaded or rules
+  source with a query string (`?`) or a fragment (`#`), or starting with
+  `//` (the server reads a request for `//a/b` as the path `/b`), or a host
+  with a port. These are also logged as warnings when the file is loaded or rules
   are imported. Loop checks follow `server.trailing_slash`.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
@@ -397,15 +398,18 @@ Security measures:
   one account and 20 times in all; an account accepts 100 failures from all
   clients. A correct password from another client still works, so failures
   cannot lock a user out. The API token endpoint works the same way with
-  client ids. A throttled request gets a 429 with `Retry-After`. Behind a proxy, list it in `access_log.trusted_proxies` so
+  client ids. A client may start 30 SSO logins and fail 20 SSO callbacks,
+  and the API accepts 100 invalid access tokens from one client before
+  answering 429 without checking more. A throttled request gets a 429 with
+  `Retry-After`. Behind a proxy, list it in `access_log.trusted_proxies` so
   that the client address is the forwarded one.
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),
   `X-Frame-Options: DENY` and `nosniff`. When `admin.public_url` is
   `https://`, responses carry `Strict-Transport-Security` and the session
-  cookie is named `__Host-rp_session`, which a sibling subdomain cannot set
-  or shadow.
+  and SSO state cookies are named `__Host-rp_session` and
+  `__Host-rp_oidc_state`, which a sibling subdomain cannot set or shadow.
 
 > **Behind a reverse proxy.** Keep the `Host` header unchanged so that the
 > origin check passes. Serve the admin over HTTPS so that cookies get the
@@ -540,8 +544,11 @@ for it. `rules import` writes the file; a running server applies it on
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule
   before and after, and sign-ins: logins, failed logins (with the client
   address) and logouts, for local, SSO and proxy-header sessions. SSO entries
-  carry the provider `issuer` and `subject`, failed ones the reason.
-  Throttled logins (`auth.throttled`) and API tokens issued and refused
+  carry the provider `issuer` and `subject`, failed ones the reason. Names
+  from SSO and proxy headers are recorded as `sso:<name>` and
+  `proxy:<name>`, so that they cannot pass for a local user, `system` or an
+  API client (`client:<id>`). Throttling (`auth.throttled`) is recorded
+  once per client and window, and API tokens issued and refused
   (`api.token_issued`, `api.token_rejected`) are recorded too. Imports and
   reloads record the file fingerprint before and after and the rules added,
   removed and changed (counts, and up to 100 ids each). Rejected reloads and

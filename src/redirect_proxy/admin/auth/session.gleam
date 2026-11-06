@@ -18,6 +18,8 @@ pub type Method {
 pub type Session {
   Session(
     token: String,
+    /// Who the session acts as, in the audit log and everywhere else: the
+    /// local username, or `sso:<name>` / `proxy:<name>` (see `actor`).
     username: String,
     method: Method,
     csrf_token: String,
@@ -46,8 +48,10 @@ pub fn init() -> Nil {
   ffi.ets_new(table)
 }
 
+/// `name` is the local username, the SSO username or the name vouched for by
+/// the proxy: the session acts as `actor(method, name)`.
 pub fn create(
-  username: String,
+  name: String,
   method: Method,
   ttl: Int,
   fingerprint: String,
@@ -56,7 +60,7 @@ pub fn create(
   let session =
     Session(
       token: id.token(32),
-      username:,
+      username: actor(method, name),
       method:,
       csrf_token: id.token(32),
       expires_at: now + ttl,
@@ -102,13 +106,35 @@ pub fn destroy(token: String) -> Nil {
   ffi.ets_delete(table, token)
 }
 
-/// Revokes every session of a user (e.g. after deletion or password change).
+/// The name a session acts as. Names from the identity provider or the proxy
+/// are prefixed with the sign-in method: they come from outside, and could
+/// otherwise be recorded as a local user, `system` or an API client
+/// (`client:…`). Local usernames cannot contain `:`.
+pub fn actor(method: Method, name: String) -> String {
+  case method {
+    Local -> name
+    Oidc -> "sso:" <> name
+    Header -> "proxy:" <> name
+  }
+}
+
+/// The name without the sign-in method prefix of `actor`, for display next
+/// to the method.
+pub fn display_name(session: Session) -> String {
+  case session.method, session.username {
+    Oidc, "sso:" <> name | Header, "proxy:" <> name -> name
+    _, name -> name
+  }
+}
+
+/// Revokes every session of a local user (e.g. after deletion or password
+/// change).
 pub fn destroy_user(username: String) -> Nil {
   let entries: List(#(String, #(Int, Session))) = ffi.ets_to_list(table)
   entries
   |> list.each(fn(entry) {
     let #(token, #(_, session)) = entry
-    case session.username == username {
+    case session.method == Local && session.username == username {
       True -> ffi.ets_delete(table, token)
       False -> Nil
     }

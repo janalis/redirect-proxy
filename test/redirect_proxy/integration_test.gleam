@@ -388,6 +388,53 @@ pub fn login_failures_are_throttled_test() {
   let assert Ok(retry) = response.get_header(resp, "retry-after")
   let assert Ok(seconds) = int.parse(retry)
   assert seconds > 0 && seconds <= 900
+  // an anonymous loop cannot flood the audit log: once per window
+  let throttled =
+    audit.tail(env.dir <> "/audit.jsonl", 100)
+    |> list.filter(fn(e) { e.action == "auth.throttled" })
+  assert list.length(throttled) == 1
+}
+
+/// Each SSO start holds a pending login attempt: one address cannot start
+/// enough of them to block everyone else's SSO logins.
+pub fn sso_starts_are_throttled_per_address_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+        oidc: config.OidcConfig(
+          ..d.oidc,
+          enabled: True,
+          issuer:,
+          client_id: "redirect-proxy",
+          client_secret: "secret",
+        ),
+      ),
+    )
+  let start = fn(ip) {
+    get(env.admin <> "/auth/oidc/start", [#("x-forwarded-for", ip)])
+  }
+  let statuses =
+    list.map(list.repeat(Nil, 31), fn(_) { start("198.51.100.8").status })
+  assert list.take(statuses, 30) == list.repeat(303, 30)
+  let blocked = start("198.51.100.8")
+  assert blocked.status == 429
+  assert response.get_header(blocked, "retry-after") |> result.is_ok
+  assert start("203.0.113.10").status == 303
+  // failed callbacks are throttled too
+  let callbacks =
+    list.map(list.repeat(Nil, 21), fn(_) {
+      get(env.admin <> "/auth/oidc/callback?state=x&code=y", [
+        #("x-forwarded-for", "198.51.100.9"),
+      ]).status
+    })
+  assert list.take(callbacks, 20) == list.repeat(403, 20)
+  assert list.last(callbacks) == Ok(429)
 }
 
 pub fn failures_elsewhere_do_not_lock_the_account_test() {
@@ -497,6 +544,37 @@ pub fn users_file_is_private_test() {
   let env = boot(config.default())
   let assert Ok(info) = simplifile.file_info(env.dir <> "/users.json")
   assert simplifile.file_info_permissions_octal(info) == 0o600
+}
+
+@external(erlang, "test_net_ffi", "raw_exchange")
+fn raw_exchange(port: Int, chunks: List(BitArray)) -> BitArray
+
+/// The redirect listener never reads request bodies: a body arriving after
+/// the headers must not be parsed as a second request on the same connection.
+pub fn unread_bodies_close_the_connection_test() {
+  let env = boot(config.default())
+  let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let smuggled = "GET /blog/7 HTTP/1.1\r\nhost: a.test\r\n\r\n"
+  let headers =
+    "POST /old HTTP/1.1\r\nhost: a.test\r\ncontent-length: "
+    <> int.to_string(string.byte_size(smuggled))
+    <> "\r\n\r\n"
+  let assert Ok(received) =
+    raw_exchange(port, [<<headers:utf8>>, <<smuggled:utf8>>])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 301")
+  assert string.contains(string.lowercase(received), "connection: close")
+  assert !string.contains(received, "/articles/7")
+
+  // without a body the connection stays open for the next request
+  let assert Ok(received) =
+    raw_exchange(port, [
+      <<"GET /old HTTP/1.1\r\nhost: a.test\r\n\r\n":utf8>>,
+      <<"GET /blog/7 HTTP/1.1\r\nhost: a.test\r\n\r\n":utf8>>,
+    ])
+    |> bit_array.to_string
+  assert string.contains(received, "/articles/7")
 }
 
 pub fn draining_before_a_stop_test() {
@@ -612,6 +690,30 @@ pub fn https_admin_hardening_test() {
       #("x-forwarded-proto", "https"),
     ])
   assert page.status == 200
+}
+
+pub fn sso_state_cookie_is_host_prefixed_over_https_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        admin: config.AdminConfig(..d.admin, public_url: "https://admin.test"),
+        oidc: config.OidcConfig(
+          ..d.oidc,
+          enabled: True,
+          issuer:,
+          client_id: "redirect-proxy",
+          client_secret: "secret",
+        ),
+      ),
+    )
+  let start =
+    get(env.admin <> "/auth/oidc/start", [#("x-forwarded-proto", "https")])
+  assert start.status == 303
+  assert cookie_of(start, "__Host-rp_oidc_state") != ""
+  assert cookie_of(start, "rp_oidc_state") == ""
 }
 
 pub fn sign_ins_are_audited_test() {
@@ -1272,7 +1374,10 @@ pub fn header_auth_test() {
     )
   let resp = get(env.admin <> "/rules", [#("x-forwarded-user", "Proxy-User")])
   assert resp.status == 200
-  assert string.contains(resp.body, "proxy-user (proxy)")
+  assert string.contains(resp.body, ">proxy-user (proxy)<")
+  // names from the proxy cannot pass for a local user in the audit log
+  let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
+  assert #(login.actor, login.action) == #("proxy:proxy-user", "auth.login")
   // a forged header from an untrusted network is ignored
   let untrusted =
     boot(
@@ -1432,7 +1537,10 @@ pub fn oidc_login_test() {
   let cookie = session_cookie(resp)
   let page = get(env.admin <> "/rules", [#("cookie", cookie)])
   assert page.status == 200
-  assert string.contains(page.body, "alice@example.com (sso)")
+  assert string.contains(page.body, ">alice@example.com (sso)<")
+  let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
+  assert #(login.actor, login.action)
+    == #("sso:alice@example.com", "auth.login")
 
   // a state can only be used once
   let start = get(env.admin <> "/auth/oidc/start", [])

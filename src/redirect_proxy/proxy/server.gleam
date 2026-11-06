@@ -52,9 +52,23 @@ fn respond(
   permanent_cache: String,
 ) -> #(Response(mist.ResponseData), String) {
   let #(resp, rule_id) = route(config, req, not_found_body, permanent_cache)
-  case ffi.draining() {
+  case ffi.draining() || has_body(req) {
     False -> #(resp, rule_id)
     True -> #(response.set_header(resp, "connection", "close"), rule_id)
+  }
+}
+
+/// The body is never read: on a kept-alive connection its bytes would be
+/// parsed as the next request (request smuggling behind a reverse proxy that
+/// reuses connections), so the connection is closed after the response.
+fn has_body(req: Request(mist.Connection)) -> Bool {
+  case request.get_header(req, "transfer-encoding") {
+    Ok(_) -> True
+    Error(Nil) ->
+      case request.get_header(req, "content-length") {
+        Ok(length) -> string.trim(length) != "0"
+        Error(Nil) -> False
+      }
   }
 }
 
