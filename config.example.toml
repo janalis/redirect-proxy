@@ -145,6 +145,9 @@ allowed_domains = []
 allowed_groups = []
 groups_claim = "groups"
 button_label = "Sign in with SSO"
+# On logout, also sign out at the provider and come back to the login page.
+# Register <public_url>/login as a post-logout redirect URI at the provider.
+logout_at_provider = false
 
 [auth.header]
 # Trust an identity header set by an authenticating reverse proxy

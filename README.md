@@ -329,7 +329,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
-| `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL` | `groups`, `Sign in with SSO` |
+| `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
 | `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
@@ -378,6 +378,12 @@ when the admin is disabled.
     Entra ID, can only be restricted with `allowed_groups`.
   - Register `<admin.public_url>/auth/oidc/callback` as the redirect URI at the
     provider.
+  - After signing in, you land on the page that asked for it, as with a
+    password.
+  - With `logout_at_provider = true`, signing out also ends the session at
+    the provider (its `end_session_endpoint`), which sends you back to the
+    login page: register `<admin.public_url>/login` as a post-logout
+    redirect URI there.
 - **Trusted proxy headers.** With `auth.header` enabled, the user named in
   `user_header` (`X-Forwarded-User`) is signed in. Set `user_header = ""` to
   use `email_header` (`X-Forwarded-Email`) instead. The two are never

@@ -87,6 +87,7 @@ pub const known_keys = [
   "auth.oidc.enabled",
   "auth.oidc.groups_claim",
   "auth.oidc.issuer",
+  "auth.oidc.logout_at_provider",
   "auth.oidc.scopes",
   "server.cache_max_age",
   "server.fallback_url",
@@ -250,6 +251,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["auth", "oidc", "button_label"],
     o.button_label,
   ))
+  use logout_at_provider <- result.try(boolean(
+    t,
+    ["auth", "oidc", "logout_at_provider"],
+    o.logout_at_provider,
+  ))
   let h = d.header_auth
   use header_enabled <- result.try(boolean(
     t,
@@ -406,6 +412,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       allowed_groups:,
       groups_claim:,
       button_label:,
+      logout_at_provider:,
     ),
     header_auth: HeaderAuthConfig(
       enabled: header_enabled,

@@ -167,6 +167,9 @@ pub type OidcConfig {
     allowed_groups: List(String),
     groups_claim: String,
     button_label: String,
+    /// On logout, also end the session at the provider (its
+    /// `end_session_endpoint`), then come back to the login page.
+    logout_at_provider: Bool,
   )
 }
 
@@ -248,6 +251,7 @@ pub fn default() -> Config {
       allowed_groups: [],
       groups_claim: "groups",
       button_label: "Sign in with SSO",
+      logout_at_provider: False,
     ),
     header_auth: HeaderAuthConfig(
       enabled: False,

@@ -56,12 +56,39 @@ pub fn redirect_uri(public_url: String) -> String {
   trim_trailing_slash(public_url) <> "/auth/oidc/callback"
 }
 
-/// Builds the authorization URL and remembers the PKCE verifier and nonce
-/// associated with the generated `state`. Returns the URL and the state,
-/// which the caller binds to the browser (cookie) for `complete`.
+/// The provider's logout URL (RP-Initiated Logout 1.0), coming back to the
+/// login page.
+pub fn end_session_url(
+  cfg: OidcConfig,
+  public_url: String,
+) -> Result(String, String) {
+  use provider <- result.try(discover(cfg))
+  use <- bool.guard(
+    provider.end_session_endpoint == "",
+    Error("the provider has no end_session_endpoint"),
+  )
+  let separator = case string.contains(provider.end_session_endpoint, "?") {
+    True -> "&"
+    False -> "?"
+  }
+  Ok(
+    provider.end_session_endpoint
+    <> separator
+    <> uri.query_to_string([
+      #("client_id", cfg.client_id),
+      #("post_logout_redirect_uri", trim_trailing_slash(public_url) <> "/login"),
+    ]),
+  )
+}
+
+/// Builds the authorization URL and remembers the PKCE verifier, the nonce
+/// and `next` (where to go after signing in) associated with the generated
+/// `state`. Returns the URL and the state, which the caller binds to the
+/// browser (cookie) for `complete`.
 pub fn begin(
   cfg: OidcConfig,
   public_url: String,
+  next: String,
 ) -> Result(#(String, String), String) {
   use <- bool.guard(
     ffi.ets_size(flows) >= max_flows,
@@ -76,7 +103,7 @@ pub fn begin(
     |> bit_array.base64_url_encode(False)
   ffi.ets_put(flows, "flow:" <> state, #(
     ffi.now_seconds() + flow_ttl,
-    #(verifier, nonce),
+    #(verifier, nonce, next),
   ))
   let query =
     uri.query_to_string([
@@ -105,13 +132,13 @@ pub fn complete(
   public_url: String,
   query: List(#(String, String)),
   browser_state: Result(String, Nil),
-) -> Result(Identity, Failure) {
-  use identity <- result.try(
+) -> Result(#(Identity, String), Failure) {
+  use #(identity, next) <- result.try(
     authenticate(cfg, public_url, query, browser_state)
     |> result.map_error(Failed),
   )
   use Nil <- result.try(authorise(cfg, identity) |> result.map_error(Denied))
-  Ok(identity)
+  Ok(#(identity, next))
 }
 
 fn authenticate(
@@ -119,7 +146,7 @@ fn authenticate(
   public_url: String,
   query: List(#(String, String)),
   browser_state: Result(String, Nil),
-) -> Result(Identity, String) {
+) -> Result(#(Identity, String), String) {
   use <- bool.guard(
     list.key_find(query, "error") |> result.is_ok,
     Error(
@@ -144,7 +171,7 @@ fn authenticate(
     },
     Error("the login was not started in this browser"),
   )
-  use #(verifier, nonce) <- result.try(take_flow(state))
+  use #(verifier, nonce, next) <- result.try(take_flow(state))
   use provider <- result.try(discover(cfg))
   use id_token <- result.try(exchange(
     cfg,
@@ -155,9 +182,10 @@ fn authenticate(
   ))
   use claims <- result.try(verify(cfg, provider, id_token))
   check_claims(cfg, provider, claims, nonce)
+  |> result.map(fn(identity) { #(identity, next) })
 }
 
-fn take_flow(state: String) -> Result(#(String, String), String) {
+fn take_flow(state: String) -> Result(#(String, String, String), String) {
   let key = "flow:" <> state
   case ffi.ets_get(flows, key) {
     Ok(#(expires_at, flow)) -> {

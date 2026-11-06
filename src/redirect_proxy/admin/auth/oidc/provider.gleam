@@ -24,6 +24,9 @@ pub type Provider {
     authorization_endpoint: String,
     token_endpoint: String,
     jwks_uri: String,
+    /// RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0), "" when
+    /// the provider does not offer it.
+    end_session_endpoint: String,
   )
 }
 
@@ -120,11 +123,17 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
       decode.string,
     )
     use jwks_uri <- decode.field("jwks_uri", decode.string)
+    use end_session_endpoint <- decode.optional_field(
+      "end_session_endpoint",
+      "",
+      decode.string,
+    )
     decode.success(Provider(
       issuer:,
       authorization_endpoint:,
       token_endpoint:,
       jwks_uri:,
+      end_session_endpoint:,
     ))
   }
   use provider <- result.try(
