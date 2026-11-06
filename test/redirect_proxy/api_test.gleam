@@ -840,3 +840,142 @@ pub fn clients_wait_for_another_process_test() {
   let assert Ok(_) = clients.rotate(s, client.client_id, by: "test")
   assert ffi.now_millis() - started >= 250
 }
+
+// --- operator features -------------------------------------------------------
+
+fn import_set(env: App, token: String, rules: List(#(String, String, Bool))) {
+  let body =
+    rules
+    |> list.map(fn(r) {
+      json.object([
+        #("id", json.string(r.0)),
+        #("source", json.string(r.1)),
+        #("target", json.string("/to" <> r.1)),
+        #("enabled", json.bool(r.2)),
+      ])
+    })
+    |> json.preprocessed_array
+    |> json.to_string
+  let resp = api(env, Post, "/api/redirects/import?mode=replace", token, body)
+  assert resp.status == 200
+}
+
+pub fn list_sort_links_and_invalid_filters_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [
+    #("b", "/b", True),
+    #("c", "/c", True),
+    #("a", "/a", True),
+  ])
+  let ids = fn(resp: response.Response(String)) {
+    field(resp.body, ["data"], decode.list(decode.at(["id"], decode.string)))
+  }
+  assert ids(api(env, Get, "/api/redirects?sort=source", token, ""))
+    == ["a", "b", "c"]
+  assert ids(api(env, Get, "/api/redirects?sort=-source", token, ""))
+    == ["c", "b", "a"]
+  // hits are part of the rule representation
+  let resp = api(env, Get, "/api/redirects?per_page=1&page=2", token, "")
+  assert field(
+      resp.body,
+      ["data"],
+      decode.list(decode.at(["hits"], decode.int)),
+    )
+    == [0]
+  assert field(resp.body, ["meta", "total_pages"], decode.int) == 3
+  let link = header(resp, "link")
+  assert string.contains(link, "page=3>; rel=\"next\"")
+  assert string.contains(link, "page=1>; rel=\"prev\"")
+  // invalid values are errors, not silently ignored
+  assert api(env, Get, "/api/redirects?match=foo", token, "").status == 400
+  assert api(env, Get, "/api/redirects?enabled=yes", token, "").status == 400
+  assert api(env, Get, "/api/redirects?sort=colour", token, "").status == 400
+}
+
+pub fn bulk_changes_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True), #("b", "/b", True)])
+  let bulk = fn(body) { api(env, Post, "/api/redirects/bulk", token, body) }
+  let resp = bulk("{\"ids\": [\"a\", \"b\"], \"action\": \"disable\"}")
+  assert resp.status == 200
+  assert field(resp.body, ["changed"], decode.int) == 2
+  assert get_rule_enabled(env, token, "a") == False
+  // already disabled: nothing changes
+  let resp = bulk("{\"ids\": [\"a\"], \"action\": \"disable\"}")
+  assert field(resp.body, ["changed"], decode.int) == 0
+  // unknown ids and actions are refused, and nothing is changed
+  assert bulk("{\"ids\": [\"a\", \"nope\"], \"action\": \"enable\"}").status
+    == 422
+  assert get_rule_enabled(env, token, "a") == False
+  assert bulk("{\"ids\": [\"a\"], \"action\": \"explode\"}").status == 422
+  let resp = bulk("{\"ids\": [\"b\"], \"action\": \"delete\"}")
+  assert field(resp.body, ["changed"], decode.int) == 1
+  assert api(env, Get, "/api/redirects/b", token, "").status == 404
+}
+
+fn get_rule_enabled(env: App, token: String, id: String) -> Bool {
+  let resp = api(env, Get, "/api/redirects/" <> id, token, "")
+  field(resp.body, ["enabled"], decode.bool)
+}
+
+pub fn import_dry_run_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True), #("b", "/b", True)])
+  let body =
+    "[{\"id\": \"a\", \"source\": \"/a\", \"target\": \"/changed\"},
+      {\"id\": \"c\", \"source\": \"/c\", \"target\": \"/new\"}]"
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects/import?mode=replace&dry_run=true",
+      token,
+      body,
+    )
+  assert resp.status == 200
+  assert field(resp.body, ["dry_run"], decode.bool)
+  assert field(resp.body, ["added_ids"], decode.list(decode.string)) == ["c"]
+  assert field(resp.body, ["removed_ids"], decode.list(decode.string)) == ["b"]
+  assert field(resp.body, ["changed_ids"], decode.list(decode.string)) == ["a"]
+  // nothing was written
+  assert api(env, Get, "/api/redirects/b", token, "").status == 200
+  assert api(env, Get, "/api/redirects/c", token, "").status == 404
+}
+
+pub fn tester_explains_the_resolution_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let body =
+    "[{\"id\": \"exact\", \"source\": \"/docs/a\", \"target\": \"/exact\"},
+      {\"id\": \"prefix\", \"match\": \"prefix\", \"source\": \"/docs/\", \"target\": \"/prefix/$1\"},
+      {\"id\": \"off\", \"match\": \"prefix\", \"source\": \"/docs/a\", \"target\": \"/off\", \"enabled\": false},
+      {\"id\": \"hop\", \"source\": \"/exact\", \"target\": \"/final\"}]"
+  let resp = api(env, Post, "/api/redirects/import?mode=replace", token, body)
+  assert resp.status == 200
+  let resp =
+    api(env, Get, "/api/test?url=https%3A%2F%2Fx.test%2Fdocs%2Fa", token, "")
+  let verdicts =
+    field(
+      resp.body,
+      ["candidates"],
+      decode.list({
+        use id <- decode.subfield(["rule", "id"], decode.string)
+        use verdict <- decode.field("verdict", decode.string)
+        decode.success(#(id, verdict))
+      }),
+    )
+  assert verdicts
+    == [#("exact", "applied"), #("off", "disabled"), #("prefix", "shadowed")]
+  // the redirect chain: /exact is redirected again
+  let chain =
+    field(
+      resp.body,
+      ["chain"],
+      decode.list(decode.at(["location"], decode.string)),
+    )
+  assert chain == ["/exact", "/final"]
+  assert field(resp.body, ["loop"], decode.bool) == False
+}

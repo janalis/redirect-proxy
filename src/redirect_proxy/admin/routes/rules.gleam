@@ -6,17 +6,20 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
+import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/pages
 import redirect_proxy/admin/views/rules as rules_view
 import redirect_proxy/admin/web.{
   type Context, error_page, features, flash_from_query, form_value, html,
-  not_found, require_csrf_form,
+  not_found, require_csrf_form, return_to,
 } as _
 import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/matcher
+import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
@@ -25,21 +28,44 @@ import redirect_proxy/store/rules as store_rules
 import simplifile
 import wisp.{type Request, type Response}
 
+fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
+  rules_view.Filters(
+    query: string.trim(get("q")),
+    host: string.trim(get("host")),
+    kind: get("kind"),
+    status: get("status"),
+    sort: get("sort"),
+    page: int.parse(get("page")) |> result.unwrap(1),
+  )
+}
+
 pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let query = wisp.get_query(req)
-  let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
   let filters =
-    rules_view.Filters(
-      query: string.trim(get("q")),
-      kind: get("kind"),
-      status: get("status"),
-      page: int.parse(get("page")) |> result.unwrap(1),
-    )
+    filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
   let all = store.all(ctx.store)
+  let matching = list.filter(all, matches_filters(_, filters))
+  let sorted =
+    store_rules.sort(matching, filters.sort, metrics.hits)
+    |> result.unwrap(matching)
+  let count = list.length(sorted)
+  let pages =
+    int.max(1, { count + rules_view.page_size - 1 } / rules_view.page_size)
+  let page = int.clamp(filters.page, 1, pages)
+  // hit counts are read for the displayed page only
   let rows =
-    all
-    |> list.filter(matches_filters(_, filters))
+    sorted
+    |> list.drop({ page - 1 } * rules_view.page_size)
+    |> list.take(rules_view.page_size)
     |> list.map(fn(r) { rules_view.Row(rule: r, hits: metrics.hits(r.id)) })
+  let filters = rules_view.Filters(..filters, page:)
+  let here =
+    "/rules?"
+    <> uri.query_to_string(
+      list.append(rules_view.filters_query(filters), [
+        #("page", int.to_string(page)),
+      ]),
+    )
   html(
     200,
     rules_view.index(
@@ -48,7 +74,10 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
       flash_from_query(req),
       rows,
       list.length(all),
+      count,
       filters,
+      pages,
+      here,
     ),
   )
 }
@@ -60,29 +89,90 @@ fn matches_filters(r: Rule, f: rules_view.Filters) -> Bool {
     || list.any([r.host, r.source, r.target, r.note, r.id], fn(field) {
       string.contains(string.lowercase(field), needle)
     })
+  let host_ok = f.host == "" || r.host == rule.normalise_host(f.host)
   let kind_ok = f.kind == "" || rule.kind_to_string(r.kind) == f.kind
   let status_ok = case f.status {
     "enabled" -> r.enabled
     "disabled" -> !r.enabled
     _ -> True
   }
-  text_ok && kind_ok && status_ok
+  text_ok && host_ok && kind_ok && status_ok
+}
+
+/// Enable, disable or delete the selected rules, or every rule matching the
+/// list filters. Deleting asks for a confirmation first.
+pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
+  use form <- require_csrf_form(req, s)
+  let back = form_value(form, "return_to")
+  let selected = case form_value(form, "all_matching") {
+    "on" -> {
+      let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
+      store.all(ctx.store)
+      |> list.filter(matches_filters(_, filters))
+      |> list.map(fn(r) { r.id })
+    }
+    _ ->
+      form.values
+      |> list.filter(fn(kv) { kv.0 == "ids" })
+      |> list.map(fn(kv) { kv.1 })
+  }
+  case store.bulk_action_from_string(form_value(form, "action")), selected {
+    Error(Nil), _ -> wisp.redirect(return_to(back, []))
+    Ok(_), [] -> wisp.redirect(return_to(back, []))
+    Ok(store.Remove), ids ->
+      case form_value(form, "confirm") {
+        "yes" -> apply_bulk(ctx, s, ids, store.Remove, back)
+        _ -> {
+          let wanted = set.from_list(ids)
+          let rules =
+            store.all(ctx.store)
+            |> list.filter(fn(r) { set.contains(wanted, r.id) })
+          html(
+            200,
+            rules_view.confirm_bulk_delete(
+              s,
+              features(ctx),
+              rules,
+              return_to(back, []),
+            ),
+          )
+        }
+      }
+    Ok(action), ids -> apply_bulk(ctx, s, ids, action, back)
+  }
+}
+
+fn apply_bulk(
+  ctx: Context,
+  s: Session,
+  ids: List(String),
+  action: store.BulkAction,
+  back: String,
+) -> Response {
+  case store.bulk(ctx.store, ids, action, s.username) {
+    Ok(count) ->
+      wisp.redirect(
+        return_to(back, [#("flash", "bulk"), #("count", int.to_string(count))]),
+      )
+    Error(errors) ->
+      error_page(ctx, s, 422, "Not changed", string.join(errors, " "))
+  }
 }
 
 pub fn new_rule(_req: Request, ctx: Context, s: Session) -> Response {
-  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True, ""))
+  html(200, rules_view.form(s, features(ctx), rule.blank(), [], True, "", 0))
 }
 
 pub fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   case rule_from_form(form.values, rule.blank()) {
     Error(#(r, errors)) ->
-      html(422, rules_view.form(s, features(ctx), r, errors, True, ""))
+      html(422, rules_view.form(s, features(ctx), r, errors, True, "", 0))
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
         Error(errors) ->
-          html(422, rules_view.form(s, features(ctx), r, errors, True, ""))
+          html(422, rules_view.form(s, features(ctx), r, errors, True, "", 0))
       }
   }
 }
@@ -92,7 +182,15 @@ pub fn edit_rule(ctx: Context, s: Session, id: String) -> Response {
     Ok(r) ->
       html(
         200,
-        rules_view.form(s, features(ctx), r, [], False, rule.version(r)),
+        rules_view.form(
+          s,
+          features(ctx),
+          r,
+          [],
+          False,
+          rule.version(r),
+          metrics.hits(r.id),
+        ),
       )
     Error(Nil) -> not_found(ctx, s)
   }
@@ -112,7 +210,15 @@ pub fn update_rule(
       let render = fn(status, r, errors, version) {
         html(
           status,
-          rules_view.form(s, features(ctx), r, errors, False, version),
+          rules_view.form(
+            s,
+            features(ctx),
+            r,
+            errors,
+            False,
+            version,
+            metrics.hits(r.id),
+          ),
         )
       }
       let submitted_version = option.unwrap(version, rule.version(existing))
@@ -141,9 +247,20 @@ pub fn update_rule(
   }
 }
 
-pub fn confirm_delete(ctx: Context, s: Session, id: String) -> Response {
+pub fn confirm_delete(
+  req: Request,
+  ctx: Context,
+  s: Session,
+  id: String,
+) -> Response {
+  let back =
+    list.key_find(wisp.get_query(req), "return_to") |> result.unwrap("")
   case store.get(ctx.store, id) {
-    Ok(r) -> html(200, rules_view.confirm_delete(s, features(ctx), r))
+    Ok(r) ->
+      html(
+        200,
+        rules_view.confirm_delete(s, features(ctx), r, return_to(back, [])),
+      )
     Error(Nil) -> not_found(ctx, s)
   }
 }
@@ -157,7 +274,10 @@ pub fn delete_rule(
   use form <- require_csrf_form(req, s)
   let version = form_version(form.values)
   case store.delete_versioned(ctx.store, id, version, s.username) {
-    Ok(_) -> wisp.redirect("/rules?flash=deleted")
+    Ok(_) ->
+      wisp.redirect(
+        return_to(form_value(form, "return_to"), [#("flash", "deleted")]),
+      )
     Error(store.Conflict(current)) ->
       error_page(
         ctx,
@@ -195,7 +315,15 @@ pub fn toggle_rule(
           s.username,
         )
       {
-        Ok(_) -> wisp.redirect("/rules?flash=toggled")
+        Ok(_) ->
+          wisp.redirect(
+            return_to(form_value(form, "return_to"), [
+              #("flash", case r.enabled {
+                True -> "disabled"
+                False -> "enabled"
+              }),
+            ]),
+          )
         Error(store.Conflict(current)) ->
           error_page(
             ctx,
@@ -318,7 +446,18 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
         matcher.BadUrl -> pages.InvalidUrl
       }
   }
-  html(200, pages.test_url(s, features(ctx), url, result))
+  let explanation = case result {
+    pages.Matched(..) | pages.NoMatch ->
+      explain.explain(
+        snapshot.current(),
+        store.all(ctx.store),
+        url,
+        config.ignore_trailing_slash(ctx.config),
+      )
+      |> option.from_result
+    _ -> None
+  }
+  html(200, pages.test_url(s, features(ctx), url, result, explanation))
 }
 
 pub fn export(ctx: Context) -> Response {
@@ -361,18 +500,84 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
       case rule.file_from_string(content) {
         Error(reason) -> fail([reason])
         Ok(incoming) ->
-          case store.import_rules(ctx.store, incoming, mode, s.username) {
-            Ok(count) ->
-              wisp.redirect(
-                "/rules?flash=imported&count=" <> int.to_string(count),
-              )
-            Error(errors) -> fail(errors)
+          // a replace is always previewed before it is applied
+          case form_value(form, "step"), mode {
+            "apply", _ ->
+              case store.import_rules(ctx.store, incoming, mode, s.username) {
+                Ok(count) ->
+                  wisp.redirect(
+                    "/rules?flash=imported&count=" <> int.to_string(count),
+                  )
+                Error(errors) -> fail(errors)
+              }
+            "preview", _ | _, store.Replace ->
+              case store.preview_import(ctx.store, incoming, mode, s.username) {
+                Ok(d) ->
+                  html(
+                    200,
+                    pages.import_preview(
+                      s,
+                      features(ctx),
+                      d.added,
+                      d.removed,
+                      d.changed,
+                      content,
+                      form_value(form, "mode"),
+                    ),
+                  )
+                Error(errors) -> fail(errors)
+              }
+            _, store.Merge ->
+              case store.import_rules(ctx.store, incoming, mode, s.username) {
+                Ok(count) ->
+                  wisp.redirect(
+                    "/rules?flash=imported&count=" <> int.to_string(count),
+                  )
+                Error(errors) -> fail(errors)
+              }
           }
       }
   }
 }
 
-pub fn audit_page(ctx: Context, s: Session) -> Response {
-  let entries = audit.tail(config.audit_path(ctx.config), 200)
-  html(200, pages.audit_log(s, features(ctx), entries))
+/// The most recent audit entries considered by the audit page filters.
+const audit_window = 1000
+
+const audit_page_size = 50
+
+pub fn audit_page(req: Request, ctx: Context, s: Session) -> Response {
+  let query = wisp.get_query(req)
+  let get = fn(key) {
+    list.key_find(query, key) |> result.unwrap("") |> string.trim
+  }
+  let filters =
+    pages.AuditFilters(
+      actor: get("actor"),
+      action: get("action"),
+      target: get("target"),
+    )
+  let matching =
+    audit.tail(config.audit_path(ctx.config), audit_window)
+    |> list.filter(fn(e) {
+      { filters.actor == "" || e.actor == filters.actor }
+      && {
+        filters.action == "" || string.starts_with(e.action, filters.action)
+      }
+      && { filters.target == "" || string.contains(e.target, filters.target) }
+    })
+  let pages_count =
+    int.max(
+      1,
+      { list.length(matching) + audit_page_size - 1 } / audit_page_size,
+    )
+  let page =
+    int.parse(get("page")) |> result.unwrap(1) |> int.clamp(1, pages_count)
+  let entries =
+    matching
+    |> list.drop({ page - 1 } * audit_page_size)
+    |> list.take(audit_page_size)
+  html(
+    200,
+    pages.audit_log(s, features(ctx), entries, filters, page, pages_count),
+  )
 }

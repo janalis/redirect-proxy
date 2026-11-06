@@ -8,7 +8,7 @@ import redirect_proxy/admin/routes/clients.{
   api_clients_page, create_api_client, delete_api_client, rotate_api_client,
 } as _
 import redirect_proxy/admin/routes/rules.{
-  audit_page, confirm_delete, create_rule, delete_rule, edit_rule, export,
+  audit_page, bulk, confirm_delete, create_rule, delete_rule, edit_rule, export,
   import_page, import_rules, list_rules, new_rule, reload, test_url, toggle_rule,
   update_rule,
 } as _
@@ -94,9 +94,10 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Get, ["rules"] -> list_rules(req, ctx, s)
     Get, ["rules", "new"] -> new_rule(req, ctx, s)
     Post, ["rules"] -> create_rule(req, ctx, s)
+    Post, ["rules", "bulk"] -> bulk(req, ctx, s)
     Get, ["rules", id, "edit"] -> edit_rule(ctx, s, id)
     Post, ["rules", id] -> update_rule(req, ctx, s, id)
-    Get, ["rules", id, "delete"] -> confirm_delete(ctx, s, id)
+    Get, ["rules", id, "delete"] -> confirm_delete(req, ctx, s, id)
     Post, ["rules", id, "delete"] -> delete_rule(req, ctx, s, id)
     Post, ["rules", id, "toggle"] -> toggle_rule(req, ctx, s, id)
     Post, ["reload"] -> reload(req, ctx, s)
@@ -108,7 +109,7 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Post, ["users"] -> create_user(req, ctx, s)
     Post, ["users", username, "delete"] -> delete_user(req, ctx, s, username)
     Post, ["account", "password"] -> change_password(req, ctx, s)
-    Get, ["audit"] -> audit_page(ctx, s)
+    Get, ["audit"] -> audit_page(req, ctx, s)
     Get, ["api-clients"] -> api_clients_page(req, ctx, s)
     Post, ["api-clients"] -> create_api_client(req, ctx, s)
     Post, ["api-clients", client_id, "rotate"] ->

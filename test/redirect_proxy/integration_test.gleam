@@ -611,6 +611,122 @@ fn reload_rules(env: Env) -> Result(Nil, Nil) {
   }
 }
 
+pub fn admin_bulk_actions_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let ids =
+    get(env.admin <> "/rules", [#("cookie", cookie)]).body
+    |> string.split("name=\"ids\" type=\"checkbox\" value=\"")
+    |> list.drop(1)
+    |> list.filter_map(fn(chunk) {
+      string.split_once(chunk, "\"") |> result.map(fn(p) { p.0 })
+    })
+  assert list.length(ids) == 3
+  // disable two of them, coming back to a filtered list
+  let back = "/rules?kind=exact&page=1"
+  let resp =
+    post_form(
+      env,
+      "/rules/bulk",
+      cookie,
+      list.flatten([
+        [#("csrf_token", csrf), #("action", "disable"), #("return_to", back)],
+        list.map(list.take(ids, 2), fn(id) { #("ids", id) }),
+      ]),
+    )
+  assert resp.status == 303
+  assert string.starts_with(
+    location(resp),
+    "/rules?kind=exact&page=1&flash=bulk",
+  )
+  let after = get(env.admin <> location(resp), [#("cookie", cookie)])
+  assert string.contains(after.body, "Changed 2 redirection(s).")
+  // every rule matching a filter, deleted after a confirmation
+  let confirm =
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "delete"),
+      #("all_matching", "on"),
+      #("filter_kind", "regex"),
+      #("return_to", "/rules"),
+    ])
+  assert confirm.status == 200
+  assert string.contains(confirm.body, "1 redirection(s) will be removed")
+  assert get(env.redirect <> "/blog/1", []).status == 308
+  let resp =
+    post_form(
+      env,
+      "/rules/bulk",
+      cookie,
+      list.flatten([
+        [#("csrf_token", csrf), #("action", "delete"), #("confirm", "yes")],
+        confirm.body
+          |> string.split("name=\"ids\" type=\"hidden\" value=\"")
+          |> list.drop(1)
+          |> list.filter_map(fn(chunk) {
+            string.split_once(chunk, "\"")
+            |> result.map(fn(p) { #("ids", p.0) })
+          }),
+      ]),
+    )
+  assert resp.status == 303
+  assert get(env.redirect <> "/blog/1", []).status == 404
+}
+
+pub fn toggle_keeps_the_list_filters_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let page = get(env.admin <> "/rules?q=old&sort=source", [#("cookie", cookie)])
+  let assert Ok(#(_, rest)) = string.split_once(page.body, "/toggle\"")
+  let assert Ok(#(before, _)) = string.split_once(page.body, "/toggle\"")
+  let id = case string.split(before, "/rules/") |> list.last {
+    Ok(id) -> id
+    Error(Nil) -> ""
+  }
+  let assert Ok(#(_, version_rest)) =
+    string.split_once(rest, "name=\"version\" type=\"hidden\" value=\"")
+  let assert Ok(#(version, _)) = string.split_once(version_rest, "\"")
+  let resp =
+    post_form(env, "/rules/" <> id <> "/toggle", cookie, [
+      #("csrf_token", csrf),
+      #("version", version),
+      #("return_to", "/rules?q=old&sort=source&page=1"),
+    ])
+  assert resp.status == 303
+  assert location(resp) == "/rules?q=old&sort=source&page=1&flash=disabled"
+  // anything else than the rules list goes back to /rules
+  let resp =
+    post_form(env, "/rules/" <> id <> "/toggle", cookie, [
+      #("csrf_token", csrf),
+      #("return_to", "https://evil.test/rules"),
+    ])
+  assert string.starts_with(location(resp), "/rules?")
+}
+
+pub fn audit_page_filters_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let assert 303 =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("source", "/audited"),
+      #("target", "/x"),
+      #("status", "301"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ]).status
+  let page = fn(query) {
+    get(env.admin <> "/audit?" <> query, [#("cookie", cookie)]).body
+  }
+  // the action column renders <code>action</code>
+  assert string.contains(page("action=rule."), "<code>rule.create</code>")
+  assert !string.contains(page("action=rule."), "<code>auth.login</code>")
+  assert string.contains(page("action=auth."), "<code>auth.login</code>")
+  assert string.contains(page("actor=nobody"), "No audit entry matches.")
+}
+
 pub fn login_rejects_bad_password_test() {
   let env = boot(config.default())
   let resp =
@@ -850,14 +966,25 @@ pub fn csrf_protection_test() {
 pub fn import_export_and_tester_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)
+  let content =
+    "[{\"source\": \"/imported\", \"target\": \"/landing\", \"status\": 302}]"
+  // a replace is previewed first: nothing is written yet
+  let preview =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replace"),
+      #("content", content),
+    ])
+  assert preview.status == 200
+  assert string.contains(preview.body, "Import preview")
+  assert string.contains(preview.body, "removed")
+  assert get(env.redirect <> "/old", []).status == 301
   let resp =
     post_form(env, "/import", cookie, [
       #("csrf_token", csrf),
       #("mode", "replace"),
-      #(
-        "content",
-        "[{\"source\": \"/imported\", \"target\": \"/landing\", \"status\": 302}]",
-      ),
+      #("step", "apply"),
+      #("content", content),
     ])
   assert resp.status == 303
   assert location(get(env.redirect <> "/imported", [])) == "/landing"

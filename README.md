@@ -23,11 +23,15 @@ rules. It never proxies traffic to an upstream.
     with a PCRE budget.
   - Processes are supervised by OTP.
 - **Administration backend** (Bootstrap 6):
-  - Create, read, update and delete rules, with search and filters.
-  - Enable and disable rules.
-  - A "test a URL" tool.
-  - JSON import and export.
-  - Users and an audit log.
+  - Create, read, update and delete rules, with search, filters (host, match
+    type, state) and sorting (source, host, hits, last update).
+  - Enable, disable or delete a selection of rules, or every rule matching
+    the filters, in one change.
+  - A "test a URL" tool that explains the result: every rule that matches,
+    which one applies, which are shadowed or disabled, and the redirect chain.
+  - JSON import and export. An import can be previewed (rules added, changed
+    and removed); a replace is always previewed first.
+  - Users, and an audit log with filters and a field by field diff.
 - **REST API** with OAuth 2.0:
   - A built-in client credentials token endpoint, with API clients managed in
     the admin or the CLI.
@@ -404,13 +408,14 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; pages via `page` and `per_page` (max 500). |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` since the server started. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch). |
 | `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. |
-| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing. |
+| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing. `dry_run=true` returns what would be added, changed and removed without writing. |
+| `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
-| `GET /api/test?url=` | `redirects:read` | Which rule matches a URL, and where it redirects. |
+| `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
 
 **Tokens.**
 

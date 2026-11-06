@@ -3,10 +3,12 @@
 
 import gleam/http
 import gleam/http/request
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
@@ -125,6 +127,25 @@ pub fn set_session_cookie(
   )
 }
 
+/// Where to go back after an action on the rules list, keeping its filters,
+/// sort and page: `return_to` when it is a local `/rules` URL, otherwise
+/// `/rules`, with `flash` set (and any previous flash parameters dropped).
+pub fn return_to(value: String, flash: List(#(String, String))) -> String {
+  let #(path, query) = case string.split_once(value, "?") {
+    Ok(#(path, query)) -> #(path, query)
+    Error(Nil) -> #(value, "")
+  }
+  let path = case path == "/rules" {
+    True -> path
+    False -> "/rules"
+  }
+  let kept =
+    uri.parse_query(query)
+    |> result.unwrap([])
+    |> list.filter(fn(kv) { kv.0 != "flash" && kv.0 != "count" })
+  path <> "?" <> uri.query_to_string(list.append(kept, flash))
+}
+
 /// A form field, "" when absent.
 pub fn form_value(form: wisp.FormData, name: String) -> String {
   list.key_find(form.values, name) |> result.unwrap("")
@@ -170,23 +191,25 @@ pub fn features(ctx: Context) -> layout.Features {
 
 pub fn flash_from_query(req: Request) -> Option(layout.Flash) {
   let query = wisp.get_query(req)
+  // a number, never text from the link
+  let count =
+    list.key_find(query, "count")
+    |> result.try(int.parse)
+    |> result.unwrap(0)
+    |> int.to_string
   case list.key_find(query, "flash") {
+    Ok("bulk") ->
+      Some(layout.Success("Changed " <> count <> " redirection(s)."))
     Ok("created") -> Some(layout.Success("Redirection created."))
     Ok("updated") -> Some(layout.Success("Redirection updated."))
     Ok("deleted") -> Some(layout.Success("Redirection deleted."))
     Ok("toggled") -> Some(layout.Success("Redirection updated."))
+    Ok("enabled") -> Some(layout.Success("Redirection enabled."))
+    Ok("disabled") -> Some(layout.Success("Redirection disabled."))
     Ok("reloaded") ->
-      Some(layout.Success(
-        "Reloaded "
-        <> { list.key_find(query, "count") |> result.unwrap("0") }
-        <> " redirection(s) from disk.",
-      ))
+      Some(layout.Success("Reloaded " <> count <> " redirection(s) from disk."))
     Ok("imported") ->
-      Some(layout.Success(
-        "Imported "
-        <> { list.key_find(query, "count") |> result.unwrap("0") }
-        <> " redirection(s).",
-      ))
+      Some(layout.Success("Imported " <> count <> " redirection(s)."))
     Ok("user_created") -> Some(layout.Success("User created."))
     Ok("user_deleted") -> Some(layout.Success("User deleted."))
     Ok("password_changed") -> Some(layout.Success("Password changed."))

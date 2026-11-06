@@ -26,3 +26,16 @@ pub fn tail_reads_the_end_of_a_large_log_test() {
   assert list.map(entries, fn(e) { e.action })
     == ["a2000", "a1999", "a1998", "a1997", "a1996"]
 }
+
+pub fn changes_test() {
+  let entry =
+    audit.Entry(
+      at: "t",
+      actor: "a",
+      action: "rules.import.merge",
+      target: "",
+      details: "{\"before\":{\"fingerprint\":\"x\",\"n\":1},\"after\":{\"fingerprint\":\"y\",\"n\":1,\"added_ids\":[\"a\",\"b\"]}}",
+    )
+  assert audit.changes(entry)
+    == [#("added_ids", "", "a, b"), #("fingerprint", "x", "y")]
+}

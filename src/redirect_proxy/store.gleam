@@ -24,6 +24,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/set
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
@@ -106,8 +107,44 @@ pub opaque type Message {
     actor: String,
     reply: Subject(Result(Int, List(String))),
   )
+  /// `rules` are prepared and validated, as for `Import`.
+  PreviewImport(
+    rules: List(Rule),
+    mode: ImportMode,
+    reply: Subject(Result(store_rules.Diff, List(String))),
+  )
+  Bulk(
+    ids: List(String),
+    action: BulkAction,
+    actor: String,
+    reply: Subject(Result(Int, List(String))),
+  )
   Reload(actor: String, reply: Subject(Result(Int, String)))
   ReloadInBackground(actor: String)
+}
+
+/// What a bulk change does to the rules it names.
+pub type BulkAction {
+  Enable
+  Disable
+  Remove
+}
+
+pub fn bulk_action_from_string(action: String) -> Result(BulkAction, Nil) {
+  case action {
+    "enable" -> Ok(Enable)
+    "disable" -> Ok(Disable)
+    "delete" -> Ok(Remove)
+    _ -> Error(Nil)
+  }
+}
+
+pub fn bulk_action_to_string(action: BulkAction) -> String {
+  case action {
+    Enable -> "enable"
+    Disable -> "disable"
+    Remove -> "delete"
+  }
 }
 
 type State {
@@ -239,6 +276,29 @@ pub fn import_rules(
   // does not hold the file lock (nor block other callers) while it runs.
   use prepared <- result.try(prepare_import(rules, actor_name))
   actor.call(store, 60_000, Import(prepared, mode, actor_name, _))
+}
+
+/// What an import would change, without writing anything: rules added,
+/// removed and changed (by id). Fails like `import_rules` would.
+pub fn preview_import(
+  store: Store,
+  rules: List(Rule),
+  mode: ImportMode,
+  by actor_name: String,
+) -> Result(store_rules.Diff, List(String)) {
+  use prepared <- result.try(prepare_import(rules, actor_name))
+  actor.call(store, 60_000, PreviewImport(prepared, mode, _))
+}
+
+/// Enables, disables or deletes several rules in one write, recorded as one
+/// audit entry. Every id must exist. Returns the number of rules changed.
+pub fn bulk(
+  store: Store,
+  ids: List(String),
+  action: BulkAction,
+  by actor_name: String,
+) -> Result(Int, List(String)) {
+  actor.call(store, timeout, Bulk(list.unique(ids), action, actor_name, _))
 }
 
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
@@ -413,6 +473,67 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             Error(errors)
           }
         }
+      }
+    }
+
+    PreviewImport(prepared, mode, reply) -> {
+      let rules = case mode {
+        Replace -> prepared
+        Merge -> merge(state.rules, prepared)
+      }
+      process.send(
+        reply,
+        check_conflicts(rules)
+          |> result.map(fn(_) { store_rules.diff(state.rules, rules) }),
+      )
+      actor.continue(state)
+    }
+
+    Bulk(ids, action, actor_name, reply) -> {
+      use state <- mutate(state, reply, fn(e) { [e] })
+      {
+        let known = list.map(state.rules, fn(r) { r.id }) |> set.from_list
+        let wanted = set.from_list(ids)
+        use <- bool.guard(ids == [], Error(["ids: select at least one rule"]))
+        use <- bool.guard(
+          !list.all(ids, set.contains(known, _)),
+          Error([
+            "ids: unknown rule "
+            <> {
+              list.filter(ids, fn(id) { !set.contains(known, id) })
+              |> string.join(", ")
+            },
+          ]),
+        )
+        let now = ffi.now_rfc3339()
+        let change = fn(r: Rule, enabled: Bool) {
+          case set.contains(wanted, r.id) && r.enabled != enabled {
+            True ->
+              rule.Rule(..r, enabled:, updated_at: now, updated_by: actor_name)
+            False -> r
+          }
+        }
+        let rules = case action {
+          Remove ->
+            list.filter(state.rules, fn(r) { !set.contains(wanted, r.id) })
+          Enable -> list.map(state.rules, change(_, True))
+          Disable -> list.map(state.rules, change(_, False))
+        }
+        // enabling may bring two exact rules for one path back together
+        use Nil <- result.try(check_conflicts(rules))
+        let built = warn_loops(matcher.build(rules), rules)
+        use fingerprint <- result.try(commit(state.settings, rules, built))
+        let d = store_rules.diff(state.rules, rules)
+        let count = list.length(d.removed) + list.length(d.changed)
+        audit_rules_change(
+          state,
+          actor_name,
+          "rules.bulk." <> bulk_action_to_string(action),
+          int.to_string(count) <> " rule(s)",
+          rules,
+          fingerprint,
+        )
+        Ok(#(count, rules, fingerprint))
       }
     }
 

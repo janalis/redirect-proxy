@@ -13,6 +13,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation.{type Deprecation}
 import redirect_proxy/api/openapi
@@ -24,6 +25,7 @@ import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
 import redirect_proxy/log
 import redirect_proxy/matcher
+import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
@@ -104,6 +106,10 @@ fn route(
       use <- require(principal, scope.Write, ctx)
       import_rules(req, ctx, principal)
     }
+    Post, ["redirects", "bulk"] -> {
+      use <- require(principal, scope.Write, ctx)
+      bulk(req, ctx, principal)
+    }
     Get, ["redirects", id] -> {
       use <- require(principal, scope.Read, ctx)
       case store.get(ctx.store, id) {
@@ -145,6 +151,7 @@ fn route(
     _, ["redirects"] -> problem.method_not_allowed(["GET", "POST"])
     _, ["redirects", "export"] -> problem.method_not_allowed(["GET"])
     _, ["redirects", "import"] -> problem.method_not_allowed(["POST"])
+    _, ["redirects", "bulk"] -> problem.method_not_allowed(["POST"])
     _, ["redirects", _] ->
       problem.method_not_allowed(["GET", "PUT", "PATCH", "DELETE"])
     _, ["reload"] -> problem.method_not_allowed(["POST"])
@@ -161,7 +168,7 @@ fn with_route_deprecations(
   segments: List(String),
 ) -> Response {
   let template = case segments {
-    ["redirects", id] if id != "export" && id != "import" ->
+    ["redirects", id] if id != "export" && id != "import" && id != "bulk" ->
       "/api/redirects/{id}"
     _ -> "/api/" <> string.join(segments, "/")
   }
@@ -240,6 +247,14 @@ fn list_rules(req: Request, ctx: Context) -> Response {
   }
   let kind = get("match")
   let enabled = get("enabled")
+  // invalid filters are errors: silently ignoring them returns the wrong set
+  use <- bool.lazy_guard(
+    !list.contains(["", "exact", "prefix", "regex"], kind),
+    fn() { problem.bad_request("match must be exact, prefix or regex.") },
+  )
+  use <- bool.lazy_guard(!list.contains(["", "true", "false"], enabled), fn() {
+    problem.bad_request("enabled must be true or false.")
+  })
   let matching =
     store.all(ctx.store)
     |> list.filter(fn(r) {
@@ -252,23 +267,89 @@ fn list_rules(req: Request, ctx: Context) -> Response {
         _ -> True
       }
     })
-  let total = list.length(matching)
-  let data =
-    matching |> list.drop({ page - 1 } * per_page) |> list.take(per_page)
-  problem.json_response(
-    200,
-    json.object([
-      #("data", json.array(data, rule_json)),
-      #(
-        "meta",
-        json.object([
-          #("total", json.int(total)),
-          #("page", json.int(page)),
-          #("per_page", json.int(per_page)),
-        ]),
-      ),
-    ]),
-  )
+  case store_rules.sort(matching, get("sort"), metrics.hits) {
+    Error(Nil) ->
+      problem.bad_request(
+        "sort must be one of "
+        <> string.join(store_rules.sort_fields, ", ")
+        <> ", optionally prefixed with - (descending).",
+      )
+    Ok(sorted) -> {
+      let total = list.length(sorted)
+      let pages = int.max(1, { total + per_page - 1 } / per_page)
+      let data =
+        sorted |> list.drop({ page - 1 } * per_page) |> list.take(per_page)
+      let link = fn(p, rel) {
+        "<"
+        <> "/api/redirects?"
+        <> uri.query_to_string(
+          query
+          |> list.filter(fn(kv) { kv.0 != "page" })
+          |> list.append([#("page", int.to_string(p))]),
+        )
+        <> ">; rel=\""
+        <> rel
+        <> "\""
+      }
+      let links =
+        list.flatten([
+          case page < pages {
+            True -> [link(page + 1, "next")]
+            False -> []
+          },
+          case page > 1 {
+            True -> [link(int.min(page - 1, pages), "prev")]
+            False -> []
+          },
+        ])
+      let resp =
+        problem.json_response(
+          200,
+          json.object([
+            #("data", json.array(data, rule_json)),
+            #(
+              "meta",
+              json.object([
+                #("total", json.int(total)),
+                #("page", json.int(page)),
+                #("per_page", json.int(per_page)),
+                #("total_pages", json.int(pages)),
+              ]),
+            ),
+          ]),
+        )
+      case links {
+        [] -> resp
+        _ -> wisp.set_header(resp, "link", string.join(links, ", "))
+      }
+    }
+  }
+}
+
+fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
+  use body, _ <- require_json_object(req)
+  let decoder = {
+    use ids <- decode.field("ids", decode.list(decode.string))
+    use action <- decode.field("action", decode.string)
+    decode.success(#(ids, action))
+  }
+  case json.parse(body, decoder) {
+    Error(e) -> problem.validation([rule.describe_json_error(e)])
+    Ok(#(ids, action)) ->
+      case store.bulk_action_from_string(action) {
+        Error(Nil) ->
+          problem.validation(["action: must be enable, disable or delete"])
+        Ok(action) ->
+          case store.bulk(ctx.store, ids, action, principal.actor) {
+            Ok(count) ->
+              problem.json_response(
+                200,
+                json.object([#("changed", json.int(count))]),
+              )
+            Error(errors) -> problem.validation(errors)
+          }
+      }
+  }
 }
 
 fn text_matches(r: Rule, needle: String) -> Bool {
@@ -426,10 +507,23 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
     Ok(mode) -> store.import_mode_from_string(mode)
     Error(Nil) -> Ok(store.Merge)
   }
+  let dry_run = list.key_find(wisp.get_query(req), "dry_run") == Ok("true")
   use body <- wisp.require_string_body(req)
   case mode, rule.file_from_string(body) {
     Error(Nil), _ -> problem.bad_request("mode must be merge or replace.")
     _, Error(reason) -> problem.validation([reason])
+    Ok(mode), Ok(incoming) if dry_run ->
+      case store.preview_import(ctx.store, incoming, mode, principal.actor) {
+        Ok(d) ->
+          problem.json_response(
+            200,
+            json.object([
+              #("dry_run", json.bool(True)),
+              ..store_rules.diff_to_json(d)
+            ]),
+          )
+        Error(errors) -> problem.validation(errors)
+      }
     Ok(mode), Ok(incoming) ->
       case store.import_rules(ctx.store, incoming, mode, principal.actor) {
         Ok(count) ->
@@ -447,28 +541,66 @@ fn import_rules(req: Request, ctx: Context, principal: Principal) -> Response {
 
 fn test_url(req: Request, ctx: Context) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
-  case
-    matcher.resolve_url(
-      snapshot.current(),
-      url,
-      config.ignore_trailing_slash(ctx.config),
-    )
-  {
+  let tolerant = config.ignore_trailing_slash(ctx.config)
+  case matcher.resolve_url(snapshot.current(), url, tolerant) {
     matcher.BadUrl ->
       problem.bad_request(
         "url must be an absolute URL, e.g. https://host/path.",
       )
-    matcher.NotMatched ->
-      problem.json_response(200, json.object([#("matched", json.bool(False))]))
-    matcher.Redirected(m, location) ->
-      problem.json_response(
-        200,
-        json.object([
-          #("matched", json.bool(True)),
-          #("status", json.int(m.rule.status)),
-          #("location", json.string(location)),
-          #("rule", rule_json(m.rule)),
-        ]),
-      )
+    resolution -> {
+      let explanation =
+        explain.explain(snapshot.current(), store.all(ctx.store), url, tolerant)
+      let details = case explanation {
+        Ok(e) -> [
+          #(
+            "candidates",
+            json.array(e.candidates, fn(c) {
+              json.object([
+                #("verdict", json.string(verdict_string(c.verdict))),
+                #("rule", rule_json(c.rule)),
+              ])
+            }),
+          ),
+          #(
+            "chain",
+            json.array(e.chain, fn(hop) {
+              json.object([
+                #("location", json.string(hop.location)),
+                #("status", json.int(hop.status)),
+                #("rule_id", json.string(hop.rule_id)),
+              ])
+            }),
+          ),
+          #("loop", json.bool(e.loops)),
+        ]
+        Error(Nil) -> []
+      }
+      case resolution {
+        matcher.Redirected(m, location) ->
+          problem.json_response(
+            200,
+            json.object([
+              #("matched", json.bool(True)),
+              #("status", json.int(m.rule.status)),
+              #("location", json.string(location)),
+              #("rule", rule_json(m.rule)),
+              ..details
+            ]),
+          )
+        _ ->
+          problem.json_response(
+            200,
+            json.object([#("matched", json.bool(False)), ..details]),
+          )
+      }
+    }
+  }
+}
+
+fn verdict_string(verdict: explain.Verdict) -> String {
+  case verdict {
+    explain.Applied -> "applied"
+    explain.Shadowed -> "shadowed"
+    explain.Disabled -> "disabled"
   }
 }

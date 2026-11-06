@@ -4,13 +4,16 @@ import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 
-/// `rule.to_json` plus the version (the ETag of the rule).
+/// `rule.to_json` plus the version (the ETag of the rule) and the hits since
+/// the server started (read only).
 pub fn rule_json(r: Rule) -> Json {
   json.object(
     list.append(rule.json_fields(r), [
       #("version", json.string(rule.version(r))),
+      #("hits", json.int(metrics.hits(r.id))),
     ]),
   )
 }
