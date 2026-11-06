@@ -334,7 +334,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                 "query",
                 enum_schema([
                   "source", "-source", "host", "-host", "hits", "-hits",
-                  "updated", "-updated",
+                  "last_hit", "-last_hit", "updated", "-updated",
                 ]),
                 "Sort field; - for descending. File order by default.",
               ),
@@ -1062,7 +1062,17 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
           #("version", typed("string", "Content version, also sent as ETag.")),
           #(
             "hits",
-            typed("integer", "Requests redirected since the server started."),
+            typed(
+              "integer",
+              "Requests redirected (kept across restarts, saved every minute).",
+            ),
+          ),
+          #(
+            "last_hit_at",
+            typed(
+              "string",
+              "RFC 3339 time of the last request redirected (empty: never).",
+            ),
           ),
         ],
       ])

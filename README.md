@@ -24,7 +24,9 @@ rules. It never proxies traffic to an upstream.
   - Processes are supervised by OTP.
 - **Administration backend** (Bootstrap 6, a pre-release):
   - Create, read, update and delete rules, with search, filters (host, match
-    type, state) and sorting (source, host, hits, last update).
+    type, state) and sorting (source, host, hits, last hit, last update).
+    Hit counts and the time of the last hit are kept across restarts, so
+    rules nobody uses any more are easy to find.
   - Enable, disable or delete a selection of rules, or every rule matching
     the filters, in one change.
   - A "test a URL" tool that explains the result: every rule that matches,
@@ -455,7 +457,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` since the server started. The `ETag` is the version of the whole rule set. |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
 | `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch); `GET` honours `If-None-Match` (`304`). |
 | `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). `ETag` and `If-None-Match` as for the list. |
@@ -549,6 +551,10 @@ for it. `rules import` writes the file; a running server applies it on
   - An import previewed in the admin applies exactly what was shown: if the
     rules changed meanwhile, nothing is written and the updated preview is
     shown again. The API does the same with the `ETag` of a dry run.
+- **Hit counts.** `<data_dir>/hits.json` keeps each rule's hit count and
+  last hit time across restarts. It is written every minute and when a stop
+  begins (`SIGTERM`), so a crash loses at most a minute of counts. Deleting
+  it resets the counts.
 - **Backups.** Each change keeps the previous file as
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule

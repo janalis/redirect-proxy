@@ -304,14 +304,16 @@ pub fn filter(rules: List(Rule), f: Filter) -> List(Rule) {
   })
 }
 
-pub const sort_fields = ["source", "host", "hits", "updated"]
+pub const sort_fields = ["source", "host", "hits", "last_hit", "updated"]
 
 /// Sorts rules by `by` (one of `sort_fields`, optionally prefixed with `-`;
-/// "" keeps the file order). Hit counts come from `hits`.
+/// "" keeps the file order). Hit counts come from `hits`, last hit times
+/// from `last_hit`.
 pub fn sort(
   rules: List(Rule),
   by: String,
   hits: fn(String) -> Int,
+  last_hit: fn(String) -> Int,
 ) -> Result(List(Rule), Nil) {
   let #(field, descending) = case by {
     "-" <> field -> #(field, True)
@@ -324,6 +326,8 @@ pub fn sort(
     "updated" ->
       Ok(fn(a: Rule, b: Rule) { string.compare(a.updated_at, b.updated_at) })
     "hits" -> Ok(fn(a: Rule, b: Rule) { int.compare(hits(a.id), hits(b.id)) })
+    "last_hit" ->
+      Ok(fn(a: Rule, b: Rule) { int.compare(last_hit(a.id), last_hit(b.id)) })
     _ -> Error(Nil)
   }
   use compare <- result.map(compare)

@@ -298,7 +298,7 @@ fn list_rules(req: Request, ctx: Context) -> Response {
     |> result.unwrap(default_per_page)
     |> int.clamp(1, max_per_page)
   use #(matching, version) <- result_or_response(filtered_rules(ctx, get))
-  case store_rules.sort(matching, get("sort"), metrics.hits) {
+  case store_rules.sort(matching, get("sort"), metrics.hits, metrics.last_hit) {
     Error(Nil) ->
       problem.bad_request(
         "sort must be one of "

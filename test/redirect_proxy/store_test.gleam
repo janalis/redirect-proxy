@@ -20,6 +20,7 @@ fn settings(dir: String, backups: Int) -> store.Settings {
     audit_path: dir <> "/audit.jsonl",
     ignore_trailing_slash: False,
     watch_interval: 0,
+    hits_path: dir <> "/hits.json",
   )
 }
 
@@ -559,4 +560,38 @@ pub fn versioned_set_changes_test() {
     == Ok(1)
   assert store.bulk_versioned(s, [], store.Disable, Some("*"), by: "t")
     == Error(store.Rejected(["ids: select at least one rule"]))
+}
+
+@external(erlang, "redirect_proxy_sigterm", "set_draining")
+fn set_draining(value: Bool) -> Nil
+
+/// Hit counts survive a restart: saved when a stop begins (and every
+/// minute), restored by the next start.
+pub fn hit_counts_survive_a_restart_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) = store.create(s, new_rule("/counted", "/x"), by: "t")
+  matcher.record_hit(snapshot.current(), created.id)
+  matcher.record_hit(snapshot.current(), created.id)
+  set_draining(True)
+  wait_for_file(dir <> "/hits.json", 30)
+  set_draining(False)
+  let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
+  assert string.contains(saved, created.id)
+  // a fresh start (nothing published yet) restores them
+  snapshot.publish(matcher.empty())
+  let _ = start(settings(dir, 0))
+  assert matcher.hit_count(snapshot.current(), created.id) == 2
+  assert matcher.last_hit(snapshot.current(), created.id) > 0
+}
+
+fn wait_for_file(path: String, attempts: Int) -> Nil {
+  case simplifile.is_file(path), attempts {
+    Ok(True), _ -> Nil
+    _, 0 -> panic as "file not written in time"
+    _, _ -> {
+      process.sleep(100)
+      wait_for_file(path, attempts - 1)
+    }
+  }
 }

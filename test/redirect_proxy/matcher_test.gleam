@@ -456,3 +456,25 @@ pub fn whole_segments_prefix_test() {
   assert location(m, "x.test", "/BLOG/a") == Ok("https://new.test/news/a")
   assert location(m, "x.test", "/BLOGS") == Error(Nil)
 }
+
+pub fn hit_records_test() {
+  let m = matcher.build([r("a", "*", rule.Exact, "/a", "/x")])
+  assert matcher.last_hit(m, "a") == 0
+  matcher.record_hit(m, "a")
+  matcher.record_hit(m, "a")
+  let assert [record] = matcher.hit_records(m)
+  assert record.rule_id == "a" && record.count == 2 && record.last > 0
+  // carried to the next matcher, and seeded from saved records
+  let next =
+    matcher.build([r("a", "*", rule.Exact, "/a", "/y")])
+    |> matcher.carry_hits(from: m)
+  assert matcher.hit_count(next, "a") == 2
+  assert matcher.last_hit(next, "a") == record.last
+  matcher.seed_hits(next, [
+    matcher.HitRecord("a", 5, record.last - 100),
+    matcher.HitRecord("gone", 9, 1),
+  ])
+  assert matcher.hit_count(next, "a") == 7
+  // the most recent last hit wins
+  assert matcher.last_hit(next, "a") == record.last
+}

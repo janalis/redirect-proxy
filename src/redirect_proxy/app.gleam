@@ -83,6 +83,7 @@ pub fn store_settings(cfg: Config) -> store.Settings {
     audit_path: config.audit_path(cfg),
     ignore_trailing_slash: config.ignore_trailing_slash(cfg),
     watch_interval: cfg.storage.watch_interval * 1000,
+    hits_path: cfg.storage.data_dir <> "/hits.json",
   )
 }
 
