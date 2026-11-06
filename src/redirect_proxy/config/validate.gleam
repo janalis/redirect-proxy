@@ -161,6 +161,15 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("storage.watch_interval must be >= 0 (0: off)"),
   )
   use <- bool.guard(
+    config.storage.audit_max_bytes != 0
+      && config.storage.audit_max_bytes < 65_536,
+    Error("storage.audit_max_bytes must be 0 (never rotate) or at least 65536"),
+  )
+  use <- bool.guard(
+    config.storage.audit_files < 0 || config.storage.audit_files > 100,
+    Error("storage.audit_files must be between 0 and 100"),
+  )
+  use <- bool.guard(
     config.admin.session_ttl < 60,
     Error("admin.session_ttl must be at least 60 seconds"),
   )

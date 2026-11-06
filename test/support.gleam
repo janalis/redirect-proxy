@@ -49,6 +49,7 @@ pub fn boot(cfg: config.Config) -> App {
       // own port pass one from `free_port()`.
       api: config.ApiConfig(..cfg.api, listen: ""),
       storage: config.StorageConfig(
+        ..config.default().storage,
         data_dir: dir,
         backups: 3,
         watch_interval: 0,

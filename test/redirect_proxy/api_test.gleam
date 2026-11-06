@@ -1536,3 +1536,46 @@ pub fn csv_import_and_export_over_the_api_test() {
   assert bad.status == 422
   assert string.contains(bad.body, "line 2: status: must be a number")
 }
+
+pub fn audit_over_the_api_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write, scope.Ops])
+  list.each(["/a1", "/a2", "/a3"], fn(source) {
+    let resp =
+      api(
+        env,
+        Post,
+        "/api/redirects",
+        token,
+        "{\"source\":\"" <> source <> "\",\"target\":\"/x\"}",
+      )
+    assert resp.status == 201
+  })
+  let resp =
+    api(env, Get, "/api/audit?action=rule.create&per_page=2", token, "")
+  assert resp.status == 200
+  let actions =
+    field(
+      resp.body,
+      ["data"],
+      decode.list(decode.at(["action"], decode.string)),
+    )
+  assert actions == ["rule.create", "rule.create"]
+  // entries are as recorded, with the rule after the change
+  let sources =
+    field(
+      resp.body,
+      ["data"],
+      decode.list(decode.at(["after", "source"], decode.string)),
+    )
+  assert sources == ["/a3", "/a2"]
+  assert field(resp.body, ["meta", "has_more"], decode.bool)
+  assert string.contains(header(resp, "link"), "page=2")
+  let next =
+    api(env, Get, "/api/audit?action=rule.create&per_page=2&page=2", token, "")
+  assert !field(next.body, ["meta", "has_more"], decode.bool)
+  assert api(env, Get, "/api/audit?since=yesterday", token, "").status == 400
+  // the ops scope is required
+  let reader = access_token(env, [scope.Read])
+  assert api(env, Get, "/api/audit", reader, "").status == 403
+}

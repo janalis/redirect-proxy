@@ -105,6 +105,8 @@ pub const known_keys = [
   "storage.backups",
   "storage.data_dir",
   "storage.watch_interval",
+  "storage.audit_max_bytes",
+  "storage.audit_files",
 ]
 
 /// The keys of a parsed configuration file that are not configuration keys.
@@ -174,6 +176,16 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["storage", "watch_interval"],
     d.storage.watch_interval,
+  ))
+  use audit_max_bytes <- result.try(integer(
+    t,
+    ["storage", "audit_max_bytes"],
+    d.storage.audit_max_bytes,
+  ))
+  use audit_files <- result.try(integer(
+    t,
+    ["storage", "audit_files"],
+    d.storage.audit_files,
   ))
   use admin_enabled <- result.try(boolean(
     t,
@@ -406,7 +418,13 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       session_idle_timeout:,
       metrics_token:,
     ),
-    storage: StorageConfig(data_dir:, backups:, watch_interval:),
+    storage: StorageConfig(
+      data_dir:,
+      backups:,
+      watch_interval:,
+      audit_max_bytes:,
+      audit_files:,
+    ),
     local_auth: LocalAuthConfig(enabled: local_enabled),
     oidc: OidcConfig(
       enabled: oidc_enabled,

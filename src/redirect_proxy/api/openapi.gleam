@@ -783,6 +783,64 @@ fn paths(registry: List(Deprecation)) -> Json {
         ),
       ]),
     ),
+    #(
+      "/api/audit",
+      json.object([
+        op(
+          "get",
+          "/api/audit",
+          "Audit log entries, newest first (current and rotated files)",
+          "redirects:ops",
+          [
+            #(
+              "parameters",
+              json.preprocessed_array([
+                param("actor", "query", string_schema(), "Exactly this actor."),
+                param(
+                  "action",
+                  "query",
+                  string_schema(),
+                  "Actions starting with this (rule. for every rule change).",
+                ),
+                param(
+                  "target",
+                  "query",
+                  string_schema(),
+                  "Targets containing this.",
+                ),
+                param(
+                  "since",
+                  "query",
+                  string_schema(),
+                  "RFC 3339 date-time: entries at or after it.",
+                ),
+                param(
+                  "until",
+                  "query",
+                  string_schema(),
+                  "RFC 3339 date-time: entries before it.",
+                ),
+                param("page", "query", int_schema(), "Page number (from 1)."),
+                param("per_page", "query", int_schema(), "Page size (max 500)."),
+              ]),
+            ),
+            #(
+              "responses",
+              json.object([
+                #(
+                  "200",
+                  response(
+                    "Entries as recorded; meta.has_more (and a Link rel=next header) when older ones match.",
+                    ref("AuditPage"),
+                  ),
+                ),
+                ..errors([#("400", "Invalid date or paging value.")])
+              ]),
+            ),
+          ],
+        ),
+      ]),
+    ),
   ])
 }
 
@@ -817,7 +875,9 @@ fn components(registry: List(Deprecation)) -> Json {
                         ),
                         #(
                           "redirects:ops",
-                          json.string("Reload the redirections file."),
+                          json.string(
+                            "Reload the redirections file and read the audit log.",
+                          ),
                         ),
                       ]),
                     ),
@@ -915,6 +975,67 @@ fn components(registry: List(Deprecation)) -> Json {
                   #("type", json.string("array")),
                   #("items", ref("RuleInput")),
                 ]),
+              ]),
+            ),
+          ]),
+        ),
+        #(
+          "AuditPage",
+          json.object([
+            #("type", json.string("object")),
+            #(
+              "properties",
+              json.object([
+                #(
+                  "data",
+                  json.object([
+                    #("type", json.string("array")),
+                    #("items", ref("AuditEntry")),
+                  ]),
+                ),
+                #(
+                  "meta",
+                  json.object([
+                    #("type", json.string("object")),
+                    #(
+                      "properties",
+                      json.object([
+                        #("page", int_schema()),
+                        #("per_page", int_schema()),
+                        #("has_more", typed("boolean", "Older entries match.")),
+                      ]),
+                    ),
+                  ]),
+                ),
+              ]),
+            ),
+          ]),
+        ),
+        #(
+          "AuditEntry",
+          json.object([
+            #("type", json.string("object")),
+            #(
+              "properties",
+              json.object([
+                #("at", typed("string", "RFC 3339 time.")),
+                #(
+                  "actor",
+                  typed(
+                    "string",
+                    "Who: a local user, sso:<name>, proxy:<name>, client:<id>, oauth:<subject>, system, cli...",
+                  ),
+                ),
+                #(
+                  "action",
+                  typed("string", "rule.create, rules.reload, auth.login..."),
+                ),
+                #("target", typed("string", "What it applies to.")),
+                #(
+                  "before",
+                  typed("object", "The state before (null for none)."),
+                ),
+                #("after", typed("object", "The state after (null for none).")),
               ]),
             ),
           ]),

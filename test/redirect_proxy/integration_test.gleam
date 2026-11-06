@@ -42,6 +42,7 @@ fn boot(cfg: config.Config) -> Env {
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
       storage: config.StorageConfig(
+        ..config.default().storage,
         data_dir: dir,
         backups: 3,
         watch_interval: 0,
@@ -2160,6 +2161,7 @@ pub fn replica_on_a_read_only_data_dir_test() {
       admin: config.AdminConfig(..d.admin, enabled: False),
       api: config.ApiConfig(..d.api, enabled: False),
       storage: config.StorageConfig(
+        ..config.default().storage,
         data_dir: dir,
         backups: 3,
         watch_interval: 0,

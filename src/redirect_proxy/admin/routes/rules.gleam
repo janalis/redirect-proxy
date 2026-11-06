@@ -663,8 +663,9 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   }
 }
 
-/// The most recent audit entries considered by the audit page filters.
-const audit_window = 1000
+/// The most recent matching audit entries the audit page pages through,
+/// in the current file and the rotated ones.
+const audit_window = 10_000
 
 const audit_page_size = 50
 
@@ -680,14 +681,16 @@ pub fn audit_page(req: Request, ctx: Context, s: Session) -> Response {
       target: get("target"),
     )
   let matching =
-    audit.tail(config.audit_path(ctx.config), audit_window)
-    |> list.filter(fn(e) {
-      { filters.actor == "" || e.actor == filters.actor }
-      && {
-        filters.action == "" || string.starts_with(e.action, filters.action)
-      }
-      && { filters.target == "" || string.contains(e.target, filters.target) }
-    })
+    audit.search(
+      config.audit_path(ctx.config),
+      audit.Filter(
+        ..audit.any,
+        actor: filters.actor,
+        action: filters.action,
+        target: filters.target,
+      ),
+      audit_window,
+    )
   let pages_count =
     int.max(
       1,

@@ -24,6 +24,7 @@ import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
 import redirect_proxy/api/web as api_web
+import redirect_proxy/audit
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/validate as config_validate
@@ -98,6 +99,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     }),
   )
   init_tables()
+  audit.configure(cfg.storage.audit_max_bytes, cfg.storage.audit_files)
   use secret <- result.try(secret_key_base(cfg))
   bootstrap_admin(cfg)
   list.each(config_validate.runtime_warnings(cfg), log.warning)
