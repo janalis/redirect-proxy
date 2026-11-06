@@ -17,6 +17,7 @@ import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
+import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
@@ -120,7 +121,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       Error(Nil) -> ""
     }
     let ctx =
-      router.Context(
+      admin_web.Context(
         config: cfg,
         store: store_subject,
         users: users_settings(cfg),
