@@ -1,10 +1,12 @@
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/oidc/provider as oidc_provider
 import redirect_proxy/config
 import redirect_proxy/ffi
+import support
 
 fn cfg(domains: List(String), groups: List(String)) -> config.OidcConfig {
   config.OidcConfig(
@@ -192,3 +194,49 @@ fn counting_server() -> #(Int, Counter)
 
 @external(erlang, "test_net_ffi", "accepted")
 fn accepted(counter: Counter) -> Int
+
+/// While the provider cannot be reached, the metadata and signing keys
+/// fetched before are used for a day past their hour, not forgotten.
+pub fn provider_outage_uses_the_last_good_metadata_test() {
+  // the application owns the cache table
+  let _ = support.boot(config.default())
+  let down = "http://127.0.0.1:1/outage-" <> int.to_string(ffi.now_micros())
+  let provider =
+    oidc_provider.Provider(
+      issuer: down,
+      authorization_endpoint: down <> "/authorize",
+      token_endpoint: down <> "/token",
+      jwks_uri: down <> "/jwks",
+      end_session_endpoint: "",
+    )
+  let now = ffi.now_seconds()
+  // fetched two hours ago: expired an hour ago
+  ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
+    now - 3600,
+    #(now - 7200, provider),
+  ))
+  assert oidc_provider.discover_issuer(down) == Ok(provider)
+  let #(jwks, key) = support.keypair()
+  ffi.ets_put(oidc_provider.table, "jwks:" <> down <> "/jwks", #(
+    now - 3600,
+    #(now - 7200, jwks),
+  ))
+  // the stale keys are used: a token they signed is accepted
+  let assert Ok(_) =
+    oidc_provider.verify_signature(
+      provider,
+      support.sign(key, "{\"sub\":\"s\"}"),
+    )
+  // the failed fetch is remembered: a forced refresh (a token with an
+  // unknown key) does not fetch again at once
+  let failed: Result(#(Int, String), Nil) =
+    ffi.ets_get(oidc_provider.table, "failed:jwks:" <> down <> "/jwks")
+  assert result.is_ok(failed)
+  // fetched over a day ago: gone
+  let old = down <> "/old"
+  ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
+    now - 90_000,
+    #(now - 93_600, provider),
+  ))
+  let assert Error(_) = oidc_provider.discover_issuer(old)
+}

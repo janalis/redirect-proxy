@@ -596,3 +596,34 @@ pub fn no_admin_role_warns_test() {
   assert proxy_warns(proxy(""))
   assert !proxy_warns(proxy("x-forwarded-role"))
 }
+
+/// Signing keys fetched over plain HTTP from another host can be changed in
+/// transit: the server warns (the loopback interface is fine).
+pub fn plain_http_issuer_warns_test() {
+  let d = config.default()
+  let with = fn(issuer) {
+    config.Config(
+      ..d,
+      api: config.ApiConfig(
+        ..d.api,
+        oauth: config.ApiOAuthConfig(
+          ..d.api.oauth,
+          enabled: True,
+          issuer:,
+          audience: "rp",
+        ),
+      ),
+    )
+  }
+  let warns = fn(issuer) {
+    list.any(config_validate.runtime_warnings(with(issuer)), string.starts_with(
+      _,
+      "api.oauth.issuer is plain http://",
+    ))
+  }
+  assert warns("http://idp.internal:8080/realms/x")
+  assert !warns("https://idp.example.com")
+  assert !warns("http://127.0.0.1:9000")
+  assert !warns("http://localhost:9000")
+  assert !warns("http://[::1]:9000")
+}
