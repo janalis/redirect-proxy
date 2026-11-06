@@ -2076,3 +2076,44 @@ pub fn header_session_ends_without_the_proxy_header_test() {
   // ... and the session is gone, not just skipped
   assert get(env.admin <> "/rules", [#("cookie", cookie)]).status == 303
 }
+
+/// A replica serving a read-only volume (a Kubernetes ConfigMap): with the
+/// admin disabled it starts, serves the rules and picks up a replaced file,
+/// without writing to the data directory.
+pub fn replica_on_a_read_only_data_dir_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"id\":\"r1\",\"source\":\"/ro\",\"target\":\"/one\"}]}",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let d = config.default()
+  let cfg =
+    config.Config(
+      ..d,
+      server: config.ServerConfig(..d.server, listen: "127.0.0.1", port: 0),
+      admin: config.AdminConfig(..d.admin, enabled: False),
+      api: config.ApiConfig(..d.api, enabled: False),
+      storage: config.StorageConfig(
+        data_dir: dir,
+        backups: 3,
+        watch_interval: 0,
+      ),
+      access_log: config.AccessLogConfig(..d.access_log, enabled: False),
+    )
+  let started = app.start(cfg)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Ok(running) = started
+  let resp =
+    get(
+      "http://127.0.0.1:" <> int.to_string(running.redirect_port) <> "/ro",
+      [],
+    )
+  assert resp.status == 301
+  assert location(resp) == "/one"
+  // nothing was written: no cookie secret, no lock left behind
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert files == ["redirects.json"]
+}

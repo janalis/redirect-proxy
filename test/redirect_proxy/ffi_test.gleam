@@ -183,3 +183,14 @@ pub fn host_helpers_test() {
   assert ffi.url_host("example.com\\x") == "example.com"
   assert ffi.url_host("") == ""
 }
+
+/// In a directory this process cannot write to, the lock cannot be taken,
+/// and is not needed (nothing can be written there): the function runs.
+pub fn file_lock_in_a_read_only_directory_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let result = ffi.with_file_lock(dir <> "/redirects.json", 100, fn() { 7 })
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  assert result == Ok(7)
+}

@@ -200,9 +200,9 @@ type State {
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
     hits_saved_draining: Bool,
-    /// The content last written to the hits file: an unchanged one is not
-    /// written again (no write and fsync a minute while idle).
-    hits_content: String,
+    /// What is in the hits file: an unchanged content is not written again
+    /// (no write and fsync a minute while idle).
+    hits_written: hits.Written,
     /// When the published rules were last checked against the rules'
     /// `starts_at`/`expires_at` (`Schedule`).
     checked_at: Int,
@@ -253,7 +253,7 @@ pub fn start(
             stamp: ffi.file_stamp(settings.rules_path),
             hits_saved_at: ffi.now_seconds(),
             hits_saved_draining: False,
-            hits_content: "",
+            hits_written: hits.nothing_written,
             checked_at: ffi.now_seconds(),
           ))
         }
@@ -279,7 +279,7 @@ pub fn start(
                 stamp: ffi.file_stamp(settings.rules_path),
                 hits_saved_at: ffi.now_seconds(),
                 hits_saved_draining: False,
-                hits_content: "",
+                hits_written: hits.nothing_written,
                 checked_at: ffi.now_seconds(),
               ))
             }
@@ -743,10 +743,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     FlushHits(reply) -> {
-      let hits_content = save_hits(state)
+      let hits_written = save_hits(state)
       process.send(reply, Nil)
       actor.continue(
-        State(..state, hits_saved_at: ffi.now_seconds(), hits_content:),
+        State(..state, hits_saved_at: ffi.now_seconds(), hits_written:),
       )
     }
     SaveHits(self) -> {
@@ -759,13 +759,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       {
         False -> actor.continue(state)
         True -> {
-          let hits_content = save_hits(state)
+          let hits_written = save_hits(state)
           actor.continue(
             State(
               ..state,
               hits_saved_at: now,
               hits_saved_draining: draining,
-              hits_content:,
+              hits_written:,
             ),
           )
         }
@@ -995,11 +995,11 @@ fn files(settings: Settings) -> store_file.Files {
   )
 }
 
-fn save_hits(state: State) -> String {
+fn save_hits(state: State) -> hits.Written {
   hits.save(
     state.settings.hits_path,
     list.map(state.rules, fn(r) { r.id }),
-    state.hits_content,
+    state.hits_written,
   )
 }
 

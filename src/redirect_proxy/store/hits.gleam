@@ -34,16 +34,20 @@ pub fn load(path: String) -> Nil {
   }
 }
 
+/// What is in the hits file, and whether the last save failed.
+pub type Written {
+  Written(content: String, failing: Bool)
+}
+
+pub const nothing_written = Written(content: "", failing: False)
+
 /// Saves the hit counts of the rules `rule_ids` (atomically), unless they are
-/// `last_written`. Returns the content now in the file: a failure is logged
-/// and retried at the next save.
-pub fn save(
-  path: String,
-  rule_ids: List(String),
-  last_written: String,
-) -> String {
+/// what `last` wrote. A failure is retried at the next save and logged once
+/// until a save succeeds again (a replica on a read-only volume would
+/// otherwise log it every minute).
+pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
   case path {
-    "" -> ""
+    "" -> last
     path -> {
       let ids = set.from_list(rule_ids)
       let records =
@@ -69,14 +73,22 @@ pub fn save(
         ])
         |> json.to_string
       let content = content <> "\n"
-      case content == last_written {
-        True -> content
+      case content == last.content {
+        True -> last
         False ->
           case ffi.atomic_write(path, content) {
-            Ok(Nil) -> content
+            Ok(Nil) -> Written(content:, failing: False)
             Error(reason) -> {
-              log.warning("hit counts not saved: " <> reason)
-              last_written
+              case last.failing {
+                True -> Nil
+                False ->
+                  log.warning(
+                    "hit counts not saved: "
+                    <> reason
+                    <> " (not repeated until a save succeeds)",
+                  )
+              }
+              Written(..last, failing: True)
             }
           }
       }
