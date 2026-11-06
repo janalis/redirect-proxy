@@ -10,8 +10,11 @@ User=redirect-proxy
 Group=redirect-proxy
 Environment=RP_CONFIG=/etc/redirect-proxy/config.toml
 Environment=HOME=/var/lib/redirect-proxy
+# A writable directory for an erl_crash.dump: / is read-only (ProtectSystem)
+WorkingDirectory=/var/lib/redirect-proxy
 EnvironmentFile=-/etc/default/redirect-proxy
 ExecStart=/usr/bin/redirect-proxy serve
+# Reloads redirects.json only; config.toml changes need a restart
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2

@@ -35,6 +35,8 @@ jobs:
       - run: gleam deps download
       - run: scripts/check-versions.sh --online
       - run: make fmt-check build lint-erlang lint-shell
+      - name: Release SBOM (as built by the release workflow)
+        run: python3 scripts/sbom.py 0.0.0 | python3 -c 'import json, sys; d = json.load(sys.stdin); assert len(d["packages"]) > 2, d'
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
       - name: zizmor (workflow security)

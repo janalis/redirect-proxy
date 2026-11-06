@@ -294,13 +294,12 @@ jobs:
           sha256sum ./*.tar.gz ./*.deb | sed 's| \./| |' > SHA256SUMS
           cat SHA256SUMS
           echo "portable_sha256=$(grep -- '-erlang.tar.gz' SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          path: dist
-          format: spdx-json
-          output-file: dist/redirect-proxy-${{ needs.meta.outputs.version }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
+      # From manifest.toml: scanners find no Gleam/Hex packages in the
+      # archives (the previous syft SBOM listed only the archives themselves)
+      - name: SBOM
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: python3 scripts/sbom.py "${VERSION}" > "dist/redirect-proxy-${VERSION}.spdx.json"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
