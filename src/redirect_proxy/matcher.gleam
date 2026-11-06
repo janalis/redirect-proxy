@@ -434,14 +434,23 @@ pub fn lookup(
 ) -> Result(Match, Nil) {
   let host = normalise_request_host(host)
   let path = ffi.normalise_path(path)
-  lookup_host(matcher, host, path)
+  // `${host}` only ever holds a host name
+  let vars =
+    rule.RequestVars(
+      host: case rule.is_host_name(host) {
+        True -> host
+        False -> ""
+      },
+      sub: "",
+    )
+  lookup_host(matcher, host, path, vars)
   |> result.lazy_or(fn() {
     case matcher.wildcards {
-      True -> lookup_wildcards(matcher, host, path)
+      True -> lookup_wildcards(matcher, host, path, vars)
       False -> Error(Nil)
     }
   })
-  |> result.lazy_or(fn() { lookup_host(matcher, "*", path) })
+  |> result.lazy_or(fn() { lookup_host(matcher, "*", path, vars) })
 }
 
 /// `lookup`, retrying a miss with the trailing slash added or removed
@@ -462,15 +471,23 @@ pub fn lookup_tolerant(
   }
 }
 
+/// `*.parent` rules, from the closest parent of `host` (the label being
+/// removed). `${sub}` is what the `*` stands for in the request host.
 fn lookup_wildcards(
   matcher: Matcher,
   host: String,
   path: String,
+  vars: rule.RequestVars,
 ) -> Result(Match, Nil) {
   case string.split_once(host, ".") {
-    Ok(#(_, parent)) ->
-      lookup_host(matcher, "*." <> parent, path)
-      |> result.lazy_or(fn() { lookup_wildcards(matcher, parent, path) })
+    Ok(#(_, parent)) -> {
+      let sub = case vars.host {
+        "" -> ""
+        full -> string.drop_end(full, string.byte_size(parent) + 1)
+      }
+      lookup_host(matcher, "*." <> parent, path, rule.RequestVars(..vars, sub:))
+      |> result.lazy_or(fn() { lookup_wildcards(matcher, parent, path, vars) })
+    }
     Error(Nil) -> Error(Nil)
   }
 }
@@ -479,11 +496,12 @@ fn lookup_host(
   matcher: Matcher,
   host: String,
   path: String,
+  vars: rule.RequestVars,
 ) -> Result(Match, Nil) {
   use rules <- result.try(dict.get(matcher.hosts, host))
   match_exact(rules, path)
-  |> result.lazy_or(fn() { match_prefix(rules, path) })
-  |> result.lazy_or(fn() { match_regex(rules, path) })
+  |> result.lazy_or(fn() { match_prefix(rules, path, vars) })
+  |> result.lazy_or(fn() { match_regex(rules, path, vars) })
 }
 
 /// The target is used as written: substitutions are for prefix and regex
@@ -501,7 +519,11 @@ fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   }
 }
 
-fn match_prefix(rules: HostRules, path: String) -> Result(Match, Nil) {
+fn match_prefix(
+  rules: HostRules,
+  path: String,
+  vars: rule.RequestVars,
+) -> Result(Match, Nil) {
   let found = candidates(rules.prefix, path)
   let found = case rules.prefix_ci.lengths {
     [] -> found
@@ -532,8 +554,8 @@ fn match_prefix(rules: HostRules, path: String) -> Result(Match, Nil) {
         })
       let r = best.rule
       // a substitution leaving the target's host: the rule does not apply
-      rule.expand(r.target, [path, remainder])
-      |> rule.guard_location(best.guard, _)
+      rule.expand_with(r.target, [path, remainder], vars)
+      |> rule.guard_location(best.guard, _, vars)
       |> result.map(Match(r, _))
     }
   }
@@ -548,11 +570,15 @@ fn prefix_remainder(r: Rule, path: String) -> String {
   }
 }
 
-fn match_regex(rules: HostRules, path: String) -> Result(Match, Nil) {
+fn match_regex(
+  rules: HostRules,
+  path: String,
+  vars: rule.RequestVars,
+) -> Result(Match, Nil) {
   let indexed =
     candidates(rules.regex, path)
     |> list.sort(fn(a, b) { int.compare(a.rank, b.rank) })
-  run_regexes(indexed, rules.regex_unindexed, path, 0)
+  run_regexes(indexed, rules.regex_unindexed, path, vars, 0)
 }
 
 /// Regex runs of one request that may exhaust their budget before the
@@ -566,6 +592,7 @@ fn run_regexes(
   a: List(RegexRule),
   b: List(RegexRule),
   path: String,
+  vars: rule.RequestVars,
   exhausted: Int,
 ) -> Result(Match, Nil) {
   let next = case a, b {
@@ -583,19 +610,20 @@ fn run_regexes(
           case
             rule.guard_location(
               entry.guard,
-              rule.expand(entry.rule.target, captures),
+              rule.expand_with(entry.rule.target, captures, vars),
+              vars,
             )
           {
             Ok(location) -> Ok(Match(entry.rule, location))
             // the substitution would leave the target's host: try the next
-            Error(Nil) -> run_regexes(a, b, path, exhausted)
+            Error(Nil) -> run_regexes(a, b, path, vars, exhausted)
           }
-        Error(ffi.NoMatch) -> run_regexes(a, b, path, exhausted)
+        Error(ffi.NoMatch) -> run_regexes(a, b, path, vars, exhausted)
         // a run exhausting its budget is counted by `regex_run`
         Error(ffi.LimitExceeded) ->
           case exhausted + 1 >= max_exhausted_runs {
             True -> Error(Nil)
-            False -> run_regexes(a, b, path, exhausted + 1)
+            False -> run_regexes(a, b, path, vars, exhausted + 1)
           }
       }
   }

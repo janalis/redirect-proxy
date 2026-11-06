@@ -179,34 +179,59 @@ pub fn target_guard_shapes_test() {
 
 pub fn guard_blocks_open_redirects_test() {
   let path = rule.target_guard("/$1")
-  assert rule.guard_location(path, "//evil.com") == Ok("/evil.com")
-  assert rule.guard_location(path, "/\\evil.com") == Ok("/evil.com")
-  assert rule.guard_location(path, "/\t/evil.com") == Ok("/evil.com")
-  assert rule.guard_location(path, "/blog/post") == Ok("/blog/post")
+  assert rule.guard_location(path, "//evil.com", rule.no_vars)
+    == Ok("/evil.com")
+  assert rule.guard_location(path, "/\\evil.com", rule.no_vars)
+    == Ok("/evil.com")
+  assert rule.guard_location(path, "/\t/evil.com", rule.no_vars)
+    == Ok("/evil.com")
+  assert rule.guard_location(path, "/blog/post", rule.no_vars)
+    == Ok("/blog/post")
 
   let fixed = rule.target_guard("https://example.com$1")
-  assert rule.guard_location(fixed, "https://example.com/blog")
+  assert rule.guard_location(fixed, "https://example.com/blog", rule.no_vars)
     == Ok("https://example.com/blog")
-  assert rule.guard_location(fixed, "https://example.com?q")
+  assert rule.guard_location(fixed, "https://example.com?q", rule.no_vars)
     == Ok("https://example.com?q")
-  assert rule.guard_location(fixed, "https://example.com")
+  assert rule.guard_location(fixed, "https://example.com", rule.no_vars)
     == Ok("https://example.com")
-  assert rule.guard_location(fixed, "https://example.com.evil.com/")
+  assert rule.guard_location(
+      fixed,
+      "https://example.com.evil.com/",
+      rule.no_vars,
+    )
     == Error(Nil)
-  assert rule.guard_location(fixed, "https://example.com@evil.com/")
+  assert rule.guard_location(
+      fixed,
+      "https://example.com@evil.com/",
+      rule.no_vars,
+    )
     == Error(Nil)
-  assert rule.guard_location(fixed, "https://example.com:1@evil.com")
+  assert rule.guard_location(
+      fixed,
+      "https://example.com:1@evil.com",
+      rule.no_vars,
+    )
     == Error(Nil)
 
   let sub = rule.target_guard("https://$1.example.com/")
-  assert rule.guard_location(sub, "https://blog.example.com/")
+  assert rule.guard_location(sub, "https://blog.example.com/", rule.no_vars)
     == Ok("https://blog.example.com/")
-  assert rule.guard_location(sub, "https://evil.com#.example.com/")
+  assert rule.guard_location(
+      sub,
+      "https://evil.com#.example.com/",
+      rule.no_vars,
+    )
     == Error(Nil)
-  assert rule.guard_location(sub, "https://evil.com/.example.com/")
+  assert rule.guard_location(
+      sub,
+      "https://evil.com/.example.com/",
+      rule.no_vars,
+    )
     == Error(Nil)
-  assert rule.guard_location(sub, "https://.example.com/") == Error(Nil)
-  assert rule.guard_location(rule.Unsafe, "/x") == Error(Nil)
+  assert rule.guard_location(sub, "https://.example.com/", rule.no_vars)
+    == Error(Nil)
+  assert rule.guard_location(rule.Unsafe, "/x", rule.no_vars) == Error(Nil)
 }
 
 pub fn wildcard_and_international_hosts_test() {
@@ -284,4 +309,20 @@ pub fn schedule_test() {
   assert rule.crosses_boundary([timed], from - 1, from)
   assert !rule.crosses_boundary([timed], from, until - 1)
   assert rule.crosses_boundary([timed], until - 1, until)
+}
+
+pub fn host_placeholder_lint_test() {
+  let prefix = Rule(..base(), kind: rule.Prefix, source: "/")
+  assert rule.lint(Rule(..prefix, target: "https://${host}/$1")) == []
+  assert rule.lint(Rule(..prefix, target: "https://${sub}.new.test/$1")) == []
+  let assert [exact] = rule.lint(Rule(..base(), target: "https://${host}/x"))
+  assert string.starts_with(exact, "target: ${host} and ${sub} only apply")
+  let assert [unsafe] = rule.lint(Rule(..prefix, target: "https://a$1b.test/"))
+  assert string.starts_with(unsafe, "target: placeholders in the host")
+  assert rule.expand_with(
+      "${host}|${sub}|$${host}|${9}",
+      ["p"],
+      rule.RequestVars("h.test", "s"),
+    )
+    == "h.test|s|${host}|"
 }

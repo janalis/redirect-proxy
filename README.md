@@ -227,6 +227,8 @@ overlap. Both fields are written to the file only when set.
 | `$1` … `$9`, `${10}` | Regex capture groups. |
 | `$0` | The whole match. |
 | `$1` in a prefix rule | The rest of the path after the prefix. |
+| `${host}` | The request host, lower case, without its port. Only as the whole host of the target (`https://${host}/$1`): the result must keep that host. |
+| `${sub}` | For a wildcard rule host (`*.old.example`), what `*` stands for in the request (`a.b` for `a.b.old.example`): `https://${sub}.new.example/$1`. |
 | `$$` | A literal `$`. |
 
 Substitutions apply to prefix and regex rules. The target of an exact rule
@@ -297,10 +299,17 @@ guard):
   `/go/page` redirects but `/go.evil.com` and `/go@evil.com` do not.
 - A host starting with placeholders, as in `https://$1.example.com/`, must
   stay a subdomain of `example.com`. Placeholders elsewhere in the host
-  (`https://example$1.com/`, `https://$1.com/`) never redirect.
+  (`https://example$1.com/`, `https://$1.com/`) never redirect, and such
+  targets are refused when a rule is created or edited.
+- `https://${host}...` must keep the request's host, and `${host}` is only
+  filled with a host name (letters, digits, `-` and `.`).
 
 A rule whose result fails the check does not match, so the next rule or
 the 404 applies.
+
+The server cannot tell `http` from `https` requests, so a rule redirecting
+a host to itself over another scheme (`https://${host}/$1` on that host) is
+refused as a redirect loop.
 
 ## Configuration
 

@@ -502,3 +502,25 @@ pub fn rules_outside_their_window_are_not_matched_test() {
   assert location(m, "x.test", "/n") == Ok("/now")
   assert matcher.size(m) == 1
 }
+
+/// `${host}` is the request host and `${sub}` what a wildcard host's `*`
+/// stands for; a capture can never move the redirect to another host.
+pub fn host_placeholders_test() {
+  let https = r("1", "*", rule.Prefix, "/", "https://${host}/$1")
+  let m = matcher.build([https])
+  assert location(m, "Shop.Test:80", "/a/b") == Ok("https://shop.test/a/b")
+  // a request host that is not a host name never fills ${host}
+  assert location(m, "x@evil.test", "/a") == Error(Nil)
+  // the path cannot change the authority
+  let m =
+    matcher.build([r("1", "*", rule.Regex, "^(.*)$", "https://${host}$1")])
+  assert location(m, "shop.test", "/x") == Ok("https://shop.test/x")
+  assert location(m, "shop.test", "@evil.test/x") == Error(Nil)
+  // keep the subdomain
+  let m =
+    matcher.build([
+      r("2", "*.old.test", rule.Prefix, "/", "https://${sub}.new.test/$1"),
+    ])
+  assert location(m, "a.b.old.test", "/p") == Ok("https://a.b.new.test/p")
+  assert location(m, "old.test", "/p") == Error(Nil)
+}

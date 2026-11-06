@@ -421,6 +421,18 @@ pub fn lint(rule: Rule) -> List(String) {
     !string.contains(rule.host, ":"),
     "host: remove the port: requests are matched on the host name only",
   )
+  |> check(
+    rule.kind != Exact
+      || !{
+      string.contains(rule.target, "${host}")
+      || string.contains(rule.target, "${sub}")
+    },
+    "target: ${host} and ${sub} only apply to prefix and regex rules: an exact rule's target is used as written",
+  )
+  |> check(
+    rule.kind == Exact || target_guard(rule.target) != Unsafe,
+    "target: placeholders in the host never redirect: use ${host}, or placeholders before a fixed domain ($1.example.com, ${sub}.example.com)",
+  )
   |> list.reverse
 }
 
@@ -478,6 +490,11 @@ pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
       )
     False -> Ok(regex)
   }
+}
+
+/// Only letters, digits, `-` and `.`: what `${host}` may hold.
+pub fn is_host_name(host: String) -> Bool {
+  host != "" && list.all(string.to_graphemes(host), host_char)
 }
 
 pub fn normalise_host(host: String) -> String {
@@ -552,31 +569,61 @@ fn valid_target(target: String) -> Bool {
 
 // --- target templating ------------------------------------------------------
 
-/// Expands `$0`..`$9`, `${n}` and `$$` in a target template using captures.
-pub fn expand(template: String, captures: List(String)) -> String {
-  do_expand(template, captures, "")
+/// What a request gives to `${host}` and `${sub}` in targets.
+pub type RequestVars {
+  RequestVars(
+    /// The request host: lower case, without port ("" when not a valid
+    /// host name, so that a target using it never redirects).
+    host: String,
+    /// The part of the request host matched by the `*` of a wildcard rule
+    /// host (`a.b` for `a.b.example.com` and `*.example.com`), else "".
+    sub: String,
+  )
 }
 
-fn do_expand(rest: String, captures: List(String), acc: String) -> String {
+pub const no_vars = RequestVars(host: "", sub: "")
+
+/// Expands `$0`..`$9`, `${n}` and `$$` in a target template using captures.
+pub fn expand(template: String, captures: List(String)) -> String {
+  do_expand(template, captures, [], "")
+}
+
+/// `expand`, with `${host}` and `${sub}` from the request too.
+pub fn expand_with(
+  template: String,
+  captures: List(String),
+  vars: RequestVars,
+) -> String {
+  do_expand(template, captures, [#("host", vars.host), #("sub", vars.sub)], "")
+}
+
+fn do_expand(
+  rest: String,
+  captures: List(String),
+  named: List(#(String, String)),
+  acc: String,
+) -> String {
+  let do_expand = fn(rest, acc) { do_expand(rest, captures, named, acc) }
   case string.split_once(rest, "$") {
     Error(Nil) -> acc <> rest
     Ok(#(before, after)) -> {
       let acc = acc <> before
       case string.pop_grapheme(after) {
-        Ok(#("$", tail)) -> do_expand(tail, captures, acc <> "$")
+        Ok(#("$", tail)) -> do_expand(tail, acc <> "$")
         Ok(#("{", tail)) ->
           case string.split_once(tail, "}") {
-            Ok(#(digits, tail2)) ->
-              case int.parse(digits) {
-                Ok(n) -> do_expand(tail2, captures, acc <> capture(captures, n))
-                Error(_) -> do_expand(tail, captures, acc <> "${")
+            Ok(#(name, tail2)) ->
+              case int.parse(name), list.key_find(named, name) {
+                Ok(n), _ -> do_expand(tail2, acc <> capture(captures, n))
+                _, Ok(value) -> do_expand(tail2, acc <> value)
+                _, _ -> do_expand(tail, acc <> "${")
               }
-            Error(_) -> do_expand(tail, captures, acc <> "${")
+            Error(_) -> do_expand(tail, acc <> "${")
           }
         Ok(#(c, tail)) ->
           case int.parse(c) {
-            Ok(n) -> do_expand(tail, captures, acc <> capture(captures, n))
-            Error(_) -> do_expand(after, captures, acc <> "$")
+            Ok(n) -> do_expand(tail, acc <> capture(captures, n))
+            Error(_) -> do_expand(after, acc <> "$")
           }
         Error(Nil) -> acc <> "$"
       }
@@ -605,6 +652,8 @@ pub type TargetGuard {
   SameHostPath
   /// The result must keep this host (`example.com`, with its port if any).
   FixedHost(String)
+  /// `https://${host}/...`: the result must keep the request's host.
+  RequestHost
   /// The result must stay a host ending with this suffix (`.example.com`),
   /// for templates such as `https://$1.example.com/`.
   SubdomainOf(String)
@@ -618,6 +667,14 @@ pub fn target_guard(template: String) -> TargetGuard {
     True ->
       case authority(template) {
         Error(Nil) -> SameHostPath
+        // `${host}`, then only placeholders (`https://${host}$1`): the
+        // result is checked to keep the request's host
+        Ok("${host}" <> rest) if rest == "" -> RequestHost
+        Ok("${host}" <> rest) ->
+          case expand(rest, []) {
+            "" -> RequestHost
+            _ -> Unsafe
+          }
         Ok(host) ->
           case string.split_once(host, "$") {
             Error(Nil) -> FixedHost(host)
@@ -681,10 +738,18 @@ fn drop_digits(text: String) -> String {
 pub fn guard_location(
   guard: TargetGuard,
   location: String,
+  vars: RequestVars,
 ) -> Result(String, Nil) {
   case guard {
     Static -> Ok(location)
     Unsafe -> Error(Nil)
+    RequestHost -> {
+      let location = strip_url_whitespace(location)
+      case authority(location) {
+        Ok(host) if host == vars.host && host != "" -> Ok(location)
+        _ -> Error(Nil)
+      }
+    }
     SameHostPath -> {
       let location = strip_url_whitespace(location)
       case string.pop_grapheme(location) {
