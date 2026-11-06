@@ -7,6 +7,9 @@
 #   EXACT=10000 PREFIX=1000 REGEX=500   rule counts
 #   REQUESTS=200000 CONCURRENCY=100     load parameters
 #   PORT=18180                          redirect listener port
+#   ACCESS_LOG=<file>                   access log output (default: a temp
+#                                       file; RP_ACCESS_LOG_ENABLED=false
+#                                       measures without it)
 set -eu
 
 bundle=${1:-}
@@ -30,7 +33,8 @@ awk -v e="$exact" -v p="$prefix" -v r="$regex" 'BEGIN {
 }' >"$work/redirects.json"
 
 export RP_STORAGE_DATA_DIR="$work" RP_SERVER_PORT="$port" RP_SERVER_LISTEN=127.0.0.1 \
-  RP_ADMIN_ENABLED=false RP_STORAGE_BACKUPS=0 RP_LOG_LEVEL=warning
+  RP_ADMIN_ENABLED=false RP_STORAGE_BACKUPS=0 RP_LOG_LEVEL=warning \
+  RP_ACCESS_LOG_OUTPUT="${ACCESS_LOG:-$work/access.log}"
 if [ -n "$bundle" ]; then
   "$bundle/bin/redirect-proxy" serve &
 else
@@ -71,3 +75,6 @@ run "no match (worst case: every rule tried)" "/nothing/here"
 rss_kb=$(ps -o rss= -p "$beam_pid" 2>/dev/null | tr -d ' ' || echo "?")
 echo
 echo "== memory: RSS ${rss_kb} KiB with $((exact + prefix + regex)) rules"
+if [ -f "$work/access.log" ]; then
+  echo "== access log: $(wc -l <"$work/access.log" | tr -d ' ') lines written"
+fi

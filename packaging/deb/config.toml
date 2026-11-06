@@ -13,3 +13,8 @@ public_url = "http://localhost:8081"
 
 [storage]
 data_dir = "/var/lib/redirect-proxy"
+
+[access_log]
+# Access lines go to the journal by default (journalctl -u redirect-proxy).
+# To write a file instead (rotated by /etc/logrotate.d/redirect-proxy):
+# output = "/var/log/redirect-proxy/access.log"

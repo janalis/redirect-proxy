@@ -11,6 +11,7 @@ import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import mist
+import redirect_proxy/access_log
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
@@ -95,8 +96,10 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let store_subject = process.named_subject(store_name)
   let ports = process.new_subject()
 
+  use access <- result.try(access_log.start(cfg.access_log))
+
   let redirect_child =
-    mist.new(server.handler(cfg.server))
+    mist.new(server.handler(cfg.server, access.redirect))
     |> mist.bind(cfg.server.listen)
     |> mist.port(cfg.server.port)
     |> mist.after_start(fn(port, _, _) {
@@ -126,6 +129,14 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
+  // The admin listener also serves the API when they share a port.
+  let admin_handler =
+    access_log.wrap(admin_handler, fn(req: request.Request(mist.Connection)) {
+      case config.api_on_admin(cfg) && access_log.is_api_path(req.path) {
+        True -> access.api
+        False -> access.admin
+      }
+    })
 
   let api_handler = fn(req: request.Request(mist.Connection)) {
     let peer_ip = case mist.get_connection_info(req.body) {
@@ -142,6 +153,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
   }
+  let api_handler = access_log.wrap(api_handler, fn(_) { access.api })
 
   let builder =
     supervisor.new(supervisor.OneForOne)

@@ -49,6 +49,12 @@ pub fn boot(cfg: config.Config) -> App {
       // own port pass one from `free_port()`.
       api: config.ApiConfig(..cfg.api, listen: ""),
       storage: config.StorageConfig(data_dir: dir, backups: 3),
+      // Keep access lines out of the test output unless a test picks a path.
+      access_log: case cfg.access_log.output {
+        "stdout" | "stderr" ->
+          config.AccessLogConfig(..cfg.access_log, output: dir <> "/access.log")
+        _ -> cfg.access_log
+      },
     )
   let assert Ok(running) = app.start(cfg)
   let admin = "http://127.0.0.1:" <> int.to_string(running.admin_port)

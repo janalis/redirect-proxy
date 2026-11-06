@@ -36,6 +36,9 @@ contents:
     type: config|noreplace
     file_info:
       mode: 0640
+  - src: packaging/deb/logrotate
+    dst: /etc/logrotate.d/redirect-proxy
+    type: config|noreplace
   - src: config.example.toml
     dst: /usr/share/doc/redirect-proxy/config.example.toml
   - src: LICENSE

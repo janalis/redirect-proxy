@@ -1,5 +1,7 @@
 //// Typed bindings to the Erlang helpers in `redirect_proxy_ffi.erl`.
 
+import redirect_proxy/listener.{type Listener}
+
 // --- persistent_term --------------------------------------------------------
 
 @external(erlang, "redirect_proxy_ffi", "snapshot_put")
@@ -154,3 +156,45 @@ pub fn strip_control(value: String) -> String
 /// Forces a garbage collection of the calling process.
 @external(erlang, "redirect_proxy_ffi", "garbage_collect")
 pub fn garbage_collect() -> Nil
+
+// --- access log -----------------------------------------------------------------
+
+/// Installs one access log handler per output, each accepting the listed
+/// listeners.
+@external(erlang, "redirect_proxy_access_ffi", "start")
+pub fn access_log_start(
+  groups: List(#(String, List(Listener))),
+  max_bytes: Int,
+  max_files: Int,
+  compress: Bool,
+) -> Result(Nil, String)
+
+@external(erlang, "redirect_proxy_access_ffi", "stop")
+pub fn access_log_stop() -> Nil
+
+@external(erlang, "redirect_proxy_access_ffi", "emit")
+pub fn access_log_emit(listener: Listener, line: String) -> Nil
+
+@external(erlang, "redirect_proxy_access_ffi", "escape_default")
+pub fn escape_default(value: String) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "escape_json")
+pub fn escape_json(value: String) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "escape_newlines")
+pub fn escape_newlines(value: String) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "time_local")
+pub fn time_local(micros: Int) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "time_iso8601")
+pub fn time_iso8601(micros: Int) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "anonymize_ip")
+pub fn anonymize_ip(ip: String) -> String
+
+@external(erlang, "redirect_proxy_access_ffi", "now_micros")
+pub fn now_micros() -> Int
+
+@external(erlang, "redirect_proxy_access_ffi", "monotonic_micros")
+pub fn monotonic_micros() -> Int

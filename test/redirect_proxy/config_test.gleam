@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/string
 import redirect_proxy/config
+import redirect_proxy/listener
 import tom
 
 pub fn defaults_test() {
@@ -107,5 +108,100 @@ pub fn validation_errors_test() {
   ]
   list.each(invalid, fn(cfg) {
     let assert Error(_) = config.validate(cfg)
+  })
+}
+
+pub fn access_log_test() {
+  let d = config.default()
+  assert d.access_log.enabled
+  assert d.access_log.format == "combined"
+  assert d.access_log.output == "stdout"
+  assert d.access_log.anonymize_ip == "truncate"
+  assert !d.access_log.log_query
+
+  let assert Ok(t) =
+    tom.parse(
+      "
+[access_log]
+format = '$remote_addr $status'
+output = \"/var/log/rp/access.log\"
+anonymize_ip = \"none\"
+log_query = true
+trusted_proxies = [\"10.0.0.0/8\"]
+max_bytes = 1048576
+
+[access_log.admin]
+output = \"/var/log/rp/admin.log\"
+format = \"json\"
+
+[access_log.api]
+enabled = false
+",
+    )
+  let assert Ok(cfg) = config.from_toml(t)
+  assert cfg.access_log.format == "$remote_addr $status"
+  assert cfg.access_log.output == "/var/log/rp/access.log"
+  assert cfg.access_log.log_query
+  assert cfg.access_log.trusted_proxies == ["10.0.0.0/8"]
+  assert cfg.access_log.max_bytes == 1_048_576
+  let al = cfg.access_log
+  assert config.access_log_output(al, listener.RedirectListener)
+    == "/var/log/rp/access.log"
+  assert config.access_log_output(al, listener.AdminListener)
+    == "/var/log/rp/admin.log"
+  assert config.access_log_format(al, listener.AdminListener) == "json"
+  assert config.access_log_format(al, listener.RedirectListener)
+    == "$remote_addr $status"
+  assert config.access_log_enabled(al, listener.AdminListener)
+  assert !config.access_log_enabled(al, listener.ApiListener)
+  let assert Ok(_) = config.validate(cfg)
+
+  let env = [
+    #("RP_ACCESS_LOG_ENABLED", "false"),
+    #("RP_ACCESS_LOG_FORMAT", "json"),
+    #("RP_ACCESS_LOG_OUTPUT", "stderr"),
+    #("RP_ACCESS_LOG_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
+    #("RP_ACCESS_LOG_API_OUTPUT", "/logs/api.log"),
+    #("RP_ACCESS_LOG_ADMIN_ENABLED", "false"),
+  ]
+  let cfg = config.apply_env(d, fn(name) { list.key_find(env, name) })
+  assert !cfg.access_log.enabled
+  assert cfg.access_log.format == "json"
+  assert cfg.access_log.output == "stderr"
+  assert cfg.access_log.trusted_proxies == ["127.0.0.1/32", "::1/128"]
+  assert cfg.access_log.api.output == "/logs/api.log"
+  assert !cfg.access_log.admin.enabled
+  // the master switch wins
+  assert !config.access_log_enabled(cfg.access_log, listener.RedirectListener)
+}
+
+pub fn access_log_validation_test() {
+  let d = config.default()
+  let with = fn(f) { config.Config(..d, access_log: f(d.access_log)) }
+  let invalid = [
+    with(fn(a) { config.AccessLogConfig(..a, format: "$unknown") }),
+    with(fn(a) { config.AccessLogConfig(..a, format: "") }),
+    with(fn(a) { config.AccessLogConfig(..a, escape: "html") }),
+    with(fn(a) { config.AccessLogConfig(..a, anonymize_ip: "hash") }),
+    with(fn(a) { config.AccessLogConfig(..a, output: " ") }),
+    with(fn(a) { config.AccessLogConfig(..a, trusted_proxies: ["nope"]) }),
+    with(fn(a) { config.AccessLogConfig(..a, max_bytes: -1) }),
+    with(fn(a) { config.AccessLogConfig(..a, max_files: 0) }),
+    with(fn(a) {
+      config.AccessLogConfig(
+        ..a,
+        admin: config.ListenerLogConfig(..a.admin, format: "$nope"),
+      )
+    }),
+    with(fn(a) {
+      config.AccessLogConfig(
+        ..a,
+        api: config.ListenerLogConfig(..a.api, output: " "),
+      )
+    }),
+  ]
+  list.each(invalid, fn(cfg) {
+    let assert Error(message) = config.validate(cfg)
+    assert string.starts_with(message, "access_log.")
   })
 }
