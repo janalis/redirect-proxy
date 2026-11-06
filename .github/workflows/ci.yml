@@ -123,7 +123,7 @@ jobs:
           fail_ci_if_error: false
 
   bundle:
-    name: Bundle smoke test
+    name: Bundle and .deb smoke test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +164,14 @@ jobs:
           for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || exit 0; sleep 0.2; done
           echo "still running 10 s after SIGTERM" >&2
           exit 1
+      # packaging (nfpm.yaml, maintainer scripts, systemd unit, deb config)
+      # is checked before a release is tagged, not after
+      - name: Build the .deb
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' gleam.toml)
+          scripts/package-deb.sh "$version" amd64 "dist/redirect-proxy-$version-linux-amd64"
+      - name: Install, upgrade, remove and purge the .deb
+        run: scripts/test-deb.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' gleam.toml)" amd64
 
   docker:
     name: Container image
@@ -185,12 +193,29 @@ jobs:
         run: |
           # as locked down as a hardened deployment: read-only root
           # filesystem, no capabilities, writable data volume and /tmp only
-          docker run -d --name rp -p 18080:8080 \
-            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+          hardened="--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges"
+          # the image's HEALTHCHECK, probed every second instead of every 30
+          healthy() {
+            for _ in $(seq 1 60); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' "$1")
+              test "$status" = healthy && return 0
+              sleep 1
+            done
+            echo "$1 is $status" >&2
+            docker logs "$1"
+            return 1
+          }
+          # shellcheck disable=SC2086
+          docker run -d --name rp -p 18080:8080 $hardened --health-interval 1s \
             -v rp-data:/var/lib/redirect-proxy redirect-proxy:ci
-          for _ in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.2; done
+          healthy rp
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/missing)" = "404"
           docker logs rp
+          # without the admin, the health check probes the redirect listener
+          # shellcheck disable=SC2086
+          docker run -d --name rp-noadmin $hardened --health-interval 1s \
+            -e RP_ADMIN_ENABLED=false -v rp-data2:/var/lib/redirect-proxy redirect-proxy:ci
+          healthy rp-noadmin
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: redirect-proxy:ci

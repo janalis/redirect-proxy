@@ -39,6 +39,7 @@ RUN scripts/bundle.sh "${VERSION}" container --with-erts \
 FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
 
 RUN apk add --no-cache libstdc++ libgcc ncurses-libs openssl zlib lksctp-tools \
+ && apk --purge del apk-tools \
  && addgroup -S -g 10001 redirect-proxy \
  && adduser -S -D -H -u 10001 -G redirect-proxy -h /var/lib/redirect-proxy redirect-proxy \
  && mkdir -p /var/lib/redirect-proxy \

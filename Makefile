@@ -12,6 +12,12 @@ CONFIG ?= config.example.toml
 COVERAGE_MIN ?= 88
 IMAGE ?= ghcr.io/janalis/redirect-proxy
 MAINTAINER ?= Janalis
+# STRICT=1: a missing linter fails instead of being skipped (as in CI)
+STRICT ?=
+
+# $(call missing,tool): skip, or fail with STRICT=1
+missing = { echo "$(1) not installed$(if $(STRICT),,$(comma) skipping)"; exit $(if $(STRICT),1,0); }
+comma := ,
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "redirect-proxy $(VERSION)\n\nUsage: make <target>\n\n"} \
@@ -53,19 +59,19 @@ lint-erlang: ## Compile Erlang FFI with warnings as errors
 	erlc -Wall -Werror -o build/lint src/*.erl
 
 lint-shell: ## shellcheck scripts
-	@command -v shellcheck >/dev/null || { echo "shellcheck not installed, skipping"; exit 0; }; \
+	@command -v shellcheck >/dev/null || $(call missing,shellcheck); \
 	shellcheck scripts/*.sh packaging/bin/redirect-proxy packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm packaging/docker/healthcheck.sh
 
 lint-actions: ## actionlint GitHub workflows
-	@command -v actionlint >/dev/null || { echo "actionlint not installed, skipping"; exit 0; }; \
+	@command -v actionlint >/dev/null || $(call missing,actionlint); \
 	actionlint
 
 lint-docker: ## hadolint the Dockerfile
-	@command -v hadolint >/dev/null || { echo "hadolint not installed, skipping"; exit 0; }; \
+	@command -v hadolint >/dev/null || $(call missing,hadolint); \
 	hadolint Dockerfile
 
 lint-markdown: ## markdownlint documentation
-	@command -v markdownlint-cli2 >/dev/null || { echo "markdownlint-cli2 not installed, skipping"; exit 0; }; \
+	@command -v markdownlint-cli2 >/dev/null || $(call missing,markdownlint-cli2); \
 	markdownlint-cli2 "*.md" ".github/**/*.md"
 
 check: lint test ## Lint and test (what CI runs)

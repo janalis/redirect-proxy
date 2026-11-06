@@ -182,10 +182,20 @@ json_chars(<<$\n, R/binary>>) -> [<<"\\n">> | json_chars(R)];
 json_chars(<<$\r, R/binary>>) -> [<<"\\r">> | json_chars(R)];
 json_chars(<<$\t, R/binary>>) -> [<<"\\t">> | json_chars(R)];
 json_chars(<<C, R/binary>>) when C < 16#20 -> [u_escape(C) | json_chars(R)];
+%% Valid in JSON, but control or line separator characters for the tools
+%% that read logs: DEL, the C1 controls (U+0085 is a line break for some)
+%% and the Unicode line and paragraph separators.
+json_chars(<<C/utf8, R/binary>>)
+  when C =:= 16#7f; C >= 16#80, C =< 16#9f; C =:= 16#2028; C =:= 16#2029 ->
+    [u4_escape(C) | json_chars(R)];
 json_chars(<<C/utf8, R/binary>>) -> [<<C/utf8>> | json_chars(R)];
 json_chars(<<C, R/binary>>) -> [u_escape(C) | json_chars(R)].
 
 u_escape(C) -> <<"\\u00", (hex(C bsr 4)), (hex(C band 15))>>.
+
+u4_escape(C) ->
+    <<"\\u", (hex(C bsr 12)), (hex((C bsr 8) band 15)),
+      (hex((C bsr 4) band 15)), (hex(C band 15))>>.
 
 escape_newlines(Bin) ->
     binary:replace(binary:replace(Bin, <<"\n">>, <<"\\n">>, [global]),

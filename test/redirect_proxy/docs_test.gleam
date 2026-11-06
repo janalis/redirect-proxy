@@ -6,12 +6,49 @@ import gleam/regexp
 import gleam/string
 import simplifile
 
-/// Every `RP_…` variable read in config/env.gleam is named in the README.
+/// Every `RP_…` variable the code reads is named in the README.
 pub fn every_env_var_is_documented_test() {
-  let assert Ok(code) = simplifile.read("src/redirect_proxy/config/env.gleam")
   let assert Ok(readme) = simplifile.read("README.md")
+  let documented = documented_vars(readme)
+  let missing =
+    code_literals()
+    // "RP_ACCESS_LOG_" <> listener <> … builds the per-listener variables
+    |> list.filter(fn(var) { !string.ends_with(var, "_") })
+    |> list.filter(fn(var) { !list.contains(documented, var) })
+  assert missing == []
+}
+
+/// Every `RP_…` variable written out in the README is read by the code: a
+/// literal, a per-listener name built from a literal prefix, or a `_FILE`
+/// variant of a secret.
+pub fn every_documented_env_var_exists_test() {
+  let assert Ok(readme) = simplifile.read("README.md")
+  let literals = code_literals()
+  let known = fn(var) {
+    list.contains(literals, var)
+    || list.any(literals, fn(literal) {
+      string.ends_with(literal, "_") && string.starts_with(var, literal)
+    })
+    || {
+      string.ends_with(var, "_FILE")
+      && list.contains(literals, string.drop_end(var, 5))
+    }
+  }
+  let unknown =
+    written_vars(readme)
+    |> list.unique
+    |> list.filter(fn(var) { !known(var) })
+  assert unknown == []
+}
+
+/// The `"RP_…"` string literals of every source file.
+fn code_literals() -> List(String) {
+  let assert Ok(files) = simplifile.get_files("src")
   let assert Ok(literal) = regexp.from_string("\"(RP_[A-Z0-9_]+)\"")
-  let used =
+  files
+  |> list.filter(string.ends_with(_, ".gleam"))
+  |> list.flat_map(fn(path) {
+    let assert Ok(code) = simplifile.read(path)
     regexp.scan(literal, code)
     |> list.filter_map(fn(m) {
       case m.submatches {
@@ -19,12 +56,8 @@ pub fn every_env_var_is_documented_test() {
         _ -> Error(Nil)
       }
     })
-    // "RP_ACCESS_LOG_" <> listener <> … builds the per-listener variables
-    |> list.filter(fn(var) { !string.ends_with(var, "_") })
-    |> list.unique
-  let documented = documented_vars(readme)
-  let missing = list.filter(used, fn(var) { !list.contains(documented, var) })
-  assert missing == []
+  })
+  |> list.unique
 }
 
 /// The README abbreviates related variables on one line: after
@@ -49,23 +82,40 @@ fn option_value(option) -> Result(String, Nil) {
   }
 }
 
+/// The variables written out in full (braces expanded) in code spans.
+fn written_vars(readme: String) -> List(String) {
+  string.split(readme, "\n")
+  |> list.flat_map(fn(line) { code_spans(line) |> full_vars })
+}
+
+fn code_spans(line: String) -> List(String) {
+  // code spans are the odd pieces between backticks
+  string.split(line, "`")
+  |> list.index_map(fn(piece, i) { #(piece, i % 2 == 1) })
+  |> list.filter_map(fn(p) {
+    case p.1 {
+      True -> Ok(p.0)
+      False -> Error(Nil)
+    }
+  })
+}
+
+fn full_vars(spans: List(String)) -> List(String) {
+  spans
+  |> list.filter(fn(span) {
+    string.starts_with(span, "RP_")
+    // a name, not an example assignment like `RP_X=1` or a pattern
+    && !string.contains(span, "=")
+    && !string.contains(span, "<")
+  })
+  |> list.flat_map(expand_braces)
+}
+
 fn documented_vars(readme: String) -> List(String) {
   string.split(readme, "\n")
   |> list.flat_map(fn(line) {
-    // code spans are the odd pieces between backticks
-    let spans =
-      string.split(line, "`")
-      |> list.index_map(fn(piece, i) { #(piece, i % 2 == 1) })
-      |> list.filter_map(fn(p) {
-        case p.1 {
-          True -> Ok(p.0)
-          False -> Error(Nil)
-        }
-      })
-    let full =
-      spans
-      |> list.filter(string.starts_with(_, "RP_"))
-      |> list.flat_map(expand_braces)
+    let spans = code_spans(line)
+    let full = full_vars(spans)
     let abbreviated =
       spans
       |> list.filter(string.starts_with(_, "_"))

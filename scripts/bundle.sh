@@ -30,6 +30,8 @@ for app in build/erlang-shipment/*/; do
     cp -R "$app/priv" "$out/lib/$app_name/"
   fi
 done
+# source maps only serve browser developer tools (Bootstrap's is ~860 KB)
+find "$out/lib" -name '*.map' -type f -delete
 
 cp packaging/bin/redirect-proxy "$out/bin/redirect-proxy"
 chmod 755 "$out/bin/redirect-proxy"

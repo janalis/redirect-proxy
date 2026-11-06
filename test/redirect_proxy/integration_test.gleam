@@ -1747,6 +1747,48 @@ pub fn latency_and_response_metrics_test() {
   assert metric(env, "redirect_proxy_last_reload_timestamp_seconds") > 0
 }
 
+/// Failures that need an operator are counted: an unwritable data directory
+/// and an identity provider that cannot be reached.
+pub fn failure_metrics_test() {
+  let d = config.default()
+  // nothing listens on the free port: SSO discovery fails
+  let issuer = "http://127.0.0.1:" <> int.to_string(support.free_port())
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        oidc: config.OidcConfig(
+          ..d.oidc,
+          enabled: True,
+          issuer:,
+          client_id: "redirect-proxy",
+          client_secret: "secret",
+        ),
+      ),
+    )
+  let idp = metric(env, "redirect_proxy_idp_fetch_failures_total")
+  assert get(env.admin <> "/auth/oidc/start", []).status == 303
+  assert metric(env, "redirect_proxy_idp_fetch_failures_total") == idp + 1
+
+  let #(cookie, csrf) = login(env)
+  let writes = metric(env, "redirect_proxy_storage_write_failures_total")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o500)
+  let resp =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("status", "301"),
+      #("source", "/unsaved"),
+      #("target", "/x"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ])
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
+  assert resp.status == 422
+  assert metric(env, "redirect_proxy_storage_write_failures_total") > writes
+}
+
 /// The value of an unlabelled metric in /metrics.
 fn metric(env: Env, name: String) -> Int {
   let body = get(env.admin <> "/metrics", []).body

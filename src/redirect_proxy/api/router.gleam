@@ -24,6 +24,7 @@ import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
+import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
@@ -43,11 +44,25 @@ const default_per_page = 100
 pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
+  let plain = fn(status, body) {
+    wisp.response(status)
+    |> wisp.set_header("content-type", "text/plain; charset=utf-8")
+    |> wisp.set_header("cache-control", "no-store")
+    |> wisp.string_body(body)
+  }
   case wisp.path_segments(req) {
-    ["healthz"] ->
+    ["healthz"] -> plain(200, "ok")
+    // 503 while draining before a stop, like the admin's
+    ["readyz"] ->
+      case ffi.draining() {
+        True -> plain(503, "draining")
+        False -> plain(200, "ready")
+      }
+    // the admin serves the metrics; without it, they would be nowhere
+    ["metrics"] if !ctx.config.admin.enabled ->
       wisp.response(200)
-      |> wisp.set_header("content-type", "text/plain; charset=utf-8")
-      |> wisp.string_body("ok")
+      |> wisp.set_header("content-type", "text/plain; version=0.0.4")
+      |> wisp.string_body(metrics.render_prometheus())
     _ -> handle(req, ctx)
   }
   |> wisp.set_header("x-content-type-options", "nosniff")
