@@ -367,6 +367,11 @@ pub fn creating_a_redirect_loop_is_refused_test() {
   assert string.contains(reason, "redirect loop")
   let assert Ok(_) =
     store.create(s, Rule(..looping, target: "/new/$1"), by: "t")
+  // whole segments: `/w` -> `/w/x$1` is a loop (`/w/…` matches again)
+  let segments =
+    Rule(..new_rule("/w", "/w/x$1"), kind: rule.Prefix, whole_segments: True)
+  let assert Error([reason]) = store.create(s, segments, by: "t")
+  assert string.contains(reason, "redirect loop")
 }
 
 pub fn a_file_with_a_loop_still_loads_test() {

@@ -443,26 +443,44 @@ fn match_prefix(rules: HostRules, path: String) -> Result(Match, Nil) {
     [] -> found
     _ -> list.append(candidates(rules.prefix_ci, string.lowercase(path)), found)
   }
+  let found =
+    list.filter_map(found, fn(p) {
+      let remainder = prefix_remainder(p.rule, path)
+      // whole segments: `/blog` matches `/blog` and `/blog/…`, not `/blogger`
+      case
+        !p.rule.whole_segments
+        || remainder == ""
+        || string.starts_with(remainder, "/")
+      {
+        True -> Ok(#(p, remainder))
+        False -> Error(Nil)
+      }
+    })
   case found {
     [] -> Error(Nil)
     [first, ..others] -> {
-      let best =
+      let #(best, remainder) =
         list.fold(others, first, fn(best, p) {
-          case p.rank < best.rank {
+          case { p.0 }.rank < { best.0 }.rank {
             True -> p
             False -> best
           }
         })
       let r = best.rule
-      let remainder = case r.case_insensitive {
-        False -> ffi.byte_drop(path, string.byte_size(r.source))
-        True -> drop_lowered(path, string.byte_size(string.lowercase(r.source)))
-      }
       // a substitution leaving the target's host: the rule does not apply
       rule.expand(r.target, [path, remainder])
       |> rule.guard_location(best.guard, _)
       |> result.map(Match(r, _))
     }
+  }
+}
+
+/// The rest of `path` after the source of prefix rule `r`.
+fn prefix_remainder(r: Rule, path: String) -> String {
+  case r.case_insensitive {
+    False -> ffi.byte_drop(path, string.byte_size(r.source))
+    // cut where the lower-cased prefix ends, in bytes, like the index
+    True -> drop_lowered(path, string.byte_size(string.lowercase(r.source)))
   }
 }
 

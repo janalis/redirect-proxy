@@ -241,3 +241,16 @@ pub fn lint_flags_parts_that_never_match_test() {
   // `?` is a quantifier in a regex
   assert rule.lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
 }
+
+pub fn whole_segments_test() {
+  let prefix = Rule(..base(), kind: rule.Prefix, whole_segments: True)
+  let assert Ok(_) = rule.validate(prefix)
+  let assert Error([reason]) =
+    rule.validate(Rule(..base(), whole_segments: True))
+  assert string.starts_with(reason, "whole_segments:")
+  // only written when set: existing files and rule versions do not change
+  assert !string.contains(rule.file_to_string([base()]), "whole_segments")
+  assert rule.file_from_string(rule.file_to_string([prefix])) == Ok([prefix])
+  assert rule.version(prefix)
+    != rule.version(Rule(..prefix, whole_segments: False))
+}

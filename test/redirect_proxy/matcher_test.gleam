@@ -433,3 +433,26 @@ pub fn case_insensitive_prefix_remainder_test() {
     == location(rules(False), "x.test", path)
   assert location(rules(True), "x.test", "/eRest") == Ok("/t/[Rest]")
 }
+
+/// A whole-segments prefix matches the path itself and what is below it,
+/// not longer names that start the same way.
+pub fn whole_segments_prefix_test() {
+  let blog =
+    rule.Rule(
+      ..r("1", "*", rule.Prefix, "/blog", "https://new.test/news$1"),
+      whole_segments: True,
+    )
+  let m = matcher.build([blog])
+  assert location(m, "x.test", "/blog") == Ok("https://new.test/news")
+  assert location(m, "x.test", "/blog/") == Ok("https://new.test/news/")
+  assert location(m, "x.test", "/blog/2024/x")
+    == Ok("https://new.test/news/2024/x")
+  assert location(m, "x.test", "/blogger") == Error(Nil)
+  // a shorter plain prefix still gets what the longer one leaves
+  let m = matcher.build([blog, r("2", "*", rule.Prefix, "/b", "/other$1")])
+  assert location(m, "x.test", "/blogger") == Ok("/otherlogger")
+  // case-insensitive
+  let m = matcher.build([rule.Rule(..blog, case_insensitive: True)])
+  assert location(m, "x.test", "/BLOG/a") == Ok("https://new.test/news/a")
+  assert location(m, "x.test", "/BLOGS") == Error(Nil)
+}
