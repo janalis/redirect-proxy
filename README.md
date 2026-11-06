@@ -217,6 +217,9 @@ accepted. Ids and timestamps are added automatically.
 | `$1` in a prefix rule | The rest of the path after the prefix. |
 | `$$` | A literal `$`. |
 
+Substitutions apply to prefix and regex rules. The target of an exact rule
+is used as written, `$` included.
+
 **Resolution order.** Rules for the request's `Host` are tried first, then
 those of wildcard hosts from the closest one (for `a.b.example.com`:
 `*.b.example.com`, then `*.example.com`), then the `*` rules. Within each
@@ -448,12 +451,12 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` since the server started. |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`; `sort` by `source`, `host`, `hits` or `updated` (`-` for descending); pages via `page` and `per_page` (max 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` since the server started. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. |
-| `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch). |
-| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). |
-| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing. `dry_run=true` returns what would be added, changed and removed without writing. |
-| `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. |
+| `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch); `GET` honours `If-None-Match` (`304`). |
+| `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`. Takes the list filters (`q`, `host`, `match`, `enabled`). `ETag` and `If-None-Match` as for the list. |
+| `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
+| `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
 
@@ -539,6 +542,9 @@ for it. `rules import` writes the file; a running server applies it on
   - Edits from the admin UI and the API (`If-Match`) carry the rule version.
     If someone else changed the rule meanwhile, nothing is saved and the
     editor is told.
+  - An import previewed in the admin applies exactly what was shown: if the
+    rules changed meanwhile, nothing is written and the updated preview is
+    shown again. The API does the same with the `ETag` of a dry run.
 - **Backups.** Each change keeps the previous file as
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule

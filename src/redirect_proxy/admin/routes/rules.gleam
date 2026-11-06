@@ -45,10 +45,10 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let filters =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
   let all = store.all(ctx.store)
-  let matching = list.filter(all, matches_filters(_, filters))
+  let found = matching(all, filters)
   let sorted =
-    store_rules.sort(matching, filters.sort, metrics.hits)
-    |> result.unwrap(matching)
+    store_rules.sort(found, filters.sort, metrics.hits)
+    |> result.unwrap(found)
   let count = list.length(sorted)
   let pages =
     int.max(1, { count + rules_view.page_size - 1 } / rules_view.page_size)
@@ -99,21 +99,20 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   )
 }
 
-fn matches_filters(r: Rule, f: rules_view.Filters) -> Bool {
-  let needle = string.lowercase(f.query)
-  let text_ok =
-    needle == ""
-    || list.any([r.host, r.source, r.target, r.note, r.id], fn(field) {
-      string.contains(string.lowercase(field), needle)
-    })
-  let host_ok = f.host == "" || r.host == rule.normalise_host(f.host)
-  let kind_ok = f.kind == "" || rule.kind_to_string(r.kind) == f.kind
-  let status_ok = case f.status {
-    "enabled" -> r.enabled
-    "disabled" -> !r.enabled
-    _ -> True
-  }
-  text_ok && host_ok && kind_ok && status_ok
+fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
+  store_rules.filter(
+    rules,
+    store_rules.Filter(
+      text: f.query,
+      host: f.host,
+      kind: f.kind,
+      enabled: case f.status {
+        "enabled" -> Some(True)
+        "disabled" -> Some(False)
+        _ -> None
+      },
+    ),
+  )
 }
 
 /// Enable, disable or delete the selected rules, or every rule matching the
@@ -124,8 +123,7 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
   let selected = case form_value(form, "all_matching") {
     "on" -> {
       let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
-      store.all(ctx.store)
-      |> list.filter(matches_filters(_, filters))
+      matching(store.all(ctx.store), filters)
       |> list.map(fn(r) { r.id })
     }
     _ ->
@@ -498,8 +496,7 @@ pub fn export(req: Request, ctx: Context) -> Response {
   let filters =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
   let body =
-    store.all(ctx.store)
-    |> list.filter(matches_filters(_, filters))
+    matching(store.all(ctx.store), filters)
     |> store_rules.export
   wisp.ok()
   |> wisp.set_header("content-type", "application/json")
@@ -533,6 +530,29 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   let fail = fn(errors) {
     html(422, pages.import_export(s, features(ctx), None, errors))
   }
+  let imported = fn(count) {
+    wisp.redirect("/rules?flash=imported&count=" <> int.to_string(count))
+  }
+  let preview = fn(incoming, stale) {
+    case store.preview_import(ctx.store, incoming, mode, s.username) {
+      Ok(#(d, version)) ->
+        html(
+          200,
+          pages.import_preview(
+            s,
+            features(ctx),
+            d.added,
+            d.removed,
+            d.changed,
+            content,
+            form_value(form, "mode"),
+            version,
+            stale,
+          ),
+        )
+      Error(errors) -> fail(errors)
+    }
+  }
   case string.trim(content) {
     "" -> fail(["Provide a JSON file or paste JSON content."])
     _ ->
@@ -541,37 +561,30 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
         Ok(incoming) ->
           // a replace is always previewed before it is applied
           case form_value(form, "step"), mode {
-            "apply", _ ->
-              case store.import_rules(ctx.store, incoming, mode, s.username) {
-                Ok(count) ->
-                  wisp.redirect(
-                    "/rules?flash=imported&count=" <> int.to_string(count),
-                  )
-                Error(errors) -> fail(errors)
+            "apply", _ -> {
+              // the version the preview was computed against
+              let expected = case form_value(form, "version") {
+                "" -> None
+                version -> Some(version)
               }
-            "preview", _ | _, store.Replace ->
-              case store.preview_import(ctx.store, incoming, mode, s.username) {
-                Ok(d) ->
-                  html(
-                    200,
-                    pages.import_preview(
-                      s,
-                      features(ctx),
-                      d.added,
-                      d.removed,
-                      d.changed,
-                      content,
-                      form_value(form, "mode"),
-                    ),
-                  )
-                Error(errors) -> fail(errors)
+              case
+                store.import_rules_versioned(
+                  ctx.store,
+                  incoming,
+                  mode,
+                  expected,
+                  s.username,
+                )
+              {
+                Ok(count) -> imported(count)
+                Error(store.Stale(_)) -> preview(incoming, True)
+                Error(store.Rejected(errors)) -> fail(errors)
               }
+            }
+            "preview", _ | _, store.Replace -> preview(incoming, False)
             _, store.Merge ->
               case store.import_rules(ctx.store, incoming, mode, s.username) {
-                Ok(count) ->
-                  wisp.redirect(
-                    "/rules?flash=imported&count=" <> int.to_string(count),
-                  )
+                Ok(count) -> imported(count)
                 Error(errors) -> fail(errors)
               }
           }

@@ -190,6 +190,21 @@ pub fn parse_if_match(value: String) -> IfMatch {
   }
 }
 
+/// Parses an `If-None-Match` header value. Unlike `If-Match`, it uses the
+/// weak comparison (RFC 9110): `W/"v"` matches version `v`.
+pub fn parse_if_none_match(value: String) -> IfMatch {
+  value
+  |> string.split(",")
+  |> list.map(fn(tag) {
+    case string.trim(tag) {
+      "W/" <> strong -> strong
+      strong -> strong
+    }
+  })
+  |> string.join(",")
+  |> parse_if_match
+}
+
 /// The version to require from the store: the current one when `If-Match`
 /// lists it (or is `*`), otherwise one that cannot match (412).
 pub fn expected_version(condition: IfMatch, current: String) -> String {

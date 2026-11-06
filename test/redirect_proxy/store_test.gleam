@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{Some}
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/matcher
@@ -516,4 +517,41 @@ fn wait_until(condition: fn() -> Bool, attempts: Int) -> Nil {
       wait_until(condition, attempts - 1)
     }
   }
+}
+
+/// Imports and bulk changes based on an older version of the rule set are
+/// refused, and nothing is written.
+pub fn versioned_set_changes_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let #(_, before) = store.versioned(s)
+  let assert Ok(a) = store.create(s, new_rule("/a", "/1"), by: "t")
+  let #(_, current) = store.versioned(s)
+  assert current != before
+  let incoming = [new_rule("/b", "/2")]
+  assert store.import_rules_versioned(
+      s,
+      incoming,
+      store.Replace,
+      Some(before),
+      by: "t",
+    )
+    == Error(store.Stale(current))
+  assert store.bulk_versioned(s, [a.id], store.Disable, Some(before), by: "t")
+    == Error(store.Stale(current))
+  assert store.all(s) == [a]
+  // the preview tells which version it was computed against
+  let assert Ok(#(_, previewed)) =
+    store.preview_import(s, incoming, store.Replace, by: "t")
+  assert previewed == current
+  assert store.import_rules_versioned(
+      s,
+      incoming,
+      store.Replace,
+      Some(previewed),
+      by: "t",
+    )
+    == Ok(1)
+  assert store.bulk_versioned(s, [], store.Disable, Some("*"), by: "t")
+    == Error(store.Rejected(["ids: select at least one rule"]))
 }

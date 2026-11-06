@@ -5,6 +5,7 @@ import gleam/dict
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/set
@@ -267,6 +268,42 @@ pub fn diff_to_json(d: Diff) -> List(#(String, json.Json)) {
 }
 
 /// The fields rules can be sorted by; `-field` sorts in descending order.
+/// The filters of the rules list, in the admin and the API.
+pub type Filter {
+  Filter(
+    /// Case-insensitive text searched in the host, source, target, note
+    /// and id ("" for any).
+    text: String,
+    /// A host as written in rules, or "" for any.
+    host: String,
+    /// `exact`, `prefix` or `regex`, or "" for any.
+    kind: String,
+    enabled: Option(Bool),
+  )
+}
+
+pub fn filter(rules: List(Rule), f: Filter) -> List(Rule) {
+  let needle = string.lowercase(string.trim(f.text))
+  let host = case string.trim(f.host) {
+    "" -> ""
+    h -> rule.normalise_host(h)
+  }
+  list.filter(rules, fn(r) {
+    {
+      needle == ""
+      || list.any([r.host, r.source, r.target, r.note, r.id], fn(field) {
+        string.contains(string.lowercase(field), needle)
+      })
+    }
+    && { host == "" || r.host == host }
+    && { f.kind == "" || rule.kind_to_string(r.kind) == f.kind }
+    && case f.enabled {
+      Some(enabled) -> r.enabled == enabled
+      None -> True
+    }
+  })
+}
+
 pub const sort_fields = ["source", "host", "hits", "updated"]
 
 /// Sorts rules by `by` (one of `sort_fields`, optionally prefixed with `-`;

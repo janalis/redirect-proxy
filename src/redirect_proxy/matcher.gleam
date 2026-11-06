@@ -211,7 +211,8 @@ fn build_host(rules: List(Rule)) -> HostRules {
     rules
     |> list.filter(fn(r) { r.kind == Prefix })
     |> list.sort(fn(a, b) {
-      int.compare(string.length(b.source), string.length(a.source))
+      // in bytes, like the index: longest first
+      int.compare(string.byte_size(b.source), string.byte_size(a.source))
       |> order.break_tie(int.compare(a.priority, b.priority))
     })
     |> list.index_map(fn(r, rank) {
@@ -241,6 +242,27 @@ fn build_host(rules: List(Rule)) -> HostRules {
     regex: index(regex, fn(r) { regex_literal(r.rule) }),
     regex_unindexed:,
   )
+}
+
+/// `path` without its start whose lower-cased form is `lowered_bytes` long
+/// (a case-insensitive prefix, indexed lower-cased): lower-casing may change
+/// byte lengths outside ASCII, so the path is walked code point by code
+/// point, keeping the case of what remains.
+fn drop_lowered(path: String, lowered_bytes: Int) -> String {
+  drop_codepoints(string.to_utf_codepoints(path), lowered_bytes)
+  |> string.from_utf_codepoints
+}
+
+fn drop_codepoints(rest: List(UtfCodepoint), bytes: Int) -> List(UtfCodepoint) {
+  case rest, bytes > 0 {
+    [c, ..tail], True ->
+      drop_codepoints(
+        tail,
+        bytes
+          - string.byte_size(string.lowercase(string.from_utf_codepoints([c]))),
+      )
+    _, _ -> rest
+  }
 }
 
 /// Indexes entries (given in rank order) by `key`.
@@ -400,6 +422,8 @@ fn lookup_host(
   |> result.lazy_or(fn() { match_regex(rules, path) })
 }
 
+/// The target is used as written: substitutions are for prefix and regex
+/// rules.
 fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   case dict.get(rules.exact, path) {
     Ok(r) -> Ok(Match(r, r.target))
@@ -432,8 +456,7 @@ fn match_prefix(rules: HostRules, path: String) -> Result(Match, Nil) {
       let r = best.rule
       let remainder = case r.case_insensitive {
         False -> ffi.byte_drop(path, string.byte_size(r.source))
-        // lower-casing may change byte lengths outside ASCII
-        True -> string.drop_start(path, string.length(r.source))
+        True -> drop_lowered(path, string.byte_size(string.lowercase(r.source)))
       }
       // a substitution leaving the target's host: the rule does not apply
       rule.expand(r.target, [path, remainder])

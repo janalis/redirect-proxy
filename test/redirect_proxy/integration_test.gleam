@@ -1295,6 +1295,48 @@ pub fn import_export_and_tester_test() {
   assert resp.status == 422
 }
 
+/// Applying a previewed replace while the rules changed meanwhile shows the
+/// updated preview instead of deleting rules that were never shown.
+pub fn stale_import_preview_is_shown_again_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let content = "[{\"source\": \"/imported\", \"target\": \"/landing\"}]"
+  let preview =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replace"),
+      #("content", content),
+    ])
+  let assert Ok(#(_, rest)) =
+    string.split_once(preview.body, "name=\"version\" type=\"hidden\" value=\"")
+  let assert Ok(#(version, _)) = string.split_once(rest, "\"")
+  assert version != ""
+  // another administrator adds a rule
+  let assert 303 =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("status", "301"),
+      #("source", "/added-meanwhile"),
+      #("target", "/x"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ]).status
+  let resp =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replace"),
+      #("step", "apply"),
+      #("version", version),
+      #("content", content),
+    ])
+  assert resp.status == 200
+  assert string.contains(resp.body, "were changed while you were reviewing")
+  assert get(env.redirect <> "/added-meanwhile", []).status == 301
+  assert get(env.redirect <> "/imported", []).status == 404
+}
+
 pub fn reload_from_disk_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)

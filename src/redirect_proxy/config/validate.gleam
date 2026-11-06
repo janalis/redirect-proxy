@@ -2,6 +2,7 @@
 
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -43,27 +44,63 @@ pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
 /// Warnings also logged when the server starts.
 pub fn runtime_warnings(config: Config) -> List(String) {
   let oidc = config.oidc
-  case
-    oidc.enabled
-    && oidc.allowed_emails == []
-    && oidc.allowed_domains == []
-    && oidc.allowed_groups == []
-  {
-    True -> [
-      "auth.oidc has no allowed_emails, allowed_domains or allowed_groups: every account of the provider can sign in to the admin",
-    ]
-    False -> []
-  }
+  let admin = config.admin
+  list.flatten([
+    case
+      oidc.enabled
+      && oidc.allowed_emails == []
+      && oidc.allowed_domains == []
+      && oidc.allowed_groups == []
+    {
+      True -> [
+        "auth.oidc has no allowed_emails, allowed_domains or allowed_groups: every account of the provider can sign in to the admin",
+      ]
+      False -> []
+    },
+    case
+      admin.session_idle_timeout > 0
+      && admin.session_idle_timeout >= admin.session_ttl
+    {
+      True -> [
+        "admin.session_idle_timeout is not shorter than admin.session_ttl: sessions end at session_ttl before they can be idle that long",
+      ]
+      False -> []
+    },
+    case config.server.shutdown_grace >= 10 {
+      True -> [
+        "server.shutdown_grace is "
+        <> int.to_string(config.server.shutdown_grace)
+        <> " seconds: allow longer than that before the service manager kills the server (docker stop waits 10 seconds by default, the systemd unit 15)",
+      ]
+      False -> []
+    },
+  ])
 }
 
 fn is_loopback(address: String) -> Bool {
-  address == "localhost"
-  || address == "::1"
-  || string.starts_with(address, "127.")
+  ffi.is_loopback_address(address)
 }
 
 pub fn validate(config: Config) -> Result(Config, String) {
   let port_ok = fn(p) { p >= 0 && p < 65_536 }
+  let listen_ok = fn(name, address) {
+    case ffi.valid_listen_address(address) {
+      True -> Ok(Nil)
+      False ->
+        Error(
+          name <> " must be an IP address or \"localhost\", not " <> address,
+        )
+    }
+  }
+  use Nil <- result.try(listen_ok("server.listen", config.server.listen))
+  use Nil <- result.try(case config.admin.enabled {
+    True -> listen_ok("admin.listen", config.admin.listen)
+    False -> Ok(Nil)
+  })
+  use Nil <- result.try(case config.api.listen {
+    "" -> Ok(Nil)
+    address -> listen_ok("api.listen", address)
+  })
   use <- bool.guard(
     !port_ok(config.server.port),
     Error("server.port must be between 0 and 65535"),
@@ -134,6 +171,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("admin.public_url must be an http:// or https:// URL"),
   )
   use <- bool.guard(
+    config.api.public_url != "" && !is_http_url(config.api.public_url),
+    Error("api.public_url must be empty or an http:// or https:// URL"),
+  )
+  use <- bool.guard(
     config.admin.session_idle_timeout != 0
       && config.admin.session_idle_timeout < 60,
     Error("admin.session_idle_timeout must be 0 (off) or at least 60 seconds"),
@@ -151,6 +192,18 @@ pub fn validate(config: Config) -> Result(Config, String) {
       || config.oidc.client_secret == ""
     },
     Error("auth.oidc requires issuer, client_id and client_secret when enabled"),
+  )
+  use <- bool.guard(
+    config.oidc.enabled && !is_http_url(config.oidc.issuer),
+    Error("auth.oidc.issuer must be an http:// or https:// URL"),
+  )
+  use <- bool.guard(
+    config.header_auth.enabled
+      && string.trim(config.header_auth.user_header) == ""
+      && string.trim(config.header_auth.email_header) == "",
+    Error(
+      "auth.header needs user_header or email_header: with neither, nobody can sign in",
+    ),
   )
   use <- bool.guard(
     config.header_auth.enabled && config.header_auth.trusted_proxies == [],
@@ -197,6 +250,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
     config.api.oauth.enabled
       && { config.api.oauth.issuer == "" || config.api.oauth.audience == "" },
     Error("api.oauth requires issuer and audience when enabled"),
+  )
+  use <- bool.guard(
+    config.api.oauth.enabled && !is_http_url(config.api.oauth.issuer),
+    Error("api.oauth.issuer must be an http:// or https:// URL"),
   )
   validate_access_log(config.access_log)
   |> result.replace(config)

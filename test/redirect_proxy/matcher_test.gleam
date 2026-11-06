@@ -404,3 +404,32 @@ pub fn regex_budget_is_per_request_test() {
     matcher.build([expensive("1"), expensive("2"), expensive("3"), cheap])
   assert location(three, "x.test", path) == Error(Nil)
 }
+
+/// Substitutions apply to prefix and regex rules only: an exact rule's
+/// target is used as written.
+pub fn exact_targets_are_literal_test() {
+  let m = matcher.build([r("1", "*", rule.Exact, "/a", "/price$5?x=$$")])
+  assert location(m, "x.test", "/a") == Ok("/price$5?x=$$")
+}
+
+/// The rest of the path after a case-insensitive prefix keeps its case and
+/// is cut where the prefix ends in bytes, like a case-sensitive prefix: here
+/// before a combining accent (e + U+0301), which counting characters dropped.
+pub fn case_insensitive_prefix_remainder_test() {
+  let rules = fn(ci) {
+    matcher.build([
+      rule.Rule(
+        ..r("1", "*", rule.Prefix, "/E", "/t/[$1]"),
+        source: case ci {
+          True -> "/E"
+          False -> "/e"
+        },
+        case_insensitive: ci,
+      ),
+    ])
+  }
+  let path = "/e\u{301}Rest"
+  assert location(rules(True), "x.test", path)
+    == location(rules(False), "x.test", path)
+  assert location(rules(True), "x.test", "/eRest") == Ok("/t/[Rest]")
+}

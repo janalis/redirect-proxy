@@ -152,6 +152,46 @@ fn if_match_param() -> Json {
   )
 }
 
+/// `If-Match` on changes to the whole rule set (import, bulk).
+fn set_if_match_param() -> Json {
+  param(
+    "If-Match",
+    "header",
+    string_schema(),
+    "Version of the rule set (ETag of the list, the export or an import dry run) the change is based on. 412 when the rules changed since.",
+  )
+}
+
+fn if_none_match_param() -> Json {
+  param(
+    "If-None-Match",
+    "header",
+    string_schema(),
+    "ETag of a copy already held: 304 while it is current.",
+  )
+}
+
+fn not_modified() -> #(String, Json) {
+  #(
+    "304",
+    json.object([
+      #(
+        "description",
+        json.string("Not modified: the copy held (If-None-Match) is current."),
+      ),
+    ]),
+  )
+}
+
+fn set_version_header() -> #(String, Json) {
+  #(
+    "ETag",
+    header(
+      "Version of the whole rule set, for If-Match on import and bulk changes.",
+    ),
+  )
+}
+
 fn operation(
   registry: List(Deprecation),
   method: String,
@@ -316,6 +356,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                         "Link",
                         header("rel=\"next\" and rel=\"prev\" page URLs."),
                       ),
+                      set_version_header(),
                     ]),
                   ),
                   #(
@@ -373,11 +414,15 @@ fn paths(registry: List(Deprecation)) -> Json {
       "/api/redirects/{id}",
       json.object([
         op("get", "/api/redirects/{id}", "Get a redirection", "redirects:read", [
-          #("parameters", json.preprocessed_array([id_param()])),
+          #(
+            "parameters",
+            json.preprocessed_array([id_param(), if_none_match_param()]),
+          ),
           #(
             "responses",
             json.object([
               #("200", response("The redirection (ETag header).", ref("Rule"))),
+              not_modified(),
               ..errors([#("404", "Not found.")])
             ]),
           ),
@@ -486,13 +531,30 @@ fn paths(registry: List(Deprecation)) -> Json {
                   enum_schema(["true", "false"]),
                   "true or false.",
                 ),
+                if_none_match_param(),
               ]),
             ),
             #(
               "responses",
               json.object([
-                #("200", response("Redirections file.", ref("RulesFile"))),
-                ..errors([])
+                #(
+                  "200",
+                  json.object([
+                    #("description", json.string("Redirections file.")),
+                    #("headers", json.object([set_version_header()])),
+                    #(
+                      "content",
+                      json.object([
+                        #(
+                          "application/json",
+                          json.object([#("schema", ref("RulesFile"))]),
+                        ),
+                      ]),
+                    ),
+                  ]),
+                ),
+                not_modified(),
+                ..errors([#("400", "Invalid match or enabled value.")])
               ]),
             ),
           ],
@@ -521,8 +583,9 @@ fn paths(registry: List(Deprecation)) -> Json {
                   "dry_run",
                   "query",
                   enum_schema(["true", "false"]),
-                  "true: return what would change (added, removed, changed) without writing.",
+                  "true: return what would change (added, removed, changed) without writing, with the version it was computed against as ETag: send it back in If-Match to apply exactly that change.",
                 ),
+                set_if_match_param(),
               ]),
             ),
             body(ref("RulesFile"), "application/json"),
@@ -556,6 +619,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                   body_errors(),
                   errors([
                     #("400", "mode is not merge or replace."),
+                    #("412", "The rules changed since the If-Match version."),
                     #("422", "Validation failed."),
                   ]),
                 )
@@ -574,6 +638,7 @@ fn paths(registry: List(Deprecation)) -> Json {
           "Enable, disable or delete several redirections (all or nothing)",
           "redirects:write",
           [
+            #("parameters", json.preprocessed_array([set_if_match_param()])),
             body(
               json.object([
                 #("type", json.string("object")),
@@ -609,7 +674,10 @@ fn paths(registry: List(Deprecation)) -> Json {
                 ),
                 ..list.append(
                   body_errors(),
-                  errors([#("422", "Unknown id, invalid action or conflict.")]),
+                  errors([
+                    #("412", "The rules changed since the If-Match version."),
+                    #("422", "Unknown id, invalid action or conflict."),
+                  ]),
                 )
               ]),
             ),

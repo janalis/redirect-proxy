@@ -1050,6 +1050,96 @@ pub fn import_dry_run_test() {
   assert api(env, Get, "/api/redirects/c", token, "").status == 404
 }
 
+/// The dry run's ETag applies exactly the previewed change: if the rules
+/// changed in between, the import is refused with 412 and nothing is written.
+pub fn import_applies_only_what_was_previewed_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True)])
+  let body = "[{\"id\": \"c\", \"source\": \"/c\", \"target\": \"/new\"}]"
+  let with_if_match = fn(path, tag) {
+    support.send(
+      Post,
+      env.api <> path,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/json"),
+        #("if-match", tag),
+      ],
+      body,
+    )
+  }
+  let preview =
+    api(
+      env,
+      Post,
+      "/api/redirects/import?mode=replace&dry_run=true",
+      token,
+      body,
+    )
+  let tag = header(preview, "etag")
+  assert tag != ""
+  // someone adds a rule after the preview
+  let other = "{\"source\": \"/late\", \"target\": \"/x\"}"
+  assert api(env, Post, "/api/redirects", token, other).status == 201
+  let resp = with_if_match("/api/redirects/import?mode=replace", tag)
+  assert resp.status == 412
+  assert header(resp, "etag") != tag
+  // nothing was written
+  assert api(env, Get, "/api/redirects/c", token, "").status == 404
+  // with the current version from the list, it applies
+  let current = header(api(env, Get, "/api/redirects", token, ""), "etag")
+  assert current == header(resp, "etag")
+  let resp = with_if_match("/api/redirects/import?mode=replace", current)
+  assert resp.status == 200
+  // bulk changes take If-Match the same way
+  let resp =
+    support.send(
+      Post,
+      env.api <> "/api/redirects/bulk",
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/json"),
+        #("if-match", current),
+      ],
+      "{\"ids\": [\"c\"], \"action\": \"disable\"}",
+    )
+  assert resp.status == 412
+}
+
+pub fn conditional_reads_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True)])
+  let get = fn(path, tag) {
+    support.send(
+      Get,
+      env.api <> path,
+      [#("authorization", "Bearer " <> token), #("if-none-match", tag)],
+      "",
+    )
+  }
+  let tag = header(api(env, Get, "/api/redirects/a", token, ""), "etag")
+  assert get("/api/redirects/a", tag).status == 304
+  assert get("/api/redirects/a", "W/" <> tag).status == 304
+  assert get("/api/redirects/a", "\"other\"").status == 200
+  let export = api(env, Get, "/api/redirects/export", token, "")
+  assert get("/api/redirects/export", header(export, "etag")).status == 304
+}
+
+pub fn import_needs_a_json_body_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let resp =
+    support.send(
+      Post,
+      env.api <> "/api/redirects/import",
+      [#("authorization", "Bearer " <> token), #("content-type", "text/plain")],
+      "[]",
+    )
+  assert resp.status == 415
+}
+
 pub fn tester_explains_the_resolution_test() {
   let env = support.boot(config.default())
   let token = access_token(env, [scope.Write])

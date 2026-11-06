@@ -401,6 +401,8 @@ pub fn import_preview(
   changed: List(String),
   content: String,
   mode: String,
+  version: String,
+  stale: Bool,
 ) -> String {
   let group = fn(title, ids, theme) {
     h.div([a.class("col-12 md:col-4")], [
@@ -430,6 +432,14 @@ pub fn import_preview(
     features:,
     content: [
       layout.heading("Import preview", []),
+      case stale {
+        True ->
+          layout.alert(
+            "theme-warning",
+            "The redirections were changed while you were reviewing: this preview was updated. Nothing has been written yet.",
+          )
+        False -> h.text("")
+      },
       h.p([], [
         h.text(case mode {
           "replace" ->
@@ -447,6 +457,8 @@ pub fn import_preview(
         layout.csrf_field(session),
         h.input([a.type_("hidden"), a.name("mode"), a.value(mode)]),
         h.input([a.type_("hidden"), a.name("step"), a.value("apply")]),
+        // applies exactly what is shown, or nothing if the rules changed
+        h.input([a.type_("hidden"), a.name("version"), a.value(version)]),
         h.textarea([a.name("content"), a.hidden(True)], content),
         h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
           h.text("Apply"),
