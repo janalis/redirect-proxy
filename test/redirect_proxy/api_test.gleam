@@ -17,6 +17,7 @@ import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/openapi
 import redirect_proxy/api/problem
+import redirect_proxy/api/routes
 import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config
@@ -1361,4 +1362,87 @@ pub fn query_rules_over_http_test() {
       "{\"source\":\"/p\",\"match\":\"prefix\",\"query\":\"a=1\",\"target\":\"/x\"}",
     )
   assert resp.status == 422
+}
+
+/// The route table, the router and the OpenAPI document agree: every
+/// documented operation is in the table and the other way round, each one
+/// is routed (neither "no such endpoint" nor 405), and a 405 lists exactly
+/// the table's methods.
+pub fn routes_router_and_openapi_agree_test() {
+  let methods = ["get", "post", "put", "patch", "delete"]
+  let documented =
+    json.parse(
+      openapi.document([]),
+      decode.at(
+        ["paths"],
+        decode.dict(decode.string, decode.dict(decode.string, decode.dynamic)),
+      ),
+    )
+    |> result.unwrap(dict.new())
+    |> dict.to_list
+    |> list.filter(fn(entry) { string.starts_with(entry.0, "/api/") })
+    |> list.flat_map(fn(entry) {
+      dict.keys(entry.1)
+      |> list.filter(list.contains(methods, _))
+      |> list.map(fn(method) { #(method, entry.0) })
+    })
+  let table =
+    list.map(routes.operations, fn(o) {
+      #(string.lowercase(http.method_to_string(o.method)), o.template)
+    })
+  assert list.sort(documented, compare_pairs) == list.sort(table, compare_pairs)
+
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Write, scope.Ops])
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/r\",\"target\":\"/x\"}",
+    )
+  assert created.status == 201
+  let id = field(created.body, ["id"], decode.string)
+  // DELETE last: the other operations use the rule
+  let #(deletes, others) =
+    list.partition(routes.operations, fn(o) { o.method == Delete })
+  list.each(list.append(others, deletes), fn(o) {
+    let path = string.replace(o.template, "{id}", id)
+    let path = case o.template {
+      "/api/test" -> path <> "?url=https://x.test/r"
+      _ -> path
+    }
+    let resp = api(env, o.method, path, token, "{}")
+    assert resp.status != 405
+    assert !string.contains(resp.body, "No such endpoint")
+  })
+  // a method the table does not list for a known path: `PUT
+  // /api/redirects/export` used to reach `PUT /api/redirects/{id}` (404)
+  let resp = api(env, Put, "/api/redirects/export", token, "{}")
+  assert resp.status == 405
+  assert header(resp, "allow") == "GET"
+  list.each(
+    list.unique(list.map(routes.operations, fn(o) { o.template })),
+    fn(t) {
+      let path = string.replace(t, "{id}", id)
+      let unused =
+        [Get, Post, Put, Patch, Delete]
+        |> list.find(fn(m) {
+          !list.contains(routes.operations, routes.Operation(m, t))
+        })
+      case unused {
+        Error(Nil) -> Nil
+        Ok(method) -> {
+          let resp = api(env, method, path, token, "{}")
+          assert resp.status == 405
+          assert header(resp, "allow") == string.join(routes.allowed(t), ", ")
+        }
+      }
+    },
+  )
+}
+
+fn compare_pairs(a: #(String, String), b: #(String, String)) {
+  string.compare(a.1 <> " " <> a.0, b.1 <> " " <> b.0)
 }

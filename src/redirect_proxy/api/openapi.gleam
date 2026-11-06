@@ -4,6 +4,7 @@
 import gleam/json.{type Json}
 import gleam/list
 import redirect_proxy/api/deprecation.{type Deprecation}
+import redirect_proxy/store/rules as store_rules
 
 pub fn document(registry: List(Deprecation)) -> String {
   json.object([
@@ -332,10 +333,12 @@ fn paths(registry: List(Deprecation)) -> Json {
               param(
                 "sort",
                 "query",
-                enum_schema([
-                  "source", "-source", "host", "-host", "hits", "-hits",
-                  "last_hit", "-last_hit", "updated", "-updated",
-                ]),
+                // the fields the list really sorts by, each also descending
+                enum_schema(
+                  list.flat_map(store_rules.sort_fields, fn(field) {
+                    [field, "-" <> field]
+                  }),
+                ),
                 "Sort field; - for descending. File order by default.",
               ),
               param("page", "query", int_schema(), "Page number (from 1)."),
