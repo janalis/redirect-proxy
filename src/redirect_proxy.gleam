@@ -18,6 +18,7 @@ import redirect_proxy/config/validate as config_validate
 import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/rule
 import redirect_proxy/rule_csv
 import redirect_proxy/store
@@ -37,7 +38,8 @@ const usage =
 Usage:
   redirect-proxy [serve] [--config FILE]   Start the redirect and admin listeners
   redirect-proxy check-config [--config FILE]
-  redirect-proxy user add <username> [--config FILE]
+  redirect-proxy user add <username> [--role ROLE] [--config FILE]
+  redirect-proxy user role <username> <ROLE> [--config FILE]
   redirect-proxy user passwd <username> [--config FILE]
   redirect-proxy user delete <username> [--config FILE]
   redirect-proxy user list [--config FILE]
@@ -52,6 +54,7 @@ Usage:
 The configuration file defaults to $RP_CONFIG. Every setting can be
 overridden with RP_* environment variables (see README). Passwords for
 `user add`/`user passwd` are read from $RP_PASSWORD or prompted for.
+Roles: viewer, editor, admin (default for `user add`).
 API client scopes: redirects:read, redirects:write (default), redirects:ops.
 "
 
@@ -78,7 +81,11 @@ pub fn run(args: List(String)) -> Result(Nil, String) {
   case args {
     [] | ["serve"] -> serve(config_path)
     ["check-config"] -> check_config(config_path)
-    ["user", "add", username] -> user_add(config_path, username)
+    ["user", "add", username] -> user_add(config_path, username, "admin")
+    ["user", "add", username, "--role", r]
+    | ["user", "add", "--role", r, username] ->
+      user_add(config_path, username, r)
+    ["user", "role", username, r] -> user_role(config_path, username, r)
     ["user", "passwd", username] -> user_passwd(config_path, username)
     ["user", "delete", username] -> user_delete(config_path, username)
     ["user", "list"] -> user_list(config_path)
@@ -233,17 +240,52 @@ fn read_new_password() -> Result(String, String) {
   }
 }
 
-fn user_add(config_path: String, username: String) -> Result(Nil, String) {
+fn parse_role(value: String) -> Result(role.Role, String) {
+  role.from_string(string.lowercase(value))
+  |> result.replace_error("role must be viewer, editor or admin")
+}
+
+fn user_add(
+  config_path: String,
+  username: String,
+  role_name: String,
+) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
   use Nil <- result.try(users.validate_username(users.normalise(username)))
+  use new_role <- result.try(parse_role(role_name))
   use pass <- result.try(read_new_password())
-  use user <- result.try(users.create(
+  use user <- result.try(users.create_with_role(
     app.users_settings(cfg),
     username,
     password.hash(pass),
+    new_role,
     "cli",
   ))
-  io.println("user " <> user.username <> " created")
+  io.println(
+    "user " <> user.username <> " created (" <> role.to_string(user.role) <> ")",
+  )
+  Ok(Nil)
+}
+
+fn user_role(
+  config_path: String,
+  username: String,
+  role_name: String,
+) -> Result(Nil, String) {
+  use cfg <- result.try(load(config_path))
+  use new_role <- result.try(parse_role(role_name))
+  use Nil <- result.try(users.set_role(
+    app.users_settings(cfg),
+    username,
+    new_role,
+    "cli",
+  ))
+  io.println(
+    "role of "
+    <> users.normalise(username)
+    <> " set to "
+    <> role.to_string(new_role),
+  )
   Ok(Nil)
 }
 
@@ -270,7 +312,11 @@ fn user_delete(config_path: String, username: String) -> Result(Nil, String) {
 fn user_list(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
   use all <- result.try(users.list(app.users_settings(cfg)))
-  list.each(all, fn(u) { io.println(u.username <> "\t" <> u.created_at) })
+  list.each(all, fn(u) {
+    io.println(
+      u.username <> "\t" <> role.to_string(u.role) <> "\t" <> u.created_at,
+    )
+  })
   Ok(Nil)
 }
 

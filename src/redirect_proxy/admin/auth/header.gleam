@@ -3,10 +3,12 @@
 //// when the TCP peer address belongs to a configured trusted proxy CIDR.
 
 import gleam/list
+import gleam/result
 import gleam/string
 import redirect_proxy/config.{type HeaderAuthConfig}
 import redirect_proxy/ffi
 import redirect_proxy/log
+import redirect_proxy/role.{type Role}
 import wisp
 
 /// The user named by the identity header: `user_header`, or `email_header`
@@ -39,6 +41,33 @@ pub fn identify(
         [_, _, ..] -> refuse(" sent more than once")
       }
     }
+  }
+}
+
+/// The role of a proxy user: from `role_header` when it is configured (a
+/// missing, repeated or unknown value gives the least, viewer: a proxy that
+/// stopped sending it must not grant `default_role`), `default_role`
+/// otherwise.
+pub fn role(cfg: HeaderAuthConfig, req: wisp.Request) -> Role {
+  let default = role.from_string(cfg.default_role) |> result.unwrap(role.Viewer)
+  case cfg.role_header {
+    "" -> default
+    name ->
+      case list.filter(req.headers, fn(h) { h.0 == name }) {
+        [#(_, value)] ->
+          case role.from_string(string.lowercase(string.trim(value))) {
+            Ok(r) -> r
+            Error(Nil) -> {
+              log.warning(
+                "proxy authentication: unknown role in header "
+                <> name
+                <> ": viewer",
+              )
+              role.Viewer
+            }
+          }
+        _ -> role.Viewer
+      }
   }
 }
 

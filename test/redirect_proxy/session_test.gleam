@@ -1,9 +1,10 @@
 import gleam/erlang/process
 import redirect_proxy/admin/auth/session
+import redirect_proxy/role
 
 pub fn idle_sessions_end_test() {
   session.init()
-  let s = session.create("alice", session.Local, 3600, "fp")
+  let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
   let assert Ok(_) = session.get(s.token, 0)
   process.sleep(1100)
   // unused for over a second, with a one second idle timeout
@@ -23,9 +24,9 @@ pub fn fingerprint_follows_the_password_test() {
 /// local user, and deleting a local user does not end their sessions.
 pub fn external_names_are_prefixed_test() {
   session.init()
-  let local = session.create("alice", session.Local, 60, "")
-  let sso = session.create("alice", session.Oidc, 60, "")
-  let proxy = session.create("alice", session.Header, 60, "")
+  let local = session.create("alice", session.Local, 60, "", role.Admin)
+  let sso = session.create("alice", session.Oidc, 60, "", role.Admin)
+  let proxy = session.create("alice", session.Header, 60, "", role.Admin)
   assert local.username == "alice"
   assert sso.username == "sso:alice"
   assert proxy.username == "proxy:alice"

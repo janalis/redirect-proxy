@@ -69,24 +69,27 @@ pub fn index(
     flash:,
     features:,
     content: [
-      layout.heading("Redirections", [
-        h.form([a.method("post"), a.action("/reload")], [
-          layout.csrf_field(session),
-          h.button(
-            [
-              a.type_("submit"),
-              a.class("btn btn-outline theme-secondary"),
-              a.title("Re-read the redirections file from disk"),
-            ],
-            [h.text("Reload from disk")],
+      layout.heading("Redirections", case layout.can_edit(session) {
+        False -> []
+        True -> [
+          h.form([a.method("post"), a.action("/reload")], [
+            layout.csrf_field(session),
+            h.button(
+              [
+                a.type_("submit"),
+                a.class("btn btn-outline theme-secondary"),
+                a.title("Re-read the redirections file from disk"),
+              ],
+              [h.text("Reload from disk")],
+            ),
+          ]),
+          layout.button_link(
+            "/rules/new",
+            "New redirection",
+            "btn-solid theme-primary",
           ),
-        ]),
-        layout.button_link(
-          "/rules/new",
-          "New redirection",
-          "btn-solid theme-primary",
-        ),
-      ]),
+        ]
+      }),
       filters_form(filters),
       h.p([a.class("small fg-secondary d-flex gap-2")], [
         h.text(
@@ -107,7 +110,10 @@ pub fn index(
         [] -> empty_state(total)
         _ ->
           element.fragment([
-            bulk_form(session, filters, matching, here, version),
+            case layout.can_edit(session) {
+              True -> bulk_form(session, filters, matching, here, version)
+              False -> element.none()
+            },
             table(session, rows, filters, here),
           ])
       },
@@ -328,16 +334,19 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
   let r = row.rule
   let name = r.host <> " " <> r.source
   h.tr([], [
-    h.td([], [
-      h.input([
-        a.type_("checkbox"),
-        a.class("check"),
-        a.name("ids"),
-        a.value(r.id),
-        a.form("bulk"),
-        a.aria_label("Select " <> name),
-      ]),
-    ]),
+    h.td([], case layout.can_edit(session) {
+      True -> [
+        h.input([
+          a.type_("checkbox"),
+          a.class("check"),
+          a.name("ids"),
+          a.value(r.id),
+          a.form("bulk"),
+          a.aria_label("Select " <> name),
+        ]),
+      ]
+      False -> []
+    }),
     h.td([a.class("text-nowrap")], [h.text(r.host)]),
     h.td([], [
       kind_badge(r.kind),
@@ -362,30 +371,14 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
       [h.text(int.to_string(row.hits))],
     ),
     h.td([], [
-      h.form(
-        [
-          a.method("post"),
-          a.action("/rules/" <> uri.percent_encode(r.id) <> "/toggle"),
-        ],
-        [
-          layout.csrf_field(session),
-          layout.version_field(rule.version(r)),
-          h.input([a.type_("hidden"), a.name("return_to"), a.value(here)]),
-          h.button(
+      case layout.can_edit(session) {
+        False ->
+          h.span(
             [
-              a.type_("submit"),
               a.class(case r.enabled {
-                True -> "badge theme-success border-0"
-                False -> "badge theme-secondary border-0"
+                True -> "badge theme-success"
+                False -> "badge theme-secondary"
               }),
-              a.aria_label(
-                case r.enabled {
-                  True -> "Enabled. Disable "
-                  False -> "Disabled. Enable "
-                }
-                <> name,
-              ),
-              a.title("Click to toggle"),
             ],
             [
               h.text(case r.enabled {
@@ -393,33 +386,79 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
                 False -> "disabled"
               }),
             ],
-          ),
-          schedule_badge(r),
-        ],
-      ),
+          )
+        True ->
+          h.form(
+            [
+              a.method("post"),
+              a.action("/rules/" <> uri.percent_encode(r.id) <> "/toggle"),
+            ],
+            [
+              layout.csrf_field(session),
+              layout.version_field(rule.version(r)),
+              h.input([a.type_("hidden"), a.name("return_to"), a.value(here)]),
+              h.button(
+                [
+                  a.type_("submit"),
+                  a.class(case r.enabled {
+                    True -> "badge theme-success border-0"
+                    False -> "badge theme-secondary border-0"
+                  }),
+                  a.aria_label(
+                    case r.enabled {
+                      True -> "Enabled. Disable "
+                      False -> "Disabled. Enable "
+                    }
+                    <> name,
+                  ),
+                  a.title("Click to toggle"),
+                ],
+                [
+                  h.text(case r.enabled {
+                    True -> "enabled"
+                    False -> "disabled"
+                  }),
+                ],
+              ),
+              schedule_badge(r),
+            ],
+          )
+      },
     ]),
     h.td([a.class("text-end text-nowrap")], [
       h.a(
         [
           a.class("btn btn-sm btn-outline theme-primary me-1"),
           a.href("/rules/" <> uri.percent_encode(r.id) <> "/edit"),
-          a.aria_label("Edit " <> name),
+          a.aria_label(case layout.can_edit(session) {
+            True -> "Edit " <> name
+            False -> "View " <> name
+          }),
         ],
-        [h.text("Edit")],
-      ),
-      h.a(
         [
-          a.class("btn btn-sm btn-outline theme-danger"),
-          a.href(
-            "/rules/"
-            <> uri.percent_encode(r.id)
-            <> "/delete?"
-            <> uri.query_to_string([#("return_to", here)]),
-          ),
-          a.aria_label("Delete " <> name),
+          h.text(case layout.can_edit(session) {
+            True -> "Edit"
+            False -> "View"
+          }),
         ],
-        [h.text("Delete")],
       ),
+      case layout.can_edit(session) {
+        False -> element.none()
+        True ->
+          h.a(
+            [
+              a.class("btn btn-sm btn-outline theme-danger"),
+              a.href(
+                "/rules/"
+                <> uri.percent_encode(r.id)
+                <> "/delete?"
+                <> uri.query_to_string([#("return_to", here)]),
+              ),
+              a.aria_label("Delete " <> name),
+            ],
+            [h.text("Delete")],
+          )
+      },
     ]),
   ])
 }
@@ -827,35 +866,49 @@ pub fn form(
           ]),
         ]),
         h.div([a.class("card-body border-top")], [
-          h.div([a.class("d-flex gap-2")], [
-            h.button(
-              [a.type_("submit"), a.class("btn btn-solid theme-primary")],
-              [
-                h.text("Save"),
-              ],
-            ),
-            layout.button_link(
-              "/rules",
-              "Cancel",
-              "btn-outline theme-secondary",
-            ),
-            case is_new {
-              True -> element.none()
-              False ->
-                element.fragment([
-                  layout.button_link(
-                    "/rules/new?" <> uri.query_to_string([#("from", r.id)]),
-                    "Duplicate",
-                    "btn-outline theme-secondary ms-auto",
-                  ),
-                  layout.button_link(
-                    "/rules/" <> uri.percent_encode(r.id) <> "/delete",
-                    "Delete",
-                    "btn-outline theme-danger",
-                  ),
-                ])
-            },
-          ]),
+          case layout.can_edit(session) {
+            False ->
+              h.div([a.class("d-flex gap-2 align-items-center")], [
+                h.p([a.class("small fg-secondary mb-0 me-auto")], [
+                  h.text("Read only: your role cannot change redirections."),
+                ]),
+                layout.button_link(
+                  "/rules",
+                  "Back",
+                  "btn-outline theme-secondary",
+                ),
+              ])
+            True ->
+              h.div([a.class("d-flex gap-2")], [
+                h.button(
+                  [a.type_("submit"), a.class("btn btn-solid theme-primary")],
+                  [
+                    h.text("Save"),
+                  ],
+                ),
+                layout.button_link(
+                  "/rules",
+                  "Cancel",
+                  "btn-outline theme-secondary",
+                ),
+                case is_new {
+                  True -> element.none()
+                  False ->
+                    element.fragment([
+                      layout.button_link(
+                        "/rules/new?" <> uri.query_to_string([#("from", r.id)]),
+                        "Duplicate",
+                        "btn-outline theme-secondary ms-auto",
+                      ),
+                      layout.button_link(
+                        "/rules/" <> uri.percent_encode(r.id) <> "/delete",
+                        "Delete",
+                        "btn-outline theme-danger",
+                      ),
+                    ])
+                },
+              ])
+          },
         ]),
       ]),
     ],

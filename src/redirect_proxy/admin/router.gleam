@@ -1,5 +1,6 @@
 //// Administration backend: entry point and routing.
 
+import gleam/bool
 import gleam/http.{Get, Post}
 import redirect_proxy/admin/routes/auth.{
   login, login_page, logout, oidc_callback, oidc_start, require_session,
@@ -14,10 +15,11 @@ import redirect_proxy/admin/routes/rules.{
   update_rule,
 } as _
 import redirect_proxy/admin/routes/users.{
-  change_password, confirm_delete_user, create_user, delete_user, list_users,
+  account_page, change_password, confirm_delete_user, create_user, delete_user,
+  list_users, set_user_role,
 } as _
 import redirect_proxy/admin/web.{
-  type Context, limit_body, not_found, plain, security_headers,
+  type Context, error_page, limit_body, not_found, plain, security_headers,
   strict_transport_security,
 } as _
 import redirect_proxy/api/deprecation
@@ -27,6 +29,7 @@ import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
+import redirect_proxy/role.{type Role}
 import wisp.{type Request, type Response}
 
 pub fn handle(req: Request, ctx: Context) -> Response {
@@ -86,9 +89,43 @@ fn api_dispatch(
   }
 }
 
+/// The role a route needs (see `role`). Reading is for every role; changing
+/// rules for editors; users, API clients and the audit log (sign-ins, with
+/// client addresses) for admins.
+pub fn required_role(method: http.Method, segments: List(String)) -> Role {
+  case method, segments {
+    Get, ["users", ..] | Post, ["users", ..] -> role.Admin
+    Get, ["api-clients", ..] | Post, ["api-clients", ..] -> role.Admin
+    Get, ["audit"] -> role.Admin
+    // own password and session: anyone (other users' passwords: checked in
+    // `change_password`)
+    Get, ["account"] | Post, ["account", "password"] | Post, ["logout"] ->
+      role.Viewer
+    // a rule's details are on its edit page
+    Get, [] | Get, ["rules"] | Get, ["rules", _, "edit"] -> role.Viewer
+    Get, ["test"] | Get, ["export"] -> role.Viewer
+    // everything else changes rules, or leads to a change
+    _, _ -> role.Editor
+  }
+}
+
 fn authenticated(req: Request, ctx: Context) -> Response {
   use s, set_cookie <- require_session(req, ctx)
-  let resp = case req.method, wisp.path_segments(req) {
+  let segments = wisp.path_segments(req)
+  use <- bool.lazy_guard(
+    !role.allows(s.role, required_role(req.method, segments)),
+    fn() {
+      error_page(
+        ctx,
+        s,
+        403,
+        "Not allowed",
+        "Your role (" <> role.to_string(s.role) <> ") does not allow this.",
+      )
+      |> set_cookie
+    },
+  )
+  let resp = case req.method, segments {
     Get, [] -> wisp.redirect("/rules")
     Post, ["logout"] -> logout(req, ctx, s)
     Get, ["rules"] -> list_rules(req, ctx, s)
@@ -109,7 +146,9 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Post, ["users"] -> create_user(req, ctx, s)
     Get, ["users", username, "delete"] -> confirm_delete_user(ctx, s, username)
     Post, ["users", username, "delete"] -> delete_user(req, ctx, s, username)
+    Get, ["account"] -> account_page(req, ctx, s)
     Post, ["account", "password"] -> change_password(req, ctx, s)
+    Post, ["users", username, "role"] -> set_user_role(req, ctx, s, username)
     Get, ["audit"] -> audit_page(req, ctx, s)
     Get, ["api-clients"] -> api_clients_page(req, ctx, s)
     Post, ["api-clients"] -> create_api_client(req, ctx, s)

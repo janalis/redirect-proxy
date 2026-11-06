@@ -15,6 +15,7 @@ import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
 import redirect_proxy/ffi
 import redirect_proxy/listener
+import redirect_proxy/role
 import tom.{type Toml}
 
 fn is_http_url(url: String) -> Bool {
@@ -159,6 +160,14 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.storage.watch_interval < 0,
     Error("storage.watch_interval must be >= 0 (0: off)"),
+  )
+  use <- bool.guard(
+    role.from_string(config.oidc.default_role) == Error(Nil),
+    Error("auth.oidc.default_role must be viewer, editor or admin"),
+  )
+  use <- bool.guard(
+    role.from_string(config.header_auth.default_role) == Error(Nil),
+    Error("auth.header.default_role must be viewer, editor or admin"),
   )
   use <- bool.guard(
     config.storage.audit_max_bytes != 0
