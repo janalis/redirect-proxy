@@ -26,6 +26,7 @@ pub const operations = [
   Operation(Delete, "/api/redirects/{id}"),
   Operation(Post, "/api/reload"),
   Operation(Get, "/api/test"),
+  Operation(Get, "/api/audit"),
 ]
 
 /// The template of the path segments after `/api/` (`["redirects", "42"]` is

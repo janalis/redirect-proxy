@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
 import redirect_proxy/audit
 import simplifile
@@ -38,4 +39,43 @@ pub fn changes_test() {
     )
   assert audit.changes(entry)
     == [#("added_ids", "", "a, b"), #("fingerprint", "x", "y")]
+}
+
+/// The log rotates at the size limit, keeps the configured number of files,
+/// and searches go through all of them, newest first.
+pub fn rotation_and_search_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+  let path = dir <> "/audit.jsonl"
+  // about 4 entries (~115 bytes each) per file, 2 rotated files kept: 24
+  // entries do not all fit
+  audit.configure(400, 2)
+  int.range(from: 1, to: 25, with: Nil, run: fn(_, i) {
+    audit.record(
+      path,
+      "user" <> int.to_string(i % 2),
+      "rule.update",
+      "rule-" <> int.to_string(i),
+      option.None,
+      option.None,
+    )
+  })
+  audit.configure(audit.default_max_bytes, audit.default_files)
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert list.sort(files, string.compare)
+    == ["audit.jsonl", "audit.jsonl.1", "audit.jsonl.2"]
+  let all = audit.search(path, audit.any, 100) |> list.map(fn(e) { e.target })
+  // the newest first; the oldest entries went with the third rotated file
+  let assert ["rule-24", "rule-23", ..] = all
+  assert list.length(all) < 24
+  assert !list.contains(all, "rule-1")
+  // filters apply across files
+  let by_user1 =
+    audit.search(path, audit.Filter(..audit.any, actor: "user1"), 100)
+  assert list.all(by_user1, fn(e) { e.actor == "user1" })
+  assert list.length(by_user1) > 1
+  assert list.length(audit.search(path, audit.any, 2)) == 2
+  // time bounds
+  assert audit.search(path, audit.Filter(..audit.any, since: 4_102_444_800), 10)
+    == []
 }

@@ -150,6 +150,10 @@ pub type StorageConfig {
     /// Seconds between checks of the redirections file for changes made
     /// outside the server (0: never, reload with SIGHUP instead).
     watch_interval: Int,
+    /// Size at which `audit.jsonl` is rotated (0: never).
+    audit_max_bytes: Int,
+    /// Rotated audit files kept (`audit.jsonl.1` is the newest).
+    audit_files: Int,
   )
 }
 
@@ -241,7 +245,13 @@ pub fn default() -> Config {
       session_idle_timeout: 3600,
       metrics_token: "",
     ),
-    storage: StorageConfig(data_dir: "./data", backups: 10, watch_interval: 0),
+    storage: StorageConfig(
+      data_dir: "./data",
+      backups: 10,
+      watch_interval: 0,
+      audit_max_bytes: 10_485_760,
+      audit_files: 5,
+    ),
     local_auth: LocalAuthConfig(enabled: True),
     oidc: OidcConfig(
       enabled: False,

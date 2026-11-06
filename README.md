@@ -363,6 +363,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ADMIN_METRICS_TOKEN` | (none: `/metrics` is public) |
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
+| `RP_STORAGE_AUDIT_MAX_BYTES` / `RP_STORAGE_AUDIT_FILES` | `10485760` (10 MB, `0`: never rotate) / `5` rotated files kept |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
@@ -510,6 +511,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
 | `POST /api/reload` | `redirects:ops` | Re-read `redirects.json` from disk. |
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
+| `GET /api/audit` | `redirects:ops` | Audit entries as recorded, newest first, from the current and rotated files. Filters `actor` (exact), `action` (prefix: `rule.`), `target` (contains), `since` and `until` (RFC 3339); pages via `page` and `per_page` (max 500), with `meta.has_more` and a `Link` header for the next page. |
 
 **Tokens.**
 
@@ -621,7 +623,10 @@ for it. `rules import` writes the file; a running server applies it on
   reloads record the file fingerprint before and after and the rules added,
   removed and changed (counts, and up to 100 ids each). Rejected reloads and
   imports are recorded with the reason (`rules.reload_failed`,
-  `rules.import.merge_failed`...).
+  `rules.import.merge_failed`...). The file is rotated to `audit.jsonl.1`
+  (then `.2`...) once it reaches `storage.audit_max_bytes` (10 MB), keeping
+  `storage.audit_files` (5) rotated files. The admin's audit page and
+  `GET /api/audit` search all of them.
 - **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
   fallbacks, login failures, reloads, API requests, issued tokens, API
   authentication failures, regex runs stopped by the backtracking budget,

@@ -27,6 +27,8 @@ pub const int_env_vars = [
   "RP_SERVER_MAX_PATH_BYTES",
   "RP_SERVER_PORT",
   "RP_SERVER_SHUTDOWN_GRACE",
+  "RP_STORAGE_AUDIT_FILES",
+  "RP_STORAGE_AUDIT_MAX_BYTES",
   "RP_STORAGE_BACKUPS",
   "RP_STORAGE_WATCH_INTERVAL",
 ]
@@ -268,6 +270,8 @@ pub fn apply_env(
       data_dir: s("RP_STORAGE_DATA_DIR", storage.data_dir),
       backups: i("RP_STORAGE_BACKUPS", storage.backups),
       watch_interval: i("RP_STORAGE_WATCH_INTERVAL", storage.watch_interval),
+      audit_max_bytes: i("RP_STORAGE_AUDIT_MAX_BYTES", storage.audit_max_bytes),
+      audit_files: i("RP_STORAGE_AUDIT_FILES", storage.audit_files),
     ),
     local_auth: LocalAuthConfig(enabled: b(
       "RP_AUTH_LOCAL_ENABLED",
