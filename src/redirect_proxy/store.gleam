@@ -61,6 +61,8 @@ pub type Settings {
     /// `server.trailing_slash = "ignore"`: loops are followed the way the
     /// redirect listener answers.
     ignore_trailing_slash: Bool,
+    /// Milliseconds between checks of the file for outside changes (0: off).
+    watch_interval: Int,
   )
 }
 
@@ -125,6 +127,8 @@ pub opaque type Message {
   )
   Reload(actor: String, reply: Subject(Result(Int, String)))
   ReloadInBackground(actor: String)
+  /// `watch_interval` tick: reloads the file if it changed on disk.
+  Watch(self: Subject(Message))
 }
 
 /// What a bulk change does to the rules it names.
@@ -157,6 +161,8 @@ type State {
     rules: List(Rule),
     /// SHA-256 of the file content last read or written.
     fingerprint: String,
+    /// The file's stamp at the last `Watch` tick.
+    stamp: ffi.FileStamp,
   )
 }
 
@@ -169,26 +175,62 @@ pub fn start(
   settings: Settings,
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
+  ffi.ets_new(last_good_table)
   actor.new_with_initialiser(30_000, fn(subject) {
     let started = ffi.monotonic_micros()
-    use #(rules, fingerprint) <- result.try(load_locked(
-      settings,
-      FirstStart,
-      start_lock_timeout,
-    ))
-    let state = State(settings:, rules:, fingerprint:)
-    publish(warn_problems(
-      matcher.build(rules),
-      rules,
-      settings.ignore_trailing_slash,
-    ))
-    metrics.reloaded(ffi.monotonic_micros() - started)
-    log.info(
-      "loaded "
-      <> int.to_string(list.length(rules))
-      <> " redirection rule(s) from "
-      <> settings.rules_path,
+    use state <- result.try(
+      case load_locked(settings, FirstStart, start_lock_timeout) {
+        Ok(#(rules, fingerprint)) -> {
+          publish(
+            warn_problems(
+              matcher.build(rules),
+              rules,
+              settings.ignore_trailing_slash,
+            ),
+            settings,
+            rules,
+          )
+          metrics.reloaded(ffi.monotonic_micros() - started)
+          log.info(
+            "loaded "
+            <> int.to_string(list.length(rules))
+            <> " redirection rule(s) from "
+            <> settings.rules_path,
+          )
+          Ok(State(
+            settings:,
+            rules:,
+            fingerprint:,
+            stamp: ffi.file_stamp(settings.rules_path),
+          ))
+        }
+        Error(reason) ->
+          // A restart after a crash: the last good rules are still being
+          // served. Keep them rather than failing again until the supervisor
+          // gives up and stops the whole node. The empty fingerprint makes
+          // the next change re-read the file first (and refuse while it is
+          // invalid).
+          case ffi.ets_get(last_good_table, settings.rules_path) {
+            Ok(rules) -> {
+              metrics.incr(metrics.ReloadFailures)
+              log.error(
+                "store restarted with an invalid redirections file, keeping the "
+                <> int.to_string(list.length(rules))
+                <> " rule(s) loaded before: "
+                <> reason,
+              )
+              Ok(State(
+                settings:,
+                rules:,
+                fingerprint: "",
+                stamp: ffi.file_stamp(settings.rules_path),
+              ))
+            }
+            Error(Nil) -> Error(reason)
+          }
+      },
     )
+    schedule_watch(settings, subject)
     actor.initialised(state)
     |> actor.returning(subject)
     |> Ok
@@ -567,6 +609,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
 
+    Watch(self) -> {
+      schedule_watch(state.settings, self)
+      let stamp = ffi.file_stamp(state.settings.rules_path)
+      case stamp == state.stamp {
+        True -> actor.continue(state)
+        False -> {
+          let state = State(..state, stamp:)
+          // the store's own writes leave the fingerprint unchanged
+          case simplifile.read_bits(state.settings.rules_path) {
+            Ok(content) if content != <<>> ->
+              case fingerprint(content) == state.fingerprint {
+                True -> actor.continue(state)
+                False -> handle(state, ReloadInBackground("watch"))
+              }
+            _ -> actor.continue(state)
+          }
+        }
+      }
+    }
+
     ReloadInBackground(actor_name) -> {
       let reply = process.new_subject()
       let next = handle(state, Reload(actor_name, reply))
@@ -579,11 +641,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let started = ffi.monotonic_micros()
       case load_locked(state.settings, Reloading, lock_timeout) {
         Ok(#(rules, fingerprint)) -> {
-          publish(warn_problems(
-            matcher.build(rules),
+          publish(
+            warn_problems(
+              matcher.build(rules),
+              rules,
+              state.settings.ignore_trailing_slash,
+            ),
+            state.settings,
             rules,
-            state.settings.ignore_trailing_slash,
-          ))
+          )
           metrics.incr(metrics.Reloads)
           metrics.reloaded(ffi.monotonic_micros() - started)
           audit_rules_change(
@@ -698,11 +764,15 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              publish(warn_problems(
-                matcher.build(rules),
+              publish(
+                warn_problems(
+                  matcher.build(rules),
+                  rules,
+                  state.settings.ignore_trailing_slash,
+                ),
+                state.settings,
                 rules,
-                state.settings.ignore_trailing_slash,
-              ))
+              )
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(
@@ -726,11 +796,31 @@ fn refresh(state: State) -> Result(State, String) {
   }
 }
 
+fn schedule_watch(settings: Settings, self: Subject(Message)) -> Nil {
+  case settings.watch_interval > 0 {
+    True -> {
+      process.send_after(self, settings.watch_interval, Watch(self))
+      Nil
+    }
+    False -> Nil
+  }
+}
+
 fn fingerprint(content: BitArray) -> String {
   crypto.hash(crypto.Sha256, content) |> bit_array.base16_encode
 }
 
-fn publish(built: matcher.Matcher) -> Nil {
+/// The last rules published, by file path: what a restarted store resumes
+/// from when the file has become invalid. Created by the process calling
+/// `start` (the supervisor), so that it outlives the store process.
+const last_good_table = "redirect_proxy_store_last_good"
+
+fn publish(
+  built: matcher.Matcher,
+  settings: Settings,
+  rules: List(Rule),
+) -> Nil {
+  ffi.ets_put(last_good_table, settings.rules_path, rules)
   built
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
@@ -747,7 +837,7 @@ fn commit(
 ) -> Result(String, List(String)) {
   case persist(settings, rules) {
     Ok(fingerprint) -> {
-      publish(built)
+      publish(built, settings, rules)
       Ok(fingerprint)
     }
     Error(reason) -> {

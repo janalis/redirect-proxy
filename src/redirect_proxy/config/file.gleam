@@ -90,6 +90,8 @@ pub const known_keys = [
   "auth.oidc.scopes",
   "server.cache_max_age",
   "server.fallback_url",
+  "server.health_path",
+  "server.max_path_bytes",
   "log.format",
   "log.level",
   "server.listen",
@@ -99,6 +101,7 @@ pub const known_keys = [
   "server.trailing_slash",
   "storage.backups",
   "storage.data_dir",
+  "storage.watch_interval",
 ]
 
 /// The keys of a parsed configuration file that are not configuration keys.
@@ -148,6 +151,21 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "not_found_body"],
     d.server.not_found_body,
+  ))
+  use health_path <- result.try(str(
+    t,
+    ["server", "health_path"],
+    d.server.health_path,
+  ))
+  use max_path_bytes <- result.try(integer(
+    t,
+    ["server", "max_path_bytes"],
+    d.server.max_path_bytes,
+  ))
+  use watch_interval <- result.try(integer(
+    t,
+    ["storage", "watch_interval"],
+    d.storage.watch_interval,
   ))
   use admin_enabled <- result.try(boolean(
     t,
@@ -356,6 +374,8 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       trailing_slash: string.lowercase(trailing_slash),
       fallback_url:,
       not_found_body:,
+      health_path:,
+      max_path_bytes:,
     ),
     admin: AdminConfig(
       enabled: admin_enabled,
@@ -366,7 +386,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       session_ttl:,
       session_idle_timeout:,
     ),
-    storage: StorageConfig(data_dir:, backups:),
+    storage: StorageConfig(data_dir:, backups:, watch_interval:),
     local_auth: LocalAuthConfig(enabled: local_enabled),
     oidc: OidcConfig(
       enabled: oidc_enabled,

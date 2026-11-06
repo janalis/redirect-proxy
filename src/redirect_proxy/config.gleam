@@ -114,6 +114,11 @@ pub type ServerConfig {
     /// "strict": `/docs/` and `/docs` are different paths; "ignore": a miss
     /// is retried with the trailing slash added or removed.
     trailing_slash: String,
+    /// Optional path answered by the redirect listener itself before any
+    /// rule: 200 while serving, 503 while draining before a stop ("": off).
+    health_path: String,
+    /// Requests whose path is longer than this many bytes get a 414.
+    max_path_bytes: Int,
   )
 }
 
@@ -134,7 +139,13 @@ pub type AdminConfig {
 }
 
 pub type StorageConfig {
-  StorageConfig(data_dir: String, backups: Int)
+  StorageConfig(
+    data_dir: String,
+    backups: Int,
+    /// Seconds between checks of the redirections file for changes made
+    /// outside the server (0: never, reload with SIGHUP instead).
+    watch_interval: Int,
+  )
 }
 
 pub type LocalAuthConfig {
@@ -208,6 +219,8 @@ pub fn default() -> Config {
       trailing_slash: "strict",
       fallback_url: "",
       not_found_body: "Not Found",
+      health_path: "",
+      max_path_bytes: 8192,
     ),
     admin: AdminConfig(
       enabled: True,
@@ -218,7 +231,7 @@ pub fn default() -> Config {
       session_ttl: 28_800,
       session_idle_timeout: 3600,
     ),
-    storage: StorageConfig(data_dir: "./data", backups: 10),
+    storage: StorageConfig(data_dir: "./data", backups: 10, watch_interval: 0),
     local_auth: LocalAuthConfig(enabled: True),
     oidc: OidcConfig(
       enabled: False,

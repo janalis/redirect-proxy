@@ -288,3 +288,10 @@ pub fn now_micros() -> Int
 
 @external(erlang, "redirect_proxy_access_ffi", "monotonic_micros")
 pub fn monotonic_micros() -> Int
+
+/// Identifies a version of a file on disk: its inode, modification time and
+/// size. Two equal stamps mean the file was very probably not changed.
+pub type FileStamp
+
+@external(erlang, "redirect_proxy_ffi", "file_stamp")
+pub fn file_stamp(path: String) -> FileStamp

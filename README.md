@@ -309,6 +309,8 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_TRAILING_SLASH` | `strict` (`ignore`: retry a miss with/without the trailing slash) |
 | `RP_SERVER_FALLBACK_URL` | (none) |
 | `RP_SERVER_NOT_FOUND_BODY` | `Not Found` (body of the 404 when no fallback is set) |
+| `RP_SERVER_HEALTH_PATH` | (none: off) |
+| `RP_SERVER_MAX_PATH_BYTES` | `8192` (longer paths get a 414) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |
 | `RP_ADMIN_PUBLIC_URL` | `http://localhost:8081` |
@@ -316,6 +318,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ADMIN_SESSION_TTL` | `28800` (8 hours) |
 | `RP_ADMIN_SESSION_IDLE_TIMEOUT` | `3600` (1 hour, `0`: never) |
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
+| `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
 | `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL` | `groups`, `Sign in with SSO` |
@@ -507,6 +510,17 @@ for it. `rules import` writes the file; a running server applies it on
 - **Reload.** Edit `redirects.json`, then `kill -HUP <pid>` (or
   `systemctl reload redirect-proxy`). An invalid or missing file is rejected,
   the error is logged and the current rules stay active.
+  - With `storage.watch_interval = <seconds>` (`RP_STORAGE_WATCH_INTERVAL`),
+    the server checks the file that often and reloads it when it changed,
+    without a signal: for a Kubernetes ConfigMap, a GitOps sync or an
+    editor. The server's own writes are not taken for changes, and an
+    invalid file is reported once (`rules.reload_failed`), not at every
+    check.
+  - If the rule store restarts after a crash while the file is invalid, it
+    keeps the rules it had (and logs an error) instead of failing again until
+    the whole node stops. Changes are refused until the file is fixed.
+  - Files are replaced atomically and durably (the directory is synced
+    after the rename) and keep their permissions.
 - **Concurrent writes.** The admin UI, the API and the CLI can change the
   rules, users and API clients at the same time:
   - Every write holds a lock file next to the file it changes
@@ -561,6 +575,15 @@ for it. `rules import` writes the file; a running server applies it on
   balancers move traffic away. Then the VM stops. A second `SIGTERM` stops
   it at once. Keep the grace below the stop timeout of your supervisor
   (systemd `TimeoutStopSec=15`, Docker 10 s by default).
+- **Health check on the traffic port.** For load balancers that can only
+  probe the port they send traffic to, set `server.health_path` (for
+  example `/_health`, `RP_SERVER_HEALTH_PATH`). The redirect listener then
+  answers that path itself, before any rule: 200 `ok`, or 503 `draining`
+  during the shutdown grace. Probes are not counted in
+  `redirect_proxy_requests_total`. Off by default, so that every path stays
+  available to rules.
+- **Long paths.** Requests whose path is longer than `server.max_path_bytes`
+  (default 8192, `RP_SERVER_MAX_PATH_BYTES`) get a 414 without rule lookup.
 - **Container health check.** The image probes the admin listener's
   `/healthz` on `RP_ADMIN_PORT`. With `RP_ADMIN_ENABLED=false` it checks
   that the redirect listener on `RP_SERVER_PORT` accepts connections

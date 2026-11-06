@@ -18,6 +18,7 @@ fn settings(dir: String, backups: Int) -> store.Settings {
     backups:,
     audit_path: dir <> "/audit.jsonl",
     ignore_trailing_slash: False,
+    watch_interval: 0,
   )
 }
 
@@ -430,4 +431,89 @@ pub fn diff_test() {
   assert d.added == ["d"]
   assert d.removed == ["c"]
   assert d.changed == ["b"]
+}
+
+/// A store restarted after a crash keeps serving and editing the rules it
+/// had when the file has become invalid in the meantime, instead of failing
+/// until its supervisor stops the node. A first start still fails.
+pub fn restart_with_an_invalid_file_keeps_the_last_rules_test() {
+  let dir = support.temp_dir()
+  let s = settings(dir, 0)
+  let assert Ok(started) = store.start(s, process.new_name("store_test"))
+  let assert Ok(_) =
+    store.create(started.data, new_rule("/kept", "/target"), by: "test")
+  let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
+  process.unlink(started.pid)
+  process.kill(started.pid)
+
+  let assert Ok(restarted) = store.start(s, process.new_name("store_test"))
+  assert list.map(store.all(restarted.data), fn(r) { r.source }) == ["/kept"]
+  assert redirect("/kept") == Ok("/target")
+  // a change re-reads the file first and refuses to overwrite it
+  let assert Error(_) =
+    store.create(restarted.data, new_rule("/new", "/x"), by: "test")
+  // once fixed, changes go through again
+  let assert Ok(Nil) = simplifile.write(s.rules_path, "[]")
+  let assert Ok(_) =
+    store.create(restarted.data, new_rule("/new", "/x"), by: "test")
+
+  let other = settings(support.temp_dir(), 0)
+  let assert Ok(Nil) = simplifile.write(other.rules_path, "{ not json")
+  let assert Error(_) = store.start(other, process.new_name("store_test"))
+}
+
+/// With `watch_interval`, a file changed by another process is reloaded
+/// without SIGHUP; the store's own writes and invalid files are not.
+pub fn watched_file_is_reloaded_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let store = start(s)
+  let assert Ok(_) = store.create(store, new_rule("/own", "/write"), by: "test")
+  process.sleep(100)
+  // our own write was not taken for an outside change
+  assert reloads(dir) == 0
+
+  let assert Ok(Nil) =
+    simplifile.write(
+      s.rules_path,
+      "[{\"source\": \"/watched\", \"target\": \"/reloaded\"}]",
+    )
+  wait_until(fn() { redirect("/watched") == Ok("/reloaded") }, 100)
+  assert list.map(store.all(store), fn(r) { r.source }) == ["/watched"]
+  assert reloads(dir) == 1
+
+  // an invalid file is reported once and the rules are kept
+  let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
+  wait_until(fn() { reload_failures(dir) == 1 }, 100)
+  process.sleep(100)
+  assert reload_failures(dir) == 1
+  assert redirect("/watched") == Ok("/reloaded")
+}
+
+fn audit_actions(dir: String, action: String) -> Int {
+  case simplifile.read(dir <> "/audit.jsonl") {
+    Ok(content) ->
+      string.split(content, "\n")
+      |> list.count(string.contains(_, "\"action\":\"" <> action <> "\""))
+    Error(_) -> 0
+  }
+}
+
+fn reloads(dir: String) -> Int {
+  audit_actions(dir, "rules.reload")
+}
+
+fn reload_failures(dir: String) -> Int {
+  audit_actions(dir, "rules.reload_failed")
+}
+
+fn wait_until(condition: fn() -> Bool, attempts: Int) -> Nil {
+  case condition(), attempts {
+    True, _ -> Nil
+    False, 0 -> panic as "condition not met in time"
+    False, _ -> {
+      process.sleep(20)
+      wait_until(condition, attempts - 1)
+    }
+  }
 }

@@ -3,7 +3,7 @@
 -export([
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
-    atomic_write/2, append_line/2, read_tail/2, memo_file/2,
+    atomic_write/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
@@ -104,7 +104,12 @@ atomic_write(Path, Content) ->
                 Written = write_and_sync(Fd, Content),
                 Closed = file:close(Fd),
                 case {Written, Closed} of
-                    {ok, ok} -> file:rename(Tmp, Path);
+                    {ok, ok} ->
+                        keep_mode(Path, Tmp),
+                        case file:rename(Tmp, Path) of
+                            ok -> sync_dir(filename:dirname(Path));
+                            RenameError -> RenameError
+                        end;
                     {ok, CloseError} -> CloseError;
                     {WriteError, _} -> WriteError
                 end;
@@ -115,6 +120,28 @@ atomic_write(Path, Content) ->
         {error, Reason} ->
             _ = file:delete(Tmp),
             {error, atom_to_binary_safe(Reason)}
+    end.
+
+%% The new file replaces the old one: give it the old one's permissions
+%% (e.g. 0640 for a group-readable redirections file) instead of the umask
+%% default.
+keep_mode(Path, Tmp) ->
+    case file:read_file_info(Path) of
+        {ok, #file_info{mode = Mode}} -> _ = file:change_mode(Tmp, Mode band 8#7777);
+        {error, _} -> ok
+    end,
+    ok.
+
+%% Makes the rename durable: without it, a power loss right after a write
+%% can bring the old file back. Best effort: a file system that cannot open
+%% or sync a directory leaves the rename as it is.
+sync_dir(Dir) ->
+    case file:open(Dir, [read, raw, directory]) of
+        {ok, Fd} ->
+            _ = file:sync(Fd),
+            _ = file:close(Fd),
+            ok;
+        {error, _} -> ok
     end.
 
 write_and_sync(Fd, Content) ->
@@ -133,12 +160,16 @@ append_line(Path, Line) ->
 %% the file (atomic_write renames a new one), so the inode tells versions
 %% apart even within the second of mtime. When Fun() fails, the last good
 %% value is kept (a corrupt or half-written file does not break readers).
-memo_file(Path, Fun) ->
-    Stamp = case file:read_file_info(Path, [{time, posix}]) of
+%% Changes when a file is replaced (inode), written (mtime) or resized.
+file_stamp(Path) ->
+    case file:read_file_info(Path, [{time, posix}]) of
         {ok, #file_info{inode = Inode, mtime = MTime, size = Size}} ->
             {Inode, MTime, Size};
         {error, _} -> missing
-    end,
+    end.
+
+memo_file(Path, Fun) ->
+    Stamp = file_stamp(Path),
     Table = memo_table(),
     Cached = try ets:lookup(Table, Path) catch error:badarg -> [] end,
     case Cached of

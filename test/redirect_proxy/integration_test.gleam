@@ -41,7 +41,11 @@ fn boot(cfg: config.Config) -> Env {
       ..cfg,
       server: config.ServerConfig(..cfg.server, listen: "127.0.0.1", port: 0),
       admin: config.AdminConfig(..cfg.admin, listen: "127.0.0.1", port: 0),
-      storage: config.StorageConfig(data_dir: dir, backups: 3),
+      storage: config.StorageConfig(
+        data_dir: dir,
+        backups: 3,
+        watch_interval: 0,
+      ),
       access_log: {
         let al = cfg.access_log
         // tests can point a listener into the data dir with "{dir}"
@@ -508,6 +512,65 @@ pub fn draining_before_a_stop_test() {
   assert ready.status == 503
   assert resp.status == 301
   assert response.get_header(resp, "connection") == Ok("close")
+}
+
+/// `server.health_path` is answered before the rules, even by a catch-all
+/// rule, and turns 503 while draining.
+pub fn redirect_listener_health_path_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(..d.server, health_path: "/_health"),
+      ),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[{\"source\": \"/\", \"match\": \"prefix\", \"target\": \"https://elsewhere.test/\"}]",
+    )
+  let assert Ok(_) = reload_rules(env)
+  assert get(env.redirect <> "/anything", []).status == 301
+  let requests = metric(env, "redirect_proxy_requests_total")
+  let resp = get(env.redirect <> "/_health", [])
+  assert resp.status == 200
+  assert resp.body == "ok"
+  assert response.get_header(resp, "cache-control") == Ok("no-store")
+  // probes are not counted as traffic
+  assert metric(env, "redirect_proxy_requests_total") == requests
+  set_draining(True)
+  let draining = get(env.redirect <> "/_health", [])
+  set_draining(False)
+  assert draining.status == 503
+}
+
+/// Without a health path, the same path goes to the rules.
+pub fn health_path_is_off_by_default_test() {
+  let env = boot(config.default())
+  assert get(env.redirect <> "/_health", []).status == 404
+}
+
+pub fn overlong_paths_get_414_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(..d.server, max_path_bytes: 300),
+      ),
+    )
+  assert get(env.redirect <> "/" <> string.repeat("a", 299), []).status == 404
+  let resp = get(env.redirect <> "/" <> string.repeat("a", 300), [])
+  assert resp.status == 414
+  let default_env = boot(d)
+  assert get(default_env.redirect <> "/" <> string.repeat("a", 8192), []).status
+    == 414
+  assert get(default_env.redirect <> "/" <> string.repeat("a", 8191), []).status
+    == 404
+  // the query string does not count
+  assert get(env.redirect <> "/old?" <> string.repeat("q", 400), []).status
+    == 301
 }
 
 @external(erlang, "redirect_proxy_sigterm", "set_draining")
