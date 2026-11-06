@@ -16,6 +16,7 @@
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
     with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
+    is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     binary_take/2, binary_drop/2, rescue/1,
     normalise_path/1, encode_non_ascii/1
 ]).
@@ -722,6 +723,46 @@ encode_non_ascii(Url) ->
 has_non_ascii(<<C, _/binary>>) when C >= 16#80 -> true;
 has_non_ascii(<<_, Rest/binary>>) -> has_non_ascii(Rest);
 has_non_ascii(<<>>) -> false.
+
+%% Request hosts, on every request: byte scans instead of grapheme walks.
+%% Only lower-case letters, digits, `-`, `_` and `.` make a host name.
+is_host_name(<<>>) -> false;
+is_host_name(Host) -> host_bytes(Host).
+
+host_bytes(<<C, Rest/binary>>)
+  when (C >= $a andalso C =< $z); (C >= $0 andalso C =< $9);
+       C =:= $-; C =:= $_; C =:= $. -> host_bytes(Rest);
+host_bytes(<<>>) -> true;
+host_bytes(_) -> false.
+
+%% ASCII is lowered byte by byte; anything else goes through Unicode case
+%% mapping, as string:lowercase/1 does.
+lowercase_host(Host) ->
+    case has_non_ascii(Host) of
+        false -> lowercase_ascii(Host);
+        true -> string:lowercase(Host)
+    end.
+
+%% Lowers the ASCII letters only, byte by byte: other bytes are kept, so any
+%% binary (even one cut inside a UTF-8 sequence) stays as valid as it was.
+lowercase_ascii(Bin) ->
+    << <<(case C >= $A andalso C =< $Z of true -> C + 32; false -> C end)>>
+       || <<C>> <= Bin >>.
+
+%% The host of what follows `scheme://` in a URL: up to the first `/`, `\`,
+%% `?` or `#`, after the last `@` (user info). Byte searches: the delimiters
+%% are ASCII, and URLs are parsed by code point, not grapheme cluster.
+url_host(Rest) ->
+    End = case binary:match(Rest, [<<"/">>, <<"\\">>, <<"?">>, <<"#">>]) of
+        {Pos, _} -> binary:part(Rest, 0, Pos);
+        nomatch -> Rest
+    end,
+    case binary:matches(End, <<"@">>) of
+        [] -> End;
+        Matches ->
+            {At, 1} = lists:last(Matches),
+            binary:part(End, At + 1, byte_size(End) - At - 1)
+    end.
 
 %% Byte-wise slicing for the matcher's prefix index. The first N bytes may
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.

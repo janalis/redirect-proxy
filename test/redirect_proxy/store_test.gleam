@@ -732,3 +732,20 @@ pub fn an_update_warns_about_an_uncovered_loop_test() {
   let logs = captured_logs()
   assert list.any(logs, string.contains(_, "redirect loop"))
 }
+
+/// Unchanged hit counts are not written again (the file is replaced, so its
+/// inode changes on every write).
+pub fn unchanged_hits_are_not_rewritten_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) = store.create(s, new_rule("/idle", "/x"), by: "t")
+  matcher.record_hit(snapshot.current(), created.id)
+  store.flush_hits(s)
+  let path = dir <> "/hits.json"
+  let written = ffi.file_stamp(path)
+  store.flush_hits(s)
+  assert ffi.file_stamp(path) == written
+  matcher.record_hit(snapshot.current(), created.id)
+  store.flush_hits(s)
+  assert ffi.file_stamp(path) != written
+}

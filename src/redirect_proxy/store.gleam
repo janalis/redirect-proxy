@@ -202,6 +202,9 @@ type State {
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
     hits_saved_draining: Bool,
+    /// The content last written to the hits file: an unchanged one is not
+    /// written again (no write and fsync a minute while idle).
+    hits_content: String,
     /// When the published rules were last checked against the rules'
     /// `starts_at`/`expires_at` (`Schedule`).
     checked_at: Int,
@@ -246,6 +249,7 @@ pub fn start(
             stamp: ffi.file_stamp(settings.rules_path),
             hits_saved_at: ffi.now_seconds(),
             hits_saved_draining: False,
+            hits_content: "",
             checked_at: ffi.now_seconds(),
           ))
         }
@@ -271,6 +275,7 @@ pub fn start(
                 stamp: ffi.file_stamp(settings.rules_path),
                 hits_saved_at: ffi.now_seconds(),
                 hits_saved_draining: False,
+                hits_content: "",
                 checked_at: ffi.now_seconds(),
               ))
             }
@@ -734,9 +739,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     FlushHits(reply) -> {
-      save_hits(state)
+      let hits_content = save_hits(state)
       process.send(reply, Nil)
-      actor.continue(State(..state, hits_saved_at: ffi.now_seconds()))
+      actor.continue(
+        State(..state, hits_saved_at: ffi.now_seconds(), hits_content:),
+      )
     }
     SaveHits(self) -> {
       process.send_after(self, 1000, SaveHits(self))
@@ -748,9 +755,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       {
         False -> actor.continue(state)
         True -> {
-          save_hits(state)
+          let hits_content = save_hits(state)
           actor.continue(
-            State(..state, hits_saved_at: now, hits_saved_draining: draining),
+            State(
+              ..state,
+              hits_saved_at: now,
+              hits_saved_draining: draining,
+              hits_content:,
+            ),
           )
         }
       }
@@ -990,9 +1002,11 @@ fn load_hits(settings: Settings) -> Nil {
 
 /// Saves the hit counts of the store's rules (atomically; a failure is
 /// logged and retried at the next save).
-fn save_hits(state: State) -> Nil {
+/// Writes the hit counts unless they are what was last written; the content
+/// now in the file.
+fn save_hits(state: State) -> String {
   case state.settings.hits_path {
-    "" -> Nil
+    "" -> ""
     path -> {
       let ids = set.from_list(list.map(state.rules, fn(r) { r.id }))
       let records =
@@ -1017,9 +1031,18 @@ fn save_hits(state: State) -> Nil {
           ),
         ])
         |> json.to_string
-      case ffi.atomic_write(path, content <> "\n") {
-        Ok(Nil) -> Nil
-        Error(reason) -> log.warning("hit counts not saved: " <> reason)
+      let content = content <> "\n"
+      case content == state.hits_content {
+        True -> content
+        False ->
+          case ffi.atomic_write(path, content) {
+            Ok(Nil) -> content
+            Error(reason) -> {
+              log.warning("hit counts not saved: " <> reason)
+              // retried at the next save
+              state.hits_content
+            }
+          }
       }
     }
   }

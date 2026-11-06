@@ -322,3 +322,20 @@ pub type FileStamp
 
 @external(erlang, "redirect_proxy_ffi", "file_stamp")
 pub fn file_stamp(path: String) -> FileStamp
+
+/// Whether a (lower-case) host holds only letters, digits, `-`, `_` and `.`.
+@external(erlang, "redirect_proxy_ffi", "is_host_name")
+pub fn is_host_name(host: String) -> Bool
+
+/// `string.lowercase`, with a fast path for ASCII (request hosts).
+@external(erlang, "redirect_proxy_ffi", "lowercase_host")
+pub fn lowercase_host(host: String) -> String
+
+/// Lowers the ASCII letters only (other bytes are kept as they are).
+@external(erlang, "redirect_proxy_ffi", "lowercase_ascii")
+pub fn lowercase_ascii(text: String) -> String
+
+/// The host part of what follows `scheme://`: before the first `/`, `\`,
+/// `?` or `#`, after the last `@`.
+@external(erlang, "redirect_proxy_ffi", "url_host")
+pub fn url_host(rest: String) -> String

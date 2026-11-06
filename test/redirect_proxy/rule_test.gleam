@@ -346,3 +346,28 @@ pub fn request_query_skips_malformed_parameters_test() {
   assert rule.request_query("a=1&b=%zz&c=%33") == [#("a", "1"), #("c", "3")]
   assert rule.request_query("") == []
 }
+
+/// The host a location really goes to, as browsers parse it: case does not
+/// matter, user info is skipped, `\` counts as `/`.
+pub fn guard_location_reads_the_host_like_a_browser_test() {
+  let fixed = rule.FixedHost("example.com")
+  let ok = fn(location) {
+    rule.guard_location(fixed, location, rule.no_vars) == Ok(location)
+  }
+  assert ok("https://example.com/a")
+  assert ok("HTTPS://Example.COM/a?b#c")
+  assert ok("https:\\\\example.com\\a")
+  assert ok("//example.com")
+  assert ok("https://user@example.com/a")
+  assert !ok("https://example.com@evil.test/a")
+  assert !ok("https://a@example.com@evil.test")
+  assert !ok("https://evil.test/@example.com")
+  assert !ok("https://evil.test\\@example.com")
+  assert !ok("https://evil.test?@example.com")
+  assert !ok("https://evil.test#@example.com")
+  assert !ok("https://example.com.evil.test/")
+  // a host that is not ASCII is compared in lower case too
+  let accented = rule.FixedHost("café.example")
+  assert rule.guard_location(accented, "https://CAFÉ.example/x", rule.no_vars)
+    == Ok("https://CAFÉ.example/x")
+}
