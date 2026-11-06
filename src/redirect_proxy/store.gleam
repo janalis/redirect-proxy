@@ -14,11 +14,7 @@
 //// changed on disk since it was last read or written, reloads it first, so
 //// that outside changes are never silently overwritten.
 
-import gleam/bit_array
 import gleam/bool
-import gleam/crypto
-import gleam/dict
-import gleam/dynamic/decode
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/json
@@ -36,9 +32,11 @@ import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
+import redirect_proxy/store/file as store_file
+import redirect_proxy/store/hits
 import redirect_proxy/store/rules.{
-  check_conflicts, check_lint, check_loop, merge, prepare_import, validate_all,
-  warn_loops, warn_problems,
+  check_conflicts, check_lint, check_loop, merge, prepare_import, warn_loops,
+  warn_problems,
 } as store_rules
 import simplifile
 
@@ -156,7 +154,7 @@ pub opaque type Message {
   ReloadInBackground(actor: String)
   /// `watch_interval` tick: reloads the file if it changed on disk.
   Watch(self: Subject(Message))
-  /// Every second: saves the hit counts when due (`hits_interval`) or when
+  /// Every second: saves the hit counts when due (`hits.interval`) or when
   /// the node starts draining before a stop.
   SaveHits(self: Subject(Message))
   /// Saves the hit counts now: right before the node stops.
@@ -224,7 +222,13 @@ pub fn start(
   actor.new_with_initialiser(30_000, fn(subject) {
     let started = ffi.monotonic_micros()
     use state <- result.try(
-      case load_locked(settings, FirstStart, start_lock_timeout) {
+      case
+        store_file.load_locked(
+          files(settings),
+          store_file.FirstStart,
+          start_lock_timeout,
+        )
+      {
         Ok(#(rules, fingerprint)) -> {
           publish(
             warn_problems(
@@ -284,7 +288,7 @@ pub fn start(
       },
     )
     schedule_watch(settings, subject)
-    load_hits(settings)
+    hits.load(settings.hits_path)
     process.send_after(subject, 1000, SaveHits(subject))
 
     process.send_after(subject, schedule_interval, Schedule(subject))
@@ -750,7 +754,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let now = ffi.now_seconds()
       let draining = ffi.draining()
       case
-        now - state.hits_saved_at >= hits_interval
+        now - state.hits_saved_at >= hits.interval
         || { draining && !state.hits_saved_draining }
       {
         False -> actor.continue(state)
@@ -799,7 +803,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           // the store's own writes leave the fingerprint unchanged
           case simplifile.read_bits(state.settings.rules_path) {
             Ok(content) if content != <<>> ->
-              case fingerprint(content) == state.fingerprint {
+              case store_file.fingerprint(content) == state.fingerprint {
                 True -> actor.continue(state)
                 False -> handle(state, ReloadInBackground("watch"))
               }
@@ -819,7 +823,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     Reload(actor_name, reply) -> {
       let started = ffi.monotonic_micros()
-      case load_locked(state.settings, Reloading, lock_timeout) {
+      case
+        store_file.load_locked(
+          files(state.settings),
+          store_file.Reloading,
+          lock_timeout,
+        )
+      {
         Ok(#(rules, fingerprint)) -> {
           publish(
             warn_problems(
@@ -934,10 +944,10 @@ fn refresh(state: State) -> Result(State, String) {
   case simplifile.read_bits(state.settings.rules_path) {
     Error(_) -> Ok(state)
     Ok(content) ->
-      case fingerprint(content) == state.fingerprint {
+      case store_file.fingerprint(content) == state.fingerprint {
         True -> Ok(state)
         False ->
-          case load(state.settings, Reloading) {
+          case store_file.load(files(state.settings), store_file.Reloading) {
             Error(reason) ->
               Error(
                 "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
@@ -977,90 +987,19 @@ fn refresh(state: State) -> Result(State, String) {
   }
 }
 
-/// Seconds between saves of the hit counts.
-const hits_interval = 60
-
-/// Hit counts saved by an earlier run, added to the published rules. Only
-/// at a fresh start: a store restarted after a crash has carried the counts
-/// of the rules already published.
-fn load_hits(settings: Settings) -> Nil {
-  case settings.hits_path, matcher.hit_records(snapshot.current()) {
-    "", _ | _, [_, ..] -> Nil
-    path, [] ->
-      case simplifile.read(path) {
-        // first start, or counts never saved
-        Error(_) -> Nil
-        Ok(content) ->
-          case json.parse(content, hits_decoder()) {
-            Ok(records) -> matcher.seed_hits(snapshot.current(), records)
-            Error(_) ->
-              log.warning(path <> " is not a valid hit count file: ignored")
-          }
-      }
-  }
+fn files(settings: Settings) -> store_file.Files {
+  store_file.Files(
+    rules_path: settings.rules_path,
+    backups_dir: settings.backups_dir,
+    backups: settings.backups,
+  )
 }
 
-/// Saves the hit counts of the store's rules (atomically; a failure is
-/// logged and retried at the next save).
-/// Writes the hit counts unless they are what was last written; the content
-/// now in the file.
 fn save_hits(state: State) -> String {
-  case state.settings.hits_path {
-    "" -> ""
-    path -> {
-      let ids = set.from_list(list.map(state.rules, fn(r) { r.id }))
-      let records =
-        matcher.hit_records(snapshot.current())
-        |> list.filter(fn(h) { set.contains(ids, h.rule_id) })
-      let content =
-        json.object([
-          #("version", json.int(1)),
-          #(
-            "hits",
-            json.object(
-              list.map(records, fn(h) {
-                #(
-                  h.rule_id,
-                  json.object([
-                    #("count", json.int(h.count)),
-                    #("last", json.int(h.last)),
-                  ]),
-                )
-              }),
-            ),
-          ),
-        ])
-        |> json.to_string
-      let content = content <> "\n"
-      case content == state.hits_content {
-        True -> content
-        False ->
-          case ffi.atomic_write(path, content) {
-            Ok(Nil) -> content
-            Error(reason) -> {
-              log.warning("hit counts not saved: " <> reason)
-              // retried at the next save
-              state.hits_content
-            }
-          }
-      }
-    }
-  }
-}
-
-fn hits_decoder() -> decode.Decoder(List(matcher.HitRecord)) {
-  let record = {
-    use count <- decode.field("count", decode.int)
-    use last <- decode.optional_field("last", 0, decode.int)
-    decode.success(#(count, last))
-  }
-  use hits <- decode.field("hits", decode.dict(decode.string, record))
-  decode.success(
-    dict.to_list(hits)
-    |> list.map(fn(entry) {
-      let #(rule_id, #(count, last)) = entry
-      matcher.HitRecord(rule_id:, count:, last:)
-    }),
+  hits.save(
+    state.settings.hits_path,
+    list.map(state.rules, fn(r) { r.id }),
+    state.hits_content,
   )
 }
 
@@ -1072,10 +1011,6 @@ fn schedule_watch(settings: Settings, self: Subject(Message)) -> Nil {
     }
     False -> Nil
   }
-}
-
-fn fingerprint(content: BitArray) -> String {
-  crypto.hash(crypto.Sha256, content) |> bit_array.base16_encode
 }
 
 /// The last rules published, by file path: what a restarted store resumes
@@ -1103,7 +1038,7 @@ fn commit(
   rules: List(Rule),
   built: matcher.Matcher,
 ) -> Result(String, List(String)) {
-  case persist(settings, rules) {
+  case store_file.persist(files(settings), rules) {
     Ok(fingerprint) -> {
       publish(built, settings, rules)
       Ok(fingerprint)
@@ -1113,147 +1048,5 @@ fn commit(
       log.error("failed to persist redirections: " <> reason)
       Error(["storage: " <> reason])
     }
-  }
-}
-
-type LoadMode {
-  /// Server start: a missing file is created empty.
-  FirstStart
-  /// Reload: a missing file is an error, so that the current rules stay live
-  /// while the file is being replaced or was moved away.
-  Reloading
-}
-
-/// `load` holding the cross-process file lock, for callers that do not hold
-/// it already: loading may write the file back.
-fn load_locked(
-  settings: Settings,
-  mode: LoadMode,
-  wait: Int,
-) -> Result(#(List(Rule), String), String) {
-  ffi.with_file_lock(settings.rules_path, wait, fn() { load(settings, mode) })
-  |> result.flatten
-}
-
-/// Reads, validates and returns the rules with the file fingerprint. Writes
-/// the file when it is created or when ids were assigned, so the caller must
-/// hold the file lock.
-fn load(
-  settings: Settings,
-  mode: LoadMode,
-) -> Result(#(List(Rule), String), String) {
-  case simplifile.is_file(settings.rules_path), mode {
-    Ok(True), _ -> {
-      use bits <- result.try(
-        simplifile.read_bits(settings.rules_path)
-        |> result.map_error(fn(e) {
-          "cannot read "
-          <> settings.rules_path
-          <> ": "
-          <> simplifile.describe_error(e)
-        }),
-      )
-      use content <- result.try(
-        bit_array.to_string(bits)
-        |> result.replace_error(settings.rules_path <> ": not valid UTF-8"),
-      )
-      use rules <- result.try(
-        rule.file_from_string(content)
-        |> result.map_error(fn(e) { settings.rules_path <> ": " <> e }),
-      )
-      // Hand written files may omit ids: assign them on load and write them
-      // back so that they stay stable across reloads.
-      let missing_ids = list.any(rules, fn(r) { r.id == "" })
-      let rules =
-        list.map(rules, fn(r) {
-          case r.id {
-            "" -> rule.Rule(..r, id: id.uuid())
-            _ -> r
-          }
-        })
-      use rules <- result.try(
-        validate_all(rules)
-        |> result.map_error(fn(errors) {
-          settings.rules_path <> ": " <> string.join(errors, "; ")
-        }),
-      )
-      case missing_ids {
-        True ->
-          persist(settings, rules)
-          |> result.map(fn(fingerprint) { #(rules, fingerprint) })
-        False -> Ok(#(rules, fingerprint(bits)))
-      }
-    }
-    Ok(False), FirstStart -> {
-      // First start: create an empty file so operators know where it lives.
-      use fingerprint <- result.try(persist(settings, []))
-      Ok(#([], fingerprint))
-    }
-    Ok(False), Reloading -> Error(settings.rules_path <> ": file not found")
-    Error(e), _ ->
-      Error(
-        "cannot read "
-        <> settings.rules_path
-        <> ": "
-        <> simplifile.describe_error(e),
-      )
-  }
-}
-
-/// Backs up then atomically rewrites the file. Returns its fingerprint.
-fn persist(settings: Settings, rules: List(Rule)) -> Result(String, String) {
-  let describe = fn(e) { simplifile.describe_error(e) }
-  use Nil <- result.try(
-    simplifile.create_directory_all(settings.backups_dir)
-    |> result.map_error(describe),
-  )
-  use Nil <- result.try(backup(settings))
-  let content = rule.file_to_string(rules) <> "\n"
-  use Nil <- result.try(ffi.atomic_write(settings.rules_path, content))
-  Ok(fingerprint(bit_array.from_string(content)))
-}
-
-fn backup(settings: Settings) -> Result(Nil, String) {
-  case settings.backups, simplifile.is_file(settings.rules_path) {
-    0, _ -> Ok(Nil)
-    _, Ok(True) -> {
-      let name = backup_name(settings.backups_dir, ffi.now_millis())
-      use Nil <- result.try(
-        simplifile.copy_file(settings.rules_path, name)
-        |> result.map_error(simplifile.describe_error),
-      )
-      prune_backups(settings)
-      Ok(Nil)
-    }
-    _, _ -> Ok(Nil)
-  }
-}
-
-/// `redirects-<ms>.json`, bumping the timestamp while the name is taken (two
-/// writes in the same millisecond) so names stay unique and sortable.
-fn backup_name(dir: String, millis: Int) -> String {
-  let name = dir <> "/redirects-" <> int.to_string(millis) <> ".json"
-  case simplifile.is_file(name) {
-    Ok(True) -> backup_name(dir, millis + 1)
-    _ -> name
-  }
-}
-
-fn prune_backups(settings: Settings) -> Nil {
-  case simplifile.read_directory(settings.backups_dir) {
-    Ok(files) -> {
-      files
-      |> list.filter(fn(f) {
-        string.starts_with(f, "redirects-") && string.ends_with(f, ".json")
-      })
-      // names embed a millisecond timestamp of constant width: sort newest first
-      |> list.sort(fn(a, b) { string.compare(b, a) })
-      |> list.drop(settings.backups)
-      |> list.each(fn(f) {
-        let _ = simplifile.delete(settings.backups_dir <> "/" <> f)
-        Nil
-      })
-    }
-    Error(_) -> Nil
   }
 }
