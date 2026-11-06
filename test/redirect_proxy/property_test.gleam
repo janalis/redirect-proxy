@@ -635,3 +635,99 @@ pub fn compiled_template_expands_like_expand_with_test() {
     },
   )
 }
+
+/// Exact rules with query conditions, against a reference: the rules for
+/// the path (or its case, for case-insensitive ones) whose conditions the
+/// request has, most conditions first, then priority, then case-sensitive
+/// ones, then file order.
+pub fn query_rules_match_like_the_reference_test() {
+  let subset =
+    qcheck.generic_list(
+      qcheck.from_generators(qcheck.return("a=1"), [
+        qcheck.return("a=2"),
+        qcheck.return("b=1"),
+        qcheck.return("c=3"),
+      ]),
+      qcheck.bounded_int(0, 3),
+    )
+    |> qcheck.map(fn(chosen) { list.unique(chosen) |> string.join("&") })
+  let source =
+    qcheck.from_generators(qcheck.return("/q"), [
+      qcheck.return("/Q"),
+      qcheck.return("/r"),
+    ])
+  let query_rule =
+    qcheck.map4(
+      source,
+      subset,
+      qcheck.bool(),
+      qcheck.bounded_int(1, 3),
+      fn(source, query, case_insensitive, priority) {
+        Rule(
+          ..rule.blank(),
+          source:,
+          target: "/to",
+          query: case query {
+            "" -> "a=1"
+            q -> q
+          },
+          case_insensitive:,
+          priority:,
+        )
+      },
+    )
+  let input =
+    qcheck.map3(
+      qcheck.generic_list(query_rule, qcheck.bounded_int(0, 8)),
+      source,
+      subset,
+      fn(rules, path, query) {
+        let rules =
+          list.index_map(rules, fn(r, i) { Rule(..r, id: int.to_string(i)) })
+        #(rules, path, query)
+      },
+    )
+  check_many(1000, input, fn(input) {
+    let #(rules, path, query) = input
+    let request = rule.request_query(query)
+    let expected =
+      rules
+      |> list.index_map(fn(r, i) { #(i, r) })
+      |> list.filter(fn(entry) {
+        let r = entry.1
+        query != ""
+        && {
+          r.source == path
+          && !r.case_insensitive
+          || r.case_insensitive
+          && string.lowercase(r.source) == string.lowercase(path)
+        }
+        && rule.query_matches(rule.query_conditions(r), request)
+      })
+      |> list.sort(fn(a, b) {
+        let #(ai, a) = a
+        let #(bi, b) = b
+        int.compare(
+          list.length(rule.query_conditions(b)),
+          list.length(rule.query_conditions(a)),
+        )
+        |> order.break_tie(int.compare(a.priority, b.priority))
+        |> order.break_tie(bool_order(a.case_insensitive, b.case_insensitive))
+        |> order.break_tie(int.compare(ai, bi))
+      })
+      |> list.first
+      |> result.map(fn(entry) { { entry.1 }.id })
+    let found =
+      matcher.lookup_query(matcher.build(rules), "x.test", path, query)
+      |> result.map(fn(m) { m.rule.id })
+    assert found == expected
+  })
+}
+
+fn bool_order(a: Bool, b: Bool) -> order.Order {
+  case a, b {
+    False, True -> order.Lt
+    True, False -> order.Gt
+    _, _ -> order.Eq
+  }
+}

@@ -54,8 +54,11 @@ pub opaque type Matcher {
 type HostRules {
   HostRules(
     /// Exact rules with query conditions, keyed by their source (lower-cased
-    /// when case-insensitive), most conditions first.
-    exact_query: Dict(String, List(QueryRule)),
+    /// when case-insensitive).
+    exact_query: Dict(String, QueryGroup),
+    /// Whether some exact rule with query conditions is case-insensitive:
+    /// otherwise the path is not lower-cased to look them up.
+    exact_query_ci: Bool,
     exact: Dict(String, Rule),
     exact_ci: Dict(String, Rule),
     /// Case-sensitive prefix rules, keyed by their source.
@@ -90,6 +93,18 @@ const leaf_lengths = 4
 
 type QueryRule {
   QueryRule(rule: Rule, conditions: List(#(String, String)))
+}
+
+/// The query rules of one path, most conditions first, then priority, then
+/// file order. A rule can only match a request that has its first
+/// condition, so they are indexed by it: a request only tries the rules of
+/// its own parameters. `always` holds the rules without a condition that
+/// parses (they match any query).
+type QueryGroup {
+  QueryGroup(
+    always: List(#(Int, QueryRule)),
+    by_first: Dict(#(String, String), List(#(Int, QueryRule))),
+  )
 }
 
 type PrefixRule {
@@ -295,6 +310,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
       }
       dict.upsert(acc, key, fn(group) { [q, ..option.unwrap(group, [])] })
     })
+    |> dict.map_values(fn(_, rules) { query_group(rules) })
   let exact =
     rules
     |> list.filter(fn(r) { r.kind == Exact && !r.case_insensitive })
@@ -355,6 +371,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
     list.partition(regex, fn(r) { regex_literal(r.rule) == "" })
   HostRules(
     exact_query:,
+    exact_query_ci: list.any(with_query, fn(r) { r.case_insensitive }),
     exact:,
     exact_ci:,
     prefix: index(prefix, fn(p) { p.rule.source }),
@@ -543,8 +560,13 @@ pub fn lookup_query(
   path: String,
   query: String,
 ) -> Result(Match, Nil) {
+  let #(host, vars) = request_host(host)
+  lookup_normalised(matcher, host, ffi.normalise_path(path), query, vars)
+}
+
+/// The normalised request host and the variables it gives.
+fn request_host(host: String) -> #(String, rule.RequestVars) {
   let host = normalise_request_host(host)
-  let path = ffi.normalise_path(path)
   // `${host}` only ever holds a host name
   let vars =
     rule.RequestVars(
@@ -554,6 +576,17 @@ pub fn lookup_query(
       },
       sub: "",
     )
+  #(host, vars)
+}
+
+/// `lookup_query` for a normalised host and path.
+fn lookup_normalised(
+  matcher: Matcher,
+  host: String,
+  path: String,
+  query: String,
+  vars: rule.RequestVars,
+) -> Result(Match, Nil) {
   lookup_host(matcher, host, path, query, vars)
   |> result.lazy_or(fn() {
     case matcher.wildcards {
@@ -581,13 +614,32 @@ pub fn lookup_tolerant_query(
   path: String,
   query: String,
 ) -> Result(Match, Nil) {
-  use <- result.lazy_or(lookup_query(matcher, host, path, query))
+  // the host and path are normalised once for both lookups (a trailing
+  // `/` is kept by the normalisation, so the retry can add or drop it on
+  // the normalised path)
+  let #(host, vars) = request_host(host)
+  let normalised = ffi.normalise_path(path)
+  use <- result.lazy_or(lookup_normalised(
+    matcher,
+    host,
+    normalised,
+    query,
+    vars,
+  ))
   case path {
     "/" | "" -> Error(Nil)
     _ ->
-      case string.ends_with(path, "/") {
-        True -> lookup_query(matcher, host, string.drop_end(path, 1), query)
-        False -> lookup_query(matcher, host, path <> "/", query)
+      case string.ends_with(normalised, "/") {
+        True ->
+          lookup_normalised(
+            matcher,
+            host,
+            string.drop_end(normalised, 1),
+            query,
+            vars,
+          )
+        False ->
+          lookup_normalised(matcher, host, normalised <> "/", query, vars)
       }
   }
 }
@@ -636,6 +688,41 @@ fn lookup_host(
   |> result.lazy_or(fn() { match_regex(rules, path, vars) })
 }
 
+fn query_group(rules: List(QueryRule)) -> QueryGroup {
+  let numbered = list.index_map(rules, fn(q, position) { #(position, q) })
+  let #(always, conditional) =
+    list.partition(numbered, fn(entry) { { entry.1 }.conditions == [] })
+  let by_first =
+    conditional
+    |> list.reverse
+    |> list.fold(dict.new(), fn(acc, entry) {
+      case { entry.1 }.conditions {
+        [first, ..] ->
+          dict.upsert(acc, first, fn(group) {
+            [entry, ..option.unwrap(group, [])]
+          })
+        // in `always`
+        [] -> acc
+      }
+    })
+  QueryGroup(always:, by_first:)
+}
+
+/// The rules of a group the request may match, in the group's order.
+fn query_candidates(
+  group: QueryGroup,
+  request: List(#(String, String)),
+) -> List(QueryRule) {
+  request
+  |> list.unique
+  |> list.flat_map(fn(param) {
+    dict.get(group.by_first, param) |> result.unwrap([])
+  })
+  |> list.append(group.always)
+  |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+  |> list.map(fn(entry) { entry.1 })
+}
+
 /// Exact rules with query conditions: the first whose conditions the
 /// request query has (most conditions first). The query is only parsed
 /// when the path has such rules.
@@ -647,29 +734,40 @@ fn match_query(
   case dict.size(rules.exact_query), query {
     0, _ | _, "" -> Error(Nil)
     _, _ -> {
-      let exact =
-        dict.get(rules.exact_query, path)
-        |> result.unwrap([])
-        |> list.filter(fn(q) { !q.rule.case_insensitive })
-      let folded =
-        dict.get(rules.exact_query, string.lowercase(path))
-        |> result.unwrap([])
-        |> list.filter(fn(q) { q.rule.case_insensitive })
-      // each list is in match order already (sorted when built): only
-      // rules from both need sorting again
-      let found = case exact, folded {
-        [], found | found, [] -> found
-        _, _ ->
-          list.append(exact, folded)
-          |> list.sort(fn(a, b) {
-            int.compare(list.length(b.conditions), list.length(a.conditions))
-            |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
-          })
+      let exact_group = dict.get(rules.exact_query, path)
+      let folded_group = case rules.exact_query_ci {
+        True -> dict.get(rules.exact_query, string.lowercase(path))
+        False -> Error(Nil)
       }
-      case found {
-        [] -> Error(Nil)
-        found -> {
+      case exact_group, folded_group {
+        Error(Nil), Error(Nil) -> Error(Nil)
+        _, _ -> {
           let request = rule.request_query(query)
+          let candidates = fn(group) {
+            group
+            |> result.map(query_candidates(_, request))
+            |> result.unwrap([])
+          }
+          let exact =
+            candidates(exact_group)
+            |> list.filter(fn(q) { !q.rule.case_insensitive })
+          let folded =
+            candidates(folded_group)
+            |> list.filter(fn(q) { q.rule.case_insensitive })
+          // each list is in match order already (sorted when built): only
+          // rules from both need sorting again
+          let found = case exact, folded {
+            [], found | found, [] -> found
+            _, _ ->
+              list.append(exact, folded)
+              |> list.sort(fn(a, b) {
+                int.compare(
+                  list.length(b.conditions),
+                  list.length(a.conditions),
+                )
+                |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+              })
+          }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
           |> result.map(fn(q) { Match(q.rule, q.rule.target) })
