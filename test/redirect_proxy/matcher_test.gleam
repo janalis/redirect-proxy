@@ -263,3 +263,30 @@ pub fn regex_index_keeps_priority_order_test() {
   assert loc("/r/q") == "/indexed/q"
   assert matcher.lookup(m, "x.test", "/s/q") == Error(Nil)
 }
+
+pub fn preserved_query_goes_before_the_fragment_test() {
+  let m =
+    matcher.build([
+      Rule(..r("1", "*", rule.Exact, "/a", "/b#top"), preserve_query: True),
+      Rule(..r("2", "*", rule.Exact, "/c", "/d?x=1#top"), preserve_query: True),
+    ])
+  let loc = fn(path) {
+    let assert Ok(found) = matcher.lookup(m, "h", path)
+    matcher.location(found, Ok("q=1"))
+  }
+  assert loc("/a") == "/b?q=1#top"
+  assert loc("/c") == "/d?x=1&q=1#top"
+}
+
+pub fn rule_hosts_ignore_port_and_trailing_dot_test() {
+  let m =
+    matcher.build([
+      r("1", "example.com:8080", rule.Exact, "/a", "/b"),
+      r("2", "other.test.", rule.Exact, "/c", "/d"),
+    ])
+  assert location(m, "example.com:8080", "/a") == Ok("/b")
+  assert location(m, "example.com", "/a") == Ok("/b")
+  assert location(m, "other.test", "/c") == Ok("/d")
+  assert location(m, "other.test.:443", "/c") == Ok("/d")
+  assert location(m, "[::1]:8080", "/c") == Error(Nil)
+}

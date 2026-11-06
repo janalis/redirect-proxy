@@ -21,7 +21,21 @@ concurrency=${CONCURRENCY:-100}
 port=${PORT:-18180}
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/redirect-proxy-bench.XXXXXX")
-trap 'kill "$pid" 2>/dev/null || true; rm -rf "$work"' EXIT INT TERM
+# `gleam run` does not stop the BEAM it starts: stop the whole process tree
+descendants() {
+  for child in $(pgrep -P "$1"); do
+    echo "$child"
+    descendants "$child"
+  done
+}
+cleanup() {
+  if [ -n "${pid:-}" ]; then
+    # shellcheck disable=SC2046 # word splitting of the pid list is intended
+    kill $(descendants "$pid") "$pid" 2>/dev/null || true
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT INT TERM
 
 awk -v e="$exact" -v p="$prefix" -v r="$regex" 'BEGIN {
   printf "{\"version\":1,\"rules\":["
