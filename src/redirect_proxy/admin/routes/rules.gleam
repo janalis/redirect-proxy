@@ -32,12 +32,25 @@ import redirect_proxy/store/rules as store_rules
 import simplifile
 import wisp.{type Request, type Response}
 
+/// The list filters, named as in the API (`match`, `enabled=true|false`).
+/// The names of earlier versions (`kind`, `status=enabled|disabled`) are
+/// still read, so that saved links keep working.
 fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
+  let either = fn(name, old) {
+    case get(name) {
+      "" -> get(old)
+      value -> value
+    }
+  }
   rules_view.Filters(
     query: string.trim(get("q")),
     host: string.trim(get("host")),
-    kind: get("kind"),
-    status: get("status"),
+    kind: either("match", "kind"),
+    status: case either("enabled", "status") {
+      "enabled" -> "true"
+      "disabled" -> "false"
+      value -> value
+    },
     sort: get("sort"),
     page: int.parse(get("page")) |> result.unwrap(1),
   )
@@ -117,8 +130,8 @@ fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
       host: f.host,
       kind: f.kind,
       enabled: case f.status {
-        "enabled" -> Some(True)
-        "disabled" -> Some(False)
+        "true" -> Some(True)
+        "false" -> Some(False)
         _ -> None
       },
     ),

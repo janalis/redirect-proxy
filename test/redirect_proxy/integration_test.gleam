@@ -1144,6 +1144,27 @@ pub fn admin_forms_and_exports_test() {
   let export = page("/export?kind=regex").body
   assert string.contains(export, "/blog/")
   assert !string.contains(export, "/old")
+  // the filters are named as in the API (the old names above still work)
+  let export = page("/export?match=regex&enabled=true").body
+  assert string.contains(export, "/blog/")
+  assert !string.contains(export, "/old")
+  assert !string.contains(
+    page("/export?match=regex&enabled=false").body,
+    "/blog/",
+  )
+  let list = page("/rules?status=enabled").body
+  assert string.contains(list, "<option selected value=\"true\">Enabled only")
+    || string.contains(list, "value=\"true\" selected")
+  // the list links and the bulk form carry the API names
+  let list = page("/rules?kind=exact&status=enabled").body
+  assert string.contains(
+    list,
+    "name=\"filter_match\" type=\"hidden\" value=\"exact\"",
+  )
+  assert string.contains(
+    list,
+    "name=\"filter_enabled\" type=\"hidden\" value=\"true\"",
+  )
 }
 
 pub fn login_rejects_bad_password_test() {
