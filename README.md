@@ -300,6 +300,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ACCESS_LOG_{REDIRECT,ADMIN,API}_ENABLED`, `_FORMAT`, `_OUTPUT` | `true`, inherited, inherited |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
 | `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`); does not affect the access log |
+| `RP_LOG_FORMAT` | `text` (`json`: one `{time, level, msg, domain}` object per line) |
 | `NO_COLOR` | plain log lines (automatic when output is not a terminal) |
 
 ## Administration and authentication
@@ -486,12 +487,29 @@ for it. `rules import` writes the file; a running server applies it on
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule
   before and after, and sign-ins: logins, failed logins (with the client
-  address) and logouts, for local, SSO and proxy-header sessions.
+  address) and logouts, for local, SSO and proxy-header sessions. Imports and
+  reloads record the file fingerprint before and after and the rules added,
+  removed and changed (counts, and up to 100 ids each). Rejected reloads and
+  imports are recorded with the reason (`rules.reload_failed`,
+  `rules.import.merge_failed`...).
 - **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
   fallbacks, login failures, reloads, API requests, issued tokens, API
   authentication failures, regex runs stopped by the backtracking budget,
   loaded rules, VM memory and process count, plus
   `redirect_proxy_build_info{version}` and `process_start_time_seconds`.
+  Also:
+  - `redirect_proxy_request_duration_seconds{listener}`: a histogram of the
+    time to serve a request (0.5 ms to 1 s buckets) for the redirect, admin
+    and API listeners;
+  - `redirect_proxy_responses_total{class}`: redirect listener responses by
+    status class;
+  - `redirect_proxy_rules_by_kind{kind}`: enabled rules by match kind;
+  - `redirect_proxy_last_reload_timestamp_seconds` and
+    `redirect_proxy_reload_duration_seconds` for the last successful load of
+    the redirections file.
+
+  Per-rule hit counts are shown in the admin, not exported (one series per
+  rule would be too many).
   The endpoint is not authenticated: like the rest of the admin listener,
   keep it off the public network. The container image binds the admin to
   `0.0.0.0` so that it can be published: publish it on `127.0.0.1` only, as

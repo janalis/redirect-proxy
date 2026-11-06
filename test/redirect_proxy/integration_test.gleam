@@ -1224,6 +1224,36 @@ pub fn request_counters_test() {
   assert metric(env, "redirect_proxy_not_found_total") >= not_found + 1
 }
 
+pub fn latency_and_response_metrics_test() {
+  let env = boot(config.default())
+  let count = fn() {
+    metric(
+      env,
+      "redirect_proxy_request_duration_seconds_count{listener=\"redirect\"}",
+    )
+  }
+  let redirects = metric(env, "redirect_proxy_responses_total{class=\"3xx\"}")
+  let before = count()
+  assert get(env.redirect <> "/old", []).status == 301
+  assert get(env.redirect <> "/nothing", []).status == 404
+  assert count() >= before + 2
+  assert metric(env, "redirect_proxy_responses_total{class=\"3xx\"}")
+    >= redirects + 1
+  let body = get(env.admin <> "/metrics", []).body
+  // cumulative buckets end with +Inf, equal to the count
+  assert string.contains(
+    body,
+    "redirect_proxy_request_duration_seconds_bucket{listener=\"redirect\",le=\"+Inf\"}",
+  )
+  assert string.contains(body, "redirect_proxy_rules_by_kind{kind=\"exact\"} 1")
+  assert string.contains(
+    body,
+    "redirect_proxy_rules_by_kind{kind=\"prefix\"} 1",
+  )
+  assert string.contains(body, "redirect_proxy_rules_by_kind{kind=\"regex\"} 1")
+  assert metric(env, "redirect_proxy_last_reload_timestamp_seconds") > 0
+}
+
 /// The value of an unlabelled metric in /metrics.
 fn metric(env: Env, name: String) -> Int {
   let body = get(env.admin <> "/metrics", []).body

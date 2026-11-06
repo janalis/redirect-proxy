@@ -240,7 +240,8 @@ pub fn every_listed_env_var_is_checked_test() {
   assert list.length(reported)
     == list.length(config_env.int_env_vars)
     + list.length(config_env.bool_env_vars)
-    + 1
+    // RP_LOG_LEVEL and RP_LOG_FORMAT
+    + 2
     + list.length(config_env.secret_env_vars)
   // and every integer or boolean override of apply_env is listed
   let assert Ok(source) = simplifile.read("src/redirect_proxy/config/env.gleam")

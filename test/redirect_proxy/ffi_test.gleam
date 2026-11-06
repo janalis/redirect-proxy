@@ -1,4 +1,7 @@
+import gleam/dict
+import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/string
 import redirect_proxy/ffi
@@ -138,3 +141,17 @@ pub fn memo_file_test() {
   let assert Ok(Nil) = ffi.atomic_write(path, "garbage")
   assert ffi.memo_file(path, parse) == Ok("two")
 }
+
+pub fn json_log_lines_test() {
+  let line = format_json_log("warning", "said \"hi\"\nthen left")
+  let assert Ok(fields) =
+    json.parse(line, decode.dict(decode.string, decode.string))
+  assert dict.get(fields, "level") == Ok("warning")
+  assert dict.get(fields, "msg") == Ok("said \"hi\"\nthen left")
+  assert dict.get(fields, "domain") == Ok("redirect_proxy.test")
+  let assert Ok(time) = dict.get(fields, "time")
+  assert string.ends_with(time, "Z")
+}
+
+@external(erlang, "test_net_ffi", "format_json_log")
+fn format_json_log(level: String, message: String) -> String

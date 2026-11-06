@@ -13,6 +13,7 @@ import mist
 import redirect_proxy/access_log
 import redirect_proxy/config.{type ServerConfig}
 import redirect_proxy/ffi
+import redirect_proxy/listener
 import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/snapshot
@@ -26,18 +27,18 @@ pub fn handler(
   let not_found_body = bytes_tree.from_string(config.not_found_body)
   let permanent_cache =
     "public, max-age=" <> int.to_string(config.cache_max_age)
-  case access {
-    option.None -> fn(req) {
-      respond(config, req, not_found_body, permanent_cache).0
+  fn(req) {
+    let time_us = ffi.now_micros()
+    let started = ffi.monotonic_micros()
+    let #(resp, rule_id) = respond(config, req, not_found_body, permanent_cache)
+    metrics.observe(listener.RedirectListener, ffi.monotonic_micros() - started)
+    metrics.response(resp.status)
+    case access {
+      option.None -> Nil
+      option.Some(settings) ->
+        access_log.record(settings, req, resp, rule_id, time_us, started)
     }
-    option.Some(settings) -> fn(req) {
-      let time_us = ffi.now_micros()
-      let started = ffi.monotonic_micros()
-      let #(resp, rule_id) =
-        respond(config, req, not_found_body, permanent_cache)
-      access_log.record(settings, req, resp, rule_id, time_us, started)
-      resp
-    }
+    resp
   }
 }
 

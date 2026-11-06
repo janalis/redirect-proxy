@@ -191,3 +191,55 @@ pub fn export(rules: List(Rule)) -> String {
   ])
   |> json.to_string
 }
+
+/// What changed between two rule sets, by rule id.
+pub type Diff {
+  Diff(added: List(String), removed: List(String), changed: List(String))
+}
+
+/// Compares two rule sets. Timestamps and authors are ignored: an import
+/// sets them on every rule even when nothing else changed.
+pub fn diff(before: List(Rule), after: List(Rule)) -> Diff {
+  let content = fn(r: Rule) {
+    rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
+  }
+  let index = fn(rules: List(Rule)) {
+    list.fold(rules, dict.new(), fn(acc, r) {
+      dict.insert(acc, r.id, content(r))
+    })
+  }
+  let old = index(before)
+  let new = index(after)
+  Diff(
+    added: dict.keys(new) |> list.filter(fn(id) { !dict.has_key(old, id) }),
+    removed: dict.keys(old) |> list.filter(fn(id) { !dict.has_key(new, id) }),
+    changed: dict.to_list(new)
+      |> list.filter_map(fn(entry) {
+        case dict.get(old, entry.0) {
+          Ok(previous) if previous != entry.1 -> Ok(entry.0)
+          _ -> Error(Nil)
+        }
+      }),
+  )
+}
+
+/// A diff for the audit trail: counts and up to 100 ids of each kind.
+pub fn diff_to_json(d: Diff) -> List(#(String, json.Json)) {
+  let ids = fn(name, list) {
+    [
+      #(name, json.int(list.length(list))),
+      #(
+        name <> "_ids",
+        json.array(
+          list |> list.sort(string.compare) |> list.take(100),
+          json.string,
+        ),
+      ),
+    ]
+  }
+  list.flatten([
+    ids("added", d.added),
+    ids("removed", d.removed),
+    ids("changed", d.changed),
+  ])
+}

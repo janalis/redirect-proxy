@@ -7,7 +7,7 @@ import gleam/string
 import redirect_proxy/config.{
   type Config, type ListenerLogConfig, AccessLogConfig, AdminConfig, ApiConfig,
   ApiOAuthConfig, Config, HeaderAuthConfig, ListenerLogConfig, LocalAuthConfig,
-  OidcConfig, ServerConfig, StorageConfig,
+  LogConfig, OidcConfig, ServerConfig, StorageConfig,
 } as _
 import simplifile
 
@@ -108,7 +108,17 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
         _, _ -> Error(Nil)
       }
     })
-  list.flatten([ints, bools, level, secrets])
+  let format = case get("RP_LOG_FORMAT") {
+    Ok(format) ->
+      case list.contains(log_formats, string.lowercase(string.trim(format))) {
+        True -> []
+        False -> [
+          "RP_LOG_FORMAT: expected text or json, got \"" <> format <> "\"",
+        ]
+      }
+    Error(Nil) -> []
+  }
+  list.flatten([ints, bools, level, format, secrets])
 }
 
 /// Secrets that can also be given as a file with `<NAME>_FILE`, so that they
@@ -136,6 +146,8 @@ pub fn read_secret_file(path: String) -> Result(String, String) {
       Error("cannot read " <> path <> ": " <> simplifile.describe_error(e))
   }
 }
+
+pub const log_formats = ["text", "json"]
 
 pub const log_levels = ["debug", "info", "warning", "error", "critical", "none"]
 
@@ -180,8 +192,13 @@ pub fn apply_env(
     header_auth:,
     api:,
     access_log:,
+    log:,
   ) = config
   Config(
+    log: LogConfig(
+      level: s("RP_LOG_LEVEL", log.level) |> string.trim |> string.lowercase,
+      format: s("RP_LOG_FORMAT", log.format) |> string.trim |> string.lowercase,
+    ),
     access_log: AccessLogConfig(
       enabled: b("RP_ACCESS_LOG_ENABLED", access_log.enabled),
       format: s("RP_ACCESS_LOG_FORMAT", access_log.format),

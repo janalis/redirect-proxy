@@ -1,6 +1,6 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
--export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1]).
+-export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -36,3 +36,10 @@ accept_loop(L, Counter) ->
     end.
 
 accepted(Counter) -> counters:get(Counter, 1).
+
+%% One line of the JSON application log formatter (without the newline).
+format_json_log(Level, Message) ->
+    Event = #{level => binary_to_atom(Level), msg => {string, Message},
+              meta => #{time => logger:timestamp(), domain => [redirect_proxy, test]}},
+    Line = iolist_to_binary(redirect_proxy_log_json:format(Event, #{})),
+    binary:part(Line, 0, byte_size(Line) - 1).

@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/string
+import redirect_proxy/audit
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
@@ -351,4 +352,50 @@ pub fn equivalent_exact_sources_conflict_test() {
   let b = Rule(..rule.blank(), id: "b", source: "/caf%C3%A9", target: "/y")
   let assert Error([reason]) = store_rules.check_conflicts([a, b])
   assert string.contains(reason, "already matches")
+}
+
+pub fn imports_and_reloads_are_audited_with_their_changes_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(kept) = store.create(s, new_rule("/kept", "/k"), by: "t")
+  let assert Ok(_) =
+    store.import_rules(
+      s,
+      [
+        Rule(..kept, target: "/k2"),
+        Rule(..new_rule("/new", "/n"), id: "new-id"),
+      ],
+      store.Merge,
+      by: "importer",
+    )
+  let assert [entry, ..] = audit.tail(dir <> "/audit.jsonl", 1)
+  assert entry.action == "rules.import.merge"
+  assert string.contains(entry.details, "\"added_ids\":[\"new-id\"]")
+  assert string.contains(
+    entry.details,
+    "\"changed_ids\":[\"" <> kept.id <> "\"]",
+  )
+  assert string.contains(entry.details, "\"removed\":0")
+  // a rejected reload is audited too
+  let assert Ok(Nil) = simplifile.write(dir <> "/redirects.json", "{ broken")
+  let assert Error(_) = store.reload(s, by: "operator")
+  let assert [failed, ..] = audit.tail(dir <> "/audit.jsonl", 1)
+  assert failed.action == "rules.reload_failed"
+  assert failed.actor == "operator"
+}
+
+pub fn diff_test() {
+  let a = Rule(..new_rule("/a", "/x"), id: "a")
+  let b = Rule(..new_rule("/b", "/x"), id: "b")
+  let c = Rule(..new_rule("/c", "/x"), id: "c")
+  let d =
+    store_rules.diff([a, b, c], [
+      // only timestamps differ: unchanged
+      Rule(..a, updated_at: "later", updated_by: "someone"),
+      Rule(..b, target: "/y"),
+      Rule(..new_rule("/d", "/x"), id: "d"),
+    ])
+  assert d.added == ["d"]
+  assert d.removed == ["c"]
+  assert d.changed == ["b"]
 }

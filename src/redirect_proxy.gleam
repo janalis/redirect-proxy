@@ -55,8 +55,10 @@ API client scopes: redirects:read, redirects:write (default), redirects:ops.
 "
 
 pub fn main() -> Nil {
+  // until the configuration is loaded (`serve` applies its [log] section)
   let level = envoy.get("RP_LOG_LEVEL") |> result.unwrap("info")
-  log.configure(level)
+  let format = envoy.get("RP_LOG_FORMAT") |> result.unwrap("text")
+  log.configure_with(string.lowercase(level), string.lowercase(format))
   case run(ffi.plain_arguments()) {
     Ok(Nil) -> Nil
     Error(message) -> {
@@ -126,6 +128,7 @@ fn load(config_path: String) -> Result(Config, String) {
 
 fn serve(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
+  log.configure_with(cfg.log.level, cfg.log.format)
   log.info("starting redirect-proxy " <> version)
   use running <- result.try(app.start(cfg))
   log.info(

@@ -10,6 +10,7 @@ import redirect_proxy/config.{
   type AccessLogConfig, type Config, access_log_format, access_log_output,
   api_dedicated, api_on_admin, api_port,
 } as _
+import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
 import redirect_proxy/ffi
 import redirect_proxy/listener
@@ -67,6 +68,16 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.server.shutdown_grace < 0 || config.server.shutdown_grace > 60,
     Error("server.shutdown_grace must be between 0 and 60 seconds"),
+  )
+  use <- bool.guard(
+    !list.contains(config_env.log_levels, config.log.level),
+    Error(
+      "log.level must be one of " <> string.join(config_env.log_levels, ", "),
+    ),
+  )
+  use <- bool.guard(
+    !list.contains(config_env.log_formats, config.log.format),
+    Error("log.format must be \"text\" or \"json\""),
   )
   use <- bool.guard(
     !list.contains(["strict", "ignore"], config.server.trailing_slash),
