@@ -111,6 +111,9 @@ pub fn counter_add(ref: Counters, index: Int, amount: Int) -> Nil
 @external(erlang, "redirect_proxy_ffi", "counter_get")
 pub fn counter_get(ref: Counters, index: Int) -> Int
 
+@external(erlang, "redirect_proxy_ffi", "counter_put")
+pub fn counter_put(ref: Counters, index: Int, value: Int) -> Nil
+
 // --- network ----------------------------------------------------------------
 
 @external(erlang, "redirect_proxy_ffi", "ip_in_cidr")

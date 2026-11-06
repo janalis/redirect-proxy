@@ -7,7 +7,7 @@ import gleam/string
 import redirect_proxy/config.{
   type Config, type ListenerLogConfig, AccessLogConfig, AdminConfig, ApiConfig,
   ApiOAuthConfig, Config, HeaderAuthConfig, ListenerLogConfig, LocalAuthConfig,
-  OidcConfig, ServerConfig, StorageConfig, default,
+  LogConfig, OidcConfig, ServerConfig, StorageConfig, default,
 } as _
 import simplifile
 import tom.{type Toml}
@@ -90,6 +90,8 @@ pub const known_keys = [
   "auth.oidc.scopes",
   "server.cache_max_age",
   "server.fallback_url",
+  "log.format",
+  "log.level",
   "server.listen",
   "server.not_found_body",
   "server.port",
@@ -307,7 +309,13 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
   use al_redirect <- result.try(listener_from_toml(t, "redirect", al.redirect))
   use al_admin <- result.try(listener_from_toml(t, "admin", al.admin))
   use al_api <- result.try(listener_from_toml(t, "api", al.api))
+  use log_level <- result.try(str(t, ["log", "level"], d.log.level))
+  use log_format <- result.try(str(t, ["log", "format"], d.log.format))
   Ok(Config(
+    log: LogConfig(
+      level: string.lowercase(log_level),
+      format: string.lowercase(log_format),
+    ),
     access_log: AccessLogConfig(
       enabled: al_enabled,
       format: al_format,

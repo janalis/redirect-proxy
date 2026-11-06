@@ -39,6 +39,8 @@ pub opaque type Matcher {
     /// Whether some rule has a `*.domain` host: lookups then also try the
     /// parent domains of the request host.
     wildcards: Bool,
+    /// Enabled rules by kind: exact, prefix, regex.
+    kinds: #(Int, Int, Int),
     /// Rule id to its slot in `hits`, for every rule (disabled ones too, so
     /// that their count survives being disabled then enabled again).
     slots: Dict(String, Int),
@@ -90,6 +92,7 @@ pub fn empty() -> Matcher {
     hosts: dict.new(),
     size: 0,
     wildcards: False,
+    kinds: #(0, 0, 0),
     slots: dict.new(),
     hits: new_hits(0),
   )
@@ -97,6 +100,11 @@ pub fn empty() -> Matcher {
 
 fn new_hits(rules: Int) -> ffi.Counters {
   ffi.counter_new(int.max(rules, 1))
+}
+
+/// Enabled rules by kind: exact, prefix, regex.
+pub fn kinds(matcher: Matcher) -> #(Int, Int, Int) {
+  matcher.kinds
 }
 
 /// Number of enabled rules in the matcher.
@@ -136,6 +144,13 @@ pub fn build(rules: List(Rule)) -> Matcher {
     hosts:,
     size: list.length(enabled),
     wildcards: dict.keys(hosts) |> list.any(string.starts_with(_, "*.")),
+    kinds: list.fold(enabled, #(0, 0, 0), fn(acc, r) {
+      case r.kind {
+        Exact -> #(acc.0 + 1, acc.1, acc.2)
+        Prefix -> #(acc.0, acc.1 + 1, acc.2)
+        Regex -> #(acc.0, acc.1, acc.2 + 1)
+      }
+    }),
     slots:,
     hits: new_hits(count),
   )

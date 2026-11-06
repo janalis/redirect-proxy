@@ -19,6 +19,7 @@ import gleam/bool
 import gleam/crypto
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -34,7 +35,7 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store/rules.{
   check_conflicts, check_loop, merge, prepare_import, validate_all, warn_loops,
-} as _
+} as store_rules
 import simplifile
 
 /// How long a mutation waits for another process to release the file lock.
@@ -128,6 +129,7 @@ pub fn start(
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
   actor.new_with_initialiser(30_000, fn(subject) {
+    let started = ffi.monotonic_micros()
     use #(rules, fingerprint) <- result.try(load_locked(
       settings,
       FirstStart,
@@ -135,6 +137,7 @@ pub fn start(
     ))
     let state = State(settings:, rules:, fingerprint:)
     publish(warn_loops(matcher.build(rules), rules))
+    metrics.reloaded(ffi.monotonic_micros() - started)
     log.info(
       "loaded "
       <> int.to_string(list.length(rules))
@@ -377,21 +380,39 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Replace -> prepared
           Merge -> merge(state.rules, prepared)
         }
-        use Nil <- result.try(check_conflicts(rules))
-        let built = warn_loops(matcher.build(rules), rules)
-        use fingerprint <- result.try(commit(state.settings, rules, built))
-        audit.record(
-          state.settings.audit_path,
-          actor_name,
-          case mode {
-            Replace -> "rules.import.replace"
-            Merge -> "rules.import.merge"
-          },
-          int.to_string(list.length(prepared)) <> " rule(s)",
-          None,
-          None,
-        )
-        Ok(#(list.length(prepared), rules, fingerprint))
+        let action = case mode {
+          Replace -> "rules.import.replace"
+          Merge -> "rules.import.merge"
+        }
+        let outcome = {
+          use Nil <- result.try(check_conflicts(rules))
+          let built = warn_loops(matcher.build(rules), rules)
+          commit(state.settings, rules, built)
+        }
+        case outcome {
+          Ok(fingerprint) -> {
+            audit_rules_change(
+              state,
+              actor_name,
+              action,
+              int.to_string(list.length(prepared)) <> " rule(s)",
+              rules,
+              fingerprint,
+            )
+            Ok(#(list.length(prepared), rules, fingerprint))
+          }
+          Error(errors) -> {
+            audit.record(
+              state.settings.audit_path,
+              actor_name,
+              action <> "_failed",
+              int.to_string(list.length(prepared)) <> " rule(s)",
+              None,
+              Some(json.object([#("errors", json.array(errors, json.string))])),
+            )
+            Error(errors)
+          }
+        }
       }
     }
 
@@ -403,18 +424,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       next
     }
 
-    Reload(actor_name, reply) ->
+    Reload(actor_name, reply) -> {
+      let started = ffi.monotonic_micros()
       case load_locked(state.settings, Reloading, lock_timeout) {
         Ok(#(rules, fingerprint)) -> {
           publish(warn_loops(matcher.build(rules), rules))
           metrics.incr(metrics.Reloads)
-          audit.record(
-            state.settings.audit_path,
+          metrics.reloaded(ffi.monotonic_micros() - started)
+          audit_rules_change(
+            state,
             actor_name,
             "rules.reload",
             int.to_string(list.length(rules)) <> " rule(s)",
-            None,
-            None,
+            rules,
+            fingerprint,
           )
           log.info(
             "reloaded " <> int.to_string(list.length(rules)) <> " rule(s)",
@@ -425,11 +448,45 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Error(reason) -> {
           metrics.incr(metrics.ReloadFailures)
           log.error("reload rejected, keeping current rules: " <> reason)
+          audit.record(
+            state.settings.audit_path,
+            actor_name,
+            "rules.reload_failed",
+            state.settings.rules_path,
+            None,
+            Some(json.object([#("error", json.string(reason))])),
+          )
           process.send(reply, Error(reason))
           actor.continue(state)
         }
       }
+    }
   }
+}
+
+/// Audits a new rule set: the file fingerprints before and after, and the
+/// rules added, removed and changed.
+fn audit_rules_change(
+  state: State,
+  actor_name: String,
+  action: String,
+  target: String,
+  rules: List(Rule),
+  fingerprint: String,
+) -> Nil {
+  audit.record(
+    state.settings.audit_path,
+    actor_name,
+    action,
+    target,
+    Some(json.object([#("fingerprint", json.string(state.fingerprint))])),
+    Some(
+      json.object([
+        #("fingerprint", json.string(fingerprint)),
+        ..store_rules.diff_to_json(store_rules.diff(state.rules, rules))
+      ]),
+    ),
+  )
 }
 
 /// Runs a mutation holding the cross-process file lock, on rules refreshed
@@ -485,15 +542,17 @@ fn refresh(state: State) -> Result(State, String) {
                 <> reason,
               )
             Ok(#(rules, fingerprint)) -> {
+              let started = ffi.monotonic_micros()
               publish(warn_loops(matcher.build(rules), rules))
               metrics.incr(metrics.Reloads)
-              audit.record(
-                state.settings.audit_path,
+              metrics.reloaded(ffi.monotonic_micros() - started)
+              audit_rules_change(
+                state,
                 "external",
                 "rules.reload",
                 int.to_string(list.length(rules)) <> " rule(s)",
-                None,
-                None,
+                rules,
+                fingerprint,
               )
               log.warning(
                 state.settings.rules_path

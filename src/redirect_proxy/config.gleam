@@ -17,6 +17,17 @@ pub type Config {
     header_auth: HeaderAuthConfig,
     api: ApiConfig,
     access_log: AccessLogConfig,
+    log: LogConfig,
+  )
+}
+
+/// The application log (not the access log).
+pub type LogConfig {
+  LogConfig(
+    /// debug, info, warning, error, critical or none.
+    level: String,
+    /// "text", or "json" for one JSON object per line.
+    format: String,
   )
 }
 
@@ -244,6 +255,7 @@ pub fn default() -> Config {
         ops_scope: "redirects:ops",
       ),
     ),
+    log: LogConfig(level: "info", format: "text"),
     access_log: AccessLogConfig(
       enabled: True,
       format: "combined",

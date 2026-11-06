@@ -27,6 +27,7 @@ import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/listener
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
@@ -138,8 +139,8 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   let admin_handler =
     access_log.wrap(admin_handler, fn(req: request.Request(mist.Connection)) {
       case config.api_on_admin(cfg) && access_log.is_api_path(req.path) {
-        True -> access.api
-        False -> access.admin
+        True -> #(listener.ApiListener, access.api)
+        False -> #(listener.AdminListener, access.admin)
       }
     })
 
@@ -159,7 +160,8 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
   }
-  let api_handler = access_log.wrap(api_handler, fn(_) { access.api })
+  let api_handler =
+    access_log.wrap(api_handler, fn(_) { #(listener.ApiListener, access.api) })
 
   let builder =
     supervisor.new(supervisor.OneForOne)

@@ -20,6 +20,7 @@ import redirect_proxy/ffi
 import redirect_proxy/listener.{
   type Listener, AdminListener, ApiListener, RedirectListener,
 }
+import redirect_proxy/metrics
 
 pub type Settings {
   Settings(
@@ -92,24 +93,25 @@ pub fn stop() -> Nil {
   ffi.access_log_stop()
 }
 
-/// Wraps a listener's handler so that each request is logged. `choose`
-/// picks the settings from the request (the admin listener also serves the
-/// API when they share a port).
+/// Wraps a listener's handler so that each request is timed (request
+/// duration metric) and logged. `choose` tells the listener a request belongs
+/// to and its log settings (the admin listener also serves the API when they
+/// share a port).
 pub fn wrap(
   handle: fn(Request(mist.Connection)) -> Response(mist.ResponseData),
-  choose: fn(Request(mist.Connection)) -> Option(Settings),
+  choose: fn(Request(mist.Connection)) -> #(Listener, Option(Settings)),
 ) -> fn(Request(mist.Connection)) -> Response(mist.ResponseData) {
   fn(req) {
-    case choose(req) {
-      option.None -> handle(req)
-      option.Some(settings) -> {
-        let time_us = ffi.now_micros()
-        let started = ffi.monotonic_micros()
-        let resp = handle(req)
-        record(settings, req, resp, "", time_us, started)
-        resp
-      }
+    let #(listener, settings) = choose(req)
+    let time_us = ffi.now_micros()
+    let started = ffi.monotonic_micros()
+    let resp = handle(req)
+    metrics.observe(listener, ffi.monotonic_micros() - started)
+    case settings {
+      option.None -> Nil
+      option.Some(settings) -> record(settings, req, resp, "", time_us, started)
     }
+    resp
   }
 }
 

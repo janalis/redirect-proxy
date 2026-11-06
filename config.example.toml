@@ -98,6 +98,13 @@ session_ttl = 28800
 # A session unused for this many seconds ends (0: never).
 session_idle_timeout = 3600
 
+[log]
+# The application log (the access log is configured below). Level: debug,
+# info, warning, error, critical or none. Format: "text", or "json" for one
+# JSON object per line ({time, level, msg, domain}).
+level = "info"
+format = "text"
+
 [storage]
 # Holds redirects.json, users.json, audit.jsonl, backups/ and the cookie secret.
 data_dir = "./data"

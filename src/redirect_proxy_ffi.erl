@@ -7,7 +7,7 @@
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
-    counter_new/1, counter_add/3, counter_get/2,
+    counter_new/1, counter_add/3, counter_get/2, counter_put/3,
     ip_in_cidr/2, valid_cidr/1,
     now_seconds/0, now_millis/0, rfc3339/1,
     on_sighup/1,
@@ -267,6 +267,7 @@ ets_delete_older(Table, Now) ->
 counter_new(Size) -> counters:new(Size, [write_concurrency]).
 counter_add(Ref, Index, Amount) -> counters:add(Ref, Index, Amount), nil.
 counter_get(Ref, Index) -> counters:get(Ref, Index).
+counter_put(Ref, Index, Value) -> counters:put(Ref, Index, Value), nil.
 
 %% ---------------------------------------------------------------------------
 %% Network

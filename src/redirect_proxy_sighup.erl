@@ -10,7 +10,12 @@
 init(Callback) -> {ok, Callback}.
 
 handle_event(sighup, Callback) ->
-    try Callback() catch _:_ -> ok end,
+    logger:notice(<<"SIGHUP received: reloading the redirections file">>),
+    try Callback()
+    catch Class:Reason ->
+        logger:error(iolist_to_binary(io_lib:format(
+            "SIGHUP reload could not be started: ~p: ~0p", [Class, Reason])))
+    end,
     {ok, Callback};
 handle_event(_Signal, Callback) ->
     {ok, Callback}.
