@@ -1503,6 +1503,7 @@ fn start_fake_idp(email: String) -> String {
           #("authorization_endpoint", json.string(issuer <> "/authorize")),
           #("token_endpoint", json.string(issuer <> "/token")),
           #("jwks_uri", json.string(issuer <> "/jwks")),
+          #("end_session_endpoint", json.string(issuer <> "/logout?realm=x")),
         ])
         |> json.to_string
         |> json_response
@@ -1628,6 +1629,68 @@ pub fn oidc_login_test() {
   let assert Ok(#(_, query)) = string.split_once(location(authorize), "?")
   assert get(env.admin <> "/auth/oidc/callback?" <> query, state).status == 303
   assert get(env.admin <> "/auth/oidc/callback?" <> query, state).status == 403
+}
+
+/// SSO comes back to the page that asked for a sign-in, like a password
+/// login, and never to another site.
+pub fn oidc_login_returns_to_next_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let env = oidc_env(issuer, ["example.com"])
+  let page = get(env.admin <> "/login?next=%2Faudit%3Faction%3Drule", [])
+  assert string.contains(
+    page.body,
+    "href=\"/auth/oidc/start?next=%2Faudit%3Faction%3Drule\"",
+  )
+  let via = fn(next) {
+    let start =
+      get(
+        env.admin
+          <> "/auth/oidc/start?"
+          <> uri.query_to_string([#("next", next)]),
+        [],
+      )
+    let state = cookie_of(start, "rp_oidc_state")
+    let authorize = get(location(start), [])
+    let assert Ok(#(_, query)) = string.split_once(location(authorize), "?")
+    location(
+      get(env.admin <> "/auth/oidc/callback?" <> query, [#("cookie", state)]),
+    )
+  }
+  assert via("/audit?action=rule") == "/audit?action=rule"
+  assert via("//evil.test/x") == "/rules"
+  assert via("https://evil.test/") == "/rules"
+}
+
+/// With `logout_at_provider`, signing out of an SSO session also signs out
+/// at the provider, which sends the browser back to the login page.
+pub fn oidc_logout_at_provider_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let logout = fn(at_provider) {
+    let d = config.default()
+    let env =
+      boot(
+        config.Config(
+          ..d,
+          oidc: config.OidcConfig(
+            ..d.oidc,
+            enabled: True,
+            issuer:,
+            client_id: "redirect-proxy",
+            client_secret: "secret",
+            logout_at_provider: at_provider,
+          ),
+        ),
+      )
+    let cookie = session_cookie(sso_login(env))
+    let page = get(env.admin <> "/rules", [#("cookie", cookie)])
+    location(
+      post_form(env, "/logout", cookie, [#("csrf_token", csrf_token(page.body))]),
+    )
+  }
+  assert logout(False) == "/login"
+  assert logout(True)
+    == issuer
+    <> "/logout?realm=x&client_id=redirect-proxy&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A8081%2Flogin"
 }
 
 pub fn oidc_callback_from_another_browser_is_refused_test() {

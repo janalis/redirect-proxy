@@ -41,6 +41,7 @@ pub const bool_env_vars = [
   "RP_AUTH_HEADER_ENABLED",
   "RP_AUTH_LOCAL_ENABLED",
   "RP_AUTH_OIDC_ENABLED",
+  "RP_AUTH_OIDC_LOGOUT_AT_PROVIDER",
   "RP_SERVER_HTTPS_REDIRECT",
 ]
 
@@ -282,6 +283,10 @@ pub fn apply_env(
       allowed_groups: l("RP_AUTH_OIDC_ALLOWED_GROUPS", oidc.allowed_groups),
       groups_claim: s("RP_AUTH_OIDC_GROUPS_CLAIM", oidc.groups_claim),
       button_label: s("RP_AUTH_OIDC_BUTTON_LABEL", oidc.button_label),
+      logout_at_provider: b(
+        "RP_AUTH_OIDC_LOGOUT_AT_PROVIDER",
+        oidc.logout_at_provider,
+      ),
     ),
     header_auth: HeaderAuthConfig(
       enabled: b("RP_AUTH_HEADER_ENABLED", header_auth.enabled),

@@ -24,6 +24,7 @@ const provider =
     authorization_endpoint: "https://idp.test/auth",
     token_endpoint: "https://idp.test/token",
     jwks_uri: "https://idp.test/jwks",
+    end_session_endpoint: "",
   )
 
 /// The base claims without `key`.

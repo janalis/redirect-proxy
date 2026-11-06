@@ -23,6 +23,7 @@ pub fn login(
   local_enabled: Bool,
   sso_label: Option(String),
   username: String,
+  next: String,
 ) -> String {
   layout.page(
     title: "Sign in",
@@ -92,7 +93,13 @@ pub fn login(
                       h.a(
                         [
                           a.class("btn btn-outline theme-primary w-100"),
-                          a.href("/auth/oidc/start"),
+                          // SSO comes back to the same page as a password
+                          a.href(case next {
+                            "" -> "/auth/oidc/start"
+                            next ->
+                              "/auth/oidc/start?"
+                              <> uri.query_to_string([#("next", next)])
+                          }),
                         ],
                         [h.text(label)],
                       ),

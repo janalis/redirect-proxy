@@ -165,7 +165,13 @@ pub fn login_page(req: Request, ctx: Context) -> Response {
       }
       html(
         200,
-        pages.login(error, ctx.config.local_auth.enabled, sso_label(ctx), ""),
+        pages.login(
+          error,
+          ctx.config.local_auth.enabled,
+          sso_label(ctx),
+          "",
+          next_param(req),
+        ),
       )
     }
   }
@@ -188,6 +194,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
         ctx.config.local_auth.enabled,
         sso_label(ctx),
         username,
+        next_param(req),
       ),
     )
   }
@@ -324,6 +331,12 @@ fn audit_auth_with(
   )
 }
 
+/// The `next` query parameter of the login page ("" when absent), passed on
+/// to the SSO link.
+fn next_param(req: Request) -> String {
+  list.key_find(wisp.get_query(req), "next") |> result.unwrap("")
+}
+
 /// Only allow local, absolute-path redirects after login (no open redirect).
 fn safe_next(next: Result(String, Nil)) -> String {
   case next {
@@ -341,8 +354,27 @@ pub fn logout(req: Request, ctx: Context, s: Session) -> Response {
   session.destroy(s.token)
   log.info("logout: " <> s.username)
   audit_auth(ctx, s.username, "auth.logout", session.method_to_string(s.method))
-  wisp.redirect("/login")
+  wisp.redirect(after_logout(ctx, s))
   |> wisp.set_cookie(req, session_cookie_name(req, ctx), "", wisp.Signed, 0)
+}
+
+/// The login page, or for an SSO session with `logout_at_provider`, the
+/// provider's logout endpoint, which sends the browser back to the login
+/// page.
+fn after_logout(ctx: Context, s: Session) -> String {
+  let cfg = ctx.config.oidc
+  let login = "/login"
+  case s.method == session.Oidc && cfg.enabled && cfg.logout_at_provider {
+    False -> login
+    True ->
+      case oidc.end_session_url(cfg, ctx.config.admin.public_url) {
+        Ok(url) -> url
+        Error(reason) -> {
+          log.warning("SSO logout at the provider skipped: " <> reason)
+          login
+        }
+      }
+  }
 }
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
@@ -350,7 +382,8 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
   let start_key = "sso-start-ip:" <> ctx.client_ip
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
   ratelimit.record_failure(start_key, login_window)
-  case oidc.begin(ctx.config.oidc, ctx.config.admin.public_url) {
+  let next = safe_next(list.key_find(wisp.get_query(req), "next"))
+  case oidc.begin(ctx.config.oidc, ctx.config.admin.public_url, next) {
     Ok(#(url, state)) ->
       wisp.redirect(url)
       |> wisp.set_cookie(
@@ -389,7 +422,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
     0,
   )
   case outcome {
-    Ok(identity) -> {
+    Ok(#(identity, next)) -> {
       log.info(
         "SSO login: "
         <> log_value(identity.username)
@@ -415,7 +448,8 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
           ctx.config.admin.session_ttl,
           "",
         )
-      wisp.redirect("/rules")
+      // checked by `safe_next` when the login started
+      wisp.redirect(next)
       |> set_session_cookie(req, ctx, s)
       |> clear_state
     }
@@ -447,6 +481,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
           ctx.config.local_auth.enabled,
           sso_label(ctx),
           "",
+          "",
         ),
       )
       |> clear_state
@@ -475,6 +510,7 @@ fn sso_throttle(
           Some("Too many sign-in attempts. Try again in a few minutes."),
           ctx.config.local_auth.enabled,
           sso_label(ctx),
+          "",
           "",
         ),
       )
