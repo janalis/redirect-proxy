@@ -325,7 +325,8 @@ not parse stops the start with an error naming the variable.
 
 Secrets can be read from a file instead, so that they do not show in the
 process environment (`docker inspect`, `/proc/<pid>/environ`): set
-`RP_ADMIN_SECRET_KEY_BASE_FILE`, `RP_AUTH_OIDC_CLIENT_SECRET_FILE` or
+`RP_ADMIN_SECRET_KEY_BASE_FILE`, `RP_ADMIN_METRICS_TOKEN_FILE`,
+`RP_AUTH_OIDC_CLIENT_SECRET_FILE` or
 `RP_BOOTSTRAP_ADMIN_PASSWORD_FILE` to the path of a file holding the value
 (Docker and Kubernetes secrets). A trailing line break is ignored.
 
@@ -346,6 +347,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ADMIN_SECRET_KEY_BASE` | generated into `<data_dir>/secret_key_base` |
 | `RP_ADMIN_SESSION_TTL` | `28800` (8 hours) |
 | `RP_ADMIN_SESSION_IDLE_TIMEOUT` | `3600` (1 hour, `0`: never) |
+| `RP_ADMIN_METRICS_TOKEN` | (none: `/metrics` is public) |
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
@@ -379,7 +381,10 @@ The admin listener serves these pages:
 Unauthenticated endpoints: `/healthz` (the process is up), `/readyz` (ready
 for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
 An API on its own port serves `/healthz` and `/readyz` too, and `/metrics`
-when the admin is disabled.
+when the admin is disabled. With `admin.metrics_token`
+(`RP_ADMIN_METRICS_TOKEN`, at least 16 characters), `/metrics` answers 401
+unless the request has `Authorization: Bearer <token>`: in Prometheus, set
+`authorization: { credentials_file: ... }` on the scrape job.
 
 - **Local accounts.**
   - Passwords are hashed with PBKDF2-HMAC-SHA256 (600 000 iterations) and

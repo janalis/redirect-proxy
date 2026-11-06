@@ -195,6 +195,11 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("admin.secret_key_base must be at least 64 characters long"),
   )
   use <- bool.guard(
+    config.admin.metrics_token != ""
+      && string.length(config.admin.metrics_token) < 16,
+    Error("admin.metrics_token must be at least 16 characters long"),
+  )
+  use <- bool.guard(
     config.oidc.enabled
       && {
       config.oidc.issuer == ""

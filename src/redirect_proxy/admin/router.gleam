@@ -26,6 +26,7 @@ import redirect_proxy/api/web as api_web
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/metrics
+import redirect_proxy/metrics_endpoint
 import wisp.{type Request, type Response}
 
 pub fn handle(req: Request, ctx: Context) -> Response {
@@ -51,9 +52,7 @@ pub fn handle(req: Request, ctx: Context) -> Response {
         False -> plain(200, "ready")
       }
     Get, ["metrics"] ->
-      wisp.response(200)
-      |> wisp.set_header("content-type", "text/plain; version=0.0.4")
-      |> wisp.string_body(metrics.render_prometheus())
+      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
     Get, ["login"] -> login_page(req, ctx)
     Post, ["login"] -> login(req, ctx)
     Get, ["auth", "oidc", "start"] -> oidc_start(req, ctx)

@@ -138,6 +138,8 @@ pub type AdminConfig {
     session_ttl: Int,
     /// A session unused for this many seconds ends (0: never).
     session_idle_timeout: Int,
+    /// Bearer token required by `/metrics` ("": public).
+    metrics_token: String,
   )
 }
 
@@ -237,6 +239,7 @@ pub fn default() -> Config {
       secret_key_base: "",
       session_ttl: 28_800,
       session_idle_timeout: 3600,
+      metrics_token: "",
     ),
     storage: StorageConfig(data_dir: "./data", backups: 10, watch_interval: 0),
     local_auth: LocalAuthConfig(enabled: True),

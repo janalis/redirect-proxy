@@ -103,6 +103,9 @@ public_url = "http://localhost:8081"
 # Secret used to sign session cookies (at least 64 characters). When empty a
 # random secret is generated and stored in <data_dir>/secret_key_base.
 secret_key_base = ""
+# Bearer token required by /metrics (at least 16 characters). Empty: /metrics
+# is public, like /healthz and /readyz.
+metrics_token = ""
 # Session lifetime in seconds.
 session_ttl = 28800
 # A session unused for this many seconds ends (0: never).

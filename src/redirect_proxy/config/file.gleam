@@ -59,6 +59,7 @@ pub const known_keys = [
   "admin.public_url",
   "admin.secret_key_base",
   "admin.session_idle_timeout",
+  "admin.metrics_token",
   "admin.session_ttl",
   "api.enabled",
   "api.listen",
@@ -200,6 +201,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["admin", "session_idle_timeout"],
     d.admin.session_idle_timeout,
+  ))
+  use metrics_token <- result.try(str(
+    t,
+    ["admin", "metrics_token"],
+    d.admin.metrics_token,
   ))
   use data_dir <- result.try(str(t, ["storage", "data_dir"], d.storage.data_dir))
   use backups <- result.try(integer(
@@ -398,6 +404,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       secret_key_base:,
       session_ttl:,
       session_idle_timeout:,
+      metrics_token:,
     ),
     storage: StorageConfig(data_dir:, backups:, watch_interval:),
     local_auth: LocalAuthConfig(enabled: local_enabled),

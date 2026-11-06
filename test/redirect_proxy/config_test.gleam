@@ -509,3 +509,17 @@ pub fn more_warnings_test() {
     assert config_validate.warnings(toml, cfg) == []
   })
 }
+
+pub fn metrics_token_must_be_long_enough_test() {
+  let d = config.default()
+  let with = fn(token) {
+    config.Config(
+      ..d,
+      admin: config.AdminConfig(..d.admin, metrics_token: token),
+    )
+  }
+  let assert Error(message) = config_validate.validate(with("short"))
+  assert string.contains(message, "metrics_token")
+  let assert Ok(_) = config_validate.validate(with("sixteen-chars-ok"))
+  let assert Ok(_) = config_validate.validate(with(""))
+}

@@ -262,6 +262,7 @@ pub fn apply_env(
         "RP_ADMIN_SESSION_IDLE_TIMEOUT",
         admin.session_idle_timeout,
       ),
+      metrics_token: secret("RP_ADMIN_METRICS_TOKEN", admin.metrics_token),
     ),
     storage: StorageConfig(
       data_dir: s("RP_STORAGE_DATA_DIR", storage.data_dir),

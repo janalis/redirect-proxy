@@ -30,6 +30,7 @@ import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
+import redirect_proxy/metrics_endpoint
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
@@ -61,9 +62,7 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
       }
     // the admin serves the metrics; without it, they would be nowhere
     ["metrics"] if !ctx.config.admin.enabled ->
-      wisp.response(200)
-      |> wisp.set_header("content-type", "text/plain; version=0.0.4")
-      |> wisp.string_body(metrics.render_prometheus())
+      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
     _ -> handle(req, ctx)
   }
   |> wisp.set_header("x-content-type-options", "nosniff")
