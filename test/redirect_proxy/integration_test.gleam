@@ -2062,6 +2062,20 @@ pub fn latency_and_response_metrics_test() {
     body,
     "redirect_proxy_request_duration_seconds_bucket{listener=\"redirect\",le=\"+Inf\"}",
   )
+  // buckets of microseconds, for redirects, written as decimals
+  assert string.contains(
+    body,
+    "redirect_proxy_request_duration_seconds_bucket{listener=\"redirect\",le=\"0.000005\"}",
+  )
+  assert string.contains(
+    body,
+    "redirect_proxy_request_duration_seconds_bucket{listener=\"redirect\",le=\"0.0025\"}",
+  )
+  assert string.contains(
+    body,
+    "redirect_proxy_request_duration_seconds_bucket{listener=\"redirect\",le=\"1\"}",
+  )
+  assert !string.contains(body, "0e-")
   assert string.contains(body, "redirect_proxy_rules_by_kind{kind=\"exact\"} 1")
   assert string.contains(
     body,

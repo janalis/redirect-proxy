@@ -75,7 +75,7 @@
   `redirect_proxy_build_info{version}` and `process_start_time_seconds`.
   Also:
   - `redirect_proxy_request_duration_seconds{listener}`: a histogram of the
-    time to serve a request (0.5 ms to 1 s buckets) for the redirect, admin
+    time to serve a request (5 µs to 1 s buckets) for the redirect, admin
     and API listeners;
   - `redirect_proxy_responses_total{class}`: redirect listener responses by
     status class;
