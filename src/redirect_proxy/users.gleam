@@ -197,5 +197,8 @@ fn save(path: String, users: List(User)) -> Result(Nil, String) {
       ),
     ])
     |> json.to_string
-  ffi.atomic_write(path, content <> "\n")
+  use Nil <- result.try(ffi.atomic_write(path, content <> "\n"))
+  // password hashes: readable by the service account only
+  let _ = simplifile.set_permissions_octal(path, 0o600)
+  Ok(Nil)
 }

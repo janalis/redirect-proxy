@@ -20,7 +20,11 @@ import redirect_proxy/id
 
 const table = "redirect_proxy_oidc"
 
-const flow_ttl = 600
+pub const flow_ttl = 600
+
+/// Login attempts in progress are kept until they complete or expire: cap
+/// them so that a loop on /auth/oidc/start cannot fill the memory.
+const max_flows = 10_000
 
 const cache_ttl = 3600
 
@@ -31,6 +35,13 @@ pub type Provider {
     token_endpoint: String,
     jwks_uri: String,
   )
+}
+
+/// Why a login failed. `Denied` explains itself to the user; the details of
+/// `Failed` (provider errors, internal URLs) only go to the log.
+pub type Failure {
+  Denied(String)
+  Failed(String)
 }
 
 pub type Identity {
@@ -51,8 +62,16 @@ pub fn redirect_uri(public_url: String) -> String {
 }
 
 /// Builds the authorization URL and remembers the PKCE verifier and nonce
-/// associated with the generated `state`.
-pub fn begin(cfg: OidcConfig, public_url: String) -> Result(String, String) {
+/// associated with the generated `state`. Returns the URL and the state,
+/// which the caller binds to the browser (cookie) for `complete`.
+pub fn begin(
+  cfg: OidcConfig,
+  public_url: String,
+) -> Result(#(String, String), String) {
+  use <- bool.guard(
+    ffi.ets_size(table) >= max_flows,
+    Error("too many login attempts in progress"),
+  )
   use provider <- result.try(discover(cfg))
   let state = id.token(24)
   let verifier = id.token(48)
@@ -79,15 +98,32 @@ pub fn begin(cfg: OidcConfig, public_url: String) -> Result(String, String) {
     True -> "&"
     False -> "?"
   }
-  Ok(provider.authorization_endpoint <> separator <> query)
+  Ok(#(provider.authorization_endpoint <> separator <> query, state))
 }
 
-/// Completes the flow: validates `state`, exchanges the code, verifies the ID
-/// token and checks that the user is allowed in.
+/// Completes the flow: checks that `state` is the one started in this browser
+/// (`browser_state`, from the cookie set at `begin`, so that nobody can sign
+/// a victim into their own account with a callback link), exchanges the
+/// code, verifies the ID token and checks that the user is allowed in.
 pub fn complete(
   cfg: OidcConfig,
   public_url: String,
   query: List(#(String, String)),
+  browser_state: Result(String, Nil),
+) -> Result(Identity, Failure) {
+  use identity <- result.try(
+    authenticate(cfg, public_url, query, browser_state)
+    |> result.map_error(Failed),
+  )
+  use Nil <- result.try(authorise(cfg, identity) |> result.map_error(Denied))
+  Ok(identity)
+}
+
+fn authenticate(
+  cfg: OidcConfig,
+  public_url: String,
+  query: List(#(String, String)),
+  browser_state: Result(String, Nil),
 ) -> Result(Identity, String) {
   use <- bool.guard(
     list.key_find(query, "error") |> result.is_ok,
@@ -106,6 +142,13 @@ pub fn complete(
   use code <- result.try(
     list.key_find(query, "code") |> result.replace_error("missing code"),
   )
+  use <- bool.guard(
+    case browser_state {
+      Ok(expected) -> !ffi.secure_compare(<<expected:utf8>>, <<state:utf8>>)
+      Error(Nil) -> True
+    },
+    Error("the login was not started in this browser"),
+  )
   use #(verifier, nonce) <- result.try(take_flow(state))
   use provider <- result.try(discover(cfg))
   use id_token <- result.try(exchange(
@@ -116,9 +159,7 @@ pub fn complete(
     redirect_uri(public_url),
   ))
   use claims <- result.try(verify(cfg, provider, id_token))
-  use identity <- result.try(check_claims(cfg, provider, claims, nonce))
-  use Nil <- result.try(authorise(cfg, identity))
-  Ok(identity)
+  check_claims(cfg, provider, claims, nonce)
 }
 
 fn take_flow(state: String) -> Result(#(String, String), String) {

@@ -24,6 +24,7 @@ import redirect_proxy/api/problem
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token
 import redirect_proxy/config.{type Config}
+import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -38,6 +39,8 @@ pub type Context {
     store: Store,
     clients: clients.Settings,
     peer_ip: String,
+    /// Client address used for throttling (see the admin router).
+    client_ip: String,
     deprecations: List(Deprecation),
   )
 }
@@ -239,10 +242,20 @@ fn token_endpoint(req: Request, ctx: Context) -> Response {
     Ok(credentials) -> credentials
     Error(Nil) -> #(field("client_id"), field("client_secret"))
   }
-  let ip_key = "token-ip:" <> ctx.peer_ip
+  // Same scheme as admin logins: per client address and client id, per
+  // address, and per client id (high, so that failures from elsewhere cannot
+  // cheaply lock a deployment pipeline out).
+  let client_id = case string.byte_size(client_id) > 128 {
+    True -> ""
+    False -> client_id
+  }
+  let pair_key = "token:" <> ctx.client_ip <> " " <> client_id
+  let ip_key = "token-ip:" <> ctx.client_ip
   let client_key = "token-client:" <> client_id
   use <- bool.lazy_guard(
-    ratelimit.is_blocked(ip_key, 30) || ratelimit.is_blocked(client_key, 10),
+    ratelimit.is_blocked(pair_key, 10)
+      || ratelimit.is_blocked(ip_key, 30)
+      || ratelimit.is_blocked(client_key, 100),
     fn() {
       oauth_error(429, "slow_down", "Too many failed attempts, retry later.")
     },
@@ -256,14 +269,15 @@ fn token_endpoint(req: Request, ctx: Context) -> Response {
   })
   case client_id, clients.authenticate(ctx.clients, client_id, secret) {
     "", _ | _, Error(Nil) -> {
+      ratelimit.record_failure(pair_key, 900)
       ratelimit.record_failure(ip_key, 900)
       ratelimit.record_failure(client_key, 900)
       metrics.incr(metrics.ApiAuthFailures)
       log.warning(
         "token request rejected for client="
-        <> client_id
+        <> ffi.escape_newlines(client_id)
         <> " ip="
-        <> ctx.peer_ip,
+        <> ctx.client_ip,
       )
       let resp =
         oauth_error(401, "invalid_client", "Client authentication failed.")

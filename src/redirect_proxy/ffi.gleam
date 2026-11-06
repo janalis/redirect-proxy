@@ -77,6 +77,10 @@ pub fn ets_get(table: String, key: k) -> Result(v, Nil)
 @external(erlang, "redirect_proxy_ffi", "ets_delete")
 pub fn ets_delete(table: String, key: k) -> Nil
 
+/// Number of entries in a table.
+@external(erlang, "redirect_proxy_ffi", "ets_size")
+pub fn ets_size(table: String) -> Int
+
 @external(erlang, "redirect_proxy_ffi", "ets_to_list")
 pub fn ets_to_list(table: String) -> List(#(k, v))
 

@@ -126,13 +126,22 @@ fn location(resp: response.Response(a)) -> String {
 }
 
 fn session_cookie(resp: response.Response(a)) -> String {
+  cookie_of(resp, "rp_session")
+}
+
+/// `name=value` of a cookie set by a response, "" when not set.
+fn cookie_of(resp: response.Response(a), name: String) -> String {
   resp.headers
   |> list.filter_map(fn(h) {
     case h {
-      #("set-cookie", "rp_session=" <> rest) ->
-        case string.split_once(rest, ";") {
-          Ok(#(value, _)) -> Ok("rp_session=" <> value)
-          Error(Nil) -> Ok("rp_session=" <> rest)
+      #("set-cookie", value) ->
+        case string.split_once(value, "=") {
+          Ok(#(n, rest)) if n == name ->
+            case string.split_once(rest, ";") {
+              Ok(#(value, _)) -> Ok(name <> "=" <> value)
+              Error(Nil) -> Ok(name <> "=" <> rest)
+            }
+          _ -> Error(Nil)
         }
       _ -> Error(Nil)
     }
@@ -360,6 +369,114 @@ pub fn login_failures_are_throttled_test() {
   let statuses = list.map(list.repeat(Nil, 11), fn(_) { attempt() })
   assert list.take(statuses, 10) == list.repeat(401, 10)
   assert list.last(statuses) == Ok(429)
+}
+
+pub fn failures_elsewhere_do_not_lock_the_account_test() {
+  // behind a trusted proxy, throttling uses the forwarded client address
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+      ),
+    )
+  let from = fn(ip, pass) {
+    send(
+      http.Post,
+      env.admin <> "/login",
+      [
+        #("content-type", "application/x-www-form-urlencoded"),
+        #("origin", env.admin),
+        #("x-forwarded-for", ip),
+      ],
+      uri.query_to_string([#("username", "admin"), #("password", pass)]),
+    ).status
+  }
+  let statuses =
+    list.map(list.repeat(Nil, 11), fn(_) { from("198.51.100.7", "x") })
+  assert list.last(statuses) == Ok(429)
+  // the attacker's address is blocked, the account is not
+  assert from("203.0.113.9", admin_password) == 303
+}
+
+pub fn oversized_login_input_is_refused_test() {
+  let env = boot(config.default())
+  let resp =
+    post_form(env, "/login", "", [
+      #("username", string.repeat("a", 65)),
+      #("password", "x"),
+    ])
+  assert resp.status == 401
+  // forms are small: a large body is refused before it is read
+  let resp =
+    post_form(env, "/login", "", [
+      #("username", "admin"),
+      #("password", string.repeat("x", 70_000)),
+    ])
+  assert resp.status == 413
+}
+
+pub fn sessions_end_when_the_user_changes_from_the_cli_test() {
+  let env = boot(config.default())
+  let settings =
+    users.Settings(
+      path: env.dir <> "/users.json",
+      audit_path: env.dir <> "/audit.jsonl",
+    )
+  // a password change made by another process (the CLI) writes the file
+  let #(cookie, _) = login(env)
+  let assert Ok(Nil) =
+    users.set_password(
+      settings,
+      "admin",
+      password.hash_with("another-password", 1000),
+      by: "cli",
+    )
+  let resp = get(env.admin <> "/rules", [#("cookie", cookie)])
+  assert resp.status == 303
+  assert string.starts_with(location(resp), "/login")
+
+  // deleting the user ends their sessions too
+  let assert Ok(Nil) =
+    users.set_password(
+      settings,
+      "admin",
+      password.hash_with(admin_password, 1000),
+      by: "cli",
+    )
+  let #(cookie, _) = login(env)
+  let assert Ok(_) =
+    users.create(settings, "other", password.hash_with("pw", 1000), by: "cli")
+  let assert Ok(Nil) = users.delete(settings, "admin", by: "cli")
+  assert get(env.admin <> "/rules", [#("cookie", cookie)]).status == 303
+}
+
+pub fn own_password_change_keeps_the_current_session_test() {
+  let env = boot(config.default())
+  let #(first, csrf) = login(env)
+  let #(second, _) = login(env)
+  let resp =
+    post_form(env, "/account/password", first, [
+      #("csrf_token", csrf),
+      #("password", "a-brand-new-password"),
+    ])
+  assert resp.status == 303
+  // the browser that changed it continues with a fresh session
+  let fresh = session_cookie(resp)
+  assert fresh != "" && fresh != first
+  assert get(env.admin <> "/rules", [#("cookie", fresh)]).status == 200
+  // every other session of the account ended, the old cookie too
+  assert get(env.admin <> "/rules", [#("cookie", second)]).status == 303
+  assert get(env.admin <> "/rules", [#("cookie", first)]).status == 303
+}
+
+pub fn users_file_is_private_test() {
+  let env = boot(config.default())
+  let assert Ok(info) = simplifile.file_info(env.dir <> "/users.json")
+  assert simplifile.file_info_permissions_octal(info) == 0o600
 }
 
 pub fn login_rejects_bad_password_test() {
@@ -859,11 +976,13 @@ fn sso_login(env: Env) -> response.Response(String) {
   // the browser back to whatever redirect_uri it received, so rewrite it.
   let start = get(env.admin <> "/auth/oidc/start", [])
   assert start.status == 303
+  let state = cookie_of(start, "rp_oidc_state")
+  assert state != ""
   let authorize = get(location(start), [])
   assert authorize.status == 302
   let callback = location(authorize)
   let assert Ok(#(_, query)) = string.split_once(callback, "?")
-  get(env.admin <> "/auth/oidc/callback?" <> query, [])
+  get(env.admin <> "/auth/oidc/callback?" <> query, [#("cookie", state)])
 }
 
 pub fn oidc_login_test() {
@@ -879,10 +998,30 @@ pub fn oidc_login_test() {
 
   // a state can only be used once
   let start = get(env.admin <> "/auth/oidc/start", [])
+  let state = [#("cookie", cookie_of(start, "rp_oidc_state"))]
   let authorize = get(location(start), [])
   let assert Ok(#(_, query)) = string.split_once(location(authorize), "?")
-  assert get(env.admin <> "/auth/oidc/callback?" <> query, []).status == 303
-  assert get(env.admin <> "/auth/oidc/callback?" <> query, []).status == 403
+  assert get(env.admin <> "/auth/oidc/callback?" <> query, state).status == 303
+  assert get(env.admin <> "/auth/oidc/callback?" <> query, state).status == 403
+}
+
+pub fn oidc_callback_from_another_browser_is_refused_test() {
+  // login CSRF: an attacker sends their own callback link to a victim
+  let issuer = start_fake_idp("alice@example.com")
+  let env = oidc_env(issuer, ["example.com"])
+  let start = get(env.admin <> "/auth/oidc/start", [])
+  let authorize = get(location(start), [])
+  let assert Ok(#(_, query)) = string.split_once(location(authorize), "?")
+  let resp = get(env.admin <> "/auth/oidc/callback?" <> query, [])
+  assert resp.status == 403
+  assert session_cookie(resp) == ""
+  // the victim's own login attempt has a different state
+  let other = get(env.admin <> "/auth/oidc/start", [])
+  let resp =
+    get(env.admin <> "/auth/oidc/callback?" <> query, [
+      #("cookie", cookie_of(other, "rp_oidc_state")),
+    ])
+  assert resp.status == 403
 }
 
 pub fn oidc_rejects_disallowed_users_test() {

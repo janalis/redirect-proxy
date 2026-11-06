@@ -5,7 +5,7 @@
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     atomic_write/2, append_line/2,
     pbkdf2_sha256/4, secure_compare/2,
-    ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1,
+    ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
     counter_new/1, counter_add/3, counter_get/2,
     ip_in_cidr/2, valid_cidr/1,
@@ -172,6 +172,9 @@ ets_delete(Table, Key) ->
 
 ets_to_list(Table) ->
     ets:tab2list(binary_to_existing_atom(Table)).
+
+ets_size(Table) ->
+    ets:info(binary_to_existing_atom(Table), size).
 
 %% Delete every entry whose value is a tuple with an expiry (first element)
 %% older than Now. Used to purge sessions and rate-limit windows.
