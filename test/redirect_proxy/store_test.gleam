@@ -791,3 +791,26 @@ pub fn the_counts_file_is_kept_test() {
   let assert Ok(files) = simplifile.read_directory(other)
   assert list.any(files, string.starts_with(_, "hits.json.corrupt-"))
 }
+
+/// Two writes of the same size within one second, in place, leave the
+/// file's stamp (inode, mtime in seconds, size) as it was: the second one
+/// is still picked up, from the content.
+pub fn same_second_same_size_edits_are_seen_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _store = start(s)
+  let write = fn(target) {
+    let assert Ok(Nil) =
+      simplifile.write(
+        s.rules_path,
+        "[{\"id\": \"w\", \"source\": \"/watched\", \"target\": \""
+          <> target
+          <> "\"}]",
+      )
+    Nil
+  }
+  write("/first")
+  support.wait_until(fn() { redirect("/watched") == Ok("/first") }, 2000)
+  write("/again")
+  support.wait_until(fn() { redirect("/watched") == Ok("/again") }, 2000)
+}

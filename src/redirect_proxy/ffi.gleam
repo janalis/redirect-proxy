@@ -405,6 +405,11 @@ pub type FileStamp
 @external(erlang, "redirect_proxy_ffi", "file_stamp")
 pub fn file_stamp(path: String) -> FileStamp
 
+/// Whether the file was modified within the last two seconds: a stamp that
+/// did not change may then still hide a change of the same size.
+@external(erlang, "redirect_proxy_ffi", "stamp_is_recent")
+pub fn stamp_is_recent(stamp: FileStamp) -> Bool
+
 /// Whether a (lower-case) host holds only letters, digits, `-`, `_` and `.`.
 @external(erlang, "redirect_proxy_ffi", "is_host_name")
 pub fn is_host_name(host: String) -> Bool
