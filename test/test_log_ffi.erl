@@ -1,6 +1,6 @@
 -module(test_log_ffi).
 -export([handler_level/0, primary_level/0, formatter_module/0, format_json/2]).
--export([capture_start/0, capture_stop/0, log/2]).
+-export([capture_start/0, capture_stop/0, capture_until/2, log/2]).
 
 handler_level() ->
     {ok, #{level := Level}} = logger:get_handler_config(default),
@@ -42,6 +42,26 @@ capture_start() ->
 capture_stop() ->
     _ = logger:remove_handler(test_capture),
     collect([]).
+
+%% Waits up to Timeout ms for a captured message containing Text, then stops
+%% capturing: whether it came.
+capture_until(Text, Timeout) ->
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    Found = wait_for(Text, Deadline),
+    _ = logger:remove_handler(test_capture),
+    _ = collect([]),
+    Found.
+
+wait_for(Text, Deadline) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {test_captured_log, Msg} ->
+            case binary:match(Msg, Text) of
+                nomatch -> wait_for(Text, Deadline);
+                _ -> true
+            end
+    after Left -> false
+    end.
 
 collect(Acc) ->
     receive

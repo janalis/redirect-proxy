@@ -21,7 +21,7 @@
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
-    normalise_path/1, encode_non_ascii/1
+    normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1
 ]).
 
 -include_lib("kernel/include/file.hrl").
@@ -882,6 +882,18 @@ encode_non_ascii(Url) ->
         true -> << <<(case C >= 16#80 of true -> escape(C); false -> <<C>> end)/binary>>
                    || <<C>> <= Url >>
     end.
+
+is_ascii(Bin) -> not has_non_ascii(Bin).
+
+%% Whether string:trim could change Bin: its first or last byte is a space,
+%% a control character or not ASCII (Unicode white space is decided by
+%% string:trim itself). Gleam's string.trim compiles its patterns on every
+%% call: a rule set is trimmed field by field when it loads.
+needs_trim(<<>>) -> false;
+needs_trim(Bin) ->
+    not (is_plain(binary:first(Bin)) andalso is_plain(binary:last(Bin))).
+
+is_plain(C) -> C > 32 andalso C < 127.
 
 has_non_ascii(<<C, _/binary>>) when C >= 16#80 -> true;
 has_non_ascii(<<_, Rest/binary>>) -> has_non_ascii(Rest);

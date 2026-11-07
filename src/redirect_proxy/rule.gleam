@@ -334,15 +334,15 @@ pub fn describe_json_error(error: json.DecodeError) -> String {
 /// human readable errors (each prefixed with the field name and a colon).
 pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   let host = normalise_host(rule.host)
-  let source = string.trim(rule.source)
-  let target = string.trim(rule.target)
-  let note = string.trim(rule.note)
-  let query = case string.trim(rule.query) {
+  let source = trim(rule.source)
+  let target = trim(rule.target)
+  let note = trim(rule.note)
+  let query = case trim(rule.query) {
     "?" <> q -> q
     q -> q
   }
-  let starts_at = string.trim(rule.starts_at)
-  let expires_at = string.trim(rule.expires_at)
+  let starts_at = trim(rule.starts_at)
+  let expires_at = trim(rule.expires_at)
   let tags = normalise_tags(rule.tags)
   let rule =
     Rule(
@@ -657,17 +657,23 @@ pub fn is_host_name(host: String) -> Bool {
 }
 
 pub fn normalise_host(host: String) -> String {
-  case string.trim(host) |> string.lowercase {
+  case trim(host) |> string.lowercase {
     "" -> "*"
     h -> h
   }
 }
 
 fn is_ascii(value: String) -> Bool {
-  string.byte_size(value) == string.length(value)
-  && list.all(string.to_utf_codepoints(value), fn(c) {
-    string.utf_codepoint_to_int(c) < 128
-  })
+  ffi.is_ascii(value)
+}
+
+/// `string.trim`, without its cost for the usual value that has nothing to
+/// trim (it runs for every field of every rule when a file loads).
+fn trim(value: String) -> String {
+  case ffi.needs_trim(value) {
+    True -> string.trim(value)
+    False -> value
+  }
 }
 
 fn valid_host(host: String) -> Bool {

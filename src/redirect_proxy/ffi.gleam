@@ -299,6 +299,15 @@ pub fn locked_file(
 pub fn normalise_path(path: String) -> String
 
 /// Percent-encodes the non-ASCII bytes of a URL.
+/// Whether every byte is ASCII.
+@external(erlang, "redirect_proxy_ffi", "is_ascii")
+pub fn is_ascii(text: String) -> Bool
+
+/// False when `string.trim` would return `text` unchanged for sure: its
+/// first and last bytes are visible ASCII characters.
+@external(erlang, "redirect_proxy_ffi", "needs_trim")
+pub fn needs_trim(text: String) -> Bool
+
 @external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
 pub fn encode_non_ascii(url: String) -> String
 
