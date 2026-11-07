@@ -2563,3 +2563,28 @@ pub fn proxy_role_header_test() {
   assert get(env.admin <> "/import", [#("x-forwarded-user", "sam")]).status
     == 403
 }
+
+/// Dot segments are removed before matching: a capture cannot climb out of
+/// the target path (`/v1/../../x` would give `https://docs.example.com/x`).
+pub fn dot_segments_cannot_escape_the_target_path_test() {
+  let env = boot(config.default())
+  let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let exchange = fn(path) {
+    let request =
+      "GET "
+      <> path
+      <> " HTTP/1.1\r\nhost: docs.test\r\nconnection: close\r\n\r\n"
+    let assert Ok(text) =
+      bit_array.to_string(raw_exchange(port, [bit_array.from_string(request)]))
+    text
+  }
+  assert string.starts_with(exchange("/v1/../../x"), "HTTP/1.1 404 ")
+  assert string.starts_with(exchange("/v1/%2E%2E/%2e%2E/x"), "HTTP/1.1 404 ")
+  assert string.contains(
+    exchange("/v1/a/../b"),
+    "\r\nlocation: https://docs.example.com/v2/b\r\n",
+  )
+  // browsers read `\` as `/`: a raw backslash never reaches the matcher
+  assert !string.contains(exchange("/v1/..\\..\\x"), "location:")
+}

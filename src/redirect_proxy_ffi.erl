@@ -699,13 +699,49 @@ rescue(Fun) ->
 %% %XX escapes of unreserved characters (A-Z a-z 0-9 - . _ ~) and of valid
 %% UTF-8 sequences are decoded (/caf%C3%A9 -> /café), and the escapes kept
 %% (reserved characters such as %2F, %3F, %23, %25, invalid UTF-8) are
-%% written in upper case. A lone `%` is written %25. Applying it twice gives
-%% the same result.
+%% written in upper case. A lone `%` is written %25. Then the `.` and `..`
+%% segments are removed (RFC 3986, 5.2.4), after the decoding so that
+%% `%2E%2E` counts: a capture must not climb out of its target's path
+%% (`/docs/../../b` with `/docs/(.*)` -> `https://cdn/a/$1`). Applying it
+%% twice gives the same result.
 normalise_path(Path) ->
-    case has_percent(Path) of
+    Decoded = case has_percent(Path) of
         false -> Path;
         true -> iolist_to_binary(normalise(Path))
-    end.
+    end,
+    remove_dot_segments(Decoded).
+
+%% Only absolute paths; `/.` is searched first (a BIF scan) so that the usual
+%% path is returned as is.
+remove_dot_segments(<<"/", _/binary>> = Path) ->
+    case binary:match(Path, <<"/.">>) of
+        nomatch -> Path;
+        _ ->
+            [<<>> | Segments] = binary:split(Path, <<"/">>, [global]),
+            case lists:any(fun is_dot_segment/1, Segments) of
+                false -> Path;
+                true ->
+                    Kept = drop_dots(Segments, []),
+                    iolist_to_binary([[<<"/">>, S] || S <- Kept])
+            end
+    end;
+remove_dot_segments(Path) -> Path.
+
+is_dot_segment(<<".">>) -> true;
+is_dot_segment(<<"..">>) -> true;
+is_dot_segment(_) -> false.
+
+%% A dot segment that ends the path leaves a trailing `/` (`/a/b/..` ->
+%% `/a/`); `..` above the root stays at the root.
+drop_dots([], Acc) -> lists:reverse(Acc);
+drop_dots([<<".">>], Acc) -> lists:reverse([<<>> | Acc]);
+drop_dots([<<"..">>], Acc) -> lists:reverse([<<>> | pop(Acc)]);
+drop_dots([<<".">> | Rest], Acc) -> drop_dots(Rest, Acc);
+drop_dots([<<"..">> | Rest], Acc) -> drop_dots(Rest, pop(Acc));
+drop_dots([S | Rest], Acc) -> drop_dots(Rest, [S | Acc]).
+
+pop([]) -> [];
+pop([_ | Acc]) -> Acc.
 
 %% On every request: a plain scan, cheaper than binary:match for short paths.
 has_percent(<<$%, _/binary>>) -> true;

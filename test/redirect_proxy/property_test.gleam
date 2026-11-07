@@ -314,12 +314,17 @@ pub fn path_normalisation_is_idempotent_test() {
   use path <- qcheck.given(
     qcheck.string_from(
       qcheck.codepoint_from_strings("/", [
-        "a", "%", "2", "F", "f", "C", "3", "A", "9", "7", "E", "é", "-",
+        "a", "%", "2", "F", "f", "C", "3", "A", "9", "7", "E", "e", "é", "-",
+        ".", ".", "/",
       ]),
     ),
   )
   let once = ffi.normalise_path(path)
   assert ffi.normalise_path(once) == once
+  // no `.` or `..` segment survives in an absolute path
+  let absolute = string.starts_with(once, "/")
+  assert !absolute
+    || !list.any(string.split(once, "/"), fn(s) { s == "." || s == ".." })
   // an escaped slash or percent sign is never decoded
   assert !string.contains(ffi.normalise_path("/x%2Fy%25"), "/x/")
   assert string.contains(ffi.normalise_path("/x%2fy"), "%2F")
