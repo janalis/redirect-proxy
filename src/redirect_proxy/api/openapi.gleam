@@ -408,7 +408,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
           ),
         ]),
         op("post", "/api/redirects", "Create a redirection", [
-          body(ref("RuleInput"), "application/json"),
+          body(ref("RuleCreate"), "application/json"),
           #(
             "responses",
             json.object([
@@ -436,7 +436,13 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               ),
               ..list.append(
                 body_errors(),
-                errors([#("422", "Validation failed.")]),
+                errors([
+                  #(
+                    "409",
+                    "A redirection with the id given already exists (a retried request). Location points to it.",
+                  ),
+                  #("422", "Validation failed."),
+                ]),
               )
             ]),
           ),
@@ -890,6 +896,24 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
           object_schema(registry, "RuleInput", rule_properties(False), [
             "source", "target",
           ]),
+        ),
+        #(
+          "RuleCreate",
+          object_schema(
+            registry,
+            "RuleCreate",
+            [
+              #(
+                "id",
+                typed(
+                  "string",
+                  "Optional id chosen by the client (up to 128 letters, digits, '.', '_', '~' or '-'). Retrying a creation with the same id answers 409 instead of creating a second redirection.",
+                ),
+              ),
+              ..rule_properties(False)
+            ],
+            ["source", "target"],
+          ),
         ),
         #(
           "RulePatch",

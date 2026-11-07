@@ -328,17 +328,51 @@ pub fn create_rule(
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
     Error(e) -> problem.validation([rule.describe_json_error(e)])
-    Ok(input) ->
-      case
-        store.create(ctx.store, rule.Rule(..input, id: ""), principal.actor)
-      {
-        Ok(created) ->
-          rule_response(201, created)
-          |> wisp.set_header("location", "/api/redirects/" <> created.id)
-        Error(errors) -> problem.validation(errors)
+    Ok(input) -> {
+      // an id chosen by the client makes a retry safe: the second request
+      // gets 409 instead of creating a second rule
+      let id = string.trim(input.id)
+      case valid_client_id(id) {
+        False ->
+          problem.validation([
+            "id: up to 128 letters, digits, '.', '_', '~' or '-'",
+          ])
+        True ->
+          case
+            store.create(ctx.store, rule.Rule(..input, id:), principal.actor)
+          {
+            Ok(created) ->
+              rule_response(201, created)
+              |> wisp.set_header("location", "/api/redirects/" <> created.id)
+            Error(["id: already exists"]) ->
+              problem.conflict("A redirection with this id already exists.")
+              |> wisp.set_header("location", "/api/redirects/" <> id)
+            Error(errors) -> problem.validation(errors)
+          }
       }
+    }
   }
   |> params.add_deprecation_headers(deprecated)
+}
+
+/// An id given at creation ("" lets the server choose one): it goes in
+/// URLs, so only unreserved URL characters.
+fn valid_client_id(id: String) -> Bool {
+  id == ""
+  || {
+    string.byte_size(id) <= 128
+    && string.to_utf_codepoints(id)
+    |> list.all(fn(c) {
+      let c = string.utf_codepoint_to_int(c)
+      { c >= 0x30 && c <= 0x39 }
+      || { c >= 0x41 && c <= 0x5A }
+      || { c >= 0x61 && c <= 0x7A }
+      || c == 0x2E
+      || c == 0x5F
+      || c == 0x7E
+      || c == 0x2D
+    })
+  }
 }
 
 /// The version `If-Match` requires of rule `id`, if the header is set. With a
