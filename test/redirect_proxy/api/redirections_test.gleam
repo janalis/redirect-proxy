@@ -777,3 +777,30 @@ pub fn writes_can_require_if_match_test() {
   assert patch.status == 200
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 428
 }
+
+/// Imported ids can hold any character: URLs carry them percent-encoded.
+/// Ids that name an operation (`export`, `bulk`...) are refused.
+pub fn imported_ids_are_reachable_by_url_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Write])
+  let body = "[{\"id\":\"rule 1/é\",\"source\":\"/s\",\"target\":\"/t\"}]"
+  assert api(env, Post, "/api/redirects/import", token, body).status == 200
+  let path = "/api/redirects/" <> uri.percent_encode("rule 1/é")
+  let resp = api(env, Get, path, token, "")
+  assert resp.status == 200
+  assert field(resp.body, ["id"], decode.string) == "rule 1/é"
+  assert api(env, Delete, path, token, "").status == 204
+  let reserved = "[{\"id\":\"export\",\"source\":\"/s\",\"target\":\"/t\"}]"
+  let refused = api(env, Post, "/api/redirects/import", token, reserved)
+  assert refused.status == 422
+  assert string.contains(refused.body, "reserved")
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"id\":\"bulk\",\"source\":\"/b\",\"target\":\"/c\"}",
+    )
+  assert created.status == 422
+}

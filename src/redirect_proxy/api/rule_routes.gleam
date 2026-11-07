@@ -361,7 +361,8 @@ pub fn create_rule(
       case valid_client_id(id) {
         False ->
           problem.validation([
-            "id: up to 128 letters, digits, '.', '_', '~' or '-'",
+            "id: up to 128 letters, digits, '.', '_', '~' or '-', and not "
+            <> string.join(rule.reserved_ids, ", "),
           ])
         True ->
           case
@@ -386,7 +387,8 @@ pub fn create_rule(
 fn valid_client_id(id: String) -> Bool {
   id == ""
   || {
-    string.byte_size(id) <= 128
+    !rule.is_reserved_id(id)
+    && string.byte_size(id) <= 128
     && string.to_utf_codepoints(id)
     |> list.all(fn(c) {
       let c = string.utf_codepoint_to_int(c)

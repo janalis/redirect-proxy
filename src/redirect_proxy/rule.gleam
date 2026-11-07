@@ -459,6 +459,17 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
   }
 }
 
+// --- ids -------------------------------------------------------------------
+
+/// Ids a new rule cannot take: they name pages of the admin or operations of
+/// the API at the place of a rule id (`/rules/bulk`, `/api/redirects/export`),
+/// or path segments that are removed (`.`, `..`).
+pub const reserved_ids = ["new", "bulk", "export", "import", ".", ".."]
+
+pub fn is_reserved_id(id: String) -> Bool {
+  list.contains(reserved_ids, id)
+}
+
 // --- query conditions -------------------------------------------------------
 
 /// The parameters of `rule.query`, decoded and sorted (for comparisons).

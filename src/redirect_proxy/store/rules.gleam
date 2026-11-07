@@ -221,7 +221,17 @@ pub fn prepare_import(
       updated_by: actor_name,
     )
   })
-  |> validate_all
+  |> fn(rules) {
+    case list.filter(rules, fn(r) { rule.is_reserved_id(r.id) }) {
+      [] -> validate_all(rules)
+      reserved ->
+        Error(
+          list.map(reserved, fn(r) {
+            "id: " <> r.id <> " is reserved (it names a page or an operation)"
+          }),
+        )
+    }
+  }
 }
 
 pub fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
