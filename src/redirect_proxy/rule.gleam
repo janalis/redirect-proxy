@@ -282,6 +282,20 @@ pub fn file_to_string(rules: List(Rule)) -> String {
   |> json.to_string
 }
 
+/// `file_to_string`, encoding again only the rules that changed since the
+/// calling process last wrote a file this way (the store: it rewrites the
+/// whole file after each change). The same text as `file_to_string`.
+pub fn file_to_string_cached(rules: List(Rule)) -> String {
+  "{\"version\":"
+  <> int.to_string(file_format_version)
+  <> ",\"rules\":["
+  <> string.join(
+    ffi.encode_cached(rules, fn(r) { json.to_string(to_json(r)) }),
+    ",",
+  )
+  <> "]}"
+}
+
 /// Parses a redirections file. Both the versioned object form
 /// (`{"version": 1, "rules": [...]}`) and a bare array of rules are accepted.
 pub fn file_from_string(content: String) -> Result(List(Rule), String) {

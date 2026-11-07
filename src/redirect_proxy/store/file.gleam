@@ -114,7 +114,7 @@ pub fn persist(files: Files, rules: List(Rule)) -> Result(String, String) {
     |> result.map_error(describe),
   )
   use Nil <- result.try(backup(files))
-  let content = rule.file_to_string(rules) <> "\n"
+  let content = rule.file_to_string_cached(rules) <> "\n"
   use Nil <- result.try(ffi.atomic_write(files.rules_path, content))
   Ok(fingerprint(bit_array.from_string(content)))
 }
