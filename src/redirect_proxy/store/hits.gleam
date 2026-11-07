@@ -2,6 +2,7 @@
 
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/set
@@ -27,8 +28,15 @@ pub fn load(path: String) -> Nil {
         Ok(content) ->
           case json.parse(content, decoder()) {
             Ok(records) -> matcher.seed_hits(snapshot.current(), records)
-            Error(_) ->
-              log.warning(path <> " is not a valid hit count file: ignored")
+            Error(_) -> {
+              // set aside, not overwritten by the first save: the counts
+              // may still be recovered from it
+              let aside = path <> ".corrupt-" <> int.to_string(ffi.now_millis())
+              let _ = simplifile.rename(path, aside)
+              log.warning(
+                path <> " is not a valid hit count file: moved to " <> aside,
+              )
+            }
           }
       }
   }
@@ -73,7 +81,9 @@ pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
         ])
         |> json.to_string
       let content = content <> "\n"
-      case content == last.content {
+      // unchanged, and still there (deleted, it is written again: an idle
+      // server would otherwise lose every count at its next start)
+      case content == last.content && simplifile.is_file(path) == Ok(True) {
         True -> last
         False ->
           case ffi.atomic_write(path, content) {

@@ -894,10 +894,10 @@ fn mutate(
         Error(reason) -> #(state, Error(to_error(reason)))
         Ok(state) ->
           case change(state) {
-            Ok(#(value, rules, fingerprint)) -> #(
-              State(..state, rules:, fingerprint:),
-              Ok(value),
-            )
+            Ok(#(value, rules, fingerprint)) -> {
+              let changed = State(..state, rules:, fingerprint:)
+              #(save_hits_if_removed(state.rules, changed), Ok(value))
+            }
             Error(error) -> #(state, Error(error))
           }
       }
@@ -964,6 +964,18 @@ fn files(settings: Settings) -> store_file.Files {
     backups_dir: settings.backups_dir,
     backups: settings.backups,
   )
+}
+
+/// Saves the hit counts at once when a change removed rules: the saved
+/// counts of a deleted rule would otherwise stay in the file until the next
+/// save, and a crash meanwhile would restore them onto a new rule created
+/// with the same id.
+fn save_hits_if_removed(before: List(Rule), after: State) -> State {
+  let kept = set.from_list(list.map(after.rules, fn(r) { r.id }))
+  case list.any(before, fn(r) { !set.contains(kept, r.id) }) {
+    True -> State(..after, hits_written: save_hits(after))
+    False -> after
+  }
 }
 
 fn save_hits(state: State) -> hits.Written {

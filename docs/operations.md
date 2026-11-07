@@ -42,7 +42,10 @@
   last hit time across restarts. It is written every minute, when a stop
   begins (`SIGTERM`) and right before the VM stops, so the requests served
   while draining are counted and a crash loses at most a minute of counts.
-  Deleting it resets the counts.
+  A change that deletes rules saves them at once. To reset the counts, stop
+  the server, then delete the file (deleted while it runs, it is written
+  again from the counts in memory). A file that cannot be read is moved
+  aside to `hits.json.corrupt-<ms>`, not overwritten.
 - **Backups.** Each change keeps the previous file as
   `<data_dir>/backups/redirects-<ms>.json`, up to `storage.backups` copies.
 - **Audit.** `<data_dir>/audit.jsonl` records who changed what, with the rule

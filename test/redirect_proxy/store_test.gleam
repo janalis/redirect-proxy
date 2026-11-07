@@ -755,3 +755,39 @@ pub fn filter_by_tag_test() {
   // the text search covers tags too
   assert ids(store_rules.Filter(..none, text: "legac")) == ["/b"]
 }
+
+/// Deleting a rule saves the counts at once: a crash before the next save
+/// must not restore its count onto a new rule with the same id.
+pub fn deleting_a_rule_saves_the_counts_at_once_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) =
+    store.create(s, Rule(..new_rule("/promo", "/x"), id: "promo"), by: "t")
+  matcher.record_hit(snapshot.current(), created.id)
+  store.flush_hits(s)
+  let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
+  assert string.contains(saved, "\"promo\"")
+  let assert Ok(_) = store.delete(s, "promo", by: "t")
+  let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
+  assert !string.contains(saved, "\"promo\"")
+}
+
+/// The counts file deleted while the server runs is written again, even
+/// when the counts did not change; one that cannot be read is moved aside.
+pub fn the_counts_file_is_kept_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) = store.create(s, new_rule("/kept", "/x"), by: "t")
+  matcher.record_hit(snapshot.current(), created.id)
+  store.flush_hits(s)
+  let assert Ok(Nil) = simplifile.delete(dir <> "/hits.json")
+  store.flush_hits(s)
+  assert simplifile.is_file(dir <> "/hits.json") == Ok(True)
+
+  let other = support.temp_dir()
+  let assert Ok(Nil) = simplifile.write(other <> "/hits.json", "{ not json")
+  snapshot.publish(matcher.empty())
+  let _ = start(settings(other, 0))
+  let assert Ok(files) = simplifile.read_directory(other)
+  assert list.any(files, string.starts_with(_, "hits.json.corrupt-"))
+}
