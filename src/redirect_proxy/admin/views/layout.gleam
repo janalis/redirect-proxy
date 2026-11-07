@@ -252,6 +252,15 @@ pub fn invalid_attributes(
 }
 
 /// The messages about a field, under it.
+/// An `<option>` of a select, selected when it is `current`.
+pub fn select_option(
+  value: String,
+  label: String,
+  current: String,
+) -> Element(Nil) {
+  h.option([a.value(value), a.selected(value == current)], label)
+}
+
 pub fn field_feedback(errors: List(String), field: String) -> Element(Nil) {
   case field_errors(errors, field) {
     [] -> element.none()
