@@ -85,7 +85,15 @@ pub fn create(
 /// The live session of a token. A session unused for `idle_timeout` seconds
 /// (0: no limit) or past its lifetime is destroyed.
 pub fn get(token: String, idle_timeout: Int) -> Result(Session, Nil) {
-  let now = ffi.now_seconds()
+  get_at(token, idle_timeout, ffi.now_seconds())
+}
+
+/// `get` at a given time (seconds since the epoch), for tests.
+pub fn get_at(
+  token: String,
+  idle_timeout: Int,
+  now: Int,
+) -> Result(Session, Nil) {
   case ffi.ets_get(table, token) {
     Ok(#(expires_at, session)) -> {
       let session: Session = session

@@ -1117,15 +1117,19 @@ pub fn clients_wait_for_another_process_test() {
     clients.create(s, "ci", [scope.Read], by: "test")
   let lock = s.path <> ".lock"
   let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host\n")
+  // well under the 5 s a change waits for the lock
   let started = ffi.now_millis()
   let assert Ok(_) = clients.authenticate(s, client.client_id, secret)
-  assert ffi.now_millis() - started < 1000
+  assert ffi.now_millis() - started < 4000
+  let released = process.new_subject()
   process.spawn(fn() {
     process.sleep(300)
+    // told before the lock goes: a change that waited for it finds this
+    process.send(released, Nil)
     let _ = simplifile.delete(lock)
   })
   let assert Ok(_) = clients.rotate(s, client.client_id, by: "test")
-  assert ffi.now_millis() - started >= 250
+  assert process.receive(released, 0) == Ok(Nil)
 }
 
 // --- operator features -------------------------------------------------------

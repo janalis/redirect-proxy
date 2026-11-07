@@ -598,9 +598,7 @@ pub fn hit_counts_survive_a_restart_test() {
   let assert Ok(created) = store.create(s, new_rule("/counted", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   matcher.record_hit(snapshot.current(), created.id)
-  support.set_draining(True)
-  wait_for_file(dir <> "/hits.json", 30)
-  support.set_draining(False)
+  support.with_draining(fn() { wait_for_file(dir <> "/hits.json", 30) })
   let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
   assert string.contains(saved, created.id)
   // a fresh start (nothing published yet) restores them
@@ -617,13 +615,13 @@ pub fn hits_counted_while_draining_are_kept_test() {
   let s = start(settings(dir, 0))
   let assert Ok(created) = store.create(s, new_rule("/drained", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
-  support.set_draining(True)
-  wait_for_file(dir <> "/hits.json", 30)
-  // served during the grace period
-  matcher.record_hit(snapshot.current(), created.id)
-  matcher.record_hit(snapshot.current(), created.id)
-  store.flush_hits(s)
-  support.set_draining(False)
+  support.with_draining(fn() {
+    wait_for_file(dir <> "/hits.json", 30)
+    // served during the grace period
+    matcher.record_hit(snapshot.current(), created.id)
+    matcher.record_hit(snapshot.current(), created.id)
+    store.flush_hits(s)
+  })
   snapshot.publish(matcher.empty())
   let _ = start(settings(dir, 0))
   assert matcher.hit_count(snapshot.current(), created.id) == 3
