@@ -312,6 +312,11 @@ pub fn needs_trim(text: String) -> Bool
 /// last time for an equal item. Only the last list's encodings are kept.
 /// A host without its port (`[::1]:8080` is `[::1]`, `a.test:80` is
 /// `a.test`).
+/// The owner of `dir` when this OS process runs as root and `dir` belongs
+/// to another user (CLI commands would create root-owned files there).
+@external(erlang, "redirect_proxy_ffi", "data_dir_owner_mismatch")
+pub fn data_dir_owner_mismatch(dir: String) -> Result(String, Nil)
+
 @external(erlang, "redirect_proxy_ffi", "strip_port")
 pub fn strip_port(host: String) -> String
 

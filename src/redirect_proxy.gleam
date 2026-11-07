@@ -52,7 +52,8 @@ Usage:
   redirect-proxy version
   redirect-proxy help
 
-The configuration file defaults to $RP_CONFIG. Every setting can be
+The configuration file defaults to $RP_CONFIG, else to
+/etc/redirect-proxy/config.toml when it exists. Every setting can be
 overridden with RP_* environment variables (see docs/configuration.md).
 Passwords for `user add`/`user passwd` are read from $RP_PASSWORD or
 prompted for.
@@ -80,7 +81,7 @@ pub fn run(args: List(String)) -> Result(Nil, String) {
   let #(config_path, args) = extract_option(args, "--config")
   let config_path =
     result.lazy_or(config_path, fn() { envoy.get("RP_CONFIG") })
-    |> result.unwrap("")
+    |> result.lazy_unwrap(default_config_path)
   case args {
     [] | ["serve"] -> serve(config_path)
     ["check-config"] -> check_config(config_path)
@@ -131,6 +132,40 @@ fn extract_option(
         }
       }
   }
+}
+
+/// Without `--config` nor `RP_CONFIG`: the file the packages install, when
+/// there is one (`sudo` drops `RP_CONFIG`: a command run with it would
+/// otherwise change `./data` instead of the server's data), else the
+/// defaults.
+fn default_config_path() -> String {
+  case simplifile.is_file(system_config) {
+    Ok(True) -> system_config
+    _ -> ""
+  }
+}
+
+const system_config = "/etc/redirect-proxy/config.toml"
+
+/// `load`, for commands that change the data: says which data directory
+/// they change, and warns when root changes a directory owned by another
+/// user (the files it creates would belong to root, and the service could
+/// not read them).
+fn load_for_change(config_path: String) -> Result(Config, String) {
+  use cfg <- result.map(load(config_path))
+  io.println_error("data directory: " <> cfg.storage.data_dir)
+  case ffi.data_dir_owner_mismatch(cfg.storage.data_dir) {
+    Ok(owner) ->
+      io.println_error(
+        "warning: running as root in a data directory owned by "
+        <> owner
+        <> ": files created now will belong to root; run as that user (sudo -u "
+        <> owner
+        <> " ...)",
+      )
+    Error(Nil) -> Nil
+  }
+  cfg
 }
 
 /// The configuration, applied to what every command shares: commands that
@@ -258,7 +293,7 @@ fn user_add(
   username: String,
   role_name: String,
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use Nil <- result.try(users.validate_username(users.normalise(username)))
   use new_role <- result.try(parse_role(role_name))
   use pass <- result.try(read_new_password())
@@ -280,7 +315,7 @@ fn user_role(
   username: String,
   role_name: String,
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use new_role <- result.try(parse_role(role_name))
   use Nil <- result.try(users.set_role(
     app.users_settings(cfg),
@@ -298,7 +333,7 @@ fn user_role(
 }
 
 fn user_passwd(config_path: String, username: String) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use pass <- result.try(read_new_password())
   use Nil <- result.try(users.set_password(
     app.users_settings(cfg),
@@ -311,7 +346,7 @@ fn user_passwd(config_path: String, username: String) -> Result(Nil, String) {
 }
 
 fn user_delete(config_path: String, username: String) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use Nil <- result.try(users.delete(app.users_settings(cfg), username, "cli"))
   io.println("user " <> users.normalise(username) <> " deleted")
   Ok(Nil)
@@ -335,7 +370,7 @@ fn client_add(
   name: String,
   flags: List(String),
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use names <- result.try(scope_flags(flags, []))
   use scopes <- result.try(case names {
     [] -> Ok([scope.Write])
@@ -393,7 +428,7 @@ fn client_rotate(
   config_path: String,
   client_id: String,
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use secret <- result.try(clients.rotate(
     app.clients_settings(cfg),
     client_id,
@@ -408,7 +443,7 @@ fn client_delete(
   config_path: String,
   client_id: String,
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use Nil <- result.try(clients.delete(
     app.clients_settings(cfg),
     client_id,
@@ -459,7 +494,7 @@ fn rules_import(
   file: String,
   mode: store.ImportMode,
 ) -> Result(Nil, String) {
-  use cfg <- result.try(load(config_path))
+  use cfg <- result.try(load_for_change(config_path))
   use content <- result.try(
     simplifile.read(file)
     |> result.map_error(fn(e) {
