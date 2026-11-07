@@ -28,16 +28,13 @@ import redirect_proxy/audit
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/log
-import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
-import redirect_proxy/snapshot
+import redirect_proxy/store/checker
+import redirect_proxy/store/commit
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/hits
-import redirect_proxy/store/rules.{
-  check_conflicts, check_lint, check_loop, merge, prepare_import, warn_loops,
-  warn_problems,
-} as store_rules
+import redirect_proxy/store/rules.{merge, prepare_import} as store_rules
 import simplifile
 
 /// Milliseconds between checks for rules starting or expiring.
@@ -218,14 +215,36 @@ pub type Store =
 
 /// Starts the store. Fails if the redirections file exists but is invalid, so
 /// that a broken file never silently replaces the configuration.
+/// The state of a store that just loaded `rules`.
+fn initial_state(
+  settings: Settings,
+  rules: List(Rule),
+  fingerprint: String,
+) -> State {
+  let now = ffi.now_seconds()
+  State(
+    settings:,
+    rules:,
+    fingerprint:,
+    stamp: ffi.file_stamp(settings.rules_path),
+    hits_saved_at: now,
+    hits_saved_draining: False,
+    hits_written: hits.nothing_written,
+    checked_at: now,
+    next_boundary: #(rules, rule.next_boundary(rules, now)),
+  )
+}
+
 pub fn start(
   settings: Settings,
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
-  ffi.ets_new(last_good_table)
-  ffi.ets_new(checkers_table)
+  commit.init()
+  checker.init()
   actor.new_with_initialiser(30_000, fn(subject) {
-    start_checker(subject, settings)
+    checker.start(settings.rules_path, settings.ignore_trailing_slash, fn() {
+      all(subject)
+    })
     let started = ffi.monotonic_micros()
     use state <- result.try(
       case
@@ -236,8 +255,7 @@ pub fn start(
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          publish(matcher.build(rules), settings, rules)
-          request_check(settings, Problems)
+          commit.loaded(target(settings), rules, checker.Problems)
           metrics.reloaded(ffi.monotonic_micros() - started)
           log.info(
             "loaded "
@@ -245,22 +263,7 @@ pub fn start(
             <> " redirection rule(s) from "
             <> settings.rules_path,
           )
-          Ok(
-            State(
-              settings:,
-              rules:,
-              fingerprint:,
-              stamp: ffi.file_stamp(settings.rules_path),
-              hits_saved_at: ffi.now_seconds(),
-              hits_saved_draining: False,
-              hits_written: hits.nothing_written,
-              checked_at: ffi.now_seconds(),
-              next_boundary: #(
-                rules,
-                rule.next_boundary(rules, ffi.now_seconds()),
-              ),
-            ),
-          )
+          Ok(initial_state(settings, rules, fingerprint))
         }
         Error(reason) ->
           // A restart after a crash: the last good rules are still being
@@ -268,7 +271,7 @@ pub fn start(
           // gives up and stops the whole node. The empty fingerprint makes
           // the next change re-read the file first (and refuse while it is
           // invalid).
-          case ffi.ets_get(last_good_table, settings.rules_path) {
+          case commit.last_good(settings.rules_path) {
             Ok(rules) -> {
               metrics.incr(metrics.ReloadFailures)
               log.error(
@@ -277,22 +280,7 @@ pub fn start(
                 <> " rule(s) loaded before: "
                 <> reason,
               )
-              Ok(
-                State(
-                  settings:,
-                  rules:,
-                  fingerprint: "",
-                  stamp: ffi.file_stamp(settings.rules_path),
-                  hits_saved_at: ffi.now_seconds(),
-                  hits_saved_draining: False,
-                  hits_written: hits.nothing_written,
-                  checked_at: ffi.now_seconds(),
-                  next_boundary: #(
-                    rules,
-                    rule.next_boundary(rules, ffi.now_seconds()),
-                  ),
-                ),
-              )
+              Ok(initial_state(settings, rules, ""))
             }
             Error(Nil) -> Error(reason)
           }
@@ -532,8 +520,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use valid <- result.try(rule.validate(candidate))
         let rules = list.append(state.rules, [valid])
         // a new rule only adds matches: a loop it makes goes through it
-        use fingerprint <- result.try(commit_rule(
-          state.settings,
+        use fingerprint <- result.try(commit.one(
+          target(state.settings),
           valid,
           rules,
           uncovers: False,
@@ -577,7 +565,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           })
         // the old version may have shadowed a rule that loops
         use fingerprint <- result.try(
-          commit_rule(state.settings, valid, rules, uncovers: True)
+          commit.one(target(state.settings), valid, rules, uncovers: True)
           |> result.map_error(Invalid),
         )
         audit.record(
@@ -604,7 +592,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         // removing a rule adds no conflict (and a file with conflicts can
         // still lose rules); it may uncover a loop it was shadowing
         use fingerprint <- result.try(
-          commit_rules(state.settings, rules, check_conflicts: False)
+          commit.many(target(state.settings), rules, check_conflicts: False)
           |> result.map_error(Invalid),
         )
         audit.record(
@@ -631,7 +619,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
         }
-        let outcome = commit_rules(state.settings, rules, check_conflicts: True)
+        let outcome =
+          commit.many(target(state.settings), rules, check_conflicts: True)
         case outcome {
           Ok(fingerprint) -> {
             audit_rules_change(
@@ -666,7 +655,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
       process.send(
         reply,
-        check_conflicts(rules)
+        store_rules.check_conflicts(rules)
           |> result.map(fn(_) {
             #(store_rules.diff(state.rules, rules), state.fingerprint)
           }),
@@ -706,8 +695,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Disable -> list.map(state.rules, change(_, False))
         }
         // enabling may bring two exact rules for one path back together
-        use fingerprint <- result.try(commit_rules(
-          state.settings,
+        use fingerprint <- result.try(commit.many(
+          target(state.settings),
           rules,
           check_conflicts: True,
         ))
@@ -771,8 +760,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
-          publish(matcher.build(state.rules), state.settings, state.rules)
-          request_check(state.settings, Loops)
+          commit.loaded(target(state.settings), state.rules, checker.Loops)
         }
       }
       let next = case crossed {
@@ -830,8 +818,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          publish(matcher.build(rules), state.settings, rules)
-          request_check(state.settings, Problems)
+          commit.loaded(target(state.settings), rules, checker.Problems)
           metrics.incr(metrics.Reloads)
           metrics.reloaded(ffi.monotonic_micros() - started)
           audit_rules_change(
@@ -947,8 +934,7 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              publish(matcher.build(rules), state.settings, rules)
-              request_check(state.settings, Problems)
+              commit.loaded(target(state.settings), rules, checker.Problems)
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(
@@ -998,155 +984,9 @@ fn schedule_watch(settings: Settings, self: Subject(Message)) -> Nil {
   }
 }
 
-/// The last rules published, by file path: what a restarted store resumes
-/// from when the file has become invalid. Created by the process calling
-/// `start` (the supervisor), so that it outlives the store process.
-const last_good_table = "redirect_proxy_store_last_good"
-
-// --- background checks ---------------------------------------------------------
-
-/// The checker of each store, by rules path.
-const checkers_table = "redirect_proxy_store_checkers"
-
-/// What to log about the rules now published: only redirect loops (a change
-/// that may uncover one elsewhere), or also the rules that can never apply
-/// (a whole new rule set).
-type Check {
-  Loops
-  Problems
-}
-
-/// Logging the loops and the rules that can never apply goes over every
-/// rule: at 50 000 rules it takes about half a second. It only logs, so it
-/// runs in a process of its own, after the change is answered, rather than
-/// in the store's, before. A burst of changes is checked once, on the rules
-/// as they are when the checker gets to it. Linked to the store: they stop
-/// together.
-fn start_checker(store: Store, settings: Settings) -> Nil {
-  let ready = process.new_subject()
-  process.spawn(fn() {
-    let checks = process.new_subject()
-    process.send(ready, checks)
-    checker_loop(checks, store, settings.ignore_trailing_slash)
-  })
-  let assert Ok(checks) = process.receive(ready, 5000)
-  ffi.ets_put(checkers_table, settings.rules_path, checks)
-}
-
-fn request_check(settings: Settings, check: Check) -> Nil {
-  case ffi.ets_get(checkers_table, settings.rules_path) {
-    Ok(checks) -> process.send(checks, check)
-    Error(Nil) -> Nil
-  }
-}
-
-fn checker_loop(
-  checks: Subject(Check),
-  store: Store,
-  ignore_trailing_slash: Bool,
-) -> Nil {
-  let check = pending_checks(checks, process.receive_forever(checks))
-  let outcome =
-    ffi.rescue(fn() {
-      // the rules as published: the snapshot is their matcher
-      let rules = all(store)
-      let built = snapshot.current()
-      case check {
-        Problems -> warn_problems(built, rules, ignore_trailing_slash)
-        Loops -> warn_loops(built, rules, ignore_trailing_slash)
-      }
-    })
-  case outcome {
-    Ok(_) -> Nil
-    Error(reason) -> log.warning("checking the rules failed: " <> reason)
-  }
-  checker_loop(checks, store, ignore_trailing_slash)
-}
-
-/// The checks requested meanwhile, as one: `Problems` covers `Loops`.
-fn pending_checks(checks: Subject(Check), check: Check) -> Check {
-  case process.receive(checks, 0) {
-    Ok(next) ->
-      pending_checks(checks, case check, next {
-        Problems, _ | _, Problems -> Problems
-        Loops, Loops -> Loops
-      })
-    Error(Nil) -> check
-  }
-}
-
-fn publish(
-  built: matcher.Matcher,
-  settings: Settings,
-  rules: List(Rule),
-) -> Nil {
-  ffi.ets_put(last_good_table, settings.rules_path, rules)
-  built
-  |> matcher.carry_hits(from: snapshot.current())
-  |> snapshot.publish
-  // Building and parsing leave a lot of garbage in this long lived process.
-  ffi.garbage_collect()
-}
-
-/// Checks then commits a change of one rule (`changed`, in `rules`): it
-/// must be able to apply, conflict with no other rule and not loop. With
-/// `uncovers`, loops the change uncovers elsewhere are logged (an updated
-/// rule may no longer shadow one that loops).
-fn commit_rule(
-  settings: Settings,
-  changed: Rule,
-  rules: List(Rule),
-  uncovers uncovers: Bool,
-) -> Result(String, List(String)) {
-  use Nil <- result.try(check_lint(changed))
-  use Nil <- result.try(check_conflicts(rules))
-  let built = matcher.build(rules)
-  use Nil <- result.try(check_loop(
-    built,
-    changed,
-    settings.ignore_trailing_slash,
-  ))
-  use fingerprint <- result.try(commit(settings, rules, built))
-  case uncovers {
-    True -> request_check(settings, Loops)
-    False -> Nil
-  }
-  Ok(fingerprint)
-}
-
-/// Commits a change of a set of rules (bulk, import, delete), checking
-/// conflicts when the change can add some, and logging the loops and rules
-/// that can never apply.
-fn commit_rules(
-  settings: Settings,
-  rules: List(Rule),
-  check_conflicts check: Bool,
-) -> Result(String, List(String)) {
-  use Nil <- result.try(case check {
-    True -> check_conflicts(rules)
-    False -> Ok(Nil)
-  })
-  use fingerprint <- result.try(commit(settings, rules, matcher.build(rules)))
-  request_check(settings, Problems)
-  Ok(fingerprint)
-}
-
-/// Writes then publishes the rules (`built` is their matcher). Returns the
-/// fingerprint of the file.
-fn commit(
-  settings: Settings,
-  rules: List(Rule),
-  built: matcher.Matcher,
-) -> Result(String, List(String)) {
-  case store_file.persist(files(settings), rules) {
-    Ok(fingerprint) -> {
-      publish(built, settings, rules)
-      Ok(fingerprint)
-    }
-    Error(reason) -> {
-      metrics.incr(metrics.StorageWriteFailures)
-      log.error("failed to persist redirections: " <> reason)
-      Error(["storage: " <> reason])
-    }
-  }
+fn target(settings: Settings) -> commit.Target {
+  commit.Target(
+    files: files(settings),
+    ignore_trailing_slash: settings.ignore_trailing_slash,
+  )
 }
