@@ -33,9 +33,9 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 
 | Endpoint | Scope | |
 | --- | --- | --- |
-| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`, `tag`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
+| `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`, `tag`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header and `meta.has_more`, as in `/api/audit`. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
 | `POST /api/redirects` | `redirects:write` | Create. Returns `201`, `Location` and `ETag`. An optional `id` (up to 128 letters, digits, `.`, `_`, `~` or `-`) makes a retry safe: the same `id` again answers `409` with `Location` pointing to the rule, instead of creating a second one. |
-| `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch) with the rule's `ETag`. `GET` always answers `200`: its body has the live `hits` and `last_hit_at`, which the `ETag` (the version of the rule's settings) does not cover. |
+| `GET` / `PUT` / `PATCH` / `DELETE /api/redirects/{id}` | read / write | `PATCH` is a JSON merge patch. All writes honour `If-Match` (`412` on mismatch) with the rule's `ETag`. With `api.require_if_match`, `PUT`, `DELETE`, bulk and import without `If-Match` answer `428` (`PATCH` always guards itself). `GET` always answers `200`: its body has the live `hits` and `last_hit_at`, which the `ETag` (the version of the rule's settings) does not cover. |
 | `GET /api/redirects/export` | `redirects:read` | Same format as `redirects.json`, or CSV with `format=csv`. Takes the list filters (`q`, `host`, `match`, `enabled`, `tag`). The `ETag` is the version of the whole rule set and `If-None-Match` answers `304` (the export has no hit counts; the list, which has them, does not answer `304`). |
 | `POST /api/redirects/import?mode=merge\|replace` | `redirects:write` | All or nothing, as `application/json` or `text/csv`. `dry_run=true` returns what would be added, changed and removed without writing, with an `ETag`: send it in `If-Match` to apply exactly that change (`412` if the rules changed meanwhile). |
 | `POST /api/redirects/bulk` | `redirects:write` | `{"ids": [...], "action": "enable\|disable\|delete"}`, all or nothing. Honours `If-Match` with the version of the rule set. |
@@ -75,7 +75,11 @@ tokens from your own authorization server are accepted too:
   `write_scope`, `ops_scope` and `audit_scope`.
 
 **Errors** use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
-`application/problem+json`. Validation errors carry an `errors` array of
+`application/problem+json`. Every problem has a stable `code`
+(`not_found`, `validation_failed`, `already_exists`, `precondition_failed`,
+`precondition_required`, `reload_rejected`, `invalid_token`,
+`insufficient_scope`, `too_many_requests`...): tell problems apart by it, not
+by `title` or `detail`. Validation errors carry an `errors` array of
 `{field, message}`. Authentication failures follow
 [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (`WWW-Authenticate:
 Bearer error="invalid_token"` or `"insufficient_scope"`). The API never uses

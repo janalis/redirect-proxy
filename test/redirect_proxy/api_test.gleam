@@ -1873,3 +1873,80 @@ pub fn create_with_a_client_id_is_safe_to_retry_test() {
   assert generated.status == 201
   assert field(generated.body, ["id"], decode.string) != ""
 }
+
+/// Problems carry a stable `code`: clients tell them apart by it.
+pub fn problems_have_a_stable_code_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Read, scope.Write])
+  let code = fn(resp: response.Response(String)) {
+    field(resp.body, ["code"], decode.string)
+  }
+  assert code(api(env, Get, "/api/redirects/nope", token, "")) == "not_found"
+  assert code(api(env, Get, "/api/redirects", "", "")) == "missing_token"
+  assert code(api(env, Get, "/api/redirects", "bogus", "")) == "invalid_token"
+  let reader = access_token(env, [scope.Read])
+  assert code(api(env, Post, "/api/reload", reader, "")) == "insufficient_scope"
+  assert code(api(env, Post, "/api/redirects", token, "{\"source\":\"x\"}"))
+    == "validation_failed"
+  let body = "{\"id\":\"c1\",\"source\":\"/c\",\"target\":\"/d\"}"
+  assert api(env, Post, "/api/redirects", token, body).status == 201
+  assert code(api(env, Post, "/api/redirects", token, body)) == "already_exists"
+  // pages say whether more follow, as in /api/audit
+  let other = "{\"source\":\"/e\",\"target\":\"/f\"}"
+  assert api(env, Post, "/api/redirects", token, other).status == 201
+  let page = fn(n) {
+    api(env, Get, "/api/redirects?per_page=1&page=" <> n, token, "").body
+  }
+  assert field(page("1"), ["meta", "has_more"], decode.bool)
+  assert !field(page("2"), ["meta", "has_more"], decode.bool)
+}
+
+/// With `api.require_if_match`, writes must name the version they change.
+pub fn writes_can_require_if_match_test() {
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(..d, api: config.ApiConfig(..d.api, require_if_match: True)),
+    )
+  let token = access_token(env, [scope.Write])
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/m\",\"target\":\"/n\"}",
+    )
+  assert created.status == 201
+  let id = field(created.body, ["id"], decode.string)
+  let etag = header(created, "etag")
+  let put = fn(headers) {
+    support.send(
+      Put,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/json"),
+        ..headers
+      ],
+      "{\"source\":\"/m\",\"target\":\"/o\"}",
+    )
+  }
+  let refused = put([])
+  assert refused.status == 428
+  assert field(refused.body, ["code"], decode.string) == "precondition_required"
+  assert put([#("if-match", etag)]).status == 200
+  // PATCH guards itself: no header needed
+  let patch =
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+      ],
+      "{\"target\":\"/p\"}",
+    )
+  assert patch.status == 200
+  assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 428
+}

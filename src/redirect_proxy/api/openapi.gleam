@@ -483,6 +483,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 errors([
                   #("404", "Not found."),
                   #("412", "Version mismatch."),
+                  #(
+                    "428",
+                    "If-Match is missing and api.require_if_match is on.",
+                  ),
                   #("422", "Validation failed."),
                 ]),
               )
@@ -524,7 +528,11 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             "responses",
             json.object([
               #("204", json.object([#("description", json.string("Deleted."))])),
-              ..errors([#("404", "Not found."), #("412", "Version mismatch.")])
+              ..errors([
+                #("404", "Not found."),
+                #("412", "Version mismatch."),
+                #("428", "If-Match is missing and api.require_if_match is on."),
+              ])
             ]),
           ),
         ]),
@@ -680,6 +688,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   errors([
                     #("400", "mode is not merge or replace."),
                     #("412", "The rules changed since the If-Match version."),
+                    #(
+                      "428",
+                      "If-Match is missing and api.require_if_match is on.",
+                    ),
                     #("422", "Validation failed."),
                   ]),
                 )
@@ -735,6 +747,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   body_errors(),
                   errors([
                     #("412", "The rules changed since the If-Match version."),
+                    #(
+                      "428",
+                      "If-Match is missing and api.require_if_match is on.",
+                    ),
                     #("422", "Unknown id, invalid action or conflict."),
                   ]),
                 )
@@ -944,6 +960,13 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                         #("page", int_schema()),
                         #("per_page", int_schema()),
                         #("total_pages", int_schema()),
+                        #(
+                          "has_more",
+                          typed(
+                            "boolean",
+                            "Later pages exist (as in /api/audit).",
+                          ),
+                        ),
                       ]),
                     ),
                   ]),
@@ -1155,6 +1178,13 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 #("type", string_schema()),
                 #("title", string_schema()),
                 #("status", int_schema()),
+                #(
+                  "code",
+                  typed(
+                    "string",
+                    "Stable, machine-readable kind of problem: tell problems apart by it, not by title or detail. bad_request, missing_token, invalid_token, insufficient_scope, not_found, method_not_allowed, already_exists, precondition_failed, precondition_required, content_too_large, unsupported_media_type, validation_failed, reload_rejected, too_many_requests, internal_error.",
+                  ),
+                ),
                 #("detail", string_schema()),
                 #(
                   "errors",

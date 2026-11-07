@@ -86,7 +86,7 @@ pub fn audit_log(req: Request, ctx: Context) -> Response {
     <> "}"
   let resp =
     wisp.response(200)
-    |> wisp.set_header("content-type", "application/json")
+    |> wisp.set_header("content-type", "application/json; charset=utf-8")
     |> wisp.set_header("cache-control", "no-store")
     |> wisp.string_body(body)
   case has_more {

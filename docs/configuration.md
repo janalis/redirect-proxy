@@ -45,7 +45,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
 | `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
 | `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `viewer` (see [Roles](administration.md#roles)) |
-| `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES` | `true`, `3600`, `10485760` |
+| `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES`, `RP_API_REQUIRE_IF_MATCH` | `true`, `3600`, `10485760`, `false` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
 | `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_REQUIRE_AT_JWT`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE`, `_AUDIT_SCOPE` | disabled |
 | `RP_ACCESS_LOG_ENABLED`, `_FORMAT`, `_ESCAPE`, `_OUTPUT` | `true`, `combined`, `default`, `stdout` |

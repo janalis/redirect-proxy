@@ -206,6 +206,9 @@ pub type ApiConfig {
     token_ttl: Int,
     /// Maximum request body size of API calls (bulk imports).
     max_body_bytes: Int,
+    /// Refuse writes without `If-Match` (428), so that no client overwrites
+    /// a change it has not seen.
+    require_if_match: Bool,
     oauth: ApiOAuthConfig,
   )
 }
@@ -305,6 +308,7 @@ pub fn default() -> Config {
       public_url: "",
       token_ttl: 3600,
       max_body_bytes: 10_485_760,
+      require_if_match: False,
       oauth: ApiOAuthConfig(
         enabled: False,
         issuer: "",

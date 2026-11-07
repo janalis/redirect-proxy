@@ -64,6 +64,7 @@ pub const known_keys = [
   "api.enabled",
   "api.listen",
   "api.max_body_bytes",
+  "api.require_if_match",
   "api.oauth.audience",
   "api.oauth.enabled",
   "api.oauth.issuer",
@@ -350,6 +351,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["api", "max_body_bytes"],
     a.max_body_bytes,
   ))
+  use require_if_match <- result.try(boolean(
+    t,
+    ["api", "require_if_match"],
+    a.require_if_match,
+  ))
   let ao = a.oauth
   use ao_enabled <- result.try(boolean(
     t,
@@ -440,6 +446,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       public_url: api_public_url,
       token_ttl:,
       max_body_bytes:,
+      require_if_match:,
       oauth: ApiOAuthConfig(
         enabled: ao_enabled,
         issuer: ao_issuer,

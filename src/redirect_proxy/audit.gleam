@@ -214,13 +214,32 @@ fn search_files(
         |> result.unwrap(<<>>)
         |> ffi.split_lines
         |> list.reverse
-        |> list.filter_map(fn(bits) {
-          bit_array.to_string(bits) |> result.try(parse_line)
-        })
-        |> list.filter(matches(_, filter))
-        |> list.take(limit - list.length(found))
+        |> newest_matching(filter, limit - list.length(found), [])
       search_files(older, filter, limit, list.append(found, entries))
     }
+  }
+}
+
+/// The first `wanted` entries of `lines` (newest first) that match, decoding
+/// no more lines than that takes: a page of a large log decodes a page's
+/// worth of lines, not the whole file.
+fn newest_matching(
+  lines: List(BitArray),
+  filter: Filter,
+  wanted: Int,
+  acc: List(Entry),
+) -> List(Entry) {
+  case lines, wanted <= 0 {
+    [], _ | _, True -> list.reverse(acc)
+    [bits, ..rest], False ->
+      case bit_array.to_string(bits) |> result.try(parse_line) {
+        Ok(e) ->
+          case matches(e, filter) {
+            True -> newest_matching(rest, filter, wanted - 1, [e, ..acc])
+            False -> newest_matching(rest, filter, wanted, acc)
+          }
+        Error(Nil) -> newest_matching(rest, filter, wanted, acc)
+      }
   }
 }
 
