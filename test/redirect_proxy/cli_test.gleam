@@ -7,6 +7,7 @@ import redirect_proxy/app
 import redirect_proxy/config
 import redirect_proxy/config/loader as config_loader
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/rule
 import redirect_proxy/users
 import simplifile
@@ -189,4 +190,75 @@ pub fn bootstrap_admin_test() {
   assert users.count(settings) == 1
   let assert Ok(same) = users.get(settings, "boot")
   assert same.password_hash == user.password_hash
+}
+
+pub fn user_role_command_test() {
+  let #(dir, config_path) = setup()
+  let settings =
+    app.users_settings(
+      config.Config(
+        ..config.default(),
+        storage: config.StorageConfig(
+          ..config.default().storage,
+          data_dir: dir <> "/data",
+        ),
+      ),
+    )
+  envoy.set("RP_PASSWORD", "cli-password-123")
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "user", "add", "frank", "--role", "viewer", "--config", config_path,
+    ])
+  envoy.unset("RP_PASSWORD")
+  let assert Ok(frank) = users.get(settings, "frank")
+  assert frank.role == role.Viewer
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "user",
+      "role",
+      "frank",
+      "editor",
+      "--config",
+      config_path,
+    ])
+  let assert Ok(frank) = users.get(settings, "frank")
+  assert frank.role == role.Editor
+  let assert Error(_) =
+    redirect_proxy.run([
+      "user",
+      "role",
+      "frank",
+      "owner",
+      "--config",
+      config_path,
+    ])
+  let assert Error(_) =
+    redirect_proxy.run([
+      "user",
+      "role",
+      "nobody",
+      "admin",
+      "--config",
+      config_path,
+    ])
+  // the last administrator cannot be demoted
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "user",
+      "role",
+      "frank",
+      "admin",
+      "--config",
+      config_path,
+    ])
+  let assert Error(message) =
+    redirect_proxy.run([
+      "user",
+      "role",
+      "frank",
+      "viewer",
+      "--config",
+      config_path,
+    ])
+  assert string.contains(message, "last administrator")
 }

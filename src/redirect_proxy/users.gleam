@@ -175,8 +175,10 @@ pub fn set_role(
             False -> u
           }
         })
+      // only a demotion can leave no administrator: with none to begin
+      // with (the first user added as a viewer), roles still change
       use <- bool.guard(
-        !has_admin(changed),
+        user.role == role.Admin && !has_admin(changed),
         Error("refusing to remove the role of the last administrator"),
       )
       use Nil <- result.try(save(settings.path, changed))
