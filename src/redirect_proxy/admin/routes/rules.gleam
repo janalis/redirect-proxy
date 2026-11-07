@@ -560,7 +560,7 @@ pub fn export(req: Request, ctx: Context) -> Response {
     Ok("csv") -> #(
       "text/csv; charset=utf-8",
       "redirects.csv",
-      rule_csv.to_string(rules),
+      rule_csv.to_spreadsheet_string(rules),
     )
     _ -> #("application/json", "redirects.json", store_rules.export(rules))
   }

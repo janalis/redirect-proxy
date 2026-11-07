@@ -156,3 +156,30 @@ pub fn errors_are_capped_test() {
   assert list.length(errors) == 101
   assert list.last(errors) == Ok("… and 150 more errors")
 }
+
+/// What spreadsheets leave behind: a cleared column (a trailing empty cell
+/// on every line) and formatted rows below the data (lines of commas).
+pub fn spreadsheet_leftovers_are_ignored_test() {
+  let csv = "source,target,\r\n/a,/b,\r\n,,\r\n/c,/d,\r\n , ,\r\n"
+  let assert Ok([a, c]) = rule_csv.parse(csv)
+  assert a.source == "/a" && c.target == "/d"
+  // a cell in a column without a header is still an error
+  let assert Error([extra]) = rule_csv.parse("source,target\n/a,/b,x\n")
+  assert string.contains(extra, "more cells than columns")
+}
+
+/// French-locale spreadsheets separate cells with `;`: say so.
+pub fn semicolon_separators_get_a_hint_test() {
+  let assert Error([hint]) = rule_csv.parse("source;target\n/a;/b\n")
+  assert string.contains(hint, "semicolons")
+}
+
+/// The spreadsheet export starts with a UTF-8 byte order mark, so that
+/// Excel reads non-ASCII text right; imports skip it.
+pub fn spreadsheet_export_has_a_bom_test() {
+  let r = Rule(..rule.blank(), id: "1", source: "/café", target: "/menü")
+  let csv = rule_csv.to_spreadsheet_string([r])
+  assert string.starts_with(csv, "\u{FEFF}id,")
+  let assert Ok([back]) = rule_csv.parse_import(csv)
+  assert back.source == "/café" && back.target == "/menü"
+}
