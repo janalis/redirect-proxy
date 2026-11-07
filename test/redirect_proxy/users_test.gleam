@@ -1,6 +1,5 @@
 import gleam/erlang/process
 import gleam/list
-import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/users
@@ -61,14 +60,16 @@ pub fn waits_for_another_process_test() {
   let s = settings()
   let lock = s.path <> ".lock"
   let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host\n")
+  let released = process.new_subject()
   process.spawn(fn() {
     process.sleep(300)
+    // told before the lock goes: a change that waited for it finds this
+    process.send(released, Nil)
     let _ = simplifile.delete(lock)
   })
-  let started = ffi.now_millis()
   let assert Ok(_) =
     users.create(s, "alice", password.hash_with("x", 1000), by: "test")
-  assert ffi.now_millis() - started >= 250
+  assert process.receive(released, 0) == Ok(Nil)
   assert users.count(s) == 1
 }
 

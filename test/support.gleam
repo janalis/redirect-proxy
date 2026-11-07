@@ -157,6 +157,19 @@ pub fn start_fake_authorization_server() -> #(String, Key) {
 @external(erlang, "redirect_proxy_sigterm", "set_draining")
 pub fn set_draining(value: Bool) -> Nil
 
+/// Runs `f` with the draining flag of a SIGTERM set, and always clears it
+/// afterwards, even when `f` fails: the flag is node-wide, and left set it
+/// would fail every later test that probes readiness.
+pub fn with_draining(f: fn() -> a) -> a {
+  set_draining(True)
+  let result = ffi.rescue(f)
+  set_draining(False)
+  case result {
+    Ok(value) -> value
+    Error(reason) -> panic as reason
+  }
+}
+
 /// Waits until `condition` holds, checking every 20 ms for at most
 /// `timeout_ms`, and fails the test after that.
 pub fn wait_until(condition: fn() -> Bool, timeout_ms: Int) -> Nil {

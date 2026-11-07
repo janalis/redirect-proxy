@@ -1,4 +1,3 @@
-import gleam/erlang/process
 import redirect_proxy/admin/auth/session
 import redirect_proxy/role
 
@@ -6,9 +5,10 @@ pub fn idle_sessions_end_test() {
   session.init()
   let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
   let assert Ok(_) = session.get(s.token, 0)
-  process.sleep(1100)
-  // unused for over a second, with a one second idle timeout
-  assert session.get(s.token, 1) == Error(Nil)
+  // still in use within the idle timeout (which counts from this use)
+  let assert Ok(_) = session.get_at(s.token, 60, s.last_seen + 59)
+  // then unused for over a minute, with a one minute idle timeout
+  assert session.get_at(s.token, 60, s.last_seen + 59 + 61) == Error(Nil)
   // and it is gone for good
   assert session.get(s.token, 0) == Error(Nil)
 }

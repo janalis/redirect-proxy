@@ -702,10 +702,10 @@ pub fn draining_before_a_stop_test() {
   let resp = get(env.redirect <> "/old", [])
   assert response.get_header(resp, "connection") != Ok("close")
   // what SIGTERM does before the grace period ends
-  support.set_draining(True)
-  let ready = get(env.admin <> "/readyz", [])
-  let resp = get(env.redirect <> "/old", [])
-  support.set_draining(False)
+  let #(ready, resp) =
+    support.with_draining(fn() {
+      #(get(env.admin <> "/readyz", []), get(env.redirect <> "/old", []))
+    })
   assert ready.status == 503
   assert resp.status == 301
   assert response.get_header(resp, "connection") == Ok("close")
@@ -736,9 +736,8 @@ pub fn redirect_listener_health_path_test() {
   assert response.get_header(resp, "cache-control") == Ok("no-store")
   // probes are not counted as traffic
   assert metric(env, "redirect_proxy_requests_total") == requests
-  support.set_draining(True)
-  let draining = get(env.redirect <> "/_health", [])
-  support.set_draining(False)
+  let draining =
+    support.with_draining(fn() { get(env.redirect <> "/_health", []) })
   assert draining.status == 503
 }
 
