@@ -18,11 +18,24 @@ pub fn problem(
   detail: String,
   extra: List(#(String, Json)),
 ) -> Response {
+  coded_problem(status, status_code(status), title, detail, extra)
+}
+
+/// A problem with a `code` other than its status's: clients tell problems
+/// apart by `code` (stable, documented), never by `title` or `detail`.
+pub fn coded_problem(
+  status: Int,
+  code: String,
+  title: String,
+  detail: String,
+  extra: List(#(String, Json)),
+) -> Response {
   let body =
     json.object([
       #("type", json.string("about:blank")),
       #("title", json.string(title)),
       #("status", json.int(status)),
+      #("code", json.string(code)),
       #("detail", json.string(detail)),
       ..extra
     ])
@@ -69,6 +82,26 @@ pub fn from_plain_error(resp: Response, oauth: Bool) -> Response {
   }
 }
 
+/// The `code` of a problem, by default the one of its status.
+fn status_code(status: Int) -> String {
+  case status {
+    400 -> "bad_request"
+    401 -> "unauthorized"
+    403 -> "forbidden"
+    404 -> "not_found"
+    405 -> "method_not_allowed"
+    409 -> "conflict"
+    412 -> "precondition_failed"
+    413 -> "content_too_large"
+    415 -> "unsupported_media_type"
+    422 -> "validation_failed"
+    428 -> "precondition_required"
+    429 -> "too_many_requests"
+    _ if status >= 500 -> "internal_error"
+    _ -> "error"
+  }
+}
+
 fn status_title(status: Int, fallback: String) -> String {
   case status {
     400 -> "Bad Request"
@@ -109,7 +142,7 @@ pub fn precondition_failed(current_version: String) -> Response {
 
 /// 409: the resource already exists (a retried creation).
 pub fn conflict(detail: String) -> Response {
-  problem(409, "Conflict", detail, [])
+  coded_problem(409, "already_exists", "Conflict", detail, [])
 }
 
 /// 422 with field errors built from the `"field: message"` strings produced
@@ -144,14 +177,24 @@ pub fn unauthorized(error: String, description: String) -> Response {
       <> quote_safe(description)
       <> "\""
   }
-  problem(401, "Unauthorized", description, [])
+  coded_problem(
+    401,
+    case error {
+      "" -> "missing_token"
+      _ -> "invalid_token"
+    },
+    "Unauthorized",
+    description,
+    [],
+  )
   |> wisp.set_header("www-authenticate", challenge)
 }
 
 /// 403 for a valid token lacking the required scope (RFC 6750 §3.1).
 pub fn insufficient_scope(required: String) -> Response {
-  problem(
+  coded_problem(
     403,
+    "insufficient_scope",
     "Forbidden",
     "The access token does not grant the " <> required <> " scope.",
     [#("required_scope", json.string(required))],

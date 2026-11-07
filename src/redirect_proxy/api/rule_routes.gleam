@@ -73,8 +73,9 @@ pub fn reload(ctx: Context, principal: Principal) -> Response {
     Ok(count) ->
       problem.json_response(200, json.object([#("rules", json.int(count))]))
     Error(reason) ->
-      problem.problem(
+      problem.coded_problem(
         422,
+        "reload_rejected",
         "Reload Rejected",
         "The redirections file is invalid; the current rules are kept. "
           <> reason,
@@ -151,6 +152,8 @@ pub fn list_rules(req: Request, ctx: Context) -> Response {
                 #("page", json.int(page)),
                 #("per_page", json.int(per_page)),
                 #("total_pages", json.int(pages)),
+                // as in /api/audit, where there is no total
+                #("has_more", json.bool(page < pages)),
               ]),
             ),
           ]),
@@ -197,6 +200,28 @@ fn filtered_rules(
   Ok(#(store_rules.filter(rules, filter), version))
 }
 
+/// With `api.require_if_match`, a write must say which version it changes:
+/// 428 without `If-Match` (RFC 6585).
+fn require_precondition(
+  req: Request,
+  ctx: Context,
+  next: fn() -> Response,
+) -> Response {
+  case
+    ctx.config.api.require_if_match
+    && request.get_header(req, "if-match") == Error(Nil)
+  {
+    True ->
+      problem.problem(
+        428,
+        "Precondition Required",
+        "Send If-Match with the ETag of what you change (api.require_if_match).",
+        [],
+      )
+    False -> next()
+  }
+}
+
 /// The version `If-Match` requires of the whole rule set (import, bulk), if
 /// the header is set.
 fn collection_if_match(req: Request, ctx: Context) -> Option(String) {
@@ -241,6 +266,7 @@ fn unless_not_modified(
 }
 
 pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
+  use <- require_precondition(req, ctx)
   use body, _ <- require_json_object(req)
   let decoder = {
     use ids <- decode.field("ids", decode.list(decode.string))
@@ -406,6 +432,7 @@ pub fn replace_rule(
   principal: Principal,
   id: String,
 ) -> Response {
+  use <- require_precondition(req, ctx)
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
@@ -458,6 +485,7 @@ pub fn delete_rule(
   principal: Principal,
   id: String,
 ) -> Response {
+  use <- require_precondition(req, ctx)
   case
     store.delete_versioned(
       ctx.store,
@@ -507,7 +535,8 @@ pub fn import_rules(
           |> wisp.set_header("etag", problem.etag(version))
         Error(errors) -> problem.validation(errors)
       }
-    Ok(mode), Ok(incoming) ->
+    Ok(mode), Ok(incoming) -> {
+      use <- require_precondition(req, ctx)
       case
         store.import_rules_versioned(
           ctx.store,
@@ -527,6 +556,7 @@ pub fn import_rules(
           )
         Error(error) -> set_change_error(error)
       }
+    }
   }
 }
 

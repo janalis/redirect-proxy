@@ -41,6 +41,7 @@ pub const bool_env_vars = [
   "RP_API_ENABLED",
   "RP_API_OAUTH_ENABLED",
   "RP_API_OAUTH_REQUIRE_AT_JWT",
+  "RP_API_REQUIRE_IF_MATCH",
   "RP_AUTH_HEADER_ENABLED",
   "RP_AUTH_LOCAL_ENABLED",
   "RP_AUTH_OIDC_ENABLED",
@@ -231,6 +232,7 @@ pub fn apply_env(
       public_url: s("RP_API_PUBLIC_URL", api.public_url),
       token_ttl: i("RP_API_TOKEN_TTL", api.token_ttl),
       max_body_bytes: i("RP_API_MAX_BODY_BYTES", api.max_body_bytes),
+      require_if_match: b("RP_API_REQUIRE_IF_MATCH", api.require_if_match),
       oauth: ApiOAuthConfig(
         enabled: b("RP_API_OAUTH_ENABLED", api.oauth.enabled),
         issuer: s("RP_API_OAUTH_ISSUER", api.oauth.issuer),
