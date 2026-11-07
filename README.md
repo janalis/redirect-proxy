@@ -46,6 +46,23 @@ metrics and access logs.
   <a href="https://janalis.github.io/redirect-proxy/guide/administration"><img src="https://janalis.github.io/redirect-proxy/screenshots/rules.png" alt="The list of redirections in the administration" width="800"></a>
 </p>
 
+## Performance
+
+<!-- benchmark:start -->
+Requests per second on a GitHub Actions Linux runner (4 vCPUs, 2 for the server) with 10,000 exact, 1,000 prefix and 500 regex rules, measured on 2026-11-07:
+
+| Server | Version | Exact | Prefix | Regex | Miss | Memory |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| redirect-proxy | 0.6.1 | 36.6 k | 32.6 k | 29.9 k | 38.5 k | 90 MiB |
+| nginx | 1.30.6 | 128.2 k | 128.0 k | 28.6 k | 32.8 k | 24 MiB |
+| HAProxy | 3.4.7 | 130.9 k | 124.2 k | 37.5 k | 40.1 k | 24 MiB |
+| Caddy | 2.11.9 | 7.6 k | 2.9 k | 6.9 k | 3.0 k | 130 MiB |
+| Traefik | 3.7.17 | 5.8 k | 13.8 k | 24.6 k | 2.5 k | 185 MiB |
+| Apache httpd | 2.4.69 | 45.2 k | 11.7 k | 9.1 k | 8.4 k | 29 MiB |
+
+Updated every week from the *Benchmark* workflow. See [Performance](https://janalis.github.io/redirect-proxy/guide/performance#compared-with-other-servers) for the method, latencies and configurations.
+<!-- benchmark:end -->
+
 ## Install
 
 ```sh

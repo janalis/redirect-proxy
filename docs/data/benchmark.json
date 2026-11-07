@@ -1,0 +1,277 @@
+{
+  "date": "2026-11-07",
+  "commit": "7739568",
+  "runner": {
+    "host": "GitHub Actions Linux runner",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "vcpus": 4,
+    "kernel": "7.0.0-1017-azure",
+    "arch": "x86_64"
+  },
+  "server_cpus": 2,
+  "load": {
+    "tool": "oha 1.16.0",
+    "duration": "10s",
+    "runs": 3,
+    "concurrency": 100,
+    "keep_alive": true
+  },
+  "rules": {
+    "exact": 10000,
+    "prefix": 1000,
+    "regex": 500
+  },
+  "scenarios": {
+    "exact": {
+      "path": "/exact/9999",
+      "status": 301
+    },
+    "prefix": {
+      "path": "/prefix/999/some/page",
+      "status": 302
+    },
+    "regex": {
+      "path": "/regex/499/42",
+      "status": 308
+    },
+    "miss": {
+      "path": "/nothing/here",
+      "status": 404
+    }
+  },
+  "products": [
+    {
+      "key": "redirect-proxy",
+      "name": "redirect-proxy",
+      "image": "ghcr.io/janalis/redirect-proxy:dev",
+      "version": "0.6.1",
+      "digest": "",
+      "notes": [],
+      "startup_ms": 1259,
+      "scenarios": {
+        "exact": {
+          "rps": 36612,
+          "p50_ms": 2.643,
+          "p99_ms": 3.954,
+          "errors": 0
+        },
+        "prefix": {
+          "rps": 32577,
+          "p50_ms": 2.908,
+          "p99_ms": 4.627,
+          "errors": 0
+        },
+        "regex": {
+          "rps": 29939,
+          "p50_ms": 3.326,
+          "p99_ms": 4.761,
+          "errors": 0
+        },
+        "miss": {
+          "rps": 38454,
+          "p50_ms": 2.547,
+          "p99_ms": 3.63,
+          "errors": 0
+        }
+      },
+      "memory_mib": 89.9,
+      "status": "ok"
+    },
+    {
+      "key": "nginx",
+      "name": "nginx",
+      "image": "nginx:stable",
+      "version": "1.30.6",
+      "digest": "sha256:42c68eab6f7e22611786a9fe1d1c019e275c50185bd54b8f75dc2b9184322703",
+      "notes": [
+        "exact rules in a `map` (hash), prefix rules are `^~` locations with one `rewrite` each, regex rules are `~` locations"
+      ],
+      "startup_ms": 473,
+      "scenarios": {
+        "exact": {
+          "rps": 128161,
+          "p50_ms": 0.705,
+          "p99_ms": 1.128,
+          "errors": 0
+        },
+        "prefix": {
+          "rps": 128011,
+          "p50_ms": 0.694,
+          "p99_ms": 1.134,
+          "errors": 0
+        },
+        "regex": {
+          "rps": 28637,
+          "p50_ms": 4.202,
+          "p99_ms": 5.281,
+          "errors": 0
+        },
+        "miss": {
+          "rps": 32796,
+          "p50_ms": 4.133,
+          "p99_ms": 5.055,
+          "errors": 0
+        }
+      },
+      "memory_mib": 23.7,
+      "status": "ok"
+    },
+    {
+      "key": "haproxy",
+      "name": "HAProxy",
+      "image": "haproxy:lts",
+      "version": "3.4.7",
+      "digest": "sha256:f6d2ee87b47192d9cc8c22e88fef405122ff339859644883edc2a7d1827f87b3",
+      "notes": [
+        "`map_str` for exact rules, `map_beg` for prefix rules, `map_regm` for regex rules"
+      ],
+      "startup_ms": 345,
+      "scenarios": {
+        "exact": {
+          "rps": 130901,
+          "p50_ms": 0.673,
+          "p99_ms": 1.435,
+          "errors": 0
+        },
+        "prefix": {
+          "rps": 124169,
+          "p50_ms": 0.708,
+          "p99_ms": 1.507,
+          "errors": 0
+        },
+        "regex": {
+          "rps": 37514,
+          "p50_ms": 2.607,
+          "p99_ms": 5.218,
+          "errors": 0
+        },
+        "miss": {
+          "rps": 40119,
+          "p50_ms": 2.439,
+          "p99_ms": 4.879,
+          "errors": 0
+        }
+      },
+      "memory_mib": 23.9,
+      "status": "ok"
+    },
+    {
+      "key": "caddy",
+      "name": "Caddy",
+      "image": "caddy:2",
+      "version": "2.11.9",
+      "digest": "sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc",
+      "notes": [
+        "exact rules in a `map`, prefix rules are `handle_path` blocks, regex rules are `path_regexp` matchers"
+      ],
+      "startup_ms": 633,
+      "scenarios": {
+        "exact": {
+          "rps": 7576,
+          "p50_ms": 12.839,
+          "p99_ms": 27.669,
+          "errors": 0
+        },
+        "prefix": {
+          "rps": 2941,
+          "p50_ms": 33.287,
+          "p99_ms": 70.159,
+          "errors": 0
+        },
+        "regex": {
+          "rps": 6886,
+          "p50_ms": 13.773,
+          "p99_ms": 37.455,
+          "errors": 0
+        },
+        "miss": {
+          "rps": 3001,
+          "p50_ms": 32.439,
+          "p99_ms": 71.613,
+          "errors": 0
+        }
+      },
+      "memory_mib": 129.7,
+      "status": "ok"
+    },
+    {
+      "key": "traefik",
+      "name": "Traefik",
+      "image": "traefik:v3",
+      "version": "3.7.17",
+      "digest": "sha256:f4bb143d1135a579b630ed491e17ec50f6f7c9c6a30585ff3d385471d2a86f5a",
+      "notes": [
+        "one router (`Path`, `PathPrefix` or `PathRegexp`) and one `redirectRegex` middleware per rule; `redirectRegex` only answers 301 or 302",
+        "answers 301 instead of 308 for the regex rule"
+      ],
+      "startup_ms": 1950,
+      "scenarios": {
+        "exact": {
+          "rps": 5821,
+          "p50_ms": 15.368,
+          "p99_ms": 48.266,
+          "errors": 0
+        },
+        "prefix": {
+          "rps": 13809,
+          "p50_ms": 6.236,
+          "p99_ms": 21.86,
+          "errors": 0
+        },
+        "regex": {
+          "rps": 24607,
+          "p50_ms": 3.417,
+          "p99_ms": 15.127,
+          "errors": 0
+        },
+        "miss": {
+          "rps": 2519,
+          "p50_ms": 36.908,
+          "p99_ms": 90.163,
+          "errors": 0
+        }
+      },
+      "memory_mib": 184.6,
+      "status": "ok"
+    },
+    {
+      "key": "apache",
+      "name": "Apache httpd",
+      "image": "httpd:2.4",
+      "version": "2.4.69",
+      "digest": "sha256:f6a86043744215e4be90cf8804375d90022a711d892c9aa2d7085c089ee2cb54",
+      "notes": [
+        "exact rules in a `RewriteMap txt:` (cached), prefix and regex rules are `RewriteRule` regexes, tried in order"
+      ],
+      "startup_ms": 170,
+      "scenarios": {
+        "exact": {
+          "rps": 45240,
+          "p50_ms": 1.795,
+          "p99_ms": 9.072,
+          "errors": 43
+        },
+        "prefix": {
+          "rps": 11663,
+          "p50_ms": 2.862,
+          "p99_ms": 149.346,
+          "errors": 57
+        },
+        "regex": {
+          "rps": 9135,
+          "p50_ms": 3.316,
+          "p99_ms": 168.228,
+          "errors": 25
+        },
+        "miss": {
+          "rps": 8412,
+          "p50_ms": 3.609,
+          "p99_ms": 181.783,
+          "errors": 13
+        }
+      },
+      "memory_mib": 29.2,
+      "status": "ok"
+    }
+  ]
+}

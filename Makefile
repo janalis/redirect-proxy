@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help deps build run dev test coverage fmt fmt-check lint lint-versions lint-erlang \
-	lint-shell lint-actions lint-docker lint-markdown check bench bench-matcher bench-store bundle \
+	lint-shell lint-actions lint-docker lint-markdown check bench bench-compare bench-matcher bench-store bundle \
 	bundle-portable deb docker docker-run docs-deps screenshots docs docs-dev release-dry clean
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' gleam.toml)
@@ -78,6 +78,9 @@ check: lint test ## Lint and test (what CI runs)
 
 bench-matcher: ## Matcher work per request vs the baseline (BEAM reductions)
 	python3 scripts/matcher-bench.py
+
+bench-compare: docker ## Compare with nginx, HAProxy, Caddy, Traefik and Apache (needs Docker)
+	RP_IMAGE=$(IMAGE):dev python3 scripts/bench-compare.py
 
 bench-store: ## Time loading 50 000 rules and changing one
 	gleam run -m store_bench

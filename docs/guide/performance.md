@@ -1,7 +1,41 @@
 # Performance
 
-`make bench` (or the *Benchmark* workflow) generates 10 000 exact, 1 000
-prefix and 500 regex rules. It then load-tests four scenarios with
+## Compared with other servers
+
+The *Benchmark* workflow serves 10 000 exact, 1 000 prefix and 500 regex
+rules with redirect-proxy and with the servers people usually turn to for
+redirects: nginx, HAProxy, Caddy, Traefik and Apache httpd. It runs every
+week and after each release, then opens a pull request with the new
+numbers, so the results below follow both redirect-proxy and the latest
+stable release of each server.
+
+<BenchmarkResults />
+
+How it is measured (`scripts/bench-compare.py`):
+
+- Every server runs from its official Docker image (`nginx:stable`,
+  `haproxy:lts`, `caddy:2`, `traefik:v3`, `httpd:2.4`; redirect-proxy from
+  the commit being measured) and is limited to half of the CPUs. The load
+  generator, [oha](https://github.com/hatoo/oha) in a container too, gets
+  the other half. Both are on a private Docker network.
+- Each server gets the rules in the form it serves fastest: a hash map for
+  exact rules where it has one, and its own prefix and regular expression
+  constructs. "How each server is configured" above lists them.
+- Before being timed, each server must answer every scenario with the
+  expected status and `Location`; one that does not is shown as failed.
+- Each scenario runs for 10 s with 100 keep-alive connections, after a 2 s
+  warm-up, three times. The median is kept. Access logs are off everywhere.
+- The client and the servers share one machine, which is a shared CI
+  runner: compare the servers with each other, not with your own traffic.
+
+`make bench-compare` runs it on your machine (Docker only). `--only
+nginx,caddy` measures some of the servers, and `EXACT`, `PREFIX`, `REGEX`,
+`DURATION`, `RUNS`, `CONCURRENCY` and `SERVER_CPUS` change the parameters.
+
+## redirect-proxy alone
+
+`make bench` (or the *Benchmark* workflow) generates the same rules
+and runs redirect-proxy from the checkout. It load-tests four scenarios with
 [oha](https://github.com/hatoo/oha), falling back to ApacheBench:
 
 - An exact hit.
@@ -14,10 +48,6 @@ prefix and 500 regex rules. It then load-tests four scenarios with
 It reports throughput, latency percentiles and memory. The access log is
 written to a file during the run, as it is enabled by default
 (`RP_ACCESS_LOG_ENABLED=false` measures without it).
-
-Measured locally on a laptop with the self-contained bundle, using
-ApacheBench (single-threaded, so the client is the bottleneck): redirects
-ran at about 14 000 requests/s.
 
 Rule lookup itself, measured in-process with the same 11 500 rules, takes
 about 0.4 µs for an exact hit, 1.2 µs for a prefix hit, 1.9 µs for the last
