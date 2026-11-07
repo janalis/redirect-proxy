@@ -377,6 +377,81 @@ pub fn client_ip(
 
 /// Truncates an address (IPv4 to /24, IPv6 to /48). Values that are not IP
 /// addresses are dropped.
+/// Request headers that carry client addresses: with addresses truncated,
+/// a `$http_...` variable for one of them is truncated the same way, hop by
+/// hop, rather than writing full addresses to the disk.
+pub const address_headers = [
+  "x-forwarded-for", "x-real-ip", "forwarded", "true-client-ip",
+  "cf-connecting-ip", "x-client-ip", "x-cluster-client-ip", "fastly-client-ip",
+]
+
+/// The address headers the format logs (`$http_x_forwarded_for`...).
+pub fn logged_address_headers(format: Format) -> List(String) {
+  list.filter_map(format.segments, fn(segment) {
+    case segment {
+      Var(Header(name)) ->
+        case list.contains(address_headers, name) {
+          True -> Ok(name)
+          False -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// An address header's value with each address truncated: the hops of
+/// `X-Forwarded-For` one by one, the `for=` of `Forwarded`, anything that is
+/// not an address dropped.
+pub fn anonymize_header(value: String) -> String {
+  value
+  |> string.split(",")
+  |> list.map(fn(hop) {
+    let hop = string.trim(hop)
+    case string.contains(hop, "=") {
+      // Forwarded: for=192.0.2.60;proto=http;by=203.0.113.43
+      True ->
+        hop
+        |> string.split(";")
+        |> list.filter_map(fn(pair) {
+          case string.split_once(string.trim(pair), "=") {
+            Ok(#(key, v)) -> {
+              let key = string.lowercase(key)
+              case key == "for" || key == "by" {
+                True -> Ok(key <> "=" <> anonymize(forwarded_address(v)))
+                False -> Ok(key <> "=" <> v)
+              }
+            }
+            Error(Nil) -> Error(Nil)
+          }
+        })
+        |> string.join(";")
+      False -> anonymize(hop)
+    }
+  })
+  |> string.join(", ")
+}
+
+/// The address of a `Forwarded` `for=` value: `"[2001:db8::1]:4711"` is
+/// `2001:db8::1`, `192.0.2.60:8080` is `192.0.2.60`.
+fn forwarded_address(value: String) -> String {
+  let v = case value {
+    "\"" <> rest -> string.drop_end(rest, 1)
+    _ -> value
+  }
+  case v {
+    "[" <> rest ->
+      case string.split_once(rest, "]") {
+        Ok(#(address, _)) -> address
+        Error(Nil) -> v
+      }
+    _ ->
+      case string.split(v, ":") {
+        [address, _port] -> address
+        _ -> v
+      }
+  }
+}
+
 pub fn anonymize(ip: String) -> String {
   ffi.anonymize_ip(ip)
 }

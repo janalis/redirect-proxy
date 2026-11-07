@@ -322,3 +322,26 @@ pub fn dot_segments_cannot_escape_the_target_path_test() {
   // browsers read `\` as `/`: a raw backslash never reaches the matcher
   assert !string.contains(exchange("/v1/..\\..\\x"), "location:")
 }
+
+/// With truncated addresses (the default), a logged forwarding header is
+/// truncated too: full addresses never reach the disk.
+pub fn logged_forwarding_headers_are_truncated_test() {
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(
+          ..d.access_log,
+          format: "$remote_addr|$http_x_forwarded_for|$http_x_request_id",
+        ),
+      ),
+    )
+  let _ =
+    get(env.redirect <> "/old", [
+      #("x-forwarded-for", "198.51.100.77, 2001:db8:1:2::3"),
+      #("x-request-id", "abc"),
+    ])
+  let assert [line] = access_lines(env.dir, 1)
+  assert line == "127.0.0.0|198.51.100.0, 2001:db8:1::|abc"
+}

@@ -221,3 +221,29 @@ pub fn cached_time_follows_the_second_test() {
   assert ffi.time_local(time_us) != ffi.time_local(time_us + 1_000_000)
   ffi.access_log_stop()
 }
+
+/// A 6to4 address holds the client's whole IPv4 address in its /48: it is
+/// cut like that IPv4 address, to /24.
+pub fn six_to_four_addresses_are_truncated_test() {
+  assert fmt.anonymize("2002:cb00:7101::1") == "2002:cb00:7100::"
+  assert fmt.anonymize("2001:db8:1:2::3") == "2001:db8:1::"
+}
+
+/// With truncated addresses, logged address headers are truncated too.
+pub fn address_headers_are_anonymised_test() {
+  assert fmt.anonymize_header("203.0.113.9, 2001:db8:1:2::3")
+    == "203.0.113.0, 2001:db8:1::"
+  assert fmt.anonymize_header("unknown") == ""
+  assert fmt.anonymize_header(
+      "for=192.0.2.60;proto=http;by=\"[2001:db8::1]:4711\"",
+    )
+    == "for=192.0.2.0;proto=http;by=2001:db8::"
+  let assert Ok(f) =
+    fmt.parse(
+      "$remote_addr $http_x_forwarded_for $http_x_request_id",
+      "default",
+    )
+  assert fmt.logged_address_headers(f) == ["x-forwarded-for"]
+  let assert Ok(combined) = fmt.parse("combined", "default")
+  assert fmt.logged_address_headers(combined) == []
+}

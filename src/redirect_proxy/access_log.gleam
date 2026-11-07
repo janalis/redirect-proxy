@@ -29,6 +29,9 @@ pub type Settings {
     log_query: Bool,
     anonymize_ip: Bool,
     trusted_proxies: List(String),
+    /// Address headers logged by `format` whose addresses are truncated
+    /// (empty when addresses are not truncated, or none is logged).
+    anonymized_headers: List(String),
   )
 }
 
@@ -49,13 +52,19 @@ pub fn settings(
     config.access_log_format(cfg, listener),
     cfg.escape,
   ))
-  Ok(Settings(
-    listener:,
-    format:,
-    log_query: cfg.log_query,
-    anonymize_ip: cfg.anonymize_ip == "truncate",
-    trusted_proxies: cfg.trusted_proxies,
-  ))
+  Ok(
+    Settings(
+      listener:,
+      format:,
+      log_query: cfg.log_query,
+      anonymize_ip: cfg.anonymize_ip == "truncate",
+      trusted_proxies: cfg.trusted_proxies,
+      anonymized_headers: case cfg.anonymize_ip {
+        "truncate" -> fmt.logged_address_headers(format)
+        _ -> []
+      },
+    ),
+  )
 }
 
 /// Installs one handler per distinct output of the enabled listeners and
@@ -160,7 +169,16 @@ pub fn record(
         http.Head -> 0
         _ -> body_size(resp.body)
       },
-      headers: req.headers,
+      headers: case settings.anonymized_headers {
+        [] -> req.headers
+        names ->
+          list.map(req.headers, fn(h) {
+            case list.contains(names, h.0) {
+              True -> #(h.0, fmt.anonymize_header(h.1))
+              False -> h
+            }
+          })
+      },
       location: response.get_header(resp, "location") |> result.unwrap(""),
       rule_id:,
       time_us:,
