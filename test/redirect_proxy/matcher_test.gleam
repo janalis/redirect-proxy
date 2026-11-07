@@ -605,3 +605,35 @@ pub fn query_conditions_test() {
     matcher.resolve_url(m, "https://x.test/page.php?id=42", False)
   assert location == "/article-42"
 }
+
+/// Many prefix lengths make a tree of indexes: the longest prefix still
+/// wins, whatever branch it is in, and keys of an inner node are found.
+pub fn prefix_index_with_many_lengths_test() {
+  let prefix = fn(source, target) {
+    Rule(..rule.blank(), id: source, kind: rule.Prefix, source:, target:)
+  }
+  let rules =
+    int.range(1, 31, [], list.prepend)
+    |> list.flat_map(fn(n) {
+      [
+        prefix("/" <> string.repeat("a", n), "/a" <> int.to_string(n)),
+        prefix("/" <> string.repeat("b", n) <> "/", "/b" <> int.to_string(n)),
+      ]
+    })
+    |> list.append([prefix("/c", "/c")])
+  let m = matcher.build(rules)
+  let target = fn(path) {
+    case matcher.lookup(m, "x.test", path) {
+      Ok(found) -> found.rule.target
+      Error(Nil) -> ""
+    }
+  }
+  assert target("/" <> string.repeat("a", 30) <> "/x") == "/a30"
+  assert target("/" <> string.repeat("a", 12) <> "z") == "/a12"
+  assert target("/a") == "/a1"
+  assert target("/" <> string.repeat("b", 7) <> "/x") == "/b7"
+  assert target("/" <> string.repeat("b", 6) <> "/x") == "/b6"
+  assert target("/" <> string.repeat("b", 7)) == ""
+  assert target("/cc") == "/c"
+  assert target("/d") == ""
+}

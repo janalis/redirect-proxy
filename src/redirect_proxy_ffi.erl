@@ -15,7 +15,7 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, strip_control/1, garbage_collect/0,
+    with_lock/2, with_file_lock/3, strip_control/1, strip_url_whitespace/1, garbage_collect/0,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
@@ -663,6 +663,18 @@ lock_owner(Lock) ->
 
 %% Removes CR, LF and NUL bytes (header injection guard), byte-wise so that
 %% "\r\n" grapheme clusters are handled too.
+%% Tabs and line breaks, which browsers drop from URLs. A byte scan: most
+%% locations have none, and are returned as they are.
+strip_url_whitespace(Bin) ->
+    case has_url_whitespace(Bin) of
+        false -> Bin;
+        true -> << <<C>> || <<C>> <= Bin, C =/= $\t, C =/= $\n, C =/= $\r >>
+    end.
+
+has_url_whitespace(<<C, _/binary>>) when C =:= $\t; C =:= $\n; C =:= $\r -> true;
+has_url_whitespace(<<_, Rest/binary>>) -> has_url_whitespace(Rest);
+has_url_whitespace(<<>>) -> false.
+
 strip_control(Bin) ->
     binary:replace(Bin, [<<"\r">>, <<"\n">>, <<0>>], <<>>, [global]).
 

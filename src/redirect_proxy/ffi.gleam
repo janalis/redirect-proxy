@@ -275,6 +275,10 @@ pub fn byte_take(string: String, bytes: Int) -> String
 pub fn byte_drop(string: String, bytes: Int) -> String
 
 /// Removes CR, LF and NUL bytes.
+/// Removes tabs and line breaks, which browsers drop from URLs.
+@external(erlang, "redirect_proxy_ffi", "strip_url_whitespace")
+pub fn strip_url_whitespace(url: String) -> String
+
 @external(erlang, "redirect_proxy_ffi", "strip_control")
 pub fn strip_control(value: String) -> String
 

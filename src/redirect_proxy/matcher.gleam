@@ -10,12 +10,13 @@
 //// (priority order, then insertion order). The first match wins.
 ////
 //// Prefix rules, and regex rules starting with a literal (`^/old/(.*)`), are
-//// indexed by that literal: for each distinct byte length of the literals,
-//// the request path is cut to that length and looked up in a dictionary.
-//// A lookup costs one dictionary access per distinct length instead of one
-//// comparison (or one regex run) per rule. The candidates found carry their
-//// rank in the resolution order above, so the result is the same as trying
-//// every rule in that order.
+//// indexed by that literal: the request path is cut to the byte length of
+//// the literals and looked up in a dictionary, along a tree of such lengths
+//// (`Index`), so that a lookup costs a few dictionary accesses instead of
+//// one comparison (or one regex run) per rule. The candidates found carry
+//// their rank in the resolution order above, so the result is the same as
+//// trying every rule in that order. Targets are parsed once, when the
+//// matcher is built (`rule.compile_template`).
 ////
 //// The matcher also holds the hit count and the time of the last hit of
 //// every rule (`record_hit`): a lock-free `counters` array, carried over to
@@ -69,18 +70,35 @@ type HostRules {
   )
 }
 
-/// Entries keyed by a literal prefix of the path. `lengths` lists the
-/// distinct key lengths in bytes; entries sharing a key are in rank order.
+/// Entries keyed by a literal prefix of the path; entries sharing a key are
+/// in rank order. A lookup cuts the path to each key length and looks the
+/// cut up, so a `Leaf` costs one lookup per distinct length. With more
+/// lengths than `leaf_lengths`, a `Node` keeps the keys of its shortest
+/// length, and the longer keys in one child index per first `length`
+/// bytes: a lookup only follows the child of the path's own first bytes,
+/// so it costs a few lookups however many lengths there are.
 type Index(a) {
-  Index(lengths: List(Int), entries: Dict(String, List(a)))
+  Leaf(lengths: List(Int), entries: Dict(String, List(a)))
+  Node(
+    length: Int,
+    entries: Dict(String, List(a)),
+    children: Dict(String, Index(a)),
+  )
 }
+
+const leaf_lengths = 4
 
 type QueryRule {
   QueryRule(rule: Rule, conditions: List(#(String, String)))
 }
 
 type PrefixRule {
-  PrefixRule(rank: Int, rule: Rule, guard: rule.TargetGuard)
+  PrefixRule(
+    rank: Int,
+    rule: Rule,
+    template: rule.Template,
+    guard: rule.TargetGuard,
+  )
 }
 
 type RegexRule {
@@ -88,6 +106,7 @@ type RegexRule {
     rank: Int,
     rule: Rule,
     regex: ffi.CompiledRegex,
+    template: rule.Template,
     guard: rule.TargetGuard,
   )
 }
@@ -305,7 +324,12 @@ fn build_host(rules: List(Rule)) -> HostRules {
       |> order.break_tie(int.compare(a.priority, b.priority))
     })
     |> list.index_map(fn(r, rank) {
-      PrefixRule(rank:, rule: r, guard: rule.target_guard(r.target))
+      PrefixRule(
+        rank:,
+        rule: r,
+        template: rule.compile_template(r.target),
+        guard: rule.target_guard(r.target),
+      )
     })
   let #(prefix_ci, prefix) =
     list.partition(prefix, fn(p) { p.rule.case_insensitive })
@@ -319,7 +343,13 @@ fn build_host(rules: List(Rule)) -> HostRules {
     })
     |> list.index_map(fn(entry, rank) {
       let #(r, regex) = entry
-      RegexRule(rank:, rule: r, regex:, guard: rule.target_guard(r.target))
+      RegexRule(
+        rank:,
+        rule: r,
+        regex:,
+        template: rule.compile_template(r.target),
+        guard: rule.target_guard(r.target),
+      )
     })
   let #(regex_unindexed, regex) =
     list.partition(regex, fn(r) { regex_literal(r.rule) == "" })
@@ -357,37 +387,81 @@ fn drop_codepoints(rest: List(UtfCodepoint), bytes: Int) -> List(UtfCodepoint) {
 
 /// Indexes entries (given in rank order) by `key`.
 fn index(entries: List(a), key: fn(a) -> String) -> Index(a) {
-  let grouped =
-    entries
-    |> list.reverse
-    |> list.fold(dict.new(), fn(acc, entry) {
-      // folding the reversed list keeps each group in rank order
-      dict.upsert(acc, key(entry), fn(group) {
-        [entry, ..option.unwrap(group, [])]
-      })
+  entries
+  |> list.reverse
+  |> list.fold(dict.new(), fn(acc, entry) {
+    // folding the reversed list keeps each group in rank order
+    dict.upsert(acc, key(entry), fn(group) {
+      [entry, ..option.unwrap(group, [])]
     })
+  })
+  |> dict.to_list
+  |> index_tree
+}
+
+fn index_tree(groups: List(#(String, List(a)))) -> Index(a) {
   let lengths =
-    grouped
-    |> dict.keys
-    |> list.map(string.byte_size)
+    groups
+    |> list.map(fn(group) { string.byte_size(group.0) })
     |> list.unique
     |> list.sort(fn(a, b) { int.compare(b, a) })
-  Index(lengths:, entries: grouped)
+  case list.length(lengths) <= leaf_lengths, list.last(lengths) {
+    True, _ | _, Error(Nil) -> Leaf(lengths:, entries: dict.from_list(groups))
+    False, Ok(shortest) -> {
+      let #(here, longer) =
+        list.partition(groups, fn(group) {
+          string.byte_size(group.0) == shortest
+        })
+      // every child has fewer lengths: the tree ends
+      let children =
+        longer
+        |> list.group(fn(group) { ffi.byte_take(group.0, shortest) })
+        |> dict.map_values(fn(_, groups) { index_tree(groups) })
+      Node(length: shortest, entries: dict.from_list(here), children:)
+    }
+  }
+}
+
+fn is_empty(index: Index(a)) -> Bool {
+  case index {
+    Leaf(lengths: [], ..) -> True
+    _ -> False
+  }
 }
 
 /// The entries whose key is a prefix of `subject`, in no particular order.
 fn candidates(index: Index(a), subject: String) -> List(a) {
-  let size = string.byte_size(subject)
-  list.fold(index.lengths, [], fn(found, length) {
-    case length <= size {
-      False -> found
-      True ->
-        case dict.get(index.entries, ffi.byte_take(subject, length)) {
-          Ok(entries) -> list.append(entries, found)
-          Error(Nil) -> found
+  case index {
+    Leaf(lengths:, entries:) -> {
+      let size = string.byte_size(subject)
+      list.fold(lengths, [], fn(found, length) {
+        case length <= size {
+          False -> found
+          True ->
+            case dict.get(entries, ffi.byte_take(subject, length)) {
+              Ok(entries) -> list.append(entries, found)
+              Error(Nil) -> found
+            }
         }
+      })
     }
-  })
+    Node(length:, entries:, children:) ->
+      case string.byte_size(subject) < length {
+        // every key is at least `length` bytes long
+        True -> []
+        False -> {
+          let head = ffi.byte_take(subject, length)
+          let deeper = case dict.get(children, head) {
+            Ok(child) -> candidates(child, subject)
+            Error(Nil) -> []
+          }
+          case dict.get(entries, head) {
+            Ok(found) -> list.append(found, deeper)
+            Error(Nil) -> deeper
+          }
+        }
+      }
+  }
 }
 
 /// The literal a regex rule's pattern starts with: a path can only match if
@@ -626,9 +700,10 @@ fn match_prefix(
   vars: rule.RequestVars,
 ) -> Result(Match, Nil) {
   let found = candidates(rules.prefix, path)
-  let found = case rules.prefix_ci.lengths {
-    [] -> found
-    _ -> list.append(candidates(rules.prefix_ci, string.lowercase(path)), found)
+  let found = case is_empty(rules.prefix_ci) {
+    True -> found
+    False ->
+      list.append(candidates(rules.prefix_ci, string.lowercase(path)), found)
   }
   let found =
     list.filter_map(found, fn(p) {
@@ -655,7 +730,7 @@ fn match_prefix(
         })
       let r = best.rule
       // a substitution leaving the target's host: the rule does not apply
-      rule.expand_with(r.target, [path, remainder], vars)
+      rule.expand_template(best.template, [path, remainder], vars)
       |> rule.guard_location(best.guard, _, vars)
       |> result.map(Match(r, _))
     }
@@ -711,7 +786,7 @@ fn run_regexes(
           case
             rule.guard_location(
               entry.guard,
-              rule.expand_with(entry.rule.target, captures, vars),
+              rule.expand_template(entry.template, captures, vars),
               vars,
             )
           {
