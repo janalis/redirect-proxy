@@ -2,6 +2,7 @@
 
 import gleam/bool
 import gleam/http.{Get, Post}
+import redirect_proxy/admin/routes/audit.{audit_page} as _
 import redirect_proxy/admin/routes/auth.{
   login, login_page, logout, oidc_callback, oidc_start, require_session,
 } as _
@@ -9,10 +10,10 @@ import redirect_proxy/admin/routes/clients.{
   api_clients_page, confirm_client_action, create_api_client, delete_api_client,
   rotate_api_client,
 } as _
+import redirect_proxy/admin/routes/import_export.{import_page, import_rules} as _
 import redirect_proxy/admin/routes/rules.{
-  audit_page, bulk, confirm_delete, create_rule, delete_rule, edit_rule, export,
-  import_page, import_rules, list_rules, new_rule, reload, test_url, toggle_rule,
-  update_rule,
+  bulk, confirm_delete, create_rule, delete_rule, edit_rule, export, list_rules,
+  new_rule, reload, test_url, toggle_rule, update_rule,
 } as _
 import redirect_proxy/admin/routes/users.{
   account_page, change_password, confirm_delete_user, create_user, delete_user,
