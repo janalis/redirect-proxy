@@ -3,6 +3,7 @@
 -export([
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
+    count_regex_limit/0, reductions/0,
     atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
@@ -86,6 +87,13 @@ regex_limit_count() ->
         undefined -> 0;
         Ref -> counters:get(Ref, 1)
     end.
+
+%% Reductions spent by the calling process so far: what the regex stage of a
+%% request may spend is measured with it (re:run counts its work in
+%% reductions).
+reductions() ->
+    {reductions, R} = erlang:process_info(self(), reductions),
+    R.
 
 count_regex_limit() ->
     case persistent_term:get({redirect_proxy, regex_limit}, undefined) of
