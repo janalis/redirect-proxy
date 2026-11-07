@@ -126,17 +126,15 @@ fn route(
 ) -> Response {
   let template = routes.template(segments)
   use <- known_method(req, template)
+  use <- required_scope(req, ctx, principal, template)
   let response = case req.method, segments {
     Get, ["redirects"] -> {
-      use <- require(principal, scope.Read, ctx)
       list_rules(req, ctx)
     }
     Post, ["redirects"] -> {
-      use <- require(principal, scope.Write, ctx)
       create_rule(req, ctx, principal)
     }
     Get, ["redirects", "export"] -> {
-      use <- require(principal, scope.Read, ctx)
       let query = wisp.get_query(req)
       let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
       use #(rules, version) <- result_or_response(filtered_rules(ctx, get))
@@ -159,15 +157,12 @@ fn route(
       |> unless_not_modified(req, version, _)
     }
     Post, ["redirects", "import"] -> {
-      use <- require(principal, scope.Write, ctx)
       import_rules(req, ctx, principal)
     }
     Post, ["redirects", "bulk"] -> {
-      use <- require(principal, scope.Write, ctx)
       bulk(req, ctx, principal)
     }
     Get, ["redirects", id] -> {
-      use <- require(principal, scope.Read, ctx)
       case store.get(ctx.store, id) {
         // always 200: the body has live hit counts that the ETag (the
         // rule's version, for If-Match) does not cover, so a 304 would
@@ -177,19 +172,15 @@ fn route(
       }
     }
     Put, ["redirects", id] -> {
-      use <- require(principal, scope.Write, ctx)
       replace_rule(req, ctx, principal, id)
     }
     Patch, ["redirects", id] -> {
-      use <- require(principal, scope.Write, ctx)
       patch_rule(req, ctx, principal, id)
     }
     Delete, ["redirects", id] -> {
-      use <- require(principal, scope.Write, ctx)
       delete_rule(req, ctx, principal, id)
     }
     Post, ["reload"] -> {
-      use <- require(principal, scope.Ops, ctx)
       case store.reload(ctx.store, principal.actor) {
         Ok(count) ->
           problem.json_response(200, json.object([#("rules", json.int(count))]))
@@ -204,11 +195,9 @@ fn route(
       }
     }
     Get, ["test"] -> {
-      use <- require(principal, scope.Read, ctx)
       test_url(req, ctx)
     }
     Get, ["audit"] -> {
-      use <- require(principal, scope.Audit, ctx)
       audit_log(req, ctx)
     }
     _, _ -> problem.not_found("No such endpoint.")
@@ -225,13 +214,26 @@ fn known_method(
 ) -> Response {
   case template {
     Ok(template) ->
-      case
-        list.contains(routes.operations, routes.Operation(req.method, template))
-      {
-        True -> next()
-        False -> problem.method_not_allowed(routes.allowed(template))
+      case routes.find(req.method, template) {
+        Ok(_) -> next()
+        Error(Nil) -> problem.method_not_allowed(routes.allowed(template))
       }
     // unknown paths are a 404 from the dispatch
+    Error(Nil) -> next()
+  }
+}
+
+/// The scope of the operation (`routes.operations`), for every operation:
+/// the dispatch does not check scopes itself.
+fn required_scope(
+  req: Request,
+  ctx: Context,
+  principal: Principal,
+  template: Result(String, Nil),
+  next: fn() -> Response,
+) -> Response {
+  case result.try(template, routes.find(req.method, _)) {
+    Ok(operation) -> require(principal, operation.scope, ctx, next)
     Error(Nil) -> next()
   }
 }
