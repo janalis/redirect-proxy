@@ -161,6 +161,11 @@ pub fn counter_put(ref: Counters, index: Int, value: Int) -> Nil
 // --- network ----------------------------------------------------------------
 
 /// The address throttling counts failures for: IPv6 addresses by /64.
+/// Whether the text is an IPv4 or IPv6 address (no brackets, port or
+/// prefix length).
+@external(erlang, "redirect_proxy_ffi", "is_ip_address")
+pub fn is_ip_address(text: String) -> Bool
+
 @external(erlang, "redirect_proxy_ffi", "throttle_address")
 pub fn throttle_address(ip: String) -> String
 

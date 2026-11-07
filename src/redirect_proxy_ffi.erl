@@ -10,7 +10,7 @@
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
+    ip_in_cidr/2, is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
     on_sighup/1,
     plain_arguments/0, halt/1, read_password/1,
@@ -428,6 +428,12 @@ throttle_address(IpBin) ->
             <<(list_to_binary(inet:ntoa({A, B, C, D, 0, 0, 0, 0})))/binary, "/64">>;
         {ok, Ip} when tuple_size(Ip) =:= 4 -> list_to_binary(inet:ntoa(Ip));
         _ -> IpBin
+    end.
+
+is_ip_address(Bin) ->
+    case parse_ip(Bin) of
+        {ok, _} -> true;
+        _ -> false
     end.
 
 valid_cidr(CidrBin) ->
