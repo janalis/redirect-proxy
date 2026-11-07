@@ -14,6 +14,7 @@
 //// changed on disk since it was last read or written, reloads it first, so
 //// that outside changes are never silently overwritten.
 
+import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -193,6 +194,9 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
+    /// The fingerprint of the content the watcher last found invalid: it is
+    /// reported once, not at every tick that reads it again.
+    rejected: String,
     /// When the hit counts were last saved.
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
@@ -233,6 +237,7 @@ fn initial_state(
     rules:,
     fingerprint:,
     stamp:,
+    rejected: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
@@ -782,7 +787,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Watch(self) -> {
       schedule_watch(state.settings, self)
       let stamp = ffi.file_stamp(state.settings.rules_path)
-      case stamp == state.stamp {
+      case stamp == state.stamp && !ffi.stamp_is_recent(stamp) {
         True -> actor.continue(state)
         False -> {
           let content = simplifile.read_bits(state.settings.rules_path)
@@ -793,71 +798,102 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             ffi.file_stamp(state.settings.rules_path) != stamp,
             fn() { actor.continue(state) },
           )
-          let state = State(..state, stamp:)
           // the store's own writes leave the fingerprint unchanged
           case content {
-            Ok(content) if content != <<>> ->
-              case store_file.fingerprint(content) == state.fingerprint {
-                True -> actor.continue(state)
-                False -> handle(state, ReloadInBackground("watch"))
+            Ok(content) if content != <<>> -> {
+              let found = store_file.fingerprint(content)
+              case found == state.fingerprint || found == state.rejected {
+                True -> actor.continue(State(..state, stamp:))
+                False -> {
+                  let #(reloaded, outcome) =
+                    reload_file(State(..state, stamp:), "watch")
+                  case outcome, valid_rules(content) {
+                    Ok(_), _ -> actor.continue(reloaded)
+                    // a valid file that could not be loaded now (the lock
+                    // held by another process): the next tick tries again
+                    Error(_), True ->
+                      actor.continue(State(..reloaded, stamp: state.stamp))
+                    // an invalid one is reported once
+                    Error(_), False ->
+                      actor.continue(State(..reloaded, rejected: found))
+                  }
+                }
               }
-            _ -> actor.continue(state)
+            }
+            _ -> actor.continue(State(..state, stamp:))
           }
         }
       }
     }
 
     ReloadInBackground(actor_name) -> {
-      let reply = process.new_subject()
-      let next = handle(state, Reload(actor_name, reply))
-      // drain our own reply
-      let _ = process.receive(reply, 0)
-      next
+      let #(state, _) = reload_file(state, actor_name)
+      actor.continue(state)
     }
 
     Reload(actor_name, reply) -> {
-      let started = ffi.monotonic_micros()
-      case
-        store_file.load_locked(
-          files(state.settings),
-          store_file.Reloading,
-          lock_timeout,
-        )
-      {
-        Ok(#(rules, fingerprint)) -> {
-          commit.loaded(target(state.settings), rules, checker.Problems)
-          metrics.incr(metrics.Reloads)
-          metrics.reloaded(ffi.monotonic_micros() - started)
-          audit_rules_change(
-            state,
-            actor_name,
-            "rules.reload",
-            int.to_string(list.length(rules)) <> " rule(s)",
-            rules,
-            fingerprint,
-          )
-          log.info(
-            "reloaded " <> int.to_string(list.length(rules)) <> " rule(s)",
-          )
-          process.send(reply, Ok(list.length(rules)))
-          actor.continue(State(..state, rules:, fingerprint:))
-        }
-        Error(reason) -> {
-          metrics.incr(metrics.ReloadFailures)
-          log.error("reload rejected, keeping current rules: " <> reason)
-          audit.record(
-            state.settings.audit_path,
-            actor_name,
-            "rules.reload_failed",
-            state.settings.rules_path,
-            None,
-            Some(json.object([#("error", json.string(reason))])),
-          )
-          process.send(reply, Error(reason))
-          actor.continue(state)
-        }
-      }
+      let #(state, outcome) = reload_file(state, actor_name)
+      process.send(reply, outcome)
+      actor.continue(state)
     }
+  }
+}
+
+/// Reads the file again (`SIGHUP`, the admin, the API, the watcher): the
+/// new state, and the number of rules or why the file was refused.
+fn reload_file(
+  state: State,
+  actor_name: String,
+) -> #(State, Result(Int, String)) {
+  let started = ffi.monotonic_micros()
+  case
+    store_file.load_locked(
+      files(state.settings),
+      store_file.Reloading,
+      lock_timeout,
+    )
+  {
+    Ok(#(rules, fingerprint)) -> {
+      commit.loaded(target(state.settings), rules, checker.Problems)
+      metrics.incr(metrics.Reloads)
+      metrics.reloaded(ffi.monotonic_micros() - started)
+      audit_rules_change(
+        state,
+        actor_name,
+        "rules.reload",
+        int.to_string(list.length(rules)) <> " rule(s)",
+        rules,
+        fingerprint,
+      )
+      log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
+      #(State(..state, rules:, fingerprint:), Ok(list.length(rules)))
+    }
+    Error(reason) -> {
+      metrics.incr(metrics.ReloadFailures)
+      log.error("reload rejected, keeping current rules: " <> reason)
+      audit.record(
+        state.settings.audit_path,
+        actor_name,
+        "rules.reload_failed",
+        state.settings.rules_path,
+        None,
+        Some(json.object([#("error", json.string(reason))])),
+      )
+      #(state, Error(reason))
+    }
+  }
+}
+
+/// Whether a file's content is a valid rule set, without the lock or
+/// writing anything.
+fn valid_rules(content: BitArray) -> Bool {
+  case bit_array.to_string(content) {
+    Ok(text) ->
+      case rule.file_from_string(text) {
+        Ok(rules) -> store_rules.validate_all(rules) |> result.is_ok
+        Error(_) -> False
+      }
+    Error(Nil) -> False
   }
 }
 

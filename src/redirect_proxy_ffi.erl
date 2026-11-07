@@ -4,7 +4,7 @@
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
-    atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1,
+    atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
@@ -189,6 +189,12 @@ file_stamp(Path) ->
             {Inode, MTime, Size};
         {error, _} -> missing
     end.
+
+%% Whether a stamp's modification time is within the last two seconds:
+%% another write in that same second would leave the stamp as it is (the
+%% time has a one second resolution) when it keeps the size and the inode.
+stamp_is_recent({_, MTime, _}) -> MTime >= erlang:system_time(second) - 2;
+stamp_is_recent(missing) -> false.
 
 memo_file(Path, Fun) ->
     Stamp = file_stamp(Path),
