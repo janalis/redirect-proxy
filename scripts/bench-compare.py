@@ -268,7 +268,7 @@ def apache(d):
 ServerRoot "/usr/local/apache2"
 ServerName localhost
 Listen 8080
-LoadModule mpm_event_module modules/mod_mpm_event.so
+LoadModule mpm_worker_module modules/mod_mpm_worker.so
 LoadModule authz_core_module modules/mod_authz_core.so
 LoadModule unixd_module modules/mod_unixd.so
 LoadModule rewrite_module modules/mod_rewrite.so
@@ -279,8 +279,14 @@ ErrorLog /proc/self/fd/2
 LogLevel warn
 KeepAlive On
 MaxKeepAliveRequests 0
-StartServers 4
-MinSpareThreads 100
+# worker MPM, fixed pool: the event MPM, and stopping spare processes,
+# close keep-alive connections under load
+ServerLimit 8
+StartServers 8
+ThreadsPerChild 25
+MaxRequestWorkers 200
+MinSpareThreads 25
+MaxSpareThreads 200
 DocumentRoot "/usr/local/apache2/htdocs"
 
 RewriteEngine On
@@ -293,7 +299,9 @@ RewriteRule ^ ${{exact:%{{REQUEST_URI}}}} [R=301,L]
         "cmd": ["httpd-foreground", "-f", "/etc/bench/httpd.conf"],
         "version": ["httpd", "-v"],
         "notes": ["exact rules in a `RewriteMap txt:` (cached), prefix and "
-                  "regex rules are `RewriteRule` regexes, tried in order"],
+                  "regex rules are `RewriteRule` regexes, tried in order; worker MPM "
+                  "(the event MPM drops keep-alive connections under this "
+                  "load)"],
     }
 
 

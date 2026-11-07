@@ -5,9 +5,9 @@
 The *Benchmark* workflow serves 10 000 exact, 1 000 prefix and 500 regex
 rules with redirect-proxy and with the servers people usually turn to for
 redirects: nginx, HAProxy, Caddy, Traefik and Apache httpd. It runs every
-week and after each release, then opens a pull request with the new
-numbers, so the results below follow both redirect-proxy and the latest
-stable release of each server.
+week and after each release, then publishes the new numbers (a server that
+fails its check holds them back for review), so the results below follow
+both redirect-proxy and the latest stable release of each server.
 
 <BenchmarkResults />
 
