@@ -807,6 +807,7 @@ pub fn same_second_same_size_edits_are_seen_test() {
           <> target
           <> "\"}]",
       )
+    Nil
   }
   write("/first")
   support.wait_until(fn() { redirect("/watched") == Ok("/first") }, 2000)
