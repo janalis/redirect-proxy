@@ -535,16 +535,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Error(["id: already exists"]),
         )
         use valid <- result.try(rule.validate(candidate))
-        use Nil <- result.try(check_lint(valid))
         let rules = list.append(state.rules, [valid])
-        use Nil <- result.try(check_conflicts(rules))
-        let built = matcher.build(rules)
-        use Nil <- result.try(check_loop(
-          built,
+        // a new rule only adds matches: a loop it makes goes through it
+        use fingerprint <- result.try(commit_rule(
+          state.settings,
           valid,
-          state.settings.ignore_trailing_slash,
+          rules,
+          uncovers: False,
         ))
-        use fingerprint <- result.try(commit(state.settings, rules, built))
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -575,7 +573,6 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use valid <- result.try(
           rule.validate(candidate) |> result.map_error(Invalid),
         )
-        use Nil <- result.try(check_lint(valid) |> result.map_error(Invalid))
         let rules =
           list.map(state.rules, fn(r) {
             case r.id == valid.id {
@@ -583,19 +580,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               False -> r
             }
           })
-        use Nil <- result.try(
-          check_conflicts(rules) |> result.map_error(Invalid),
-        )
-        let built = matcher.build(rules)
-        use Nil <- result.try(
-          check_loop(built, valid, state.settings.ignore_trailing_slash)
-          |> result.map_error(Invalid),
-        )
         // the old version may have shadowed a rule that loops
-        let built =
-          warn_loops(built, rules, state.settings.ignore_trailing_slash)
         use fingerprint <- result.try(
-          commit(state.settings, rules, built) |> result.map_error(Invalid),
+          commit_rule(state.settings, valid, rules, uncovers: True)
+          |> result.map_error(Invalid),
         )
         audit.record(
           state.settings.audit_path,
@@ -618,15 +606,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         )
         use Nil <- result.try(check_version(existing, expected))
         let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
-        // removing a rule may uncover a loop it was shadowing
-        let built =
-          warn_problems(
-            matcher.build(rules),
-            rules,
-            state.settings.ignore_trailing_slash,
-          )
+        // removing a rule adds no conflict (and a file with conflicts can
+        // still lose rules); it may uncover a loop it was shadowing
         use fingerprint <- result.try(
-          commit(state.settings, rules, built) |> result.map_error(Invalid),
+          commit_rules(state.settings, rules, check_conflicts: False)
+          |> result.map_error(Invalid),
         )
         audit.record(
           state.settings.audit_path,
@@ -652,16 +636,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
         }
-        let outcome = {
-          use Nil <- result.try(check_conflicts(rules))
-          let built =
-            warn_problems(
-              matcher.build(rules),
-              rules,
-              state.settings.ignore_trailing_slash,
-            )
-          commit(state.settings, rules, built)
-        }
+        let outcome = commit_rules(state.settings, rules, check_conflicts: True)
         case outcome {
           Ok(fingerprint) -> {
             audit_rules_change(
@@ -736,14 +711,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Disable -> list.map(state.rules, change(_, False))
         }
         // enabling may bring two exact rules for one path back together
-        use Nil <- result.try(check_conflicts(rules))
-        let built =
-          warn_problems(
-            matcher.build(rules),
-            rules,
-            state.settings.ignore_trailing_slash,
-          )
-        use fingerprint <- result.try(commit(state.settings, rules, built))
+        use fingerprint <- result.try(commit_rules(
+          state.settings,
+          rules,
+          check_conflicts: True,
+        ))
         let d = store_rules.diff(state.rules, rules)
         let count = list.length(d.removed) + list.length(d.changed)
         audit_rules_change(
@@ -1066,6 +1038,48 @@ fn publish(
   |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
   ffi.garbage_collect()
+}
+
+/// Checks then commits a change of one rule (`changed`, in `rules`): it
+/// must be able to apply, conflict with no other rule and not loop. With
+/// `uncovers`, loops the change uncovers elsewhere are logged (an updated
+/// rule may no longer shadow one that loops).
+fn commit_rule(
+  settings: Settings,
+  changed: Rule,
+  rules: List(Rule),
+  uncovers uncovers: Bool,
+) -> Result(String, List(String)) {
+  use Nil <- result.try(check_lint(changed))
+  use Nil <- result.try(check_conflicts(rules))
+  let built = matcher.build(rules)
+  use Nil <- result.try(check_loop(
+    built,
+    changed,
+    settings.ignore_trailing_slash,
+  ))
+  let built = case uncovers {
+    True -> warn_loops(built, rules, settings.ignore_trailing_slash)
+    False -> built
+  }
+  commit(settings, rules, built)
+}
+
+/// Commits a change of a set of rules (bulk, import, delete), checking
+/// conflicts when the change can add some, and logging the loops and rules
+/// that can never apply.
+fn commit_rules(
+  settings: Settings,
+  rules: List(Rule),
+  check_conflicts check: Bool,
+) -> Result(String, List(String)) {
+  use Nil <- result.try(case check {
+    True -> check_conflicts(rules)
+    False -> Ok(Nil)
+  })
+  let built =
+    warn_problems(matcher.build(rules), rules, settings.ignore_trailing_slash)
+  commit(settings, rules, built)
 }
 
 /// Writes then publishes the rules (`built` is their matcher). Returns the
