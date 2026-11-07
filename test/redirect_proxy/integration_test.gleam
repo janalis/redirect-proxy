@@ -1746,6 +1746,16 @@ pub fn header_auth_test() {
   // names from the proxy cannot pass for a local user in the audit log
   let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
   assert #(login.actor, login.action) == #("proxy:proxy-user", "auth.login")
+  // a client that drops cookies keeps the same session: no new session nor
+  // audit entry per request
+  let first = session_cookie(resp)
+  let again = get(env.admin <> "/rules", [#("x-forwarded-user", "proxy-user")])
+  assert again.status == 200
+  assert session_cookie(again) == first
+  let logins =
+    audit.tail(env.dir <> "/audit.jsonl", 100)
+    |> list.filter(fn(e) { e.action == "auth.login" })
+  assert list.length(logins) == 1
   // a forged header from an untrusted network is ignored
   let untrusted =
     boot(
@@ -2601,6 +2611,10 @@ pub fn proxy_role_header_test() {
   let first = get(env.admin <> "/users", as_role("viewer"))
   assert first.status == 403
   let cookie = session_cookie(first)
+  // without a cookie, each role has its own session
+  let as_editor = session_cookie(get(env.admin <> "/rules", as_role("editor")))
+  assert as_editor != "" && as_editor != cookie
+  assert session_cookie(get(env.admin <> "/rules", as_role("viewer"))) == cookie
   assert get(env.admin <> "/users", [#("cookie", cookie), ..as_role("admin")]).status
     == 200
   // no header: the least

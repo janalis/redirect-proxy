@@ -141,21 +141,25 @@ fn start_header_session(
   user: String,
   next: fn(Session, fn(Response) -> Response) -> Response,
 ) -> Response {
-  log.info(
-    "proxy-authenticated session for "
-    <> log_value(user)
-    <> " from "
-    <> ctx.peer_ip,
-  )
-  audit_auth(ctx, session.actor(session.Header, user), "auth.login", "proxy")
-  let s =
-    session.create(
+  let #(s, created) =
+    session.header_session(
       user,
-      session.Header,
-      ctx.config.admin.session_ttl,
-      "",
       header.role(ctx.config.header_auth, req),
+      ctx.config.admin.session_ttl,
+      ctx.config.admin.session_idle_timeout,
     )
+  case created {
+    True -> {
+      log.info(
+        "proxy-authenticated session for "
+        <> log_value(user)
+        <> " from "
+        <> ctx.peer_ip,
+      )
+      audit_auth(ctx, s.username, "auth.login", "proxy")
+    }
+    False -> Nil
+  }
   next(s, set_session_cookie(_, req, ctx, s))
 }
 
