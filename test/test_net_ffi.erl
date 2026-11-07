@@ -1,7 +1,7 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2]).
+         raw_exchange/2, session/3]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -59,4 +59,20 @@ read_all(S, Acc) ->
     case gen_tcp:recv(S, 0, 1000) of
         {ok, Data} -> read_all(S, <<Acc/binary, Data/binary>>);
         {error, _} -> Acc
+    end.
+
+%% Sends each chunk on one connection (50 ms apart), then reads until the
+%% server closes it or WaitMs of silence. Returns {Received, Closed}.
+session(Port, Chunks, WaitMs) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    lists:foreach(fun(C) -> gen_tcp:send(S, C), timer:sleep(50) end, Chunks),
+    Result = read_until_closed(S, <<>>, WaitMs),
+    gen_tcp:close(S),
+    Result.
+
+read_until_closed(S, Acc, WaitMs) ->
+    case gen_tcp:recv(S, 0, WaitMs) of
+        {ok, Data} -> read_until_closed(S, <<Acc/binary, Data/binary>>, WaitMs);
+        {error, closed} -> {Acc, true};
+        {error, _} -> {Acc, false}
     end.

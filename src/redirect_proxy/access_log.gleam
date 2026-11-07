@@ -115,10 +115,25 @@ pub fn wrap(
     let time_us = ffi.now_micros()
     let started = ffi.monotonic_micros()
     let resp = handle(req)
-    metrics.observe(listener, ffi.monotonic_micros() - started)
+    let duration_us = ffi.monotonic_micros() - started
+    metrics.observe(listener, duration_us)
     case settings {
       option.None -> Nil
-      option.Some(settings) -> record(settings, req, resp, "", time_us, started)
+      option.Some(settings) -> {
+        let peer =
+          mist.get_connection_info(req.body)
+          |> result.map(fn(info) { info.ip_address })
+        record(
+          settings,
+          req,
+          peer,
+          resp,
+          body_size(resp.body),
+          "",
+          time_us,
+          duration_us,
+        )
+      }
     }
     resp
   }
@@ -132,27 +147,24 @@ pub fn is_api_path(path: String) -> Bool {
   || string.starts_with(path, "/oauth/")
 }
 
-/// Logs one served request. `started` is `ffi.monotonic_micros()` and
-/// `time_us` is `ffi.now_micros()`, both taken when the request arrived.
+/// Logs one served request: `peer` is the address of the connection,
+/// `bytes` the size of the response body, `time_us` when the request arrived
+/// (`ffi.now_micros()`) and `duration_us` how long it took.
 pub fn record(
   settings: Settings,
-  req: Request(mist.Connection),
-  resp: Response(mist.ResponseData),
+  req: Request(body),
+  peer: Result(mist.IpAddress, Nil),
+  resp: Response(response_body),
+  bytes: Int,
   rule_id: String,
   time_us: Int,
-  started: Int,
+  duration_us: Int,
 ) -> Nil {
-  let duration_us = ffi.monotonic_micros() - started
-  let client = case mist.get_connection_info(req.body), settings {
+  let client = case peer, settings {
     // the peer is the client: anonymise its address without formatting it
-    Ok(info), Settings(anonymize_ip: True, trusted_proxies: [], ..) ->
-      ffi.anonymize_peer(info.ip_address)
-    Ok(info), _ ->
-      client_ip(
-        settings,
-        mist.ip_address_to_string(info.ip_address),
-        req.headers,
-      )
+    Ok(ip), Settings(anonymize_ip: True, trusted_proxies: [], ..) ->
+      ffi.anonymize_peer(ip)
+    Ok(ip), _ -> client_ip(settings, mist.ip_address_to_string(ip), req.headers)
     Error(Nil), _ -> client_ip(settings, "", req.headers)
   }
   let entry =
@@ -167,7 +179,7 @@ pub fn record(
       status: resp.status,
       bytes: case req.method {
         http.Head -> 0
-        _ -> body_size(resp.body)
+        _ -> bytes
       },
       headers: case settings.anonymized_headers {
         [] -> req.headers
