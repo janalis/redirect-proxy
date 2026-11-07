@@ -1,6 +1,5 @@
 //// Lock-free request counters exposed in the Prometheus text format.
 
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/string
@@ -14,15 +13,17 @@ const key = "metrics"
 const latency_key = "metrics_latency"
 
 /// Upper bounds of the request duration histogram buckets, in microseconds
-/// (0.5 ms to 1 s); one more bucket counts the slower requests.
+/// (5 µs to 1 s); one more bucket counts the slower requests. A redirect
+/// takes a few microseconds, admin pages and API calls milliseconds: the
+/// same buckets cover both.
 const buckets_us = [
-  500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
-  1_000_000,
+  5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000,
+  100_000, 250_000, 500_000, 1_000_000,
 ]
 
 /// Slots per listener in the latency counters: the buckets, +Inf, the sum
 /// of durations (µs) and the count.
-const latency_slots = 14
+const latency_slots = 20
 
 pub type Metric {
   Requests
@@ -187,8 +188,28 @@ fn labelled(
   }
 }
 
+/// Microseconds as decimal seconds (`0.000005`, `2.5`, `1`), not in the
+/// exponent notation of `float.to_string` (`5.0e-6`).
 fn seconds(micros: Int) -> String {
-  float.to_string(int.to_float(micros) /. 1_000_000.0)
+  let whole = int.to_string(micros / 1_000_000)
+  case micros % 1_000_000 {
+    0 -> whole
+    fraction ->
+      whole
+      <> "."
+      <> {
+        int.to_string(fraction)
+        |> string.pad_start(6, "0")
+        |> trim_zeros
+      }
+  }
+}
+
+fn trim_zeros(digits: String) -> String {
+  case string.ends_with(digits, "0") {
+    True -> trim_zeros(string.drop_end(digits, 1))
+    False -> digits
+  }
 }
 
 /// `redirect_proxy_request_duration_seconds`, per listener (cumulative
