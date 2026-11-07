@@ -31,14 +31,8 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   let pasted = form_value(form, "content")
   let uploaded = case list.key_find(form.files, "file") {
-    Ok(file) ->
-      simplifile.read(file.path)
-      |> result.unwrap("")
-    Error(Nil) -> ""
-  }
-  let content = case string.trim(uploaded) {
-    "" -> pasted
-    _ -> uploaded
+    Ok(file) -> simplifile.read(file.path) |> result.replace_error(Nil)
+    Error(Nil) -> Ok("")
   }
   let mode =
     form_value(form, "mode")
@@ -46,6 +40,17 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     |> result.unwrap(store.Merge)
   let fail = fn(errors) {
     html(422, import_export_view.import_export(s, features(ctx), None, errors))
+  }
+  // a file that is not UTF-8 (Excel's plain "CSV" is Windows-1252) is an
+  // error, not an empty upload that would import the pasted text instead
+  use uploaded <- result_or(uploaded, fn() {
+    fail([
+      "The file is not UTF-8 text. In a spreadsheet, save it as \"CSV UTF-8\".",
+    ])
+  })
+  let content = case string.trim(uploaded) {
+    "" -> pasted
+    _ -> uploaded
   }
   let imported = fn(count) {
     wisp.redirect("/rules?flash=imported&count=" <> int.to_string(count))
@@ -106,5 +111,16 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
               }
           }
       }
+  }
+}
+
+fn result_or(
+  result: Result(a, Nil),
+  otherwise: fn() -> Response,
+  next: fn(a) -> Response,
+) -> Response {
+  case result {
+    Ok(value) -> next(value)
+    Error(Nil) -> otherwise()
   }
 }

@@ -8,6 +8,7 @@
 //// import removes that one prefix again.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/result
@@ -51,7 +52,11 @@ pub fn parse(content: String) -> Result(List(Rule), List(String)) {
   case records {
     [] -> Error(["the CSV has no header row"])
     [#(_, header), ..rows] -> {
-      let header = list.map(header, fn(h) { string.lowercase(string.trim(h)) })
+      // a column typed in then cleared in a spreadsheet leaves empty cells
+      // at the end of every line
+      let header =
+        list.map(header, fn(h) { string.lowercase(string.trim(h)) })
+        |> drop_trailing_empty
       use Nil <- result.try(check_header(header))
       let #(rules, errors) =
         rows
@@ -79,7 +84,23 @@ fn first_errors(errors: List(String)) -> List(String) {
   }
 }
 
+fn drop_trailing_empty(cells: List(String)) -> List(String) {
+  cells
+  |> list.reverse
+  |> list.drop_while(fn(c) { string.trim(c) == "" })
+  |> list.reverse
+}
+
 fn check_header(header: List(String)) -> Result(Nil, List(String)) {
+  use <- bool.guard(
+    case header {
+      [only] -> string.contains(only, ";")
+      _ -> False
+    },
+    Error([
+      "line 1: the columns are separated by semicolons; separate them by commas (in a spreadsheet, save as \"CSV UTF-8 (comma delimited)\")",
+    ]),
+  )
   let unknown = list.filter(header, fn(h) { !list.contains(columns, h) })
   let missing =
     ["source", "target"] |> list.filter(fn(c) { !list.contains(header, c) })
@@ -115,7 +136,7 @@ fn row_to_rule(
   let #(line, cells) = row
   let at = fn(message) { "line " <> int.to_string(line) <> ": " <> message }
   use <- guard(
-    list.length(cells) > list.length(header),
+    list.length(drop_trailing_empty(cells)) > list.length(header),
     at("more cells than columns"),
   )
   let values = list.zip(header, list.map(cells, unescape_formula))
@@ -196,7 +217,12 @@ fn guard(condition: Bool, error: String, next: fn() -> Result(a, String)) {
 /// import of several megabytes.
 fn records(content: String) -> Result(List(#(Int, List(String))), String) {
   parse_loop(bit_array.from_string(content), 1, 1, False, <<>>, [], [])
-  |> result.map(fn(records) { list.filter(records, fn(r) { r.1 != [""] }) })
+  // lines of empty cells only (`,,,`), as spreadsheets write below the data
+  |> result.map(fn(records) {
+    list.filter(records, fn(r) {
+      !list.all(r.1, fn(c) { string.trim(c) == "" })
+    })
+  })
 }
 
 fn parse_loop(
@@ -328,6 +354,13 @@ fn needs_escape(cell: String) -> Bool {
 }
 
 // --- export -----------------------------------------------------------------
+
+/// `to_string` with a UTF-8 byte order mark, for spreadsheets: without it,
+/// Excel reads the file as ANSI and corrupts every non-ASCII character
+/// (`café` shows as `cafÃ©`). Imports skip the mark.
+pub fn to_spreadsheet_string(rules: List(Rule)) -> String {
+  "\u{FEFF}" <> to_string(rules)
+}
 
 /// Every rule, one line each, under a header of `columns`.
 pub fn to_string(rules: List(Rule)) -> String {
