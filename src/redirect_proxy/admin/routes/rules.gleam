@@ -14,6 +14,7 @@ import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/audit as audit_view
 import redirect_proxy/admin/views/import_export as import_export_view
 import redirect_proxy/admin/views/layout
+import redirect_proxy/admin/views/rule_form as rule_form_view
 import redirect_proxy/admin/views/rules as rules_view
 import redirect_proxy/admin/views/tester as tester_view
 import redirect_proxy/admin/web.{
@@ -235,19 +236,22 @@ pub fn new_rule(req: Request, ctx: Context, s: Session) -> Response {
       }
     Error(Nil) -> rule.blank()
   }
-  html(200, rules_view.form(s, features(ctx), start, [], True, "", 0))
+  html(200, rule_form_view.form(s, features(ctx), start, [], True, "", 0))
 }
 
 pub fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
   case rule_from_form(form.values, rule.blank()) {
     Error(#(r, errors)) ->
-      html(422, rules_view.form(s, features(ctx), r, errors, True, "", 0))
+      html(422, rule_form_view.form(s, features(ctx), r, errors, True, "", 0))
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
         Error(errors) ->
-          html(422, rules_view.form(s, features(ctx), r, errors, True, "", 0))
+          html(
+            422,
+            rule_form_view.form(s, features(ctx), r, errors, True, "", 0),
+          )
       }
   }
 }
@@ -257,7 +261,7 @@ pub fn edit_rule(ctx: Context, s: Session, id: String) -> Response {
     Ok(r) ->
       html(
         200,
-        rules_view.form(
+        rule_form_view.form(
           s,
           features(ctx),
           r,
@@ -285,7 +289,7 @@ pub fn update_rule(
       let render = fn(status, r, errors, version) {
         html(
           status,
-          rules_view.form(
+          rule_form_view.form(
             s,
             features(ctx),
             r,
@@ -334,7 +338,7 @@ pub fn confirm_delete(
     Ok(r) ->
       html(
         200,
-        rules_view.confirm_delete(s, features(ctx), r, return_to(back, [])),
+        rule_form_view.confirm_delete(s, features(ctx), r, return_to(back, [])),
       )
     Error(Nil) -> not_found(ctx, s)
   }
