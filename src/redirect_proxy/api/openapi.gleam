@@ -1,14 +1,22 @@
 //// OpenAPI 3.1 description of the REST API, generated at runtime so that
 //// deprecations from the registry are always reflected.
 
+import gleam/http
 import gleam/int
 import gleam/json.{type Json}
 import gleam/list
+import gleam/result
+import gleam/string
 import redirect_proxy/api/deprecation.{type Deprecation}
+import redirect_proxy/api/routes
+import redirect_proxy/api/scope.{type Scope}
+import redirect_proxy/config.{type ApiOAuthConfig}
 import redirect_proxy/rule
 import redirect_proxy/store/rules as store_rules
 
-pub fn document(registry: List(Deprecation)) -> String {
+/// `oauth`: tokens from an external authorization server may carry other
+/// scope names (`api.oauth.*_scope`), and the document says which.
+pub fn document(registry: List(Deprecation), oauth: ApiOAuthConfig) -> String {
   json.object([
     #("openapi", json.string("3.1.0")),
     #(
@@ -35,8 +43,8 @@ pub fn document(registry: List(Deprecation)) -> String {
       "security",
       json.array([oauth_security(), bearer_security()], fn(j) { j }),
     ),
-    #("paths", paths(registry)),
-    #("components", components(registry)),
+    #("paths", paths(registry, oauth)),
+    #("components", components(registry, oauth)),
   ])
   |> json.to_string
 }
@@ -197,24 +205,44 @@ fn set_version_header() -> #(String, Json) {
 
 fn operation(
   registry: List(Deprecation),
+  oauth: ApiOAuthConfig,
   method: String,
   path: String,
   summary: String,
-  scope: String,
   fields: List(#(String, Json)),
 ) -> #(String, Json) {
-  let security = case scope {
-    "" -> [#("security", json.preprocessed_array([]))]
-    _ -> [
-      #(
-        "security",
-        json.preprocessed_array([
-          json.object([#("oauth2", json.array([scope], json.string))]),
-          json.object([#("bearer", json.preprocessed_array([]))]),
-        ]),
-      ),
-      #("description", json.string("Requires the `" <> scope <> "` scope.")),
-    ]
+  // the scope comes from the route table the router checks, so that the
+  // document cannot drift from it; no entry there means a public endpoint
+  let required =
+    http.parse_method(string.uppercase(method))
+    |> result.try(routes.find(_, path))
+    |> result.map(fn(o) { o.scope })
+  let security = case required {
+    Error(Nil) -> [#("security", json.preprocessed_array([]))]
+    Ok(required) -> {
+      let name = scope.to_string(required)
+      let external = scope.external_name(oauth, required)
+      let note = case oauth.enabled && external != name {
+        True ->
+          " Access tokens from the authorization server need `"
+          <> external
+          <> "`."
+        False -> ""
+      }
+      [
+        #(
+          "security",
+          json.preprocessed_array([
+            json.object([#("oauth2", json.array([name], json.string))]),
+            json.object([#("bearer", json.preprocessed_array([]))]),
+          ]),
+        ),
+        #(
+          "description",
+          json.string("Requires the `" <> name <> "` scope." <> note),
+        ),
+      ]
+    }
   }
   #(
     method,
@@ -247,9 +275,9 @@ fn body(schema: Json, content_type: String) -> #(String, Json) {
   )
 }
 
-fn paths(registry: List(Deprecation)) -> Json {
-  let op = fn(method, path, summary, scope, fields) {
-    operation(registry, method, path, summary, scope, fields)
+fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
+  let op = fn(method, path, summary, fields) {
+    operation(registry, oauth, method, path, summary, fields)
   }
   json.object([
     #(
@@ -259,7 +287,6 @@ fn paths(registry: List(Deprecation)) -> Json {
           "post",
           "/oauth/token",
           "Issue an access token (OAuth 2.0 client credentials grant)",
-          "",
           [
             #(
               "description",
@@ -314,7 +341,7 @@ fn paths(registry: List(Deprecation)) -> Json {
     #(
       "/api/redirects",
       json.object([
-        op("get", "/api/redirects", "List redirections", "redirects:read", [
+        op("get", "/api/redirects", "List redirections", [
           #(
             "parameters",
             json.preprocessed_array([
@@ -380,7 +407,7 @@ fn paths(registry: List(Deprecation)) -> Json {
             ]),
           ),
         ]),
-        op("post", "/api/redirects", "Create a redirection", "redirects:write", [
+        op("post", "/api/redirects", "Create a redirection", [
           body(ref("RuleInput"), "application/json"),
           #(
             "responses",
@@ -419,7 +446,7 @@ fn paths(registry: List(Deprecation)) -> Json {
     #(
       "/api/redirects/{id}",
       json.object([
-        op("get", "/api/redirects/{id}", "Get a redirection", "redirects:read", [
+        op("get", "/api/redirects/{id}", "Get a redirection", [
           #("parameters", json.preprocessed_array([id_param()])),
           #(
             "responses",
@@ -435,38 +462,31 @@ fn paths(registry: List(Deprecation)) -> Json {
             ]),
           ),
         ]),
-        op(
-          "put",
-          "/api/redirects/{id}",
-          "Replace a redirection",
-          "redirects:write",
-          [
-            #(
-              "parameters",
-              json.preprocessed_array([id_param(), if_match_param()]),
-            ),
-            body(ref("RuleInput"), "application/json"),
-            #(
-              "responses",
-              json.object([
-                #("200", response("Updated.", ref("Rule"))),
-                ..list.append(
-                  body_errors(),
-                  errors([
-                    #("404", "Not found."),
-                    #("412", "Version mismatch."),
-                    #("422", "Validation failed."),
-                  ]),
-                )
-              ]),
-            ),
-          ],
-        ),
+        op("put", "/api/redirects/{id}", "Replace a redirection", [
+          #(
+            "parameters",
+            json.preprocessed_array([id_param(), if_match_param()]),
+          ),
+          body(ref("RuleInput"), "application/json"),
+          #(
+            "responses",
+            json.object([
+              #("200", response("Updated.", ref("Rule"))),
+              ..list.append(
+                body_errors(),
+                errors([
+                  #("404", "Not found."),
+                  #("412", "Version mismatch."),
+                  #("422", "Validation failed."),
+                ]),
+              )
+            ]),
+          ),
+        ]),
         op(
           "patch",
           "/api/redirects/{id}",
           "Update fields of a redirection (JSON merge patch)",
-          "redirects:write",
           [
             #(
               "parameters",
@@ -489,28 +509,19 @@ fn paths(registry: List(Deprecation)) -> Json {
             ),
           ],
         ),
-        op(
-          "delete",
-          "/api/redirects/{id}",
-          "Delete a redirection",
-          "redirects:write",
-          [
-            #(
-              "parameters",
-              json.preprocessed_array([id_param(), if_match_param()]),
-            ),
-            #(
-              "responses",
-              json.object([
-                #(
-                  "204",
-                  json.object([#("description", json.string("Deleted."))]),
-                ),
-                ..errors([#("404", "Not found."), #("412", "Version mismatch.")])
-              ]),
-            ),
-          ],
-        ),
+        op("delete", "/api/redirects/{id}", "Delete a redirection", [
+          #(
+            "parameters",
+            json.preprocessed_array([id_param(), if_match_param()]),
+          ),
+          #(
+            "responses",
+            json.object([
+              #("204", json.object([#("description", json.string("Deleted."))])),
+              ..errors([#("404", "Not found."), #("412", "Version mismatch.")])
+            ]),
+          ),
+        ]),
       ]),
     ),
     #(
@@ -520,7 +531,6 @@ fn paths(registry: List(Deprecation)) -> Json {
           "get",
           "/api/redirects/export",
           "Export the redirections (all, or those matching the filters)",
-          "redirects:read",
           [
             #(
               "parameters",
@@ -587,7 +597,6 @@ fn paths(registry: List(Deprecation)) -> Json {
           "post",
           "/api/redirects/import",
           "Import redirections (all or nothing)",
-          "redirects:write",
           [
             #(
               "parameters",
@@ -681,7 +690,6 @@ fn paths(registry: List(Deprecation)) -> Json {
           "post",
           "/api/redirects/bulk",
           "Enable, disable or delete several redirections (all or nothing)",
-          "redirects:write",
           [
             #("parameters", json.preprocessed_array([set_if_match_param()])),
             body(
@@ -733,56 +741,44 @@ fn paths(registry: List(Deprecation)) -> Json {
     #(
       "/api/reload",
       json.object([
-        op(
-          "post",
-          "/api/reload",
-          "Reload the redirections file from disk",
-          "redirects:ops",
-          [
-            #(
-              "responses",
-              json.object([
-                #(
-                  "200",
-                  response(
-                    "Reloaded.",
-                    json.object([
-                      #("type", json.string("object")),
-                      #("properties", json.object([#("rules", int_schema())])),
-                    ]),
-                  ),
+        op("post", "/api/reload", "Reload the redirections file from disk", [
+          #(
+            "responses",
+            json.object([
+              #(
+                "200",
+                response(
+                  "Reloaded.",
+                  json.object([
+                    #("type", json.string("object")),
+                    #("properties", json.object([#("rules", int_schema())])),
+                  ]),
                 ),
-                ..errors([#("422", "The file is invalid; rules unchanged.")])
-              ]),
-            ),
-          ],
-        ),
+              ),
+              ..errors([#("422", "The file is invalid; rules unchanged.")])
+            ]),
+          ),
+        ]),
       ]),
     ),
     #(
       "/api/test",
       json.object([
-        op(
-          "get",
-          "/api/test",
-          "Resolve a URL against the current rules",
-          "redirects:read",
-          [
-            #(
-              "parameters",
-              json.preprocessed_array([
-                param("url", "query", string_schema(), "Absolute URL."),
-              ]),
-            ),
-            #(
-              "responses",
-              json.object([
-                #("200", response("Resolution.", ref("TestResult"))),
-                ..errors([#("400", "Invalid URL.")])
-              ]),
-            ),
-          ],
-        ),
+        op("get", "/api/test", "Resolve a URL against the current rules", [
+          #(
+            "parameters",
+            json.preprocessed_array([
+              param("url", "query", string_schema(), "Absolute URL."),
+            ]),
+          ),
+          #(
+            "responses",
+            json.object([
+              #("200", response("Resolution.", ref("TestResult"))),
+              ..errors([#("400", "Invalid URL.")])
+            ]),
+          ),
+        ]),
       ]),
     ),
     #(
@@ -792,7 +788,6 @@ fn paths(registry: List(Deprecation)) -> Json {
           "get",
           "/api/audit",
           "Audit log entries, newest first (current and rotated files)",
-          "audit:read",
           [
             #(
               "parameters",
@@ -846,7 +841,7 @@ fn paths(registry: List(Deprecation)) -> Json {
   ])
 }
 
-fn components(registry: List(Deprecation)) -> Json {
+fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
   json.object([
     #(
       "securitySchemes",
@@ -864,28 +859,11 @@ fn components(registry: List(Deprecation)) -> Json {
                     #("tokenUrl", json.string("/oauth/token")),
                     #(
                       "scopes",
-                      json.object([
-                        #(
-                          "redirects:read",
-                          json.string("Read, export and test redirections."),
-                        ),
-                        #(
-                          "redirects:write",
-                          json.string(
-                            "Create, update, delete and import redirections (implies read).",
-                          ),
-                        ),
-                        #(
-                          "redirects:ops",
-                          json.string("Reload the redirections file."),
-                        ),
-                        #(
-                          "audit:read",
-                          json.string(
-                            "Read the audit log (sign-ins with client addresses, user and API client changes). Not implied by any other scope.",
-                          ),
-                        ),
-                      ]),
+                      json.object(
+                        list.map(scope.all, fn(s) {
+                          #(scope.to_string(s), json.string(scope_summary(s)))
+                        }),
+                      ),
                     ),
                   ]),
                 ),
@@ -898,12 +876,7 @@ fn components(registry: List(Deprecation)) -> Json {
           json.object([
             #("type", json.string("http")),
             #("scheme", json.string("bearer")),
-            #(
-              "description",
-              json.string(
-                "JWT access token issued by the configured external authorization server (api.oauth).",
-              ),
-            ),
+            #("description", json.string(bearer_description(oauth))),
           ]),
         ),
       ]),
@@ -1320,4 +1293,35 @@ fn object_schema(
     #("required", json.array(required, json.string)),
     #("properties", json.object(properties)),
   ])
+}
+
+fn scope_summary(s: Scope) -> String {
+  case s {
+    scope.Read -> "Read, export and test redirections."
+    scope.Write ->
+      "Create, update, delete and import redirections (implies read)."
+    scope.Ops -> "Reload the redirections file."
+    scope.Audit ->
+      "Read the audit log (sign-ins with client addresses, user and API client changes). Not implied by any other scope."
+  }
+}
+
+fn bearer_description(oauth: ApiOAuthConfig) -> String {
+  case oauth.enabled {
+    False ->
+      "An access token of the built-in token endpoint. No external authorization server is configured (api.oauth)."
+    True ->
+      "An access token of the built-in token endpoint, or a JWT access token from "
+      <> oauth.issuer
+      <> " (audience "
+      <> oauth.audience
+      <> "), with its scopes in the `"
+      <> oauth.scope_claim
+      <> "` claim: "
+      <> list.map(scope.all, fn(s) {
+        "`" <> scope.external_name(oauth, s) <> "` for " <> scope.to_string(s)
+      })
+      |> string.join(", ")
+      <> "."
+  }
 }

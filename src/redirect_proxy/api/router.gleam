@@ -92,7 +92,10 @@ fn dispatch(req: Request, ctx: Context) -> Response {
           wisp.response(200)
           |> wisp.set_header("content-type", "application/json")
           |> wisp.set_header("access-control-allow-origin", "*")
-          |> wisp.string_body(openapi.document(ctx.deprecations))
+          |> wisp.string_body(openapi.document(
+            ctx.deprecations,
+            ctx.config.api.oauth,
+          ))
         _ -> problem.method_not_allowed(["GET"])
       }
     ["api", ..rest] -> {
