@@ -35,14 +35,22 @@
 %% ---------------------------------------------------------------------------
 
 snapshot_put(Key, Value) ->
-    persistent_term:put({redirect_proxy, Key}, Value),
+    persistent_term:put(snapshot_key(Key), Value),
     nil.
 
 snapshot_get(Key) ->
-    case persistent_term:get({redirect_proxy, Key}, '$redirect_proxy_none') of
+    case persistent_term:get(snapshot_key(Key), '$redirect_proxy_none') of
         '$redirect_proxy_none' -> {error, nil};
         Value -> {ok, Value}
     end.
+
+%% The keys read on every request are atoms: `persistent_term` hashes its
+%% key on each read, and hashing `{redirect_proxy, <<"matcher">>}` costs
+%% more than the read itself.
+snapshot_key(<<"matcher">>) -> redirect_proxy_matcher;
+snapshot_key(<<"metrics">>) -> redirect_proxy_metrics;
+snapshot_key(<<"metrics_latency">>) -> redirect_proxy_metrics_latency;
+snapshot_key(Key) -> {redirect_proxy, Key}.
 
 %% ---------------------------------------------------------------------------
 %% Regular expressions with a backtracking budget (ReDoS guard)

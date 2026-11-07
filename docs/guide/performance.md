@@ -53,6 +53,11 @@ Rule lookup itself, measured in-process with the same 11 500 rules, takes
 about 0.4 µs for an exact hit, 1.2 µs for a prefix hit, 1.9 µs for the last
 regex rule and 0.7 µs for a miss.
 
+`make bench-handler` times the rest of the work of a request in the
+process that serves it, without the network: parsing the request head and
+running the handler (lookup, metrics, response), best of 15 runs. It does
+not depend on the load of other processes as much as a load test does.
+
 `make bench-matcher` measures the work of one redirect in-process (lookup,
 hit count and `Location`), in BEAM reductions, for more request shapes:
 many prefix lengths, unindexed regexes, many hosts and wildcard hosts,
@@ -87,6 +92,9 @@ connection, one read and one write per request, and nothing else.
   connection is closed.
 - Malformed requests get 400 and the connection is closed: a request target
   that is not an absolute path, or has characters a URI cannot hold (a raw
-  backslash, space, quote or non-ASCII byte); control characters in a
-  header; a second `Host`; an HTTP/1.1 request without `Host`. Any other
+  backslash, space, quote or non-ASCII byte); anything but one space
+  between the parts of the request line, or after `HTTP/1.x`; a header name
+  that is not a token or is followed by whitespace; control characters or
+  invalid UTF-8 in a header value; a folded header line; a second `Host`;
+  an HTTP/1.1 request without `Host`. Any other
   HTTP version than 1.0 and 1.1 gets 505.
