@@ -97,6 +97,19 @@ jobs:
           key: gleam-build-${{ runner.arch }}-otp-${{ matrix.otp == 'tool-versions' && env.OTP_VERSION || matrix.otp }}-gleam-${{ env.GLEAM_VERSION }}-${{ hashFiles('manifest.toml') }}
       - run: gleam deps download
       - run: gleam test
+      # reductions differ between OTP releases: the baseline is for the one
+      # of .tool-versions
+      - name: Matcher benchmark (reductions per request vs the baseline)
+        if: matrix.otp == 'tool-versions'
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo '### Matcher benchmark'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/matcher-bench.py | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   coverage:
     name: Coverage

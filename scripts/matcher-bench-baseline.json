@@ -1,0 +1,16 @@
+{
+  "build_ms": 42,
+  "reductions_per_request": {
+    "exact_hit": 263,
+    "exact_miss": 457,
+    "host_hit": 168,
+    "miss": 516,
+    "prefix_hit": 466,
+    "query_hit": 403,
+    "regex_indexed_hit": 424,
+    "regex_unindexed_last": 729,
+    "tolerant_miss": 980,
+    "wildcard_hit": 515
+  },
+  "rules": 11670
+}
