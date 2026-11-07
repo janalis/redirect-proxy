@@ -82,10 +82,33 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "$TAG (latest: $latest, highest tag: $highest)"
 
-  linux:
-    name: Linux ${{ matrix.arch }} bundle and .deb
+  # the release PR gets no CI run without RELEASE_PLEASE_TOKEN: nothing is
+  # built nor published from a tag whose tests fail
+  test:
+    name: Test the tag
     needs: meta
     if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.meta.outputs.tag }}
+      - name: Tool versions (.tool-versions)
+        run: scripts/tool-versions.sh >> "$GITHUB_ENV"
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          rebar3-version: "3"
+      - run: gleam deps download
+      - run: gleam build --warnings-as-errors
+      - run: gleam test
+
+  linux:
+    name: Linux ${{ matrix.arch }} bundle and .deb
+    needs: [meta, test]
+    if: always() && needs.test.result == 'success'
     env:
       TAG: ${{ needs.meta.outputs.tag }}
       VERSION: ${{ needs.meta.outputs.version }}
@@ -131,8 +154,8 @@ jobs:
 
   portable:
     name: Portable bundle (system Erlang)
-    needs: meta
-    if: always() && needs.meta.result == 'success'
+    needs: [meta, test]
+    if: always() && needs.test.result == 'success'
     env:
       TAG: ${{ needs.meta.outputs.tag }}
       VERSION: ${{ needs.meta.outputs.version }}
