@@ -466,6 +466,50 @@ pub fn login_failures_are_throttled_test() {
   assert list.length(throttled) == 1
 }
 
+/// Attempts are counted before the password is hashed: a burst of parallel
+/// guesses gets no more than the limit (10 per account and address), and
+/// the hashes running at once are bounded (503 beyond).
+pub fn parallel_login_attempts_stay_within_the_limit_test() {
+  let env = boot(config.default())
+  // the address budget is shared with the other tests' failed logins
+  let ip = ffi.throttle_address("127.0.0.1")
+  ratelimit.reset("login-ip:" <> ip)
+  let done = process.new_subject()
+  let attempts = 30
+  list.each(list.repeat(Nil, attempts), fn(_) {
+    process.spawn(fn() {
+      let status =
+        post_form(env, "/login", "", [
+          #("username", "parallel-user"),
+          #("password", "wrong"),
+        ]).status
+      process.send(done, status)
+    })
+  })
+  let statuses =
+    list.map(list.repeat(Nil, attempts), fn(_) {
+      let assert Ok(status) = process.receive(done, 30_000)
+      status
+    })
+  let failed = list.count(statuses, fn(s) { s == 401 })
+  assert failed >= 1 && failed <= 10
+  assert list.all(statuses, fn(s) { s == 401 || s == 429 || s == 503 })
+  // only real failures count: what is left of the budget is exact
+  let left =
+    list.repeat(Nil, 11)
+    |> list.map(fn(_) {
+      post_form(env, "/login", "", [
+        #("username", "parallel-user"),
+        #("password", "wrong"),
+      ]).status
+    })
+    |> list.count(fn(s) { s == 401 })
+  assert failed + left == 10
+  ratelimit.reset("login:" <> ip <> " parallel-user")
+  ratelimit.reset("login-ip:" <> ip)
+  ratelimit.reset("login-user:parallel-user")
+}
+
 /// Each SSO start holds a pending login attempt: one address cannot start
 /// enough of them to block everyone else's SSO logins.
 pub fn sso_starts_are_throttled_per_address_test() {

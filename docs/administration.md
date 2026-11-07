@@ -120,9 +120,13 @@ API clients are not affected: they have scopes (see [REST API](api.md)).
   pipeline out. Token requests are limited to 64 KB. A client may start 30
   SSO logins and fail 20 SSO callbacks, and the API accepts 100 invalid
   access tokens from one client before answering 429 without checking more.
-  A throttled request gets a 429 with `Retry-After`. Behind a proxy, list
-  it in `access_log.trusted_proxies` so that the client address is the
-  forwarded one.
+  A throttled request gets a 429 with `Retry-After`. An attempt is counted
+  before the password is checked, so parallel guesses get no more than
+  the limits. Password checks also run at most a few at once (half the CPU
+  cores, at least 2): past that, a login gets a 503 with `Retry-After: 1`,
+  so that a burst of logins leaves CPU for the redirect listener. Behind a
+  proxy, list it in `access_log.trusted_proxies` so that the client address
+  is the forwarded one.
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),

@@ -152,9 +152,9 @@ fn throttled(
   s: Session,
   next: fn() -> Response,
 ) -> Response {
-  case auth.password_check_blocked(req, ctx, s.username) {
-    Error(Nil) -> next()
-    Ok(seconds) ->
+  case auth.start_password_check(req, ctx, s.username) {
+    Ok(Nil) -> next()
+    Error(seconds) ->
       error_page(
         ctx,
         s,
@@ -163,6 +163,29 @@ fn throttled(
         "Too many wrong passwords. Try again in a few minutes.",
       )
       |> wisp.set_header("retry-after", int.to_string(seconds))
+  }
+}
+
+/// The password check did not run: the attempt is taken back.
+fn busy_or(
+  ctx: Context,
+  s: Session,
+  checked: Result(Bool, Nil),
+  next: fn(Bool) -> Response,
+) -> Response {
+  case checked {
+    Ok(ok) -> next(ok)
+    Error(Nil) -> {
+      auth.end_password_check(ctx, s.username, auth.NotRun)
+      error_page(
+        ctx,
+        s,
+        503,
+        "Server busy",
+        "Too many password checks are running. Try again in a moment.",
+      )
+      |> wisp.set_header("retry-after", "1")
+    }
   }
 }
 
@@ -205,11 +228,18 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
     }
   }
   use <- throttled(req, ctx, s)
-  let current_ok = case users.get(ctx.users, s.username) {
-    Ok(me) ->
-      password.verify(form_value(form, "current_password"), me.password_hash)
-    Error(Nil) -> False
-  }
+  let checked =
+    auth.hashing_password(fn() {
+      case users.get(ctx.users, s.username) {
+        Ok(me) ->
+          password.verify(
+            form_value(form, "current_password"),
+            me.password_hash,
+          )
+        Error(Nil) -> False
+      }
+    })
+  use current_ok <- busy_or(ctx, s, checked)
   auth.record_password_check(ctx, s.username, current_ok)
   let result = {
     use <- bool.guard(

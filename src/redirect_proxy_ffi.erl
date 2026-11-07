@@ -7,7 +7,8 @@
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2,
-         window_record/4, window_get/2, window_purge/2,
+         window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
+    with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
     ip_in_cidr/2, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
@@ -315,6 +316,70 @@ window_record(Table, Key, Now, Window) ->
     _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
     _ = ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}),
     nil.
+
+%% Counts one use of Key, atomically, when it stays within Limit in the
+%% current window: {ok, nil}, or {error, SecondsLeft} with nothing counted.
+%% Checking and counting in one step: concurrent attempts cannot all pass a
+%% check made before any of them is counted.
+window_take(Table, Key, Now, Window, Limit) ->
+    T = binary_to_existing_atom(Table),
+    _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
+    case ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}) of
+        Count when Count > Limit ->
+            _ = ets:update_counter(T, Key, {3, -1, 0, 0}),
+            %% the entry may have been purged since (an ended window)
+            WindowEnd = case ets:lookup(T, Key) of
+                [{_, End, _}] -> End;
+                [] -> Now + Window
+            end,
+            {error, max(1, WindowEnd - Now)};
+        _ -> {ok, nil}
+    end.
+
+%% Takes back one counted use of Key (never below zero).
+window_forgive(Table, Key) ->
+    try ets:update_counter(binary_to_existing_atom(Table), Key, {3, -1, 0, 0}) of
+        _ -> nil
+    catch
+        error:badarg -> nil
+    end.
+
+%% Runs Fun when fewer than Max live processes hold a Key slot: {ok, Result},
+%% or {error, nil} at once when they are all taken. Each holder is an entry
+%% of its own ({Key, Pid, Ref}), added before the holders are counted, so
+%% that racing callers never exceed Max (at worst both are refused). The
+%% entry is removed when Fun returns or raises; the entry of a process
+%% killed in Fun (no `after` then) is removed by the next caller, so a slot
+%% is never lost for good.
+with_slot(Table, Key, Max, Fun) ->
+    T = binary_to_existing_atom(Table),
+    Self = {Key, self(), make_ref()},
+    true = ets:insert(T, {Self}),
+    Holders = [H || {{_, Pid, _} = H} <- ets:match_object(T, {{Key, '_', '_'}}),
+                    holds_slot(T, H, Pid)],
+    case length(Holders) > Max of
+        true ->
+            ets:delete(T, Self),
+            {error, nil};
+        false ->
+            try {ok, Fun()}
+            after ets:delete(T, Self)
+            end
+    end.
+
+holds_slot(T, Holder, Pid) ->
+    case is_process_alive(Pid) of
+        true -> true;
+        false ->
+            ets:delete(T, Holder),
+            false
+    end.
+
+%% Password hashes allowed at once: half the dirty CPU schedulers (where
+%% crypto runs PBKDF2), at least 2, so that a burst of logins leaves CPU for
+%% the redirect listener.
+password_check_slots() ->
+    max(2, erlang:system_info(dirty_cpu_schedulers_online) div 2).
 
 window_get(Table, Key) ->
     case ets:lookup(binary_to_existing_atom(Table), Key) of
