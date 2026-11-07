@@ -16,7 +16,7 @@
 //// one comparison (or one regex run) per rule. The candidates found carry
 //// their rank in the resolution order above, so the result is the same as
 //// trying every rule in that order. Targets are parsed once, when the
-//// matcher is built (`rule.compile_template`).
+//// matcher is built (`template.compile_template`).
 ////
 //// The matcher also holds the hit count and the time of the last hit of
 //// every rule (`record_hit`): a lock-free `counters` array, carried over to
@@ -33,6 +33,7 @@ import gleam/string
 import gleam/uri
 import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
+import redirect_proxy/rule/template
 
 pub opaque type Matcher {
   Matcher(
@@ -111,8 +112,8 @@ type PrefixRule {
   PrefixRule(
     rank: Int,
     rule: Rule,
-    template: rule.Template,
-    guard: rule.TargetGuard,
+    template: template.Template,
+    guard: template.TargetGuard,
   )
 }
 
@@ -121,8 +122,8 @@ type RegexRule {
     rank: Int,
     rule: Rule,
     regex: ffi.CompiledRegex,
-    template: rule.Template,
-    guard: rule.TargetGuard,
+    template: template.Template,
+    guard: template.TargetGuard,
   )
 }
 
@@ -343,8 +344,8 @@ fn build_host(rules: List(Rule)) -> HostRules {
       PrefixRule(
         rank:,
         rule: r,
-        template: rule.compile_template(r.target),
-        guard: rule.target_guard(r.target),
+        template: template.compile_template(r.target),
+        guard: template.target_guard(r.target),
       )
     })
   let #(prefix_ci, prefix) =
@@ -363,8 +364,8 @@ fn build_host(rules: List(Rule)) -> HostRules {
         rank:,
         rule: r,
         regex:,
-        template: rule.compile_template(r.target),
-        guard: rule.target_guard(r.target),
+        template: template.compile_template(r.target),
+        guard: template.target_guard(r.target),
       )
     })
   let #(regex_unindexed, regex) =
@@ -565,11 +566,11 @@ pub fn lookup_query(
 }
 
 /// The normalised request host and the variables it gives.
-fn request_host(host: String) -> #(String, rule.RequestVars) {
+fn request_host(host: String) -> #(String, template.RequestVars) {
   let host = normalise_request_host(host)
   // `${host}` only ever holds a host name
   let vars =
-    rule.RequestVars(
+    template.RequestVars(
       host: case rule.is_host_name(host) {
         True -> host
         False -> ""
@@ -585,7 +586,7 @@ fn lookup_normalised(
   host: String,
   path: String,
   query: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
 ) -> Result(Match, Nil) {
   lookup_host(matcher, host, path, query, vars)
   |> result.lazy_or(fn() {
@@ -651,7 +652,7 @@ fn lookup_wildcards(
   host: String,
   path: String,
   query: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
 ) -> Result(Match, Nil) {
   case string.split_once(host, ".") {
     Ok(#(_, parent)) -> {
@@ -664,7 +665,7 @@ fn lookup_wildcards(
         "*." <> parent,
         path,
         query,
-        rule.RequestVars(..vars, sub:),
+        template.RequestVars(..vars, sub:),
       )
       |> result.lazy_or(fn() {
         lookup_wildcards(matcher, parent, path, query, vars)
@@ -679,7 +680,7 @@ fn lookup_host(
   host: String,
   path: String,
   query: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
 ) -> Result(Match, Nil) {
   use rules <- result.try(dict.get(matcher.hosts, host))
   match_query(rules, path, query)
@@ -795,7 +796,7 @@ fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
 fn match_prefix(
   rules: HostRules,
   path: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
 ) -> Result(Match, Nil) {
   let found = candidates(rules.prefix, path)
   let found = case is_empty(rules.prefix_ci) {
@@ -828,8 +829,8 @@ fn match_prefix(
         })
       let r = best.rule
       // a substitution leaving the target's host: the rule does not apply
-      rule.expand_template(best.template, [path, remainder], vars)
-      |> rule.guard_location(best.guard, _, vars)
+      template.expand_template(best.template, [path, remainder], vars)
+      |> template.guard_location(best.guard, _, vars)
       |> result.map(Match(r, _))
     }
   }
@@ -847,7 +848,7 @@ fn prefix_remainder(r: Rule, path: String) -> String {
 fn match_regex(
   rules: HostRules,
   path: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
 ) -> Result(Match, Nil) {
   let indexed =
     candidates(rules.regex, path)
@@ -866,7 +867,7 @@ fn run_regexes(
   a: List(RegexRule),
   b: List(RegexRule),
   path: String,
-  vars: rule.RequestVars,
+  vars: template.RequestVars,
   exhausted: Int,
 ) -> Result(Match, Nil) {
   let next = case a, b {
@@ -882,9 +883,9 @@ fn run_regexes(
       case ffi.regex_run(entry.regex, path) {
         Ok(captures) ->
           case
-            rule.guard_location(
+            template.guard_location(
               entry.guard,
-              rule.expand_template(entry.template, captures, vars),
+              template.expand_template(entry.template, captures, vars),
               vars,
             )
           {

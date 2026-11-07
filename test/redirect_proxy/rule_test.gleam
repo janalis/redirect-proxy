@@ -2,6 +2,7 @@ import gleam/json
 import gleam/list
 import gleam/string
 import redirect_proxy/rule.{Rule}
+import redirect_proxy/rule/template
 
 fn base() -> rule.Rule {
   Rule(..rule.blank(), source: "/old", target: "/new")
@@ -124,14 +125,14 @@ pub fn invalid_json_test() {
 
 pub fn expand_test() {
   let captures = ["/blog/42/hello", "42", "hello"]
-  assert rule.expand("/a/$1/$2", captures) == "/a/42/hello"
-  assert rule.expand("/a/${1}0", captures) == "/a/420"
-  assert rule.expand("/all$0", captures) == "/all/blog/42/hello"
-  assert rule.expand("/cost$$5", captures) == "/cost$5"
-  assert rule.expand("/missing$9", captures) == "/missing"
-  assert rule.expand("/literal$x", captures) == "/literal$x"
-  assert rule.expand("/trailing$", captures) == "/trailing$"
-  assert rule.expand("/brace${x}", captures) == "/brace${x}"
+  assert template.expand("/a/$1/$2", captures) == "/a/42/hello"
+  assert template.expand("/a/${1}0", captures) == "/a/420"
+  assert template.expand("/all$0", captures) == "/all/blog/42/hello"
+  assert template.expand("/cost$$5", captures) == "/cost$5"
+  assert template.expand("/missing$9", captures) == "/missing"
+  assert template.expand("/literal$x", captures) == "/literal$x"
+  assert template.expand("/trailing$", captures) == "/trailing$"
+  assert template.expand("/brace${x}", captures) == "/brace${x}"
 }
 
 pub fn kind_from_string_test() {
@@ -160,79 +161,93 @@ pub fn common_regexes_are_accepted_test() {
 }
 
 pub fn target_guard_shapes_test() {
-  assert rule.target_guard("/static") == rule.Static
-  assert rule.target_guard("/new/$1") == rule.SameHostPath
-  assert rule.target_guard("https://Example.com$1")
-    == rule.FixedHost("example.com")
-  assert rule.target_guard("https://example.com:8443/$1")
-    == rule.FixedHost("example.com:8443")
-  assert rule.target_guard("//example.com${1}") == rule.FixedHost("example.com")
-  assert rule.target_guard("https://$1.example.com/")
-    == rule.SubdomainOf(".example.com")
-  assert rule.target_guard("https://example$1.com/") == rule.Unsafe
-  assert rule.target_guard("https://$1.com/") == rule.Unsafe
-  assert rule.target_guard("https://x$1.example.com/") == rule.Unsafe
-  assert rule.target_guard("https://$1-$2.example.com/")
-    == rule.SubdomainOf(".example.com")
+  assert template.target_guard("/static") == template.Static
+  assert template.target_guard("/new/$1") == template.SameHostPath
+  assert template.target_guard("https://Example.com$1")
+    == template.FixedHost("example.com")
+  assert template.target_guard("https://example.com:8443/$1")
+    == template.FixedHost("example.com:8443")
+  assert template.target_guard("//example.com${1}")
+    == template.FixedHost("example.com")
+  assert template.target_guard("https://$1.example.com/")
+    == template.SubdomainOf(".example.com")
+  assert template.target_guard("https://example$1.com/") == template.Unsafe
+  assert template.target_guard("https://$1.com/") == template.Unsafe
+  assert template.target_guard("https://x$1.example.com/") == template.Unsafe
+  assert template.target_guard("https://$1-$2.example.com/")
+    == template.SubdomainOf(".example.com")
   // the host is entirely a capture: nothing can match it
-  assert rule.target_guard("https://$1/") == rule.FixedHost("")
+  assert template.target_guard("https://$1/") == template.FixedHost("")
 }
 
 pub fn guard_blocks_open_redirects_test() {
-  let path = rule.target_guard("/$1")
-  assert rule.guard_location(path, "//evil.com", rule.no_vars)
+  let path = template.target_guard("/$1")
+  assert template.guard_location(path, "//evil.com", template.no_vars)
     == Ok("/evil.com")
-  assert rule.guard_location(path, "/\\evil.com", rule.no_vars)
+  assert template.guard_location(path, "/\\evil.com", template.no_vars)
     == Ok("/evil.com")
-  assert rule.guard_location(path, "/\t/evil.com", rule.no_vars)
+  assert template.guard_location(path, "/\t/evil.com", template.no_vars)
     == Ok("/evil.com")
-  assert rule.guard_location(path, "/blog/post", rule.no_vars)
+  assert template.guard_location(path, "/blog/post", template.no_vars)
     == Ok("/blog/post")
 
-  let fixed = rule.target_guard("https://example.com$1")
-  assert rule.guard_location(fixed, "https://example.com/blog", rule.no_vars)
+  let fixed = template.target_guard("https://example.com$1")
+  assert template.guard_location(
+      fixed,
+      "https://example.com/blog",
+      template.no_vars,
+    )
     == Ok("https://example.com/blog")
-  assert rule.guard_location(fixed, "https://example.com?q", rule.no_vars)
+  assert template.guard_location(
+      fixed,
+      "https://example.com?q",
+      template.no_vars,
+    )
     == Ok("https://example.com?q")
-  assert rule.guard_location(fixed, "https://example.com", rule.no_vars)
+  assert template.guard_location(fixed, "https://example.com", template.no_vars)
     == Ok("https://example.com")
-  assert rule.guard_location(
+  assert template.guard_location(
       fixed,
       "https://example.com.evil.com/",
-      rule.no_vars,
+      template.no_vars,
     )
     == Error(Nil)
-  assert rule.guard_location(
+  assert template.guard_location(
       fixed,
       "https://example.com@evil.com/",
-      rule.no_vars,
+      template.no_vars,
     )
     == Error(Nil)
-  assert rule.guard_location(
+  assert template.guard_location(
       fixed,
       "https://example.com:1@evil.com",
-      rule.no_vars,
+      template.no_vars,
     )
     == Error(Nil)
 
-  let sub = rule.target_guard("https://$1.example.com/")
-  assert rule.guard_location(sub, "https://blog.example.com/", rule.no_vars)
+  let sub = template.target_guard("https://$1.example.com/")
+  assert template.guard_location(
+      sub,
+      "https://blog.example.com/",
+      template.no_vars,
+    )
     == Ok("https://blog.example.com/")
-  assert rule.guard_location(
+  assert template.guard_location(
       sub,
       "https://evil.com#.example.com/",
-      rule.no_vars,
+      template.no_vars,
     )
     == Error(Nil)
-  assert rule.guard_location(
+  assert template.guard_location(
       sub,
       "https://evil.com/.example.com/",
-      rule.no_vars,
+      template.no_vars,
     )
     == Error(Nil)
-  assert rule.guard_location(sub, "https://.example.com/", rule.no_vars)
+  assert template.guard_location(sub, "https://.example.com/", template.no_vars)
     == Error(Nil)
-  assert rule.guard_location(rule.Unsafe, "/x", rule.no_vars) == Error(Nil)
+  assert template.guard_location(template.Unsafe, "/x", template.no_vars)
+    == Error(Nil)
 }
 
 pub fn wildcard_and_international_hosts_test() {
@@ -320,10 +335,10 @@ pub fn host_placeholder_lint_test() {
   assert string.starts_with(exact, "target: ${host} and ${sub} only apply")
   let assert [unsafe] = rule.lint(Rule(..prefix, target: "https://a$1b.test/"))
   assert string.starts_with(unsafe, "target: placeholders in the host")
-  assert rule.expand_with(
+  assert template.expand_with(
       "${host}|${sub}|$${host}|${9}",
       ["p"],
-      rule.RequestVars("h.test", "s"),
+      template.RequestVars("h.test", "s"),
     )
     == "h.test|s|${host}|"
 }
@@ -351,9 +366,9 @@ pub fn request_query_skips_malformed_parameters_test() {
 /// The host a location really goes to, as browsers parse it: case does not
 /// matter, user info is skipped, `\` counts as `/`.
 pub fn guard_location_reads_the_host_like_a_browser_test() {
-  let fixed = rule.FixedHost("example.com")
+  let fixed = template.FixedHost("example.com")
   let ok = fn(location) {
-    rule.guard_location(fixed, location, rule.no_vars) == Ok(location)
+    template.guard_location(fixed, location, template.no_vars) == Ok(location)
   }
   assert ok("https://example.com/a")
   assert ok("HTTPS://Example.COM/a?b#c")
@@ -368,8 +383,12 @@ pub fn guard_location_reads_the_host_like_a_browser_test() {
   assert !ok("https://evil.test#@example.com")
   assert !ok("https://example.com.evil.test/")
   // a host that is not ASCII is compared in lower case too
-  let accented = rule.FixedHost("café.example")
-  assert rule.guard_location(accented, "https://CAFÉ.example/x", rule.no_vars)
+  let accented = template.FixedHost("café.example")
+  assert template.guard_location(
+      accented,
+      "https://CAFÉ.example/x",
+      template.no_vars,
+    )
     == Ok("https://CAFÉ.example/x")
 }
 
