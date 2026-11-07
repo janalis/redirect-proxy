@@ -33,7 +33,7 @@ src/redirect_proxy/
   store.gleam                 single writer actor: persistence, backups, audit, reload
   proxy/server.gleam          redirect listener (mist, hot path)
   admin/                      router, auth (local, OIDC, header, sessions), views
-  api/                        REST API, token endpoint, clients, OpenAPI, deprecations
+  api/                        REST API: router, handlers, token endpoint, clients, OpenAPI
   app.gleam                   supervision tree
 src/redirect_proxy_ffi.erl    persistent_term, PCRE limits, atomic writes, crypto, JWT
 packaging/                    launcher, systemd unit, Debian scripts, Homebrew formula
