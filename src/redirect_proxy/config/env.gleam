@@ -40,6 +40,7 @@ pub const bool_env_vars = [
   "RP_ADMIN_ENABLED",
   "RP_API_ENABLED",
   "RP_API_OAUTH_ENABLED",
+  "RP_API_OAUTH_REQUIRE_AT_JWT",
   "RP_AUTH_HEADER_ENABLED",
   "RP_AUTH_LOCAL_ENABLED",
   "RP_AUTH_OIDC_ENABLED",
@@ -235,6 +236,10 @@ pub fn apply_env(
         issuer: s("RP_API_OAUTH_ISSUER", api.oauth.issuer),
         audience: s("RP_API_OAUTH_AUDIENCE", api.oauth.audience),
         scope_claim: s("RP_API_OAUTH_SCOPE_CLAIM", api.oauth.scope_claim),
+        require_at_jwt: b(
+          "RP_API_OAUTH_REQUIRE_AT_JWT",
+          api.oauth.require_at_jwt,
+        ),
         read_scope: s("RP_API_OAUTH_READ_SCOPE", api.oauth.read_scope),
         write_scope: s("RP_API_OAUTH_WRITE_SCOPE", api.oauth.write_scope),
         ops_scope: s("RP_API_OAUTH_OPS_SCOPE", api.oauth.ops_scope),

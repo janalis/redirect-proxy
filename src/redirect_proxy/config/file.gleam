@@ -70,6 +70,7 @@ pub const known_keys = [
   "api.oauth.ops_scope",
   "api.oauth.audit_scope",
   "api.oauth.read_scope",
+  "api.oauth.require_at_jwt",
   "api.oauth.scope_claim",
   "api.oauth.write_scope",
   "api.port",
@@ -366,6 +367,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     ["api", "oauth", "scope_claim"],
     ao.scope_claim,
   ))
+  use ao_require_at_jwt <- result.try(boolean(
+    t,
+    ["api", "oauth", "require_at_jwt"],
+    ao.require_at_jwt,
+  ))
   use read_scope <- result.try(str(
     t,
     ["api", "oauth", "read_scope"],
@@ -439,6 +445,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
         issuer: ao_issuer,
         audience: ao_audience,
         scope_claim: ao_scope_claim,
+        require_at_jwt: ao_require_at_jwt,
         read_scope:,
         write_scope:,
         ops_scope:,

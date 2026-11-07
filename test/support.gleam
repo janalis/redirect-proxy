@@ -105,6 +105,9 @@ pub fn keypair() -> #(String, Key)
 @external(erlang, "test_jwt_ffi", "sign")
 pub fn sign(key: Key, claims: String) -> String
 
+@external(erlang, "test_jwt_ffi", "sign_typed")
+pub fn sign_typed(key: Key, typ: String, claims: String) -> String
+
 /// Starts an authorization server publishing RFC 8414 metadata and a JWKS.
 /// Returns its issuer URL and the signing key.
 pub fn start_fake_authorization_server() -> #(String, Key) {
