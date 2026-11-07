@@ -304,18 +304,25 @@ pub fn form(
 /// When and by whom the rule was changed, its hits, and its history (the
 /// audit log is for administrators only: no link others could not open).
 fn details(r: Rule, hits: Int, admin: Bool) -> Element(Nil) {
+  // A rule written by hand, or kept from an older file, may have no
+  // timestamps or author: say only what is known.
+  let created = case r.created_at {
+    "" -> []
+    at -> ["Created " <> at]
+  }
+  let updated = case r.updated_at, r.updated_by {
+    "", "" -> []
+    at, "" -> ["updated " <> at]
+    "", by -> ["updated by " <> by]
+    at, by -> ["updated " <> at <> " by " <> by]
+  }
+  let changes = case list.append(created, updated) {
+    [] -> ""
+    ["updated" <> rest, ..] -> "Updated" <> rest <> " · "
+    parts -> string.join(parts, ", ") <> " · "
+  }
   h.p([a.class("small fg-secondary")], [
-    h.text(
-      "Created "
-      <> r.created_at
-      <> ", updated "
-      <> r.updated_at
-      <> " by "
-      <> r.updated_by
-      <> " · "
-      <> int.to_string(hits)
-      <> " hit(s)",
-    ),
+    h.text(changes <> int.to_string(hits) <> " hit(s)"),
     case admin {
       True ->
         h.span([], [
