@@ -279,6 +279,10 @@ anonymize_ip(Bin) ->
         {ok, {0, 0, 0, 0, 0, 16#ffff, AB, CD}} ->
             %% IPv4-mapped IPv6 (dual stack sockets): log as IPv4
             list_to_binary(inet:ntoa({AB bsr 8, AB band 255, CD bsr 8, 0}));
+        {ok, {16#2002, B, C, _, _, _, _, _}} ->
+            %% 6to4: the /48 holds the client's whole IPv4 address; keep its
+            %% /24, as for IPv4
+            list_to_binary(inet:ntoa({16#2002, B, C band 16#ff00, 0, 0, 0, 0, 0}));
         {ok, {A, B, C, _, _, _, _, _}} ->
             list_to_binary(inet:ntoa({A, B, C, 0, 0, 0, 0, 0}));
         _ ->
@@ -291,5 +295,7 @@ anonymize_peer({ip_v4, A, B, C, _}) ->
     list_to_binary(inet:ntoa({A, B, C, 0}));
 anonymize_peer({ip_v6, 0, 0, 0, 0, 0, 16#ffff, AB, CD}) ->
     list_to_binary(inet:ntoa({AB bsr 8, AB band 255, CD bsr 8, 0}));
+anonymize_peer({ip_v6, 16#2002, B, C, _, _, _, _, _}) ->
+    list_to_binary(inet:ntoa({16#2002, B, C band 16#ff00, 0, 0, 0, 0, 0}));
 anonymize_peer({ip_v6, A, B, C, _, _, _, _, _}) ->
     list_to_binary(inet:ntoa({A, B, C, 0, 0, 0, 0, 0})).

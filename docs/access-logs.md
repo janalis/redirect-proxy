@@ -86,8 +86,12 @@ Access logs contain personal data, IP addresses in particular. The defaults
 follow data minimisation (GDPR art. 5(1)(c)):
 
 - **IP addresses are truncated** (`anonymize_ip = "truncate"`): IPv4 to /24
-  (`203.0.113.0`) and IPv6 to /48. This is done before the line is written,
-  so full addresses never reach the disk.
+  (`203.0.113.0`) and IPv6 to /48 (6to4 addresses, which embed an IPv4
+  address, to its /24). Headers that carry client addresses, when a custom
+  format logs them (`$http_x_forwarded_for`, `$http_x_real_ip`,
+  `$http_forwarded`, `$http_cf_connecting_ip`...), are truncated hop by hop
+  too. This is done before the line is written, so full addresses never
+  reach the disk.
 - **Query strings are not logged** (`log_query = false`). They are left out
   of the request line, the referer and the redirect location, because they
   often carry e-mail addresses, tokens or tracking identifiers.
