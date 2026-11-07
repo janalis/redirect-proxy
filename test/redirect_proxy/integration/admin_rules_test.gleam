@@ -716,3 +716,30 @@ pub fn history_link_is_for_administrators_test() {
   assert page.status == 200
   assert !string.contains(page.body, "History")
 }
+
+pub fn rule_details_leave_out_unknown_dates_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  // written by hand: no timestamps, no author
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[{\"id\": \"by-hand\", \"source\": \"/by-hand\", \"target\": \"/x\"},"
+        <> "{\"id\": \"dated\", \"source\": \"/dated\", \"target\": \"/y\","
+        <> "\"created_at\": \"2026-01-02T03:04:05Z\","
+        <> "\"updated_at\": \"2026-02-03T04:05:06Z\", \"updated_by\": \"ann\"}]",
+    )
+  assert post_form(env, "/reload", cookie, [#("csrf_token", csrf)]).status
+    == 303
+  let page = fn(id) {
+    get(env.admin <> "/rules/" <> id <> "/edit", [#("cookie", cookie)]).body
+  }
+  let by_hand = page("by-hand")
+  assert !string.contains(by_hand, "Created ,")
+  assert !string.contains(by_hand, " by  ·")
+  assert string.contains(by_hand, ">0 hit(s)")
+  assert string.contains(
+    page("dated"),
+    "Created 2026-01-02T03:04:05Z, updated 2026-02-03T04:05:06Z by ann · 0 hit(s)",
+  )
+}
