@@ -22,7 +22,7 @@
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
     normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
-    encode_cached/2
+    encode_cached/2, strip_port/1
 ]).
 
 -include_lib("kernel/include/file.hrl").
@@ -922,8 +922,17 @@ lowercase_host(Host) ->
 %% Lowers the ASCII letters only, byte by byte: other bytes are kept, so any
 %% binary (even one cut inside a UTF-8 sequence) stays as valid as it was.
 lowercase_ascii(Bin) ->
-    << <<(case C >= $A andalso C =< $Z of true -> C + 32; false -> C end)>>
-       || <<C>> <= Bin >>.
+    case has_upper(Bin) of
+        %% the usual host or path: returned as is, not rebuilt
+        false -> Bin;
+        true ->
+            << <<(case C >= $A andalso C =< $Z of true -> C + 32; false -> C end)>>
+               || <<C>> <= Bin >>
+    end.
+
+has_upper(<<C, _/binary>>) when C >= $A, C =< $Z -> true;
+has_upper(<<_, Rest/binary>>) -> has_upper(Rest);
+has_upper(<<>>) -> false.
 
 %% The host of what follows `scheme://` in a URL: up to the first `/`, `\`,
 %% `?` or `#`, after the last `@` (user info). Byte searches: the delimiters
@@ -971,3 +980,16 @@ encode_cached(Items, Encode) ->
         end, #{}, Items),
     erlang:put(redirect_proxy_encode_cache, New),
     Encoded.
+
+%% A host without its port: `[::1]:8080` -> `[::1]`, `a.test:80` -> `a.test`.
+%% Byte splits: on every request, and for every rule of a rebuild.
+strip_port(<<"[", _/binary>> = Host) ->
+    case binary:split(Host, <<"]">>) of
+        [Addr, _] -> <<Addr/binary, "]">>;
+        [_] -> Host
+    end;
+strip_port(Host) ->
+    case binary:split(Host, <<":">>) of
+        [Name, _] -> Name;
+        [_] -> Host
+    end.

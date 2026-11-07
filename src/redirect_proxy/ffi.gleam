@@ -310,6 +310,11 @@ pub fn needs_trim(text: String) -> Bool
 
 /// `list.map(items, encode)`, reusing what the calling process encoded
 /// last time for an equal item. Only the last list's encodings are kept.
+/// A host without its port (`[::1]:8080` is `[::1]`, `a.test:80` is
+/// `a.test`).
+@external(erlang, "redirect_proxy_ffi", "strip_port")
+pub fn strip_port(host: String) -> String
+
 @external(erlang, "redirect_proxy_ffi", "encode_cached")
 pub fn encode_cached(items: List(a), encode: fn(a) -> String) -> List(String)
 
