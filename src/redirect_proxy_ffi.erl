@@ -17,7 +17,7 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, strip_control/1, strip_url_whitespace/1, garbage_collect/0,
+    with_lock/2, with_file_lock/3, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
@@ -818,6 +818,19 @@ has_url_whitespace(<<>>) -> false.
 strip_control(Bin) ->
     binary:replace(Bin, [<<"\r">>, <<"\n">>, <<0>>], <<>>, [global]).
 
+%% On every redirect (Location): a byte scan, and the value returned as is
+%% when it has no CR, LF, NUL or non-ASCII byte, instead of binary:replace,
+%% which compiles its pattern on every call.
+header_value(Bin) ->
+    case needs_cleaning(Bin) of
+        false -> Bin;
+        true -> encode_non_ascii(strip_control(Bin))
+    end.
+
+needs_cleaning(<<C, _/binary>>) when C >= 16#80; C =:= $\r; C =:= $\n; C =:= 0 -> true;
+needs_cleaning(<<_, Rest/binary>>) -> needs_cleaning(Rest);
+needs_cleaning(<<>>) -> false.
+
 garbage_collect() ->
     erlang:garbage_collect(),
     nil.
@@ -992,17 +1005,22 @@ has_upper(<<>>) -> false.
 
 %% The host of what follows `scheme://` in a URL: up to the first `/`, `\`,
 %% `?` or `#`, after the last `@` (user info). Byte searches: the delimiters
-%% are ASCII, and URLs are parsed by code point, not grapheme cluster.
-url_host(Rest) ->
-    End = case binary:match(Rest, [<<"/">>, <<"\\">>, <<"?">>, <<"#">>]) of
-        {Pos, _} -> binary:part(Rest, 0, Pos);
-        nomatch -> Rest
-    end,
-    case binary:matches(End, <<"@">>) of
-        [] -> End;
-        Matches ->
-            {At, 1} = lists:last(Matches),
-            binary:part(End, At + 1, byte_size(End) - At - 1)
+%% are ASCII, and URLs are parsed by code point, not grapheme cluster. One
+%% scan (on every prefix or regex redirect whose target has a host):
+%% binary:match with a list of patterns compiles them on every call.
+url_host(Rest) -> url_host(Rest, 0, 0).
+
+%% Pos: the byte looked at; Start: after the last `@` so far.
+url_host(Url, Pos, Start) ->
+    case Url of
+        <<_:Pos/binary, C, _/binary>> when C =:= $/; C =:= $\\; C =:= $?; C =:= $# ->
+            binary:part(Url, Start, Pos - Start);
+        <<_:Pos/binary, $@, _/binary>> ->
+            url_host(Url, Pos + 1, Pos + 1);
+        <<_:Pos/binary, _, _/binary>> ->
+            url_host(Url, Pos + 1, Start);
+        _ ->
+            binary:part(Url, Start, Pos - Start)
     end.
 
 %% The lines of a binary, as binaries (not decoded).

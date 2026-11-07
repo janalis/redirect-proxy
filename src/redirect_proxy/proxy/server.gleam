@@ -7,6 +7,7 @@ import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
 import gleam/int
+import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
@@ -157,7 +158,7 @@ fn health() -> Response(BytesTree) {
 
 /// A TLS proxy in front forwarded an HTTPS request.
 fn forwarded_https(req: Request(proxy_http.Peer)) -> Bool {
-  case request.get_header(req, "x-forwarded-proto") {
+  case list.key_find(req.headers, "x-forwarded-proto") {
     Ok(proto) ->
       // the first value: the client side of the first proxy
       case string.split(proto, ",") {
@@ -176,7 +177,7 @@ fn to_https(
   permanent_cache: String,
 ) -> Response(BytesTree) {
   let host =
-    request.get_header(req, "host")
+    list.key_find(req.headers, "host")
     |> result.unwrap(req.host)
     |> matcher.normalise_request_host
   case rule.is_host_name(host) {
@@ -208,7 +209,9 @@ fn route_rules(
   not_found_body: BytesTree,
   permanent_cache: String,
 ) -> #(Response(BytesTree), String) {
-  let host = request.get_header(req, "host") |> result.unwrap(req.host)
+  // header names are lower case: `request.get_header` would lower-case
+  // the name on every request
+  let host = list.key_find(req.headers, "host") |> result.unwrap(req.host)
   case req.method {
     http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch -> {
       // one read of the published matcher for both the lookup and the hit

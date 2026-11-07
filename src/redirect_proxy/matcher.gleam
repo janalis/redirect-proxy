@@ -212,12 +212,18 @@ pub fn build(rules: List(Rule)) -> Matcher {
 }
 
 /// Counts a hit of a rule. Lock-free: concurrent request processes do not
-/// contend even on the same rule.
+/// contend even on the same rule. The last hit time is only written when
+/// its second changes: a `put` writes the copy of every scheduler, which
+/// requests on other schedulers hitting the same rule would contend for.
 pub fn record_hit(matcher: Matcher, rule_id: String) -> Nil {
   case dict.get(matcher.slots, rule_id) {
     Ok(slot) -> {
       ffi.counter_add(matcher.hits, count_index(slot), 1)
-      ffi.counter_put(matcher.hits, last_index(slot), ffi.now_seconds())
+      let now = ffi.now_seconds()
+      case ffi.counter_get(matcher.hits, last_index(slot)) == now {
+        True -> Nil
+        False -> ffi.counter_put(matcher.hits, last_index(slot), now)
+      }
     }
     Error(Nil) -> Nil
   }
@@ -935,7 +941,7 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
     _, _ -> m.location
   }
   // a header value must be ASCII: captures may hold decoded characters
-  base |> ffi.strip_control |> ffi.encode_non_ascii
+  ffi.header_value(base)
 }
 
 /// Appends the request query to the target URL, after the target's own
