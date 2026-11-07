@@ -1,5 +1,3 @@
-[← redirect-proxy](../README.md)
-
 # REST API
 
 The API lives under `/api`, next to the OAuth 2.0 token endpoint
@@ -31,6 +29,11 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   http://localhost:8081/api/redirects
 ```
 
+The admin's *API clients* page creates clients, rotates their secrets and
+shows how to call the API. A new secret is shown once:
+
+![A new API client and its secret](/screenshots/api-client-created.png)
+
 | Endpoint | Scope | |
 | --- | --- | --- |
 | `GET /api/redirects` | `redirects:read` | Filters `q`, `host`, `match`, `enabled`, `tag`; `sort` by `source`, `host`, `hits`, `last_hit` or `updated` (`-` for descending); pages via `page` and `per_page` (positive integers; `per_page` above 500 gets 500), with a `Link` header and `meta.has_more`, as in `/api/audit`. Invalid values answer `400`. Rules include their `hits` and `last_hit_at`. The `ETag` is the version of the whole rule set. |
@@ -43,7 +46,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
 | `GET /api/audit` | `audit:read` | Audit entries as recorded, newest first, from the current and rotated files. Filters `actor` (exact), `action` (prefix: `rule.`), `target` (contains), `since` and `until` (RFC 3339); pages via `page` and `per_page` (max 500), with `meta.has_more` and a `Link` header for the next page. |
 
-**Tokens.**
+## Tokens
 
 - Tokens from `/oauth/token` are opaque and expire after `api.token_ttl`.
 - Rotating a client's secret or deleting the client revokes its tokens
@@ -52,7 +55,9 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   `scope=…`.
 - `redirects:write` implies `redirects:read`.
 
-**External authorization server.** With `[api.oauth]` enabled, JWT access
+## External authorization server
+
+With `[api.oauth]` enabled, JWT access
 tokens from your own authorization server are accepted too:
 
 - The server is found through OIDC or RFC 8414 discovery on `issuer`.
@@ -74,7 +79,9 @@ tokens from your own authorization server are accepted too:
 - Scopes are read from `scope` or `scp` and mapped through `read_scope`,
   `write_scope`, `ops_scope` and `audit_scope`.
 
-**Errors** use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
+## Errors
+
+use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 `application/problem+json`. Every problem has a stable `code`
 (`not_found`, `validation_failed`, `already_exists`, `precondition_failed`,
 `precondition_required`, `reload_rejected`, `invalid_token`,
@@ -85,7 +92,9 @@ by `title` or `detail`. Validation errors carry an `errors` array of
 Bearer error="invalid_token"` or `"insufficient_scope"`). The API never uses
 cookies, so it isn't exposed to CSRF.
 
-**Compatibility.** There is no version prefix. The API only changes
+## Compatibility
+
+There is no version prefix. The API only changes
 additively, so clients must ignore fields they don't know. Retiring a field
 or endpoint works like this:
 

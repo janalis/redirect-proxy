@@ -1,5 +1,3 @@
-[← redirect-proxy](../README.md)
-
 # Access logs
 
 The redirect, admin and API listeners write one line per request. Logging
@@ -36,7 +34,9 @@ refused, so session cookies and bearer tokens cannot end up in a log.
 Values are escaped like nginx `escape=default` (`"` becomes `\x22`); set
 `escape = "json"` to build your own JSON lines.
 
-**Per listener.** `[access_log.redirect]`, `[access_log.admin]` and
+## Per listener
+
+`[access_log.redirect]`, `[access_log.admin]` and
 `[access_log.api]` override `enabled`, `format` and `output`. For example,
 you can keep redirect traffic in its own file for GoAccess and send admin
 and API requests elsewhere:
@@ -58,7 +58,9 @@ the API settings. Listeners writing to the same output share one handler.
 Admin requests include health checks (`/healthz`) and Prometheus scrapes
 (`/metrics`); disable `[access_log.admin]` if they are only noise for you.
 
-**Files.** Set `output` to any path, for example
+## Files
+
+Set `output` to any path, for example
 `/var/log/redirect-proxy/access.log` (the Debian package creates that
 directory and ships a logrotate policy). Missing directories are created. A
 renamed file is reopened within a second, so logrotate needs no
@@ -68,7 +70,9 @@ Use one or the other, not both: they name rotated files the same way
 (`access.log.1`...) and would overwrite each other's. With the Debian
 package's logrotate policy, leave `max_bytes = 0`.
 
-**Performance.** Each request process formats its own line, and one
+## Performance
+
+Each request process formats its own line, and one
 dedicated OTP logger handler per output batches the writes, so the three
 listeners log concurrently without coordinating. The handlers never block
 or throttle requests. Under extreme overload they drop lines and report how
@@ -76,7 +80,9 @@ many were dropped in the application log. `RP_LOG_LEVEL` only controls the appli
 log, so access logging stays on with `RP_LOG_LEVEL=warning`. Set
 `enabled = false` to turn it off entirely.
 
-**Client address behind a proxy.** List your load balancers in
+## Client address behind a proxy
+
+List your load balancers in
 `trusted_proxies` (CIDRs). The address is then taken from `X-Forwarded-For`
 (the rightmost hop that is not trusted) or `X-Real-IP`, if it is an IP
 address (otherwise the proxy's own address is used). Headers sent by any

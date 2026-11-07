@@ -370,3 +370,16 @@ jobs:
           fi
           git commit -m "redirect-proxy ${VERSION}"
           git push
+
+  # The site again, from the tag: the version in its nav is the new release.
+  docs:
+    name: Documentation
+    needs: [meta, publish]
+    permissions:
+      contents: read
+      pages: write # publish the site
+      id-token: write # authenticate the deployment
+    # The "$/" self-repository form is not understood by actionlint 1.7.12 yet.
+    uses: ./.github/workflows/docs.yml # zizmor: ignore[self-repository]
+    with:
+      ref: ${{ needs.meta.outputs.tag }}

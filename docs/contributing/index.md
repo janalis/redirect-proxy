@@ -1,6 +1,7 @@
-[← redirect-proxy](../README.md)
-
 # Development
+
+The contribution rules (commits, tests, pull requests) are in
+[CONTRIBUTING.md](https://github.com/janalis/redirect-proxy/blob/main/CONTRIBUTING.md).
 
 ```sh
 make help         # every target
@@ -11,6 +12,24 @@ make bench-matcher  # matcher work per request vs the baseline (reductions)
 make bench-store    # time to load 50 000 rules and to change one
 lefthook install  # optional git hooks (format, build, conventional commits)
 ```
+
+The documentation site is built with [VitePress](https://vitepress.dev)
+from `docs/` (Node 20+):
+
+```sh
+make docs-deps    # npm ci, and Chromium for the screenshots
+make screenshots  # run the server on demo rules and capture the admin
+make docs-dev     # live preview at http://localhost:5173/redirect-proxy/
+make docs         # the whole site, as published
+```
+
+The screenshots are not committed. `docs/scripts/screenshots.mjs` starts the
+server on free ports with the rules of `docs/screenshots/redirects.json`,
+makes a few changes so that the audit log and the users and API clients
+pages have content, then captures each page. The *Docs* workflow does the
+same on every push to `main`, so the pictures always show the current admin.
+To show a new page, add it to the script and reference
+`/screenshots/<name>.png` from the page.
 
 The test suite has several layers:
 
@@ -25,6 +44,8 @@ The test suite has several layers:
 Coverage is measured with Erlang's `cover` on the Erlang code that Gleam
 generates. It is reported per Gleam module, but line numbers refer to the
 generated `.erl` files, so treat it as an approximation of source coverage.
+`make coverage` also writes `coverage/badge.json`, which the *Docs* workflow
+publishes with the site for the README badge.
 
 Project layout:
 
@@ -42,35 +63,4 @@ packaging/                    launcher, systemd unit, Debian scripts, Homebrew f
 scripts/                      bundle, .deb packaging, coverage, benchmark
 ```
 
-## Releasing
-
-Releases are automated with
-[release-please](https://github.com/googleapis/release-please) and
-[Conventional Commits](https://www.conventionalcommits.org/):
-
-- `feat:` bumps the minor version.
-- `fix:`, `perf:`, `security:` and `deps:` bump the patch version. Dependabot
-  writes base image updates as `deps:`, so that an OS-level fix is released.
-- `feat!:` or a `BREAKING CHANGE:` footer bumps the minor version while the
-  version is below 1.0 (`bump-minor-pre-major`), then the major version.
-
-Every push to `main` updates a release PR with the next version and changelog.
-Merging that PR tags `vX.Y.Z` and publishes these artifacts:
-
-- Linux amd64 and arm64 bundles that include the Erlang runtime.
-- `.deb` packages, install-tested on the runner.
-- A portable Erlang bundle, smoke-tested on macOS.
-- `SHA256SUMS`, build provenance attestations and an SPDX SBOM of the Hex
-  packages and the Erlang/OTP runtime they ship (`scripts/sbom.py`, from
-  `manifest.toml`).
-- Multi-arch images `ghcr.io/janalis/redirect-proxy:{X.Y.Z,X.Y,X,latest}`,
-  pushed only once every other artifact passed its tests, and scanned with
-  Trivy on both platforms before they are pushed. `latest` only moves to the
-  newest release: rebuilding an older tag leaves it alone. The published
-  `latest` image is rescanned every week, and an issue is opened when a
-  fixable vulnerability turns up. Another weekly job opens an issue when
-  newer versions of the locked Hex packages are available (Dependabot does
-  not support Gleam).
-- An updated Homebrew formula in `janalis/homebrew-tap`.
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for the required repository settings.
+See [Releasing](releasing) for versions and published artifacts.

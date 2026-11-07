@@ -1,5 +1,3 @@
-[← redirect-proxy](../README.md)
-
 # Redirection rules
 
 Rules are stored in `<data_dir>/redirects.json`:
@@ -49,7 +47,9 @@ accepted. Ids and timestamps are added automatically.
 | `note` | `""` | Free text shown in the admin. |
 | `tags` | `[]` | Labels to group and filter rules (`["campaign", "legacy"]`): stored lower case, sorted and without duplicates; at most 20, each at most 40 characters, without commas. Written to the file only when set. |
 
-**CSV.** Imports (admin, API, `rules import`, `rules validate`) also take
+## CSV
+
+Imports (admin, API, `rules import`, `rules validate`) also take
 CSV: a header row naming the columns, then one rule per line. The columns
 are those of the CSV export: `id`, `host`, `match`, `source`, `target`,
 `status`, `preserve_query`, `case_insensitive`, `whole_segments`, `query`,
@@ -67,14 +67,16 @@ mark, so that Excel shows accented text right. Save imports as "CSV UTF-8
 by `;` (some locales) get a hint. Empty columns at the end of the lines and
 lines of empty cells, which spreadsheets leave behind, are ignored.
 
-**Scheduled rules.** A rule with `starts_at` or `expires_at` only applies
+## Scheduled rules
+
+A rule with `starts_at` or `expires_at` only applies
 within that window: the server republishes the rules within a second of a
 boundary, without touching the file, and the admin list marks rules as
 "scheduled" or "expired". Two exact rules for one path may take turns (a
 campaign target, then the usual one) as long as their windows do not
 overlap. Both fields are written to the file only when set.
 
-**Target substitutions:**
+## Target substitutions
 
 | Syntax | Meaning |
 | --- | --- |
@@ -88,7 +90,9 @@ overlap. Both fields are written to the file only when set.
 Substitutions apply to prefix and regex rules. The target of an exact rule
 is used as written, `$` included.
 
-**Resolution order.** Rules for the request's `Host` are tried first, then
+## Resolution order
+
+Rules for the request's `Host` are tried first, then
 those of wildcard hosts from the closest one (for `a.b.example.com`:
 `*.b.example.com`, then `*.example.com`), then the `*` rules. Within each
 host, the first match wins in this order:
@@ -104,7 +108,9 @@ rules without a leading literal (unanchored, using `|`, or case-insensitive)
 are tried one by one on every request that reaches them. Put a literal
 prefix in your patterns when you can.
 
-**Equivalent paths.** Paths are compared in one form, so a rule written
+## Equivalent paths
+
+Paths are compared in one form, so a rule written
 `/café` matches the `/caf%C3%A9` browsers send, and `%7e` matches `~`.
 Escapes of unreserved characters and of valid UTF-8 are decoded; the
 others, such as `%2F` (which is not a path separator), are kept and
@@ -113,19 +119,27 @@ or not (`/a/%2E%2E/b` is `/b`), so a capture can never climb out of its
 target's path. Regex rules see the path in this form too. In the
 `Location` header, non-ASCII characters are percent-encoded.
 
-**Trailing slashes.** By default `/docs` and `/docs/` are different paths.
+## Trailing slashes
+
+By default `/docs` and `/docs/` are different paths.
 With `server.trailing_slash = "ignore"` (`RP_SERVER_TRAILING_SLASH`), a
 request that matches no rule is retried with the trailing slash added or
 removed. A rule for the exact form always wins.
 
-**When nothing matches.** The server answers `404`, or redirects (302) to
+## When nothing matches
+
+The server answers `404`, or redirects (302) to
 `server.fallback_url` if it is set.
 
-**Caching.** `301` and `308` responses carry
+## Caching
+
+`301` and `308` responses carry
 `Cache-Control: public, max-age=<server.cache_max_age>`. Temporary redirects
 are sent with `no-store`.
 
-**Safety checks.** A rule is rejected if any of these hold:
+## Safety checks
+
+A rule is rejected if any of these hold:
 
 - It duplicates the source of another enabled exact rule on the same host.
 - It redirects to itself.
@@ -149,7 +163,9 @@ crafted to make every unindexed regex work hard is answered as a miss once
 it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). Real
 rules come nowhere near it.
 
-**Substitutions cannot leave the target's host.** Captures come from the
+## Substitutions cannot leave the target's host
+
+Captures come from the
 request path, so they are checked after `$1`... are replaced (open redirect
 guard):
 

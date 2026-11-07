@@ -9,7 +9,7 @@
 %% files in build/dev/erlang/redirect_proxy/_gleam_artefacts.
 %%
 %% Usage: escript scripts/coverage.escript [MIN_PERCENT]
-%% Writes coverage/lcov.info and coverage/summary.txt.
+%% Writes coverage/lcov.info, coverage/summary.txt and coverage/badge.json.
 
 main(Args) ->
     Min = case Args of
@@ -42,6 +42,7 @@ main(Args) ->
     ok = file:write_file("coverage/summary.txt", Summary),
     io:put_chars(Summary),
     Total = total(Rows),
+    ok = file:write_file("coverage/badge.json", badge(Total)),
     cover:stop(),
     case {Result, Total >= Min} of
         {ok, true} -> halt(0);
@@ -96,6 +97,17 @@ summary(Rows) ->
     [io_lib:format("~nLine coverage (generated Erlang, per Gleam module)~n~n", []),
      Lines,
      io_lib:format("~n~6.1f%  total~n", [total(Rows)])].
+
+%% A shields.io endpoint document: the docs workflow publishes it with the
+%% site, and the README badge reads it.
+badge(Total) ->
+    Color = if Total >= 90 -> "brightgreen";
+               Total >= 80 -> "green";
+               Total >= 70 -> "yellow";
+               true -> "red"
+            end,
+    io_lib:format("{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"~.1f%\",\"color\":\"~s\"}~n",
+                  [Total, Color]).
 
 pct(_, 0) -> 100.0;
 pct(C, T) -> 100 * C / T.
