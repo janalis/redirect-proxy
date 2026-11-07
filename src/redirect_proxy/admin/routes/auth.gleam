@@ -45,8 +45,9 @@ const max_username_bytes = 64
 
 const login_window = 900
 
-/// SSO logins started from one address in a window: each one holds a pending
-/// login attempt until it completes or expires (`oidc.flow_ttl`).
+/// SSO logins started from one address in a window. A login in progress is
+/// kept by the browser, not here: this only bounds what one address makes
+/// the provider's discovery and the log go through.
 const sso_start_ip_limit = 30
 
 /// Failed SSO callbacks from one address in a window.
@@ -553,12 +554,12 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
   ratelimit.record_failure(start_key, login_window)
   let next = safe_next(list.key_find(wisp.get_query(req), "next"))
   case oidc.begin(ctx.config.oidc, ctx.config.admin.public_url, next) {
-    Ok(#(url, state)) ->
+    Ok(#(url, flow)) ->
       wisp.redirect(url)
       |> wisp.set_cookie(
         req,
         oidc_state_cookie_name(req, ctx),
-        state,
+        flow,
         wisp.Signed,
         oidc.flow_ttl,
       )
