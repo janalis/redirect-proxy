@@ -107,6 +107,11 @@ pub fn precondition_failed(current_version: String) -> Response {
   |> wisp.set_header("etag", etag(current_version))
 }
 
+/// 409: the resource already exists (a retried creation).
+pub fn conflict(detail: String) -> Response {
+  problem(409, "Conflict", detail, [])
+}
+
 /// 422 with field errors built from the `"field: message"` strings produced
 /// by rule validation.
 pub fn validation(errors: List(String)) -> Response {

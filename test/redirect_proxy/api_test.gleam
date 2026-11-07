@@ -1830,3 +1830,42 @@ pub fn openapi_names_external_scopes_test() {
     )
   assert write == "Requires the `redirects:write` scope."
 }
+
+/// A creation with an id chosen by the client can be retried safely: the
+/// retry gets 409 (pointing to the rule) instead of creating a second one.
+pub fn create_with_a_client_id_is_safe_to_retry_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let body =
+    "{\"id\":\"deploy-42\",\"match\":\"prefix\",\"source\":\"/r/\",\"target\":\"/s/$1\"}"
+  let first = api(env, Post, "/api/redirects", token, body)
+  assert first.status == 201
+  assert field(first.body, ["id"], decode.string) == "deploy-42"
+  let retry = api(env, Post, "/api/redirects", token, body)
+  assert retry.status == 409
+  assert response.get_header(retry, "location")
+    == Ok("/api/redirects/deploy-42")
+  let listed = api(env, Get, "/api/redirects?q=/r/", token, "")
+  assert field(listed.body, ["meta", "total"], decode.int) == 1
+  // ids go in URLs
+  let bad =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"id\":\"a/b\",\"source\":\"/x\",\"target\":\"/y\"}",
+    )
+  assert bad.status == 422
+  // without an id, the server chooses one
+  let generated =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/x\",\"target\":\"/y\"}",
+    )
+  assert generated.status == 201
+  assert field(generated.body, ["id"], decode.string) != ""
+}
