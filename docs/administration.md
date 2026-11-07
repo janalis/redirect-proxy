@@ -55,7 +55,9 @@ unless the request has `Authorization: Bearer <token>`: in Prometheus, set
   Configure the proxy to set (not append to) that header, and never expose the
   admin port directly in this mode. The session ends on the first request
   that arrives without the header (signed out at the proxy, or a replayed
-  cookie).
+  cookie). A user and role have one session: a client that does not keep
+  cookies (a script, a monitoring check) reuses it rather than starting a
+  session, and an `auth.login` audit entry, on every request.
 
 ## Roles
 

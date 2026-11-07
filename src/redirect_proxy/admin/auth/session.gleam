@@ -10,6 +10,9 @@ import redirect_proxy/role.{type Role}
 
 const table = "redirect_proxy_sessions"
 
+/// The live session of each proxy user and role (`header_session`).
+const header_index = "redirect_proxy_header_sessions"
+
 pub type Method {
   Local
   Oidc
@@ -50,6 +53,7 @@ const touch_interval = 30
 /// Creates the ETS table. Must be called from a long lived process.
 pub fn init() -> Nil {
   ffi.ets_new(table)
+  ffi.ets_new(header_index)
 }
 
 /// `name` is the local username, the SSO username or the name vouched for by
@@ -108,6 +112,36 @@ pub fn get(token: String, idle_timeout: Int) -> Result(Session, Nil) {
   }
 }
 
+/// The session of a user vouched for by the proxy, with this role: the live
+/// one when there is one, else a new one (`True`). A client that drops
+/// cookies (a script, a monitoring check) is vouched for on every request:
+/// it gets the same session, not one more per request, each with an audit
+/// entry, for the whole session lifetime.
+pub fn header_session(
+  name: String,
+  role: Role,
+  ttl: Int,
+  idle_timeout: Int,
+) -> #(Session, Bool) {
+  let key = actor(Header, name) <> " " <> role.to_string(role)
+  let live = case ffi.ets_get(header_index, key) {
+    Ok(#(_, token)) ->
+      case get(token, idle_timeout) {
+        Ok(s) if s.method == Header && s.role == role -> Ok(s)
+        _ -> Error(Nil)
+      }
+    Error(Nil) -> Error(Nil)
+  }
+  case live {
+    Ok(s) -> #(s, False)
+    Error(Nil) -> {
+      let s = create(name, Header, ttl, "", role)
+      ffi.ets_put(header_index, key, #(s.expires_at, s.token))
+      #(s, True)
+    }
+  }
+}
+
 pub fn destroy(token: String) -> Nil {
   ffi.ets_delete(table, token)
 }
@@ -148,7 +182,9 @@ pub fn destroy_user(username: String) -> Nil {
 }
 
 pub fn purge_expired() -> Int {
-  ffi.ets_delete_older(table, ffi.now_seconds())
+  let now = ffi.now_seconds()
+  let _ = ffi.ets_delete_older(header_index, now)
+  ffi.ets_delete_older(table, now)
 }
 
 pub fn method_to_string(method: Method) -> String {
