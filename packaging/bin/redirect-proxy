@@ -39,10 +39,14 @@ fi
 
 # +sbwt none: do not busy-wait schedulers (lower idle CPU usage)
 # +K true: kernel poll (default on modern OTP, kept explicit)
+# +P 131072: a process per connection, and connections are limited by the
+#   ports (65 536 by default, +Q): the default table of 1 048 576 processes
+#   costs ~12 MB of memory for nothing (ERL_FLAGS="+Q … +P …" raises both)
 # -noshell / no distribution: the node never opens an Erlang distribution port
 exec "$erl" \
   +sbwt none +sbwtdcpu none +sbwtdio none \
   +K true \
+  +P 131072 \
   -noshell \
   -pa "$prefix"/lib/*/ebin \
   -eval "redirect_proxy@@main:run(redirect_proxy)" \

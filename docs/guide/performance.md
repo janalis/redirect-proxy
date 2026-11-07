@@ -69,8 +69,13 @@ scenario more than 10 % more expensive (`scripts/matcher-bench.py
 
 Memory:
 
-- An idle node with no rules uses about 70 MB RSS in the container image.
-- Loading 11 500 rules adds about 5 MB to the shared snapshot.
+- An idle node with no rules uses about 48 MB RSS in the container image
+  (30 MiB as `docker stats` counts it).
+- Loading 11 500 rules adds about 5 MB to the shared snapshot; with them,
+  after the load scenarios, `docker stats` shows about 60 MiB.
+- The node is started for at most 131 072 processes (`+P`), twice its 65 536
+  ports (`+Q`): each connection is one of each. To accept more connections,
+  raise both, e.g. `ERL_FLAGS="+Q 262144 +P 524288"`.
 
 Run the benchmark on your own hardware before sizing.
 
