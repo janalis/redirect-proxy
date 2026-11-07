@@ -517,26 +517,10 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
 /// Strips the port and a trailing dot (`example.com.`) from a Host header
 /// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  let host = strip_port(ffi.lowercase_host(host))
+  let host = ffi.strip_port(ffi.lowercase_host(host))
   case string.ends_with(host, ".") {
     True -> string.drop_end(host, 1)
     False -> host
-  }
-}
-
-fn strip_port(host: String) -> String {
-  case string.starts_with(host, "[") {
-    // IPv6 literal: [::1]:8080
-    True ->
-      case string.split_once(host, "]") {
-        Ok(#(addr, _)) -> addr <> "]"
-        Error(_) -> host
-      }
-    False ->
-      case string.split_once(host, ":") {
-        Ok(#(name, _port)) -> name
-        Error(_) -> host
-      }
   }
 }
 
