@@ -204,6 +204,8 @@ pub fn access_log_validation_test() {
     with(fn(a) { config.AccessLogConfig(..a, trusted_proxies: ["nope"]) }),
     with(fn(a) { config.AccessLogConfig(..a, max_bytes: -1) }),
     with(fn(a) { config.AccessLogConfig(..a, max_files: 0) }),
+    with(fn(a) { config.AccessLogConfig(..a, max_files: 101) }),
+    with(fn(a) { config.AccessLogConfig(..a, max_bytes: 1) }),
     with(fn(a) {
       config.AccessLogConfig(
         ..a,
@@ -278,6 +280,11 @@ pub fn every_listed_env_var_is_checked_test() {
   }
   assert used(" i") == config_env.int_env_vars
   assert used(" b") == config_env.bool_env_vars
+  // a secret read from a file that cannot be read must be reported, not
+  // silently replaced by the default (an empty metrics token is public)
+  list.each(used(" secret"), fn(name) {
+    assert list.contains(config_env.secret_env_vars, name)
+  })
 }
 
 pub fn secrets_from_files_test() {
@@ -466,6 +473,12 @@ pub fn more_value_checks_test() {
   assert string.starts_with(
     refused(config.Config(..d, oidc:)),
     "auth.oidc.issuer",
+  )
+  // a timer of more than about 49 days crashed the store at startup
+  let storage = config.StorageConfig(..d.storage, watch_interval: 5_000_000)
+  assert string.starts_with(
+    refused(config.Config(..d, storage:)),
+    "storage.watch_interval",
   )
 }
 

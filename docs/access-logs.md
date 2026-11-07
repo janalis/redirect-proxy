@@ -63,7 +63,10 @@ Admin requests include health checks (`/healthz`) and Prometheus scrapes
 directory and ships a logrotate policy). Missing directories are created. A
 renamed file is reopened within a second, so logrotate needs no
 `copytruncate` or signal. You can also use the built-in rotation:
-`max_bytes`, `max_files` and `compress`.
+`max_bytes` (0, or at least 65536), `max_files` (1 to 100) and `compress`.
+Use one or the other, not both: they name rotated files the same way
+(`access.log.1`...) and would overwrite each other's. With the Debian
+package's logrotate policy, leave `max_bytes = 0`.
 
 **Performance.** Each request process formats its own line, and one
 dedicated OTP logger handler per output batches the writes, so the three

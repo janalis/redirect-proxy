@@ -133,6 +133,7 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
 /// do not appear in the process environment (`docker inspect`,
 /// `/proc/<pid>/environ`).
 pub const secret_env_vars = [
+  "RP_ADMIN_METRICS_TOKEN",
   "RP_ADMIN_SECRET_KEY_BASE",
   "RP_AUTH_OIDC_CLIENT_SECRET",
   "RP_BOOTSTRAP_ADMIN_PASSWORD",
