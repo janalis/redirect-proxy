@@ -1,9 +1,11 @@
 //// OpenAPI 3.1 description of the REST API, generated at runtime so that
 //// deprecations from the registry are always reflected.
 
+import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import redirect_proxy/api/deprecation.{type Deprecation}
+import redirect_proxy/rule
 import redirect_proxy/store/rules as store_rules
 
 pub fn document(registry: List(Deprecation)) -> String {
@@ -322,7 +324,7 @@ fn paths(registry: List(Deprecation)) -> Json {
               param(
                 "match",
                 "query",
-                enum_schema(["exact", "prefix", "regex"]),
+                enum_schema(rule.kind_names()),
                 "exact, prefix or regex.",
               ),
               param(
@@ -529,7 +531,7 @@ fn paths(registry: List(Deprecation)) -> Json {
                 param(
                   "match",
                   "query",
-                  enum_schema(["exact", "prefix", "regex"]),
+                  enum_schema(rule.kind_names()),
                   "exact, prefix or regex.",
                 ),
                 param(
@@ -1192,7 +1194,7 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
       "match",
       json.object([
         #("type", json.string("string")),
-        #("enum", json.array(["exact", "prefix", "regex"], json.string)),
+        #("enum", json.array(rule.kind_names(), json.string)),
       ]),
     ),
     #("source", typed("string", "Request path, prefix or PCRE regex.")),
@@ -1204,7 +1206,7 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
       "status",
       json.object([
         #("type", json.string("integer")),
-        #("enum", json.array([301, 302, 303, 307, 308], json.int)),
+        #("enum", json.array(rule.allowed_statuses, json.int)),
       ]),
     ),
     #(
@@ -1254,7 +1256,11 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
         #(
           "description",
           json.string(
-            "Labels to group and filter rules: stored lower case, sorted, without duplicates; at most 20 of at most 40 characters, without commas.",
+            "Labels to group and filter rules: stored lower case, sorted, without duplicates; at most "
+            <> int.to_string(rule.max_tags)
+            <> " of at most "
+            <> int.to_string(rule.max_tag_length)
+            <> " characters, without commas.",
           ),
         ),
       ]),

@@ -532,7 +532,7 @@ fn filtered_rules(
   let enabled = get("enabled")
   // invalid filters are errors: silently ignoring them returns the wrong set
   use <- bool.guard(
-    !list.contains(["", "exact", "prefix", "regex"], kind),
+    kind != "" && !list.contains(rule.kind_names(), kind),
     Error(problem.bad_request("match must be exact, prefix or regex.")),
   )
   use enabled <- result.try(case enabled {

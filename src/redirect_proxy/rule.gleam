@@ -118,6 +118,14 @@ pub fn blank() -> Rule {
 
 // --- kinds ------------------------------------------------------------------
 
+/// Every match kind, in the order they are documented.
+pub const kinds = [Exact, Prefix, Regex]
+
+/// The names of the match kinds (`exact`, `prefix`, `regex`).
+pub fn kind_names() -> List(String) {
+  list.map(kinds, kind_to_string)
+}
+
 pub fn kind_to_string(kind: MatchKind) -> String {
   case kind {
     Exact -> "exact"
