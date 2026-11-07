@@ -733,7 +733,7 @@ pub fn deprecations_are_announced_test() {
   assert deprecation.headers(deprecation.for_route(registry, "get", "/api/test"))
     == [#("deprecation", "@1760000000")]
 
-  let doc = openapi.document(registry)
+  let doc = openapi.document(registry, config.default().api.oauth)
   let test_op =
     field(doc, ["paths", "/api/test", "get", "deprecated"], decode.bool)
   assert test_op
@@ -1478,7 +1478,7 @@ pub fn openapi_rule_schema_matches_the_rule_json_test() {
   let keys = decode.dict(decode.string, decode.dynamic)
   let documented =
     json.parse(
-      openapi.document([]),
+      openapi.document([], config.default().api.oauth),
       decode.at(["components", "schemas", "Rule", "properties"], keys),
     )
     |> result.unwrap(dict.new())
@@ -1500,7 +1500,7 @@ pub fn routes_router_and_openapi_agree_test() {
   let methods = ["get", "post", "put", "patch", "delete"]
   let documented =
     json.parse(
-      openapi.document([]),
+      openapi.document([], config.default().api.oauth),
       decode.at(
         ["paths"],
         decode.dict(decode.string, decode.dict(decode.string, decode.dynamic)),
@@ -1519,6 +1519,30 @@ pub fn routes_router_and_openapi_agree_test() {
       #(string.lowercase(http.method_to_string(o.method)), o.template)
     })
   assert list.sort(documented, compare_pairs) == list.sort(table, compare_pairs)
+  // each operation asks for the scope the router checks; the token endpoint
+  // for none
+  let doc = openapi.document([], config.default().api.oauth)
+  let oauth_scopes = fn(method, path) {
+    json.parse(
+      doc,
+      decode.at(
+        ["paths", path, method, "security"],
+        decode.list(decode.optional_field(
+          "oauth2",
+          [],
+          decode.list(decode.string),
+          decode.success,
+        )),
+      ),
+    )
+    |> result.unwrap([])
+    |> list.flatten
+  }
+  list.each(routes.operations, fn(o) {
+    let method = string.lowercase(http.method_to_string(o.method))
+    assert oauth_scopes(method, o.template) == [scope.to_string(o.scope)]
+  })
+  assert oauth_scopes("post", "/oauth/token") == []
 
   let env = support.boot(config.default())
   let token =
@@ -1725,4 +1749,38 @@ pub fn audit_api_dates_and_paging_limits_test() {
     == 200
   assert api(env, Get, "/api/audit?page=1000&per_page=500", token, "").status
     == 400
+}
+
+/// With an external authorization server, the document gives the scope
+/// names its tokens must carry.
+pub fn openapi_names_external_scopes_test() {
+  let d = config.default()
+  let oauth =
+    config.ApiOAuthConfig(
+      ..d.api.oauth,
+      enabled: True,
+      issuer: "https://idp.test",
+      read_scope: "api.read",
+    )
+  let doc = openapi.document([], oauth)
+  let description =
+    field(doc, ["paths", "/api/redirects", "get", "description"], decode.string)
+  assert string.contains(description, "`redirects:read`")
+  assert string.contains(description, "`api.read`")
+  let bearer =
+    field(
+      doc,
+      ["components", "securitySchemes", "bearer", "description"],
+      decode.string,
+    )
+  assert string.contains(bearer, "https://idp.test")
+  assert string.contains(bearer, "`api.read` for redirects:read")
+  // unchanged names are not repeated
+  let write =
+    field(
+      doc,
+      ["paths", "/api/redirects", "post", "description"],
+      decode.string,
+    )
+  assert write == "Requires the `redirects:write` scope."
 }
