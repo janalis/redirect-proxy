@@ -1,13 +1,25 @@
 name: Benchmark
 
+# `bench`: load test of redirect-proxy alone (scripts/bench.sh).
+# `compare`: the same rules served by redirect-proxy, nginx, HAProxy, Caddy,
+# Traefik and Apache httpd (scripts/bench-compare.py), every week and after
+# each release. On main, `publish` opens (or updates) a pull request with
+# the new docs/data/benchmark.json and README table.
+
 on:
   workflow_dispatch:
     inputs:
       requests:
-        description: Requests per scenario
+        description: Requests per scenario (redirect-proxy alone)
         default: "200000"
   schedule:
     - cron: "17 3 * * 1"
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to measure (the release tag)
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -20,6 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}
       - name: Tool versions (.tool-versions)
         run: scripts/tool-versions.sh >> "$GITHUB_ENV"
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -50,3 +63,69 @@ jobs:
             cat bench.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  compare:
+    name: Compare with other servers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+      # The servers and oha run in containers (scripts/bench-compare.py)
+      - name: Run comparison
+        run: |
+          make bench-compare | tee compare.txt
+          {
+            echo '### Compared with other servers (requests/s)'
+            sed -n '/^| Server/,$p' compare.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark
+          path: docs/data/benchmark.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish results
+    needs: compare
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # push the results branch
+      pull-requests: write # open the pull request
+    concurrency:
+      group: benchmark-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: benchmark
+          path: docs/data
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/bench-compare.py --from docs/data/benchmark.json --readme
+          branch=bench/results
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add docs/data/benchmark.json README.md
+          if git diff --cached --quiet; then
+            echo "results unchanged"
+            exit 0
+          fi
+          git commit -m "chore(bench): refresh the comparison with other servers"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$branch"
+          if [ -z "$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')" ]; then
+            gh pr create -R "$REPO" --base main --head "$branch" \
+              --title "chore(bench): refresh the comparison with other servers" \
+              --body "Results of the weekly *Benchmark* workflow ($RUN_URL), for the Performance page and the README."
+          fi

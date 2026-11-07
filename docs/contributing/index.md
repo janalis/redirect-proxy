@@ -10,6 +10,7 @@ make check        # format check, warnings-as-errors build, linters, tests
 make coverage     # tests under Erlang `cover`, LCOV in coverage/lcov.info
 make bench-matcher  # matcher work per request vs the baseline (reductions)
 make bench-store    # time to load 50 000 rules and to change one
+make bench-compare  # vs nginx, HAProxy, Caddy, Traefik and Apache (Docker)
 lefthook install  # optional git hooks (format, build, conventional commits)
 ```
 

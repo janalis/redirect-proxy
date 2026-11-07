@@ -383,3 +383,15 @@ jobs:
     uses: ./.github/workflows/docs.yml # zizmor: ignore[self-repository]
     with:
       ref: ${{ needs.meta.outputs.tag }}
+
+  # The comparison with other servers, for the new release; on main it
+  # opens a pull request with the results (see bench.yml).
+  benchmark:
+    name: Benchmark
+    needs: [meta, publish]
+    permissions:
+      contents: write # push the results branch
+      pull-requests: write # open the pull request
+    uses: ./.github/workflows/bench.yml # zizmor: ignore[self-repository]
+    with:
+      ref: ${{ needs.meta.outputs.tag }}
