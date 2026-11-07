@@ -30,6 +30,7 @@ Project layout:
 ```text
 src/redirect_proxy/
   rule.gleam, matcher.gleam   rule model, validation, compiled matcher
+  rule/template.gleam         target templates and their host guard
   store.gleam                 single writer actor: persistence, backups, audit, reload
   proxy/server.gleam          redirect listener (mist, hot path)
   admin/                      router, auth (local, OIDC, header, sessions), views

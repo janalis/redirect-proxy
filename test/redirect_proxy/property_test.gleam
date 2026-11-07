@@ -11,6 +11,7 @@ import redirect_proxy/access_log_format as fmt
 import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
+import redirect_proxy/rule/template
 
 fn segment() -> qcheck.Generator(String) {
   qcheck.non_empty_string_from(
@@ -67,14 +68,14 @@ pub fn expand_without_placeholders_is_identity_test() {
       qcheck.codepoint_from_strings("a", ["/", "?", "=", "&", "{", "}", "1"]),
     ),
   )
-  assert rule.expand(template, ["x", "y"]) == template
+  assert template.expand(template, ["x", "y"]) == template
 }
 
 /// `$$` always becomes a single `$`.
 pub fn expand_dollar_escape_test() {
   use n <- qcheck.given(qcheck.bounded_int(0, 20))
   let template = string.repeat("$$", n)
-  assert rule.expand(template, []) == string.repeat("$", n)
+  assert template.expand(template, []) == string.repeat("$", n)
 }
 
 /// Serialising then parsing a rule file gives back the same rules.
@@ -209,7 +210,7 @@ fn reference_lookup(
       }
     })
     |> result.map(fn(r) {
-      rule.expand(r.target, [
+      template.expand(r.target, [
         path,
         string.drop_start(path, string.length(r.source)),
       ])
@@ -225,7 +226,7 @@ fn reference_lookup(
     )
     ffi.regex_run(re, path)
     |> result.replace_error(Nil)
-    |> result.map(fn(captures) { rule.expand(r.target, captures) })
+    |> result.map(fn(captures) { template.expand(r.target, captures) })
   })
 }
 
@@ -611,11 +612,15 @@ pub fn compiled_template_expands_like_expand_with_test() {
         "x", "-",
       ]),
     )
-  let vars = rule.RequestVars(host: "req.test", sub: "a.b")
+  let vars = template.RequestVars(host: "req.test", sub: "a.b")
   check_many(1000, template, fn(template) {
     let captures = ["whole", "one", "two"]
-    assert rule.expand_template(rule.compile_template(template), captures, vars)
-      == rule.expand_with(template, captures, vars)
+    assert template.expand_template(
+        template.compile_template(template),
+        captures,
+        vars,
+      )
+      == template.expand_with(template, captures, vars)
   })
   // the shapes that matter, written out
   list.each(
@@ -626,12 +631,12 @@ pub fn compiled_template_expands_like_expand_with_test() {
     ],
     fn(template) {
       let captures = ["whole", "one", "two"]
-      assert rule.expand_template(
-          rule.compile_template(template),
+      assert template.expand_template(
+          template.compile_template(template),
           captures,
           vars,
         )
-        == rule.expand_with(template, captures, vars)
+        == template.expand_with(template, captures, vars)
     },
   )
 }
