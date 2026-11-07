@@ -333,7 +333,9 @@ fn escape(mode: Escape, value: String) -> String {
 // --- client address -------------------------------------------------------------
 
 /// The client address: the TCP peer, or the address forwarded by a trusted
-/// proxy (rightmost untrusted `X-Forwarded-For` hop, then `X-Real-IP`).
+/// proxy (rightmost untrusted `X-Forwarded-For` hop, then `X-Real-IP`). A
+/// forwarded value that is not an IP address is not used: it keys every
+/// throttle, so free text would give a client a fresh budget per request.
 pub fn client_ip(
   peer: String,
   headers: List(#(String, String)),
@@ -342,10 +344,10 @@ pub fn client_ip(
   let is_trusted = fn(ip) { list.any(trusted, ffi.ip_in_cidr(ip, _)) }
   case trusted != [] && is_trusted(peer) {
     False -> peer
-    True ->
+    True -> {
       // several header lines are one comma-separated list, in order: a
       // client can send its own line ahead of the proxy's
-      case list.key_filter(headers, "x-forwarded-for") {
+      let forwarded = case list.key_filter(headers, "x-forwarded-for") {
         [_, ..] as lines -> {
           let hops =
             lines
@@ -355,15 +357,21 @@ pub fn client_ip(
             |> list.filter(fn(h) { h != "" })
             |> list.reverse
           case list.find(hops, fn(h) { !is_trusted(h) }) {
-            Ok(ip) -> ip
-            Error(Nil) -> list.last(hops) |> result.unwrap(peer)
+            Ok(ip) -> Ok(ip)
+            Error(Nil) -> list.last(hops)
           }
         }
-        [] ->
-          list.key_find(headers, "x-real-ip")
-          |> result.map(string.trim)
-          |> result.unwrap(peer)
+        [] -> list.key_find(headers, "x-real-ip") |> result.map(string.trim)
       }
+      case forwarded {
+        Ok(ip) ->
+          case ffi.is_ip_address(ip) {
+            True -> ip
+            False -> peer
+          }
+        Error(Nil) -> peer
+      }
+    }
   }
 }
 

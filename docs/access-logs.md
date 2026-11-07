@@ -75,8 +75,10 @@ log, so access logging stays on with `RP_LOG_LEVEL=warning`. Set
 
 **Client address behind a proxy.** List your load balancers in
 `trusted_proxies` (CIDRs). The address is then taken from `X-Forwarded-For`
-(the rightmost hop that is not trusted) or `X-Real-IP`. Headers sent by any
-other peer are ignored.
+(the rightmost hop that is not trusted) or `X-Real-IP`, if it is an IP
+address (otherwise the proxy's own address is used). Headers sent by any
+other peer are ignored. Make sure your proxy sets `X-Real-IP` itself rather
+than passing on the client's: the client address keys every throttle.
 
 ## GDPR
 

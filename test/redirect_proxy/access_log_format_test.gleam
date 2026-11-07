@@ -154,6 +154,15 @@ pub fn client_ip_test() {
   assert fmt.client_ip("10.0.0.1", [#("x-real-ip", " 198.51.100.8 ")], trusted)
     == "198.51.100.8"
   assert fmt.client_ip("10.0.0.1", [], trusted) == "10.0.0.1"
+  // a forwarded value that is not an address is not used
+  assert fmt.client_ip("10.0.0.1", [#("x-real-ip", "spoofed-1")], trusted)
+    == "10.0.0.1"
+  assert fmt.client_ip("10.0.0.1", [#("x-real-ip", "1.2.3.4:80")], trusted)
+    == "10.0.0.1"
+  assert fmt.client_ip("10.0.0.1", [#("x-real-ip", "2001:db8::1")], trusted)
+    == "2001:db8::1"
+  assert fmt.client_ip("10.0.0.1", [#("x-forwarded-for", "unknown")], trusted)
+    == "10.0.0.1"
   // a header line sent by the client ahead of the proxy's own line
   assert fmt.client_ip(
       "10.0.0.1",
