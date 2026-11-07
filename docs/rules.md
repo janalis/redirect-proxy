@@ -102,7 +102,9 @@ prefix in your patterns when you can.
 `/café` matches the `/caf%C3%A9` browsers send, and `%7e` matches `~`.
 Escapes of unreserved characters and of valid UTF-8 are decoded; the
 others, such as `%2F` (which is not a path separator), are kept and
-compared in upper case. Regex rules see the path in this form too. In the
+compared in upper case. Then `.` and `..` segments are removed, encoded
+or not (`/a/%2E%2E/b` is `/b`), so a capture can never climb out of its
+target's path. Regex rules see the path in this form too. In the
 `Location` header, non-ASCII characters are percent-encoded.
 
 **Trailing slashes.** By default `/docs` and `/docs/` are different paths.

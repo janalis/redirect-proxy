@@ -627,7 +627,7 @@ pub fn lookup_tolerant_query(
     query,
     vars,
   ))
-  case path {
+  case normalised {
     "/" | "" -> Error(Nil)
     _ ->
       case string.ends_with(normalised, "/") {

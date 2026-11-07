@@ -400,6 +400,40 @@ pub fn equivalent_paths_match_test() {
   assert matcher.location(found, Error(Nil)) == "/manual/%C3%A9t%C3%A9"
 }
 
+pub fn dot_segments_are_removed_test() {
+  let m =
+    matcher.build([
+      r("1", "*", rule.Exact, "/b", "/bee"),
+      r("2", "*", rule.Regex, "^/docs/(.*)$", "https://cdn.test/a/$1"),
+      r("3", "*", rule.Exact, "/", "/root"),
+      r("4", "*", rule.Exact, "/a/", "/a-slash"),
+    ])
+  assert location(m, "h", "/a/../b") == Ok("/bee")
+  assert location(m, "h", "/./b") == Ok("/bee")
+  assert location(m, "h", "/a/%2E%2E/b") == Ok("/bee")
+  assert location(m, "h", "/a/.%2e/b") == Ok("/bee")
+  // a dot segment at the end leaves the trailing slash
+  assert location(m, "h", "/a/b/..") == Ok("/a-slash")
+  assert location(m, "h", "/a/.") == Ok("/a-slash")
+  // `..` above the root stays at the root
+  assert location(m, "h", "/../..") == Ok("/root")
+  // a capture cannot climb out of the target path
+  assert location(m, "h", "/docs/../../b2/x") == Error(Nil)
+  assert location(m, "h", "/docs/%2e%2e/%2e%2e/b2/x") == Error(Nil)
+  assert location(m, "h", "/docs/x/../y") == Ok("https://cdn.test/a/y")
+  // not dot segments: dotted names, encoded slashes
+  assert location(m, "h", "/docs/.well-known/..x")
+    == Ok("https://cdn.test/a/.well-known/..x")
+  assert location(m, "h", "/docs/..%2F..%2Fb2")
+    == Ok("https://cdn.test/a/..%2F..%2Fb2")
+}
+
+pub fn dot_segments_in_rule_sources_test() {
+  // sources are normalised the same way as request paths
+  let m = matcher.build([r("1", "*", rule.Prefix, "/x/../docs/", "/m/$1")])
+  assert location(m, "h", "/docs/a") == Ok("/m/a")
+}
+
 pub fn trailing_slash_tolerance_test() {
   let m =
     matcher.build([
