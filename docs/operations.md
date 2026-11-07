@@ -53,7 +53,9 @@
   `proxy:<name>`, so that they cannot pass for a local user, `system` or an
   API client (`client:<id>`). Throttling (`auth.throttled`) is recorded
   once per client and window, and API tokens issued and refused
-  (`api.token_issued`, `api.token_rejected`) are recorded too. Failures
+  (`api.token_issued`, `api.token_rejected`) are recorded too. A refused
+  token request names its client as the actor only when that client
+  exists; the client id sent is always the target. Failures
   need no credentials, so at most 60 failed sign-ins and token requests a
   minute are recorded, from all clients: past that, one
   `audit.failures_not_recorded` entry per minute says that some were left

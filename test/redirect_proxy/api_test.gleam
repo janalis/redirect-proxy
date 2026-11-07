@@ -164,6 +164,17 @@ pub fn token_requests_are_audited_test() {
   assert string.contains(audit, "\"action\":\"api.token_issued\"")
   assert string.contains(audit, "\"action\":\"api.token_rejected\"")
   assert string.contains(audit, "\"scope\":\"redirects:read\"")
+  // a wrong secret for a real client is filed under that client
+  assert string.contains(audit, "\"actor\":\"client:" <> id <> "\"")
+  // an unknown client id is not taken as the actor
+  let unknown =
+    token_request(env, [basic("rp_nobody", "x")], [
+      #("grant_type", "client_credentials"),
+    ])
+  assert unknown.status == 401
+  let assert Ok(audit) = simplifile.read(config.audit_path(env.config))
+  assert !string.contains(audit, "\"actor\":\"client:rp_nobody\"")
+  assert string.contains(audit, "\"target\":\"rp_nobody\"")
 }
 
 pub fn plain_errors_become_json_test() {
