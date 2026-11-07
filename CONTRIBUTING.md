@@ -24,9 +24,11 @@ make check    # what CI runs: format check, strict build, linters, tests
 ```
 
 `make coverage` fails under `COVERAGE_MIN` percent of covered lines (see
-the `Makefile`). A test in `test/redirect_proxy/docs_test.gleam` fails when
-an `RP_…` variable read in `config/env.gleam` is missing from the
-configuration table of `docs/configuration.md`.
+the `Makefile`), counting application code only (test helpers and
+benchmarks are left out). Tests in `test/redirect_proxy/docs_test.gleam`
+fail when an `RP_…` variable read in `config/env.gleam` is missing from the
+configuration table of `docs/configuration.md`, or a metric `/metrics`
+exports is missing from `docs/operations.md`.
 
 ## Pull requests
 

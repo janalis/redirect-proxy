@@ -64,6 +64,10 @@ compile(Mod, Ebin) ->
 is_test_module(Mod) ->
     Name = atom_to_list(Mod),
     lists:suffix("_test", Name) orelse Name =:= "support"
+        %% shared test helpers (test/*_support.gleam) and benchmarks
+        orelse lists:suffix("_support", Name)
+        orelse lists:suffix("_bench", Name)
+        orelse lists:suffix("_bench_ffi", Name)
         %% test helpers written in Erlang (test/test_*_ffi.erl)
         orelse lists:prefix("test_", Name)
         orelse Name =:= "redirect_proxy_test"
