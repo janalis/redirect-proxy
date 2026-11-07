@@ -2,6 +2,7 @@
 
 import envoy
 import gleam/bytes_tree
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/http
 import gleam/http/request
@@ -11,7 +12,9 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/result
+import gleam/string
 import mist
+import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/app
 import redirect_proxy/config
 import redirect_proxy/ffi
@@ -150,7 +153,23 @@ pub fn start_fake_authorization_server() -> #(String, Key) {
     })
     |> mist.start
   let assert Ok(port) = process.receive(ready, 5000)
-  #("http://127.0.0.1:" <> int.to_string(port), key)
+  let issuer = "http://127.0.0.1:" <> int.to_string(port)
+  forget_provider(issuer)
+  #(issuer, key)
+}
+
+/// Forgets what the node cached about a provider URL. The cache is shared by
+/// every test, and remembers a failed fetch for 30 s: a fake provider given
+/// the port of one an earlier test found unreachable (`free_port`) would
+/// otherwise inherit that failure.
+pub fn forget_provider(issuer: String) -> Nil {
+  let entries: List(#(String, Dynamic)) = ffi.ets_to_list(provider.table)
+  list.each(entries, fn(entry) {
+    case string.contains(entry.0, issuer) {
+      True -> ffi.ets_delete(provider.table, entry.0)
+      False -> Nil
+    }
+  })
 }
 
 /// Sets the flag a SIGTERM sets: the node drains before it stops.

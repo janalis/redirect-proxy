@@ -306,7 +306,9 @@ pub fn start_fake_idp(email: String) -> String {
     })
     |> mist.start
   let assert Ok(port) = process.receive(ready, 5000)
-  "http://127.0.0.1:" <> int.to_string(port)
+  let issuer = "http://127.0.0.1:" <> int.to_string(port)
+  support.forget_provider(issuer)
+  issuer
 }
 
 pub fn oidc_env(issuer: String, allowed_domains: List(String)) -> Env {
