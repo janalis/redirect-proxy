@@ -236,9 +236,11 @@ pub fn validate(config: Config) -> Result(Config, String) {
     config.server.max_path_bytes < 256,
     Error("server.max_path_bytes must be at least 256"),
   )
+  // in seconds, turned into an Erlang timer: past about 49 days it would
+  // crash the store at startup
   use <- bool.guard(
-    config.storage.watch_interval < 0,
-    Error("storage.watch_interval must be >= 0 (0: off)"),
+    config.storage.watch_interval < 0 || config.storage.watch_interval > 86_400,
+    Error("storage.watch_interval must be between 0 (off) and 86400 seconds"),
   )
   use <- bool.guard(
     role.from_string(config.oidc.default_role) == Error(Nil),
@@ -388,13 +390,14 @@ fn validate_access_log(al: AccessLogConfig) -> Result(Nil, String) {
     !list.all(al.trusted_proxies, ffi.valid_cidr),
     Error("access_log.trusted_proxies contains an invalid CIDR"),
   )
+  // a tiny size would rotate, and gzip, on almost every line
   use <- bool.guard(
-    al.max_bytes < 0,
-    Error("access_log.max_bytes must be >= 0"),
+    al.max_bytes < 0 || { al.max_bytes > 0 && al.max_bytes < 65_536 },
+    Error("access_log.max_bytes must be 0 (never rotate) or at least 65536"),
   )
   use <- bool.guard(
-    al.max_files < 1,
-    Error("access_log.max_files must be at least 1"),
+    al.max_files < 1 || al.max_files > 100,
+    Error("access_log.max_files must be between 1 and 100"),
   )
   use Nil <- result.try(
     access_log_format.parse(al.format, al.escape)

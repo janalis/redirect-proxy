@@ -75,7 +75,8 @@ log_query = false
 # The same address is used to throttle admin logins and API token requests.
 trusted_proxies = []
 # Built-in size based rotation of file output: rotate at max_bytes (0: never,
-# leave it to logrotate), keep max_files rotated files, gzip them.
+# leave it to logrotate; else at least 65536), keep max_files (1 to 100)
+# rotated files, gzip them. Not together with logrotate on the same file.
 max_bytes = 0
 max_files = 7
 compress = true
@@ -130,7 +131,7 @@ data_dir = "./data"
 backups = 10
 # Seconds between checks of redirects.json for changes made outside the
 # server (ConfigMap, GitOps, an editor). A change is reloaded like SIGHUP.
-# 0: off.
+# 0: off; at most 86400.
 watch_interval = 0
 # audit.jsonl is rotated to audit.jsonl.1 (then .2...) once it reaches this
 # size in bytes (0: never), keeping audit_files rotated files.
