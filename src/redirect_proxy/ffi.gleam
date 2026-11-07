@@ -103,6 +103,11 @@ pub fn ets_to_list(table: String) -> List(#(k, v))
 
 /// Deletes every entry whose value is a tuple whose first element (an expiry
 /// timestamp) is lower than `now`. Returns the number of deleted entries.
+/// Adds `key` unless it is already in the table: True when it was added.
+/// Atomic: of concurrent callers, one only gets True.
+@external(erlang, "redirect_proxy_ffi", "ets_insert_new")
+pub fn ets_insert_new(table: String, key: String, value: a) -> Bool
+
 @external(erlang, "redirect_proxy_ffi", "ets_delete_older")
 pub fn ets_delete_older(table: String, now: Int) -> Int
 

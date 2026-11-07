@@ -24,13 +24,11 @@ import redirect_proxy/role.{type Role}
 
 pub const flow_ttl = 600
 
-/// Login attempts in progress are kept until they complete or expire: cap
-/// them so that a loop on /auth/oidc/start cannot fill the memory.
-const max_flows = 10_000
-
-/// Login attempts in progress, apart from the provider cache in `table` so
-/// that the cap counts them only.
-const flows = "redirect_proxy_oidc_flows"
+/// The states of the logins completed in the last `flow_ttl` seconds, so that
+/// a callback cannot be replayed. Logins in progress are kept by the browser
+/// only (the signed flow cookie of `begin`): there is nothing to fill with a
+/// loop on /auth/oidc/start, and no cap that would block everyone's SSO.
+const used_states = "redirect_proxy_oidc_flows"
 
 /// Why a login failed. `Denied` explains itself to the user; the details of
 /// `Failed` (provider errors, internal URLs) only go to the log.
@@ -50,7 +48,7 @@ pub type Identity {
 
 pub fn init() -> Nil {
   ffi.ets_new(table)
-  ffi.ets_new(flows)
+  ffi.ets_new(used_states)
 }
 
 pub fn redirect_uri(public_url: String) -> String {
@@ -82,19 +80,15 @@ pub fn end_session_url(
   )
 }
 
-/// Builds the authorization URL and remembers the PKCE verifier, the nonce
-/// and `next` (where to go after signing in) associated with the generated
-/// `state`. Returns the URL and the state, which the caller binds to the
-/// browser (cookie) for `complete`.
+/// Builds the authorization URL and the login in progress: the generated
+/// `state`, the PKCE verifier, the nonce and `next` (where to go after
+/// signing in). Returns the URL and the flow, which the caller keeps in the
+/// browser (a signed cookie, so that it cannot be forged) for `complete`.
 pub fn begin(
   cfg: OidcConfig,
   public_url: String,
   next: String,
 ) -> Result(#(String, String), String) {
-  use <- bool.guard(
-    ffi.ets_size(flows) >= max_flows,
-    Error("too many login attempts in progress"),
-  )
   use provider <- result.try(discover(cfg))
   let state = id.token(24)
   let verifier = id.token(48)
@@ -102,10 +96,14 @@ pub fn begin(
   let challenge =
     crypto.hash(crypto.Sha256, <<verifier:utf8>>)
     |> bit_array.base64_url_encode(False)
-  ffi.ets_put(flows, "flow:" <> state, #(
-    ffi.now_seconds() + flow_ttl,
-    #(verifier, nonce, next),
-  ))
+  let flow =
+    Flow(
+      state:,
+      verifier:,
+      nonce:,
+      next:,
+      expires_at: ffi.now_seconds() + flow_ttl,
+    )
   let query =
     uri.query_to_string([
       #("response_type", "code"),
@@ -121,21 +119,56 @@ pub fn begin(
     True -> "&"
     False -> "?"
   }
-  Ok(#(provider.authorization_endpoint <> separator <> query, state))
+  Ok(#(provider.authorization_endpoint <> separator <> query, encode_flow(flow)))
+}
+
+/// A login in progress, kept in the browser between `begin` and `complete`.
+type Flow {
+  Flow(
+    state: String,
+    verifier: String,
+    nonce: String,
+    next: String,
+    expires_at: Int,
+  )
+}
+
+fn encode_flow(flow: Flow) -> String {
+  json.object([
+    #("state", json.string(flow.state)),
+    #("verifier", json.string(flow.verifier)),
+    #("nonce", json.string(flow.nonce)),
+    #("next", json.string(flow.next)),
+    #("expires_at", json.int(flow.expires_at)),
+  ])
+  |> json.to_string
+}
+
+fn decode_flow(value: String) -> Result(Flow, Nil) {
+  let decoder = {
+    use state <- decode.field("state", decode.string)
+    use verifier <- decode.field("verifier", decode.string)
+    use nonce <- decode.field("nonce", decode.string)
+    use next <- decode.field("next", decode.string)
+    use expires_at <- decode.field("expires_at", decode.int)
+    decode.success(Flow(state:, verifier:, nonce:, next:, expires_at:))
+  }
+  json.parse(value, decoder) |> result.replace_error(Nil)
 }
 
 /// Completes the flow: checks that `state` is the one started in this browser
-/// (`browser_state`, from the cookie set at `begin`, so that nobody can sign
+/// (`browser_flow`, from the cookie set at `begin`, so that nobody can sign
 /// a victim into their own account with a callback link), exchanges the
-/// code, verifies the ID token and checks that the user is allowed in.
+/// code, verifies the ID token and checks that the user is allowed in. A
+/// state completes once.
 pub fn complete(
   cfg: OidcConfig,
   public_url: String,
   query: List(#(String, String)),
-  browser_state: Result(String, Nil),
+  browser_flow: Result(String, Nil),
 ) -> Result(#(Identity, String), Failure) {
   use #(identity, next) <- result.try(
-    authenticate(cfg, public_url, query, browser_state)
+    authenticate(cfg, public_url, query, browser_flow)
     |> result.map_error(Failed),
   )
   use Nil <- result.try(authorise(cfg, identity) |> result.map_error(Denied))
@@ -146,7 +179,7 @@ fn authenticate(
   cfg: OidcConfig,
   public_url: String,
   query: List(#(String, String)),
-  browser_state: Result(String, Nil),
+  browser_flow: Result(String, Nil),
 ) -> Result(#(Identity, String), String) {
   use <- bool.guard(
     list.key_find(query, "error") |> result.is_ok,
@@ -165,40 +198,40 @@ fn authenticate(
   use code <- result.try(
     list.key_find(query, "code") |> result.replace_error("missing code"),
   )
+  use flow <- result.try(
+    browser_flow
+    |> result.try(decode_flow)
+    |> result.replace_error("the login was not started in this browser"),
+  )
   use <- bool.guard(
-    case browser_state {
-      Ok(expected) -> !ffi.secure_compare(<<expected:utf8>>, <<state:utf8>>)
-      Error(Nil) -> True
-    },
+    !ffi.secure_compare(<<flow.state:utf8>>, <<state:utf8>>),
     Error("the login was not started in this browser"),
   )
-  use #(verifier, nonce, next) <- result.try(take_flow(state))
+  use <- bool.guard(
+    flow.expires_at <= ffi.now_seconds(),
+    Error("login attempt expired, please try again"),
+  )
+  use <- bool.guard(
+    ffi.ets_get(used_states, state) |> result.is_ok,
+    Error("unknown or already used login state"),
+  )
   use provider <- result.try(discover(cfg))
   use id_token <- result.try(exchange(
     cfg,
     provider,
     code,
-    verifier,
+    flow.verifier,
     redirect_uri(public_url),
   ))
   use claims <- result.try(verify(cfg, provider, id_token))
-  check_claims(cfg, provider, claims, nonce)
-  |> result.map(fn(identity) { #(identity, next) })
-}
-
-fn take_flow(state: String) -> Result(#(String, String, String), String) {
-  let key = "flow:" <> state
-  case ffi.ets_get(flows, key) {
-    Ok(#(expires_at, flow)) -> {
-      // single use
-      ffi.ets_delete(flows, key)
-      case expires_at > ffi.now_seconds() {
-        True -> Ok(flow)
-        False -> Error("login attempt expired, please try again")
-      }
-    }
-    Error(Nil) -> Error("unknown or already used login state")
-  }
+  use identity <- result.try(check_claims(cfg, provider, claims, flow.nonce))
+  // single use, also against callbacks racing each other: only the first
+  // one to complete records the state
+  use <- bool.guard(
+    !ffi.ets_insert_new(used_states, state, #(flow.expires_at, Nil)),
+    Error("unknown or already used login state"),
+  )
+  Ok(#(identity, flow.next))
 }
 
 fn exchange(
@@ -403,5 +436,5 @@ pub fn authorise(cfg: OidcConfig, identity: Identity) -> Result(Nil, String) {
 
 pub fn purge_expired() -> Int {
   let now = ffi.now_seconds()
-  ffi.ets_delete_older(table, now) + ffi.ets_delete_older(flows, now)
+  ffi.ets_delete_older(table, now) + ffi.ets_delete_older(used_states, now)
 }

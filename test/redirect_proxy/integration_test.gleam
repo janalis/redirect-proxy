@@ -534,6 +534,7 @@ pub fn sso_starts_are_throttled_per_address_test() {
   let start = fn(ip) {
     get(env.admin <> "/auth/oidc/start", [#("x-forwarded-for", ip)])
   }
+  let flows_before = ffi.ets_size("redirect_proxy_oidc_flows")
   let statuses =
     list.map(list.repeat(Nil, 31), fn(_) { start("198.51.100.8").status })
   assert list.take(statuses, 30) == list.repeat(303, 30)
@@ -541,6 +542,9 @@ pub fn sso_starts_are_throttled_per_address_test() {
   assert blocked.status == 429
   assert response.get_header(blocked, "retry-after") |> result.is_ok
   assert start("203.0.113.10").status == 303
+  // logins in progress are kept by the browsers: starting them stores
+  // nothing on the server, so no amount of them blocks anyone's SSO
+  assert ffi.ets_size("redirect_proxy_oidc_flows") == flows_before
   // failed callbacks are throttled too
   let callbacks =
     list.map(list.repeat(Nil, 21), fn(_) {
