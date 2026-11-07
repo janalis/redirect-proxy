@@ -8,10 +8,12 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import integration_support.{
-  between, boot, find_id, get, hidden_value, location, login, post_form, send,
+  between, boot, find_id, get, hidden_value, location, login, login_with_role,
+  post_form, send,
 }
 import redirect_proxy/config
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/users
 import simplifile
 
@@ -660,4 +662,57 @@ pub fn rules_with_any_id_can_be_edited_test() {
   let resp = post_form(env, edit <> "/toggle", cookie, [#("csrf_token", csrf)])
   assert resp.status == 303
   assert get(env.redirect <> "/spaced", []).status == 404
+}
+
+/// Applying a previewed import writes exactly what was previewed: a form
+/// would turn the line breaks of a multi-line note into CRLF.
+pub fn applied_imports_are_what_was_previewed_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let content =
+    "[{\"source\": \"/multi\", \"target\": \"/t\", \"note\": \"a\\nb\"}]"
+  let preview =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replace"),
+      #("content", content),
+    ])
+  assert preview.status == 200
+  let resp =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replace"),
+      #("step", "apply"),
+      #("version", hidden_value(preview.body, "version")),
+      #("content_base64", hidden_value(preview.body, "content_base64")),
+    ])
+  assert resp.status == 303
+  let assert Ok(file) = simplifile.read(env.dir <> "/redirects.json")
+  assert string.contains(file, "\"note\":\"a\\nb\"")
+}
+
+/// The rule history is in the audit log, for administrators only: editors
+/// get no link to a page they cannot open.
+pub fn history_link_is_for_administrators_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let assert 303 =
+    post_form(env, "/rules", cookie, [
+      #("csrf_token", csrf),
+      #("host", "*"),
+      #("match", "exact"),
+      #("status", "301"),
+      #("source", "/with-history"),
+      #("target", "/x"),
+      #("priority", "100"),
+      #("enabled", "on"),
+    ]).status
+  let assert Ok(file) = simplifile.read(env.dir <> "/redirects.json")
+  let id = find_id(file, "/with-history")
+  let edit = env.admin <> "/rules/" <> id <> "/edit"
+  assert string.contains(get(edit, [#("cookie", cookie)]).body, "History")
+  let #(editor, _) = login_with_role(env, "ed-history", role.Editor)
+  let page = get(edit, [#("cookie", editor)])
+  assert page.status == 200
+  assert !string.contains(page.body, "History")
 }

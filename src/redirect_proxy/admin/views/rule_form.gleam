@@ -43,7 +43,7 @@ pub fn form(
       layout.errors_view(errors),
       case is_new {
         True -> element.none()
-        False -> details(r, hits)
+        False -> details(r, hits, layout.is_admin(session))
       },
       h.form([a.method("post"), a.action(action), a.class("card")], [
         h.div([a.class("card-body")], [
@@ -301,8 +301,9 @@ pub fn form(
   )
 }
 
-/// When and by whom the rule was changed, its hits, and its history.
-fn details(r: Rule, hits: Int) -> Element(Nil) {
+/// When and by whom the rule was changed, its hits, and its history (the
+/// audit log is for administrators only: no link others could not open).
+fn details(r: Rule, hits: Int, admin: Bool) -> Element(Nil) {
   h.p([a.class("small fg-secondary")], [
     h.text(
       "Created "
@@ -313,11 +314,18 @@ fn details(r: Rule, hits: Int) -> Element(Nil) {
       <> r.updated_by
       <> " · "
       <> int.to_string(hits)
-      <> " hit(s) · ",
+      <> " hit(s)",
     ),
-    h.a([a.href("/audit?" <> uri.query_to_string([#("target", r.id)]))], [
-      h.text("History"),
-    ]),
+    case admin {
+      True ->
+        h.span([], [
+          h.text(" · "),
+          h.a([a.href("/audit?" <> uri.query_to_string([#("target", r.id)]))], [
+            h.text("History"),
+          ]),
+        ])
+      False -> element.none()
+    },
   ])
 }
 

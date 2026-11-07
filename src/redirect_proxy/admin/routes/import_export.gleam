@@ -1,5 +1,6 @@
 //// The import page of the admin, with its preview.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -29,7 +30,14 @@ pub fn import_page(req: Request, ctx: Context, s: Session) -> Response {
 
 pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   use form <- require_csrf_form(req, s)
-  let pasted = form_value(form, "content")
+  // a previewed import comes back exactly as previewed (see the view)
+  let pasted = case form_value(form, "content_base64") {
+    "" -> form_value(form, "content")
+    encoded ->
+      bit_array.base64_decode(encoded)
+      |> result.try(bit_array.to_string)
+      |> result.unwrap("")
+  }
   let uploaded = case list.key_find(form.files, "file") {
     Ok(file) -> simplifile.read(file.path) |> result.replace_error(Nil)
     Error(Nil) -> Ok("")
