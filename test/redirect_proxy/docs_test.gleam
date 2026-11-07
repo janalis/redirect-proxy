@@ -1,10 +1,11 @@
-//// Keeps the documented environment variables (README.md and docs/) in
-//// step with the code.
+//// Keeps the documented environment variables and metrics (README.md and
+//// docs/) in step with the code.
 
 import gleam/list
 import gleam/option
 import gleam/regexp
 import gleam/string
+import redirect_proxy/metrics
 import simplifile
 
 /// The README and the pages of docs/, as one text.
@@ -175,4 +176,23 @@ fn shorter_prefixes(parts: List(String), n: Int) -> List(String) {
     }
     False -> []
   }
+}
+
+/// Every metric `/metrics` exports is documented, by its full name.
+pub fn every_metric_is_documented_test() {
+  metrics.init()
+  let docs = documentation()
+  let exported =
+    metrics.render_prometheus()
+    |> string.split("\n")
+    |> list.filter_map(fn(line) {
+      case string.split(line, " ") {
+        ["#", "TYPE", name, ..] -> Ok(name)
+        _ -> Error(Nil)
+      }
+    })
+  assert list.length(exported) > 20
+  let missing =
+    list.filter(exported, fn(name) { !string.contains(docs, "`" <> name) })
+  assert missing == []
 }
