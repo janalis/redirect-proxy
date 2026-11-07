@@ -216,22 +216,28 @@ pub type Store =
 /// Starts the store. Fails if the redirections file exists but is invalid, so
 /// that a broken file never silently replaces the configuration.
 /// The state of a store that just loaded `rules`.
+/// The state of a store that loaded `rules`; `before` is the time and the
+/// file stamp taken before the load started. The schedule is checked from
+/// that time: a rule starting or expiring while a large file loads would
+/// otherwise wait for an unrelated change. A write landing during the load
+/// changes the stamp, so the watcher reads the file again.
 fn initial_state(
   settings: Settings,
   rules: List(Rule),
   fingerprint: String,
+  before: #(Int, ffi.FileStamp),
 ) -> State {
-  let now = ffi.now_seconds()
+  let #(loaded_at, stamp) = before
   State(
     settings:,
     rules:,
     fingerprint:,
-    stamp: ffi.file_stamp(settings.rules_path),
-    hits_saved_at: now,
+    stamp:,
+    hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
-    checked_at: now,
-    next_boundary: #(rules, rule.next_boundary(rules, now)),
+    checked_at: loaded_at,
+    next_boundary: #(rules, rule.next_boundary(rules, loaded_at)),
   )
 }
 
@@ -246,6 +252,7 @@ pub fn start(
       all(subject)
     })
     let started = ffi.monotonic_micros()
+    let before = #(ffi.now_seconds(), ffi.file_stamp(settings.rules_path))
     use state <- result.try(
       case
         store_file.load_locked(
@@ -263,7 +270,7 @@ pub fn start(
             <> " redirection rule(s) from "
             <> settings.rules_path,
           )
-          Ok(initial_state(settings, rules, fingerprint))
+          Ok(initial_state(settings, rules, fingerprint, before))
         }
         Error(reason) ->
           // A restart after a crash: the last good rules are still being
@@ -280,7 +287,7 @@ pub fn start(
                 <> " rule(s) loaded before: "
                 <> reason,
               )
-              Ok(initial_state(settings, rules, ""))
+              Ok(initial_state(settings, rules, "", before))
             }
             Error(Nil) -> Error(reason)
           }
