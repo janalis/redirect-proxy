@@ -345,6 +345,11 @@ pub fn byte_drop(string: String, bytes: Int) -> String
 @external(erlang, "redirect_proxy_ffi", "strip_url_whitespace")
 pub fn strip_url_whitespace(url: String) -> String
 
+/// `strip_control` then `encode_non_ascii`, in one scan for the usual value
+/// that needs neither.
+@external(erlang, "redirect_proxy_ffi", "header_value")
+pub fn header_value(value: String) -> String
+
 @external(erlang, "redirect_proxy_ffi", "strip_control")
 pub fn strip_control(value: String) -> String
 

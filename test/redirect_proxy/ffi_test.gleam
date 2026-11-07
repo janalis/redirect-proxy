@@ -39,6 +39,14 @@ pub fn strip_control_test() {
   assert ffi.strip_control("/plain") == "/plain"
 }
 
+pub fn header_value_test() {
+  assert ffi.header_value("https://new.example.com/a?b=c")
+    == "https://new.example.com/a?b=c"
+  assert ffi.header_value("https://x.test/a\r\nb\u{0}c") == "https://x.test/abc"
+  assert ffi.header_value("https://x.test/café") == "https://x.test/caf%C3%A9"
+  assert ffi.header_value("https://x.test/é\r\n") == "https://x.test/%C3%A9"
+}
+
 pub fn secure_compare_test() {
   assert ffi.secure_compare(<<"abc":utf8>>, <<"abc":utf8>>)
   assert !ffi.secure_compare(<<"abc":utf8>>, <<"abd":utf8>>)

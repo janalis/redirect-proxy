@@ -172,7 +172,9 @@ pub fn record(
       listener: listener.name(settings.listener),
       client_ip: client,
       method: http.method_to_string(req.method),
-      host: request.get_header(req, "host") |> result.unwrap(req.host),
+      // header names are lower case (`request.get_header` lower-cases the
+      // name it is given on every call)
+      host: list.key_find(req.headers, "host") |> result.unwrap(req.host),
       path: req.path,
       query: option.unwrap(req.query, ""),
       protocol: "HTTP/1.1",
@@ -191,7 +193,7 @@ pub fn record(
             }
           })
       },
-      location: response.get_header(resp, "location") |> result.unwrap(""),
+      location: list.key_find(resp.headers, "location") |> result.unwrap(""),
       rule_id:,
       time_us:,
       duration_us:,
