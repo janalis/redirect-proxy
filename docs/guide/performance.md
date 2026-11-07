@@ -68,3 +68,25 @@ Memory:
 - Loading 11 500 rules adds about 5 MB to the shared snapshot.
 
 Run the benchmark on your own hardware before sizing.
+
+## The redirect listener
+
+The traffic port is served by a small HTTP server made for redirects, not
+by the general purpose one of the admin and the API: one process per
+connection, one read and one write per request, and nothing else.
+
+- HTTP/1.1 and 1.0, with keep-alive and pipelining. No TLS or HTTP/2 on
+  this port: put a TLS proxy in front (`server.https_redirect` redirects
+  the requests it does not mark `X-Forwarded-Proto: https`).
+- A connection idle for 10 s, or that takes as long to send a request
+  head, is closed.
+- A request head (request line and headers) is limited to
+  `server.max_path_bytes` + 64 KiB: a longer request line gets 414, longer
+  headers 431.
+- Request bodies are never read: the request is answered, then its
+  connection is closed.
+- Malformed requests get 400 and the connection is closed: a request target
+  that is not an absolute path, or has characters a URI cannot hold (a raw
+  backslash, space, quote or non-ASCII byte); control characters in a
+  header; a second `Host`; an HTTP/1.1 request without `Host`. Any other
+  HTTP version than 1.0 and 1.1 gets 505.

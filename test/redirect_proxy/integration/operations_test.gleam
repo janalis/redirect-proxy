@@ -1,6 +1,7 @@
 //// End-to-end tests of operations: probes, draining, signals, metrics,
 //// replicas.
 
+import gleam/bit_array
 import gleam/erlang/charlist
 import gleam/erlang/process
 import gleam/http/response
@@ -9,7 +10,7 @@ import gleam/list
 import gleam/string
 import integration_support.{
   boot, get, location, login, metric, notify_signal, os_cmd, os_pid, post_form,
-  reload_rules, signal_handlers, wait_until,
+  raw_exchange, reload_rules, signal_handlers, wait_until,
 }
 import redirect_proxy/app
 import redirect_proxy/config
@@ -19,17 +20,28 @@ import support
 
 pub fn draining_before_a_stop_test() {
   let env = boot(config.default())
+  let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  // a kept-alive connection serves several requests...
+  let two_requests = [
+    <<"GET /old HTTP/1.1\r\nhost: a.test\r\n\r\n":utf8>>,
+    <<"GET /old HTTP/1.1\r\nhost: a.test\r\n\r\n":utf8>>,
+  ]
+  let assert Ok(received) =
+    bit_array.to_string(raw_exchange(port, two_requests))
+  assert list.length(string.split(received, "HTTP/1.1 301")) == 3
+  assert !string.contains(string.lowercase(received), "connection: close")
   assert get(env.admin <> "/readyz", []).status == 200
-  let resp = get(env.redirect <> "/old", [])
-  assert response.get_header(resp, "connection") != Ok("close")
-  // what SIGTERM does before the grace period ends
-  let #(ready, resp) =
+  // ...until SIGTERM: until the grace period ends, it is closed after each
+  // response
+  let #(ready, received) =
     support.with_draining(fn() {
-      #(get(env.admin <> "/readyz", []), get(env.redirect <> "/old", []))
+      #(get(env.admin <> "/readyz", []), raw_exchange(port, two_requests))
     })
   assert ready.status == 503
-  assert resp.status == 301
-  assert response.get_header(resp, "connection") == Ok("close")
+  let assert Ok(received) = bit_array.to_string(received)
+  assert list.length(string.split(received, "HTTP/1.1 301")) == 2
+  assert string.contains(string.lowercase(received), "connection: close")
 }
 
 /// `server.health_path` is answered before the rules, even by a catch-all

@@ -34,6 +34,7 @@ import redirect_proxy/listener
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
+import redirect_proxy/proxy/http as proxy_http
 import redirect_proxy/proxy/server
 import redirect_proxy/store
 import redirect_proxy/users
@@ -112,23 +113,21 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   use access <- result.try(access_log.start(cfg.access_log))
 
   let redirect_child =
-    mist.new(server.handler(
-      cfg.server,
-      cfg.admin.metrics_token,
-      access.redirect,
-    ))
-    |> mist.bind(cfg.server.listen)
-    |> mist.port(cfg.server.port)
-    |> mist.after_start(fn(port, _, _) {
-      log.info(
-        "redirect listener on "
-        <> cfg.server.listen
-        <> ":"
-        <> int.to_string(port),
-      )
-      process.send(ports, #("redirect", port))
-    })
-    |> mist.supervised
+    proxy_http.supervised(
+      server.handler(cfg.server, cfg.admin.metrics_token, access.redirect),
+      cfg.server.listen,
+      cfg.server.port,
+      server.http_options(cfg.server, access.redirect),
+      fn(port) {
+        log.info(
+          "redirect listener on "
+          <> cfg.server.listen
+          <> ":"
+          <> int.to_string(port),
+        )
+        process.send(ports, #("redirect", port))
+      },
+    )
 
   let admin_handler = fn(req: request.Request(mist.Connection)) {
     let peer_ip = case mist.get_connection_info(req.body) {
