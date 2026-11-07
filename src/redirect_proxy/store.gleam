@@ -223,7 +223,9 @@ pub fn start(
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
   ffi.ets_new(last_good_table)
+  ffi.ets_new(checkers_table)
   actor.new_with_initialiser(30_000, fn(subject) {
+    start_checker(subject, settings)
     let started = ffi.monotonic_micros()
     use state <- result.try(
       case
@@ -234,15 +236,8 @@ pub fn start(
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          publish(
-            warn_problems(
-              matcher.build(rules),
-              rules,
-              settings.ignore_trailing_slash,
-            ),
-            settings,
-            rules,
-          )
+          publish(matcher.build(rules), settings, rules)
+          request_check(settings, Problems)
           metrics.reloaded(ffi.monotonic_micros() - started)
           log.info(
             "loaded "
@@ -776,13 +771,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
-          let built =
-            warn_loops(
-              matcher.build(state.rules),
-              state.rules,
-              state.settings.ignore_trailing_slash,
-            )
-          publish(built, state.settings, state.rules)
+          publish(matcher.build(state.rules), state.settings, state.rules)
+          request_check(state.settings, Loops)
         }
       }
       let next = case crossed {
@@ -840,15 +830,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          publish(
-            warn_problems(
-              matcher.build(rules),
-              rules,
-              state.settings.ignore_trailing_slash,
-            ),
-            state.settings,
-            rules,
-          )
+          publish(matcher.build(rules), state.settings, rules)
+          request_check(state.settings, Problems)
           metrics.incr(metrics.Reloads)
           metrics.reloaded(ffi.monotonic_micros() - started)
           audit_rules_change(
@@ -964,15 +947,8 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              publish(
-                warn_problems(
-                  matcher.build(rules),
-                  rules,
-                  state.settings.ignore_trailing_slash,
-                ),
-                state.settings,
-                rules,
-              )
+              publish(matcher.build(rules), state.settings, rules)
+              request_check(state.settings, Problems)
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(
@@ -1027,6 +1003,78 @@ fn schedule_watch(settings: Settings, self: Subject(Message)) -> Nil {
 /// `start` (the supervisor), so that it outlives the store process.
 const last_good_table = "redirect_proxy_store_last_good"
 
+// --- background checks ---------------------------------------------------------
+
+/// The checker of each store, by rules path.
+const checkers_table = "redirect_proxy_store_checkers"
+
+/// What to log about the rules now published: only redirect loops (a change
+/// that may uncover one elsewhere), or also the rules that can never apply
+/// (a whole new rule set).
+type Check {
+  Loops
+  Problems
+}
+
+/// Logging the loops and the rules that can never apply goes over every
+/// rule: at 50 000 rules it takes about half a second. It only logs, so it
+/// runs in a process of its own, after the change is answered, rather than
+/// in the store's, before. A burst of changes is checked once, on the rules
+/// as they are when the checker gets to it. Linked to the store: they stop
+/// together.
+fn start_checker(store: Store, settings: Settings) -> Nil {
+  let ready = process.new_subject()
+  process.spawn(fn() {
+    let checks = process.new_subject()
+    process.send(ready, checks)
+    checker_loop(checks, store, settings.ignore_trailing_slash)
+  })
+  let assert Ok(checks) = process.receive(ready, 5000)
+  ffi.ets_put(checkers_table, settings.rules_path, checks)
+}
+
+fn request_check(settings: Settings, check: Check) -> Nil {
+  case ffi.ets_get(checkers_table, settings.rules_path) {
+    Ok(checks) -> process.send(checks, check)
+    Error(Nil) -> Nil
+  }
+}
+
+fn checker_loop(
+  checks: Subject(Check),
+  store: Store,
+  ignore_trailing_slash: Bool,
+) -> Nil {
+  let check = pending_checks(checks, process.receive_forever(checks))
+  let outcome =
+    ffi.rescue(fn() {
+      // the rules as published: the snapshot is their matcher
+      let rules = all(store)
+      let built = snapshot.current()
+      case check {
+        Problems -> warn_problems(built, rules, ignore_trailing_slash)
+        Loops -> warn_loops(built, rules, ignore_trailing_slash)
+      }
+    })
+  case outcome {
+    Ok(_) -> Nil
+    Error(reason) -> log.warning("checking the rules failed: " <> reason)
+  }
+  checker_loop(checks, store, ignore_trailing_slash)
+}
+
+/// The checks requested meanwhile, as one: `Problems` covers `Loops`.
+fn pending_checks(checks: Subject(Check), check: Check) -> Check {
+  case process.receive(checks, 0) {
+    Ok(next) ->
+      pending_checks(checks, case check, next {
+        Problems, _ | _, Problems -> Problems
+        Loops, Loops -> Loops
+      })
+    Error(Nil) -> check
+  }
+}
+
 fn publish(
   built: matcher.Matcher,
   settings: Settings,
@@ -1058,11 +1106,12 @@ fn commit_rule(
     changed,
     settings.ignore_trailing_slash,
   ))
-  let built = case uncovers {
-    True -> warn_loops(built, rules, settings.ignore_trailing_slash)
-    False -> built
+  use fingerprint <- result.try(commit(settings, rules, built))
+  case uncovers {
+    True -> request_check(settings, Loops)
+    False -> Nil
   }
-  commit(settings, rules, built)
+  Ok(fingerprint)
 }
 
 /// Commits a change of a set of rules (bulk, import, delete), checking
@@ -1077,9 +1126,9 @@ fn commit_rules(
     True -> check_conflicts(rules)
     False -> Ok(Nil)
   })
-  let built =
-    warn_problems(matcher.build(rules), rules, settings.ignore_trailing_slash)
-  commit(settings, rules, built)
+  use fingerprint <- result.try(commit(settings, rules, matcher.build(rules)))
+  request_check(settings, Problems)
+  Ok(fingerprint)
 }
 
 /// Writes then publishes the rules (`built` is their matcher). Returns the

@@ -8,6 +8,7 @@ make dev          # run with a throwaway admin
 make check        # format check, warnings-as-errors build, linters, tests
 make coverage     # tests under Erlang `cover`, LCOV in coverage/lcov.info
 make bench-matcher  # matcher work per request vs the baseline (reductions)
+make bench-store    # time to load 50 000 rules and to change one
 lefthook install  # optional git hooks (format, build, conventional commits)
 ```
 

@@ -698,8 +698,9 @@ pub fn query_rules_conflicts_and_loops_test() {
 @external(erlang, "test_log_ffi", "capture_start")
 fn capture_logs() -> Nil
 
-@external(erlang, "test_log_ffi", "capture_stop")
-fn captured_logs() -> List(String)
+/// Whether a captured message contains `text` within `timeout` ms.
+@external(erlang, "test_log_ffi", "capture_until")
+fn logged_within(text: String, timeout: Int) -> Bool
 
 /// An update can uncover a loop it is not part of: the old version of the
 /// rule shadowed a rule that loops. It is applied, and the loop is logged.
@@ -716,8 +717,8 @@ pub fn an_update_warns_about_an_uncovered_loop_test() {
   let assert Ok(shadow) = store.get(s, "shadow")
   capture_logs()
   let assert Ok(_) = store.update(s, Rule(..shadow, source: "/b"), by: "t")
-  let logs = captured_logs()
-  assert list.any(logs, string.contains(_, "redirect loop"))
+  // logged after the change is answered, by the store's checker
+  assert logged_within("redirect loop", 5000)
 }
 
 /// Unchanged hit counts are not written again (the file is replaced, so its
