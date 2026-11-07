@@ -8,8 +8,10 @@
 
 import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/int
+import gleam/list
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/audit_routes
 import redirect_proxy/api/auth.{type Principal}
@@ -100,6 +102,9 @@ fn dispatch(req: Request, ctx: Context) -> Response {
       }
     ["api", ..rest] -> {
       use principal <- authenticated(req, ctx)
+      // rule ids are percent-encoded in URLs: `/api/redirects/a%20b`
+      let rest =
+        list.map(rest, fn(s) { uri.percent_decode(s) |> result.unwrap(s) })
       route(req, ctx, principal, rest)
     }
     _ -> problem.not_found("No such endpoint.")

@@ -2,6 +2,9 @@
 
 import gleam/bool
 import gleam/http.{Get, Post}
+import gleam/list
+import gleam/result
+import gleam/uri
 import redirect_proxy/admin/routes/audit.{audit_page} as _
 import redirect_proxy/admin/routes/auth.{
   login, login_page, logout, oidc_callback, oidc_start, require_session,
@@ -122,7 +125,8 @@ pub fn required_role(method: http.Method, segments: List(String)) -> Role {
 
 fn authenticated(req: Request, ctx: Context) -> Response {
   use s, set_cookie <- require_session(req, ctx)
-  let segments = wisp.path_segments(req)
+  // rule ids and usernames are percent-encoded in links: `/rules/a%20b`
+  let segments = list.map(wisp.path_segments(req), decode_segment)
   use <- bool.lazy_guard(
     !role.allows(s.role, required_role(req.method, segments)),
     fn() {
@@ -174,4 +178,8 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     _, _ -> not_found(ctx, s)
   }
   set_cookie(resp)
+}
+
+fn decode_segment(segment: String) -> String {
+  uri.percent_decode(segment) |> result.unwrap(segment)
 }
