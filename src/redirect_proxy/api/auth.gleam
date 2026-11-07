@@ -92,7 +92,32 @@ fn external(oauth: ApiOAuthConfig, jwt: String) -> Result(Principal, String) {
     oidc_provider.verify_signature(provider, jwt)
     |> result.replace_error("invalid token signature"),
   )
+  use Nil <- result.try(check_type(oauth, ffi.jwt_peek_header(jwt)))
   check_claims(oauth, provider.issuer, claims, ffi.now_seconds())
+}
+
+/// With `require_at_jwt`, the token header must say it is an access token
+/// (`typ` `at+jwt` or `application/at+jwt`, RFC 9068). Exposed for tests.
+pub fn check_type(
+  oauth: ApiOAuthConfig,
+  header_json: Result(String, Nil),
+) -> Result(Nil, String) {
+  use <- bool.guard(!oauth.require_at_jwt, Ok(Nil))
+  let typ =
+    header_json
+    |> result.try(fn(header) {
+      json.parse(
+        header,
+        decode.optional_field("typ", "", decode.string, decode.success),
+      )
+      |> result.replace_error(Nil)
+    })
+    |> result.unwrap("")
+    |> string.lowercase
+  case typ {
+    "at+jwt" | "application/at+jwt" -> Ok(Nil)
+    _ -> Error("the token is not typed as an access token (typ at+jwt)")
+  }
 }
 
 /// Validates the claims of an external access token. Exposed for tests.
@@ -142,6 +167,12 @@ pub fn check_claims(
     "", c, _ -> c
     s, _, _ -> s
   }
+  // the subject is the actor of the audit log: a caller nobody can tell
+  // apart is not accepted
+  use <- bool.guard(
+    string.trim(subject) == "",
+    Error("access token has no subject (sub, client_id or azp)"),
+  )
   Ok(Principal(
     actor: "oauth:" <> subject,
     scopes: scope.from_external(oauth, list.append(names, scp)),

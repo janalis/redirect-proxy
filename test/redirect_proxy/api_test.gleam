@@ -839,6 +839,52 @@ pub fn external_access_tokens_test() {
   assert resp.status == 403
   // the hint uses the external scope name
   assert field(resp.body, ["required_scope"], decode.string) == "redirects:read"
+  // a caller nobody can tell apart in the audit log is refused
+  let anonymous =
+    jwt(
+      key,
+      base([#("sub", json.string(""))])
+        |> list.filter(fn(c) { c.0 != "sub" }),
+    )
+  assert api(env, Get, "/api/redirects", anonymous, "").status == 401
+}
+
+/// `api.oauth.require_at_jwt`: only tokens typed as access tokens (RFC
+/// 9068) are accepted, so that an ID token for the same audience is not.
+pub fn external_tokens_can_require_at_jwt_test() {
+  let #(issuer, key) = support.start_fake_authorization_server()
+  let d = config.default()
+  let env =
+    support.boot(
+      config.Config(
+        ..d,
+        api: config.ApiConfig(
+          ..d.api,
+          oauth: config.ApiOAuthConfig(
+            ..d.api.oauth,
+            enabled: True,
+            issuer:,
+            audience: "redirect-proxy",
+            require_at_jwt: True,
+          ),
+        ),
+      ),
+    )
+  let now = ffi.now_seconds()
+  let claims =
+    json.object([
+      #("iss", json.string(issuer)),
+      #("sub", json.string("deploy-bot")),
+      #("aud", json.string("redirect-proxy")),
+      #("exp", json.int(now + 300)),
+      #("scope", json.string("redirects:read")),
+    ])
+    |> json.to_string
+  let status = fn(token) { api(env, Get, "/api/redirects", token, "").status }
+  assert status(support.sign_typed(key, "at+jwt", claims)) == 200
+  assert status(support.sign_typed(key, "application/at+JWT", claims)) == 200
+  assert status(support.sign_typed(key, "JWT", claims)) == 401
+  assert status(support.sign(key, claims)) == 401
 }
 
 // --- units ------------------------------------------------------------------

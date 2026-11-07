@@ -221,6 +221,11 @@ audience = "redirect-proxy"
 # Claim holding the scopes: a space separated string ("scope") or an array
 # ("scp" is always read too).
 scope_claim = "scope"
+# Only accept tokens whose header says they are access tokens (typ at+jwt,
+# RFC 9068). Turn it on when your server sets it (Keycloak, Auth0, Okta and
+# Entra ID can): an ID token issued for the same audience is then refused
+# even without a nonce.
+require_at_jwt = false
 # Names of the scopes at your authorization server.
 read_scope = "redirects:read"
 write_scope = "redirects:write"

@@ -1903,6 +1903,9 @@ pub fn oidc_login_test() {
   let assert [login, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
   assert #(login.actor, login.action)
     == #("sso:alice@example.com", "auth.login")
+  // the role granted from the provider's groups is recorded
+  let assert Ok(content) = simplifile.read(env.dir <> "/audit.jsonl")
+  assert string.contains(content, "\"role\":\"admin\"")
 
   // a state can only be used once
   let start = get(env.admin <> "/auth/oidc/start", [])

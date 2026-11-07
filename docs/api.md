@@ -65,7 +65,12 @@ tokens from your own authorization server are accepted too:
 - `iss`, `aud`, `exp` and `nbf` are verified.
 - ID tokens (they carry a `nonce`) are refused: give the API an `audience`
   of its own rather than the `[auth.oidc]` `client_id` (a startup warning
-  says so).
+  says so). ID tokens without a nonce cannot be told apart by their
+  claims: if your server types its access tokens (`typ: at+jwt`, RFC 9068),
+  set `require_at_jwt = true` to accept only those.
+- The caller is `sub`, else `client_id`, else `azp`, recorded as
+  `oauth:<subject>` in the audit log. A token with none of them is
+  refused.
 - Scopes are read from `scope` or `scp` and mapped through `read_scope`,
   `write_scope`, `ops_scope` and `audit_scope`.
 

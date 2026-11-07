@@ -217,6 +217,9 @@ pub type ApiOAuthConfig {
     issuer: String,
     audience: String,
     scope_claim: String,
+    /// Only accept tokens typed as access tokens (`typ: at+jwt`, RFC 9068),
+    /// so that an ID token for the same audience is never one.
+    require_at_jwt: Bool,
     read_scope: String,
     write_scope: String,
     ops_scope: String,
@@ -307,6 +310,7 @@ pub fn default() -> Config {
         issuer: "",
         audience: "redirect-proxy",
         scope_claim: "scope",
+        require_at_jwt: False,
         read_scope: "redirects:read",
         write_scope: "redirects:write",
         ops_scope: "redirects:ops",

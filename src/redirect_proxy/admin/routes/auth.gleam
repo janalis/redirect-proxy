@@ -25,6 +25,7 @@ import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
+import redirect_proxy/role
 import redirect_proxy/users
 import wisp.{type Request, type Response}
 
@@ -594,7 +595,9 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         <> log_value(identity.subject)
         <> ")",
       )
-      // the username may be editable at the provider: keep who it really is
+      let granted = oidc.role_for(ctx.config.oidc, identity)
+      // the username may be editable at the provider: keep who it really is;
+      // the role comes from the provider's groups at this sign-in
       audit_auth_with(
         ctx,
         session.actor(session.Oidc, identity.username),
@@ -603,6 +606,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
         [
           #("issuer", json.string(ctx.config.oidc.issuer)),
           #("subject", json.string(identity.subject)),
+          #("role", json.string(role.to_string(granted))),
         ],
       )
       let s =
@@ -611,7 +615,7 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
           session.Oidc,
           ctx.config.admin.session_ttl,
           "",
-          oidc.role_for(ctx.config.oidc, identity),
+          granted,
         )
       // checked by `safe_next` when the login started
       wisp.redirect(next)
