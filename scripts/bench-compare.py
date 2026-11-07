@@ -360,14 +360,19 @@ def start(spec, d, cpus):
     args += spec.get("cmd", [])
     began = time.monotonic()
     docker(*args)
-    port = int(docker("port", SERVER, "8080/tcp").stdout.split(":")[-1])
     path, status, location = SCENARIOS["exact"]
     deadline = began + 180
+    port = None
     while time.monotonic() < deadline:
         running = docker("inspect", "--format", "{{.State.Running}}", SERVER)
         if running.stdout.strip() != "true":
             raise RuntimeError("exited: " + logs())
         try:
+            if port is None:
+                out = docker("port", SERVER, "8080/tcp", check=False).stdout
+                if not out.strip():
+                    raise ConnectionError("port not published yet")
+                port = int(out.split()[0].rsplit(":", 1)[1])
             if get(port, path) == (status, location):
                 return port, round((time.monotonic() - began) * 1000)
         except OSError:
@@ -452,6 +457,8 @@ def bench(key, server_cpus, client_cpus):
     label, configure = PRODUCTS[key]
     print(f"\n== {label}", flush=True)
     work = pathlib.Path(tempfile.mkdtemp(prefix="bench-compare-"))
+    # read by the servers' own users (haproxy, daemon...), not ours
+    work.chmod(0o755)
     try:
         spec = configure(work)
         version, digest = image_info(spec["image"], spec["version"],
