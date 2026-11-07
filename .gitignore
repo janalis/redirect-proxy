@@ -7,4 +7,9 @@
 erl_crash.dump
 .DS_Store
 /node_modules
+/docs/node_modules/
+/docs/.vitepress/cache/
+/docs/.vitepress/dist/
+# taken from the server by `make screenshots` (and by the docs workflow)
+/docs/public/screenshots/
 /.playwright-mcp

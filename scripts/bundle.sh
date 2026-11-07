@@ -36,7 +36,10 @@ find "$out/lib" -name '*.map' -type f -delete
 cp packaging/bin/redirect-proxy "$out/bin/redirect-proxy"
 chmod 755 "$out/bin/redirect-proxy"
 cp config.example.toml LICENSE README.md CHANGELOG.md "$out/share/redirect-proxy/"
-cp -R docs "$out/share/redirect-proxy/"
+# the Markdown pages of the documentation site (published at
+# https://janalis.github.io/redirect-proxy/), not its tooling
+mkdir -p "$out/share/redirect-proxy/docs"
+cp docs/guide/*.md "$out/share/redirect-proxy/docs/"
 
 if [ "$with_erts" = "--with-erts" ]; then
   root=$(erl -noshell -eval 'io:format("~s", [code:root_dir()]), halt().')

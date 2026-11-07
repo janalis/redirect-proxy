@@ -11,4 +11,7 @@ Dockerfile
 .env
 .env.*
 test
+docs/node_modules
+docs/.vitepress
+docs/public
 config.toml

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help deps build run dev test coverage fmt fmt-check lint lint-versions lint-erlang \
 	lint-shell lint-actions lint-docker lint-markdown check bench bench-matcher bench-store bundle \
-	bundle-portable deb docker docker-run release-dry clean
+	bundle-portable deb docker docker-run docs-deps screenshots docs docs-dev release-dry clean
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' gleam.toml)
 UNAME_S := $(shell uname -s | tr '[:upper:]' '[:lower:]')
@@ -103,9 +103,22 @@ docker-run: docker ## Run the container image locally
 		-e RP_BOOTSTRAP_ADMIN_USERNAME=admin -e RP_BOOTSTRAP_ADMIN_PASSWORD=change-me-please \
 		$(IMAGE):dev
 
+docs-deps: ## Install the documentation tools (Node 20+, Playwright's Chromium)
+	npm --prefix docs ci
+	cd docs && npx playwright install chromium
+
+screenshots: ## Take the documentation screenshots from the server (docs/public/screenshots)
+	npm --prefix docs run screenshots
+
+docs: docs-deps screenshots ## Build the documentation site to docs/.vitepress/dist
+	npm --prefix docs run build
+
+docs-dev: ## Serve the documentation with live reload (run make screenshots once first)
+	npm --prefix docs run dev
+
 release-dry: ## Preview the next release-please release
 	npx --yes release-please release-pr --dry-run \
 		--repo-url=janalis/redirect-proxy --token=$${GITHUB_TOKEN:?set GITHUB_TOKEN}
 
 clean: ## Remove build artefacts
-	rm -rf build dist coverage
+	rm -rf build dist coverage docs/.vitepress/dist docs/.vitepress/cache docs/public/screenshots

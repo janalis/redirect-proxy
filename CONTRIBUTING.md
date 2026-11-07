@@ -27,8 +27,8 @@ make check    # what CI runs: format check, strict build, linters, tests
 the `Makefile`), counting application code only (test helpers and
 benchmarks are left out). Tests in `test/redirect_proxy/docs_test.gleam`
 fail when an `RP_…` variable read in `config/env.gleam` is missing from the
-configuration table of `docs/configuration.md`, or a metric `/metrics`
-exports is missing from `docs/operations.md`.
+configuration table of `docs/guide/configuration.md`, or a metric `/metrics`
+exports is missing from `docs/guide/monitoring.md`.
 
 ## Pull requests
 
@@ -43,44 +43,13 @@ exports is missing from `docs/operations.md`.
   after.
 - Keep the Erlang FFI minimal and compiled with warnings as errors
   (`make lint-erlang`).
-- Update the documentation (`README.md`, `docs/`) and `config.example.toml`
-  when configuration or behaviour changes.
+- Update the documentation (`README.md`, `docs/`, previewed with
+  `make docs-dev`) and `config.example.toml` when configuration or
+  behaviour changes.
 
 ## Releases
 
 Releases are fully automated by `.github/workflows/release.yml`, so do not
-edit `CHANGELOG.md` or version numbers by hand.
-
-One-time repository setup:
-
-1. **Workflow permissions.** In *Settings → Actions → General*, allow GitHub
-   Actions to create and approve pull requests. release-please needs this.
-2. **Packages.** The container image is pushed to GHCR with `GITHUB_TOKEN`.
-   Make the package public after the first release.
-3. **Homebrew tap.** Add a `HOMEBREW_TAP_TOKEN` secret: a fine-grained token
-   with *Contents: read and write* on `janalis/homebrew-tap`. Without it the
-   tap update is skipped with a warning.
-4. **Checks on the release PR.** A PR opened with `GITHUB_TOKEN` does not
-   trigger the CI workflow, so the release PR has no checks by default. Add
-   a `RELEASE_PLEASE_TOKEN` secret, a fine-grained token on this repository
-   with *Contents* and *Pull requests: read and write*, so that release-please
-   opens it with that token instead.
-5. **Coverage.** Optionally add a `CODECOV_TOKEN` secret.
-6. **Package maintainer.** Optionally set a `PACKAGE_MAINTAINER` repository
-   variable (`Name <email>`) for the `.deb` metadata.
-7. **First release (new forks only).** release-please starts from the
-   version in `.release-please-manifest.json` and needs a matching tag and
-   GitHub release to compute the next one. On a fresh fork, tag the commit
-   that holds that version `v<version>`, create its GitHub release, then run
-   the *Release* workflow manually with that tag to build and attach its
-   artifacts. After that, release-please handles every later version.
-
-Keep `main`'s history: release-please finds the last release from the
-release commit it merged. If `main` is rewound past a release commit while
-its tag stays, the next release PR proposes that version again, and
-publishing it fails because the tag exists. Restore the release commit on
-`main` (or delete the tag and its GitHub release, if nothing was published)
-before merging more work.
-
-To rebuild the artifacts of an existing release, run the *Release* workflow
-manually with its tag.
+edit `CHANGELOG.md` or version numbers by hand. See
+[Releasing](https://janalis.github.io/redirect-proxy/contributing/releasing)
+for the versioning rules and the one-time repository setup.

@@ -1,63 +1,54 @@
-[← redirect-proxy](../README.md)
+# Authentication
 
-# Administration and authentication
+The admin signs people in with local accounts, OpenID Connect or headers
+set by a trusted reverse proxy. Each user has a role. API clients
+authenticate with OAuth 2.0 instead: see [REST API](api).
 
-The admin listener serves these pages:
+## Local accounts
 
-- Redirections: search, filter, create, edit, enable/disable, delete.
-- A URL tester.
-- JSON import (merge or replace) and export.
-- Local users, with their roles.
-- The audit log.
-- "Reload from disk".
+- Passwords are hashed with PBKDF2-HMAC-SHA256 (600 000 iterations) and
+  must be at least 12 characters.
+- Accounts live in `users.json`.
+- Manage them in the admin or with `redirect-proxy user …`.
 
-Unauthenticated endpoints: `/healthz` (the process is up), `/readyz` (ready
-for traffic: 503 while draining before a stop) and `/metrics` (Prometheus).
-An API on its own port serves `/healthz` and `/readyz` too, and `/metrics`
-when the admin is disabled. With `admin.metrics_token`
-(`RP_ADMIN_METRICS_TOKEN`, at least 16 characters), `/metrics` answers 401
-unless the request has `Authorization: Bearer <token>`: in Prometheus, set
-`authorization: { credentials_file: ... }` on the scrape job.
+## OpenID Connect
 
-- **Local accounts.**
-  - Passwords are hashed with PBKDF2-HMAC-SHA256 (600 000 iterations) and
-    must be at least 12 characters.
-  - Accounts live in `users.json`.
-  - Manage them in the admin or with `redirect-proxy user …`.
-- **OpenID Connect.**
-  - Uses the authorization code flow with PKCE, `state` and `nonce`.
-  - The ID token signature is verified against the provider JWKS, and `iss`,
-    `aud`, `exp`, `nbf` and (when present) `azp` are checked.
-  - The provider metadata and JWKS are cached for an hour, and the last
-    good ones are used for up to a day more while the provider cannot be
-    reached. A plain `http://` issuer on another host gets a startup
-    warning.
-  - To allow users, set `allowed_emails`, `allowed_domains` (checked against
-    verified emails) and/or `allowed_groups` (from `groups_claim`). With all
-    three lists empty, every account of the provider is accepted, and the
-    server logs a warning at startup (and `check-config` reports it).
-  - An email counts as verified only when the ID token says
-    `email_verified: true`. Providers that never send that claim, such as
-    Entra ID, can only be restricted with `allowed_groups`.
-  - Register `<admin.public_url>/auth/oidc/callback` as the redirect URI at the
-    provider.
-  - After signing in, you land on the page that asked for it, as with a
-    password.
-  - With `logout_at_provider = true`, signing out also ends the session at
-    the provider (its `end_session_endpoint`), which sends you back to the
-    login page: register `<admin.public_url>/login` as a post-logout
-    redirect URI there.
-- **Trusted proxy headers.** With `auth.header` enabled, the user named in
-  `user_header` (`X-Forwarded-User`) is signed in. Set `user_header = ""` to
-  use `email_header` (`X-Forwarded-Email`) instead. The two are never
-  combined. The header is only accepted when the TCP peer is in
-  `trusted_proxies`, and a request carrying several values in it is refused.
-  Configure the proxy to set (not append to) that header, and never expose the
-  admin port directly in this mode. The session ends on the first request
-  that arrives without the header (signed out at the proxy, or a replayed
-  cookie). A user and role have one session: a client that does not keep
-  cookies (a script, a monitoring check) reuses it rather than starting a
-  session, and an `auth.login` audit entry, on every request.
+- Uses the authorization code flow with PKCE, `state` and `nonce`.
+- The ID token signature is verified against the provider JWKS, and `iss`,
+  `aud`, `exp`, `nbf` and (when present) `azp` are checked.
+- The provider metadata and JWKS are cached for an hour, and the last
+  good ones are used for up to a day more while the provider cannot be
+  reached. A plain `http://` issuer on another host gets a startup
+  warning.
+- To allow users, set `allowed_emails`, `allowed_domains` (checked against
+  verified emails) and/or `allowed_groups` (from `groups_claim`). With all
+  three lists empty, every account of the provider is accepted, and the
+  server logs a warning at startup (and `check-config` reports it).
+- An email counts as verified only when the ID token says
+  `email_verified: true`. Providers that never send that claim, such as
+  Entra ID, can only be restricted with `allowed_groups`.
+- Register `<admin.public_url>/auth/oidc/callback` as the redirect URI at the
+  provider.
+- After signing in, you land on the page that asked for it, as with a
+  password.
+- With `logout_at_provider = true`, signing out also ends the session at
+  the provider (its `end_session_endpoint`), which sends you back to the
+  login page: register `<admin.public_url>/login` as a post-logout
+  redirect URI there.
+
+## Trusted proxy headers
+
+With `auth.header` enabled, the user named in
+`user_header` (`X-Forwarded-User`) is signed in. Set `user_header = ""` to
+use `email_header` (`X-Forwarded-Email`) instead. The two are never
+combined. The header is only accepted when the TCP peer is in
+`trusted_proxies`, and a request carrying several values in it is refused.
+Configure the proxy to set (not append to) that header, and never expose the
+admin port directly in this mode. The session ends on the first request
+that arrives without the header (signed out at the proxy, or a replayed
+cookie). A user and role have one session: a client that does not keep
+cookies (a script, a monitoring check) reuses it rather than starting a
+session, and an `auth.login` audit entry, on every request.
 
 ## Roles
 
@@ -74,8 +65,8 @@ Pages and buttons a role cannot use are not shown, and the server answers
 
 - **Local accounts:** the role stored with the user, chosen when the user
   is created (`redirect-proxy user add <name> --role editor`, or the admin's
-  users page) and changed there or with `redirect-proxy user role <name>
-  <role>`. A change applies to the user's sessions at once. Accounts created
+  users page) and changed there or with
+  `redirect-proxy user role <name> <role>`. A change applies to the user's sessions at once. Accounts created
   before roles are administrators, and the last administrator cannot be
   demoted or deleted. Every role can change its own password on the
   account page.
@@ -93,7 +84,7 @@ Pages and buttons a role cannot use are not shown, and the server answers
   of the header. Without it, every proxy user gets `default_role`
   (`viewer`).
 
-API clients are not affected: they have scopes (see [REST API](api.md)).
+API clients are not affected: they have scopes (see [REST API](api)).
 
 ## Security measures
 

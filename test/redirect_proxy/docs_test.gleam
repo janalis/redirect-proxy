@@ -8,12 +8,17 @@ import gleam/string
 import redirect_proxy/metrics
 import simplifile
 
-/// The README and the pages of docs/, as one text.
+/// The README and the pages of docs/, as one text. The site's installed
+/// packages and build output are not documentation.
 fn documentation() -> String {
   let assert Ok(readme) = simplifile.read("README.md")
   let assert Ok(pages) = simplifile.get_files("docs")
   pages
   |> list.filter(string.ends_with(_, ".md"))
+  |> list.filter(fn(path) {
+    !string.starts_with(path, "docs/node_modules/")
+    && !string.starts_with(path, "docs/.vitepress/")
+  })
   |> list.sort(string.compare)
   |> list.map(fn(path) {
     let assert Ok(page) = simplifile.read(path)

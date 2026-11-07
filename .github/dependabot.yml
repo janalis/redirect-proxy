@@ -18,3 +18,14 @@ updates:
     # leads to a release instead of waiting for the next feat or fix
     commit-message:
       prefix: deps
+
+  # the documentation site (VitePress, Playwright for its screenshots)
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: docs
+    groups:
+      docs:
+        patterns: ["*"]

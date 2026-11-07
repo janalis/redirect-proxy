@@ -5,5 +5,11 @@
     "MD033": false,
     "MD041": false
   },
-  "ignores": ["CHANGELOG.md", "build/**", "dist/**", "node_modules/**"]
+  "ignores": [
+    "CHANGELOG.md",
+    "build/**",
+    "dist/**",
+    "**/node_modules/**",
+    "docs/.vitepress/**"
+  ]
 }
