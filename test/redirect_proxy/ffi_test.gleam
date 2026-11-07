@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import redirect_proxy/ffi
 import simplifile
@@ -228,4 +229,23 @@ pub fn atomic_write_private_mode_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(rules, 0o604)
   let assert Ok(Nil) = ffi.atomic_write(rules, "[ ]")
   assert mode(rules) == 0o604
+}
+
+/// Dates that do not exist are refused, not shifted to the next month.
+pub fn rfc3339_is_strict_test() {
+  assert ffi.parse_rfc3339("2026-12-01T00:00:00Z") == Ok(1_796_083_200)
+  assert ffi.parse_rfc3339("2026-12-01T01:00:00+01:00") == Ok(1_796_083_200)
+  assert ffi.parse_rfc3339("2026-12-01t00:00:00.250z") == Ok(1_796_083_200)
+  assert ffi.parse_rfc3339("2028-02-29T00:00:00Z") |> result.is_ok
+  list.each(
+    [
+      "2026-02-30T00:00:00Z", "2026-04-31T12:00:00Z", "2026-13-01T00:00:00Z",
+      "2027-02-29T00:00:00Z", "2026-12-01x00:00:00Z", "2026-12-01T24:00:00Z",
+      "2026-12-01T00:60:00Z", "2026-12-01T00:00:00+01:99", "2026-12-01T00:00:00",
+      "2026-12-01T00:00:00.Z", "2026-1-01T00:00:00Z", "",
+    ],
+    fn(bad) {
+      assert ffi.parse_rfc3339(bad) == Error(Nil)
+    },
+  )
 }
