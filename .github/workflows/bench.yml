@@ -4,7 +4,8 @@ name: Benchmark
 # `compare`: the same rules served by redirect-proxy, nginx, HAProxy, Caddy,
 # Traefik and Apache httpd (scripts/bench-compare.py), every week and after
 # each release. On main, `publish` opens (or updates) a pull request with
-# the new docs/data/benchmark.json and README table.
+# the new docs/data/benchmark.json and README table, and merges it when every
+# server passed its check (then redeploys the docs).
 
 on:
   workflow_dispatch:
@@ -92,8 +93,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write # push the results branch
+      contents: write # push the results branch, merge it
       pull-requests: write # open the pull request
+      actions: write # start the Docs workflow after merging
     concurrency:
       group: benchmark-publish
       cancel-in-progress: false
@@ -106,12 +108,19 @@ jobs:
         with:
           name: benchmark
           path: docs/data
-      - name: Open or update the pull request
+      - name: Open, update or merge the pull request
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          case "$EVENT" in
+            schedule) run="weekly run" ;;
+            workflow_dispatch) run="manual run" ;;
+            *) run="post-release run" ;;
+          esac
+          body="Results of the $run of the *Benchmark* workflow ($RUN_URL), for the Performance page and the README."
           python3 scripts/bench-compare.py --from docs/data/benchmark.json --readme
           branch=bench/results
           git config user.name "github-actions[bot]"
@@ -127,5 +136,21 @@ jobs:
           if [ -z "$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')" ]; then
             gh pr create -R "$REPO" --base main --head "$branch" \
               --title "chore(bench): refresh the comparison with other servers" \
-              --body "Results of the weekly *Benchmark* workflow ($RUN_URL), for the Performance page and the README."
+              --body "$body"
+          else
+            gh pr edit "$branch" -R "$REPO" --body "$body"
+          fi
+          # Merged without review only when every server passed its check;
+          # otherwise the pull request waits for someone to look at it.
+          if python3 -c 'import json, sys; sys.exit(any(p["status"] != "ok" for p in json.load(open("docs/data/benchmark.json"))["products"]))'; then
+            # GitHub may still be computing whether a new pull request is mergeable
+            for attempt in 1 2 3 4 5; do
+              gh pr merge "$branch" -R "$REPO" --squash --delete-branch && break
+              [ "$attempt" = 5 ] && exit 1
+              sleep 10
+            done
+            # a merge made with GITHUB_TOKEN does not trigger the Docs workflow
+            gh workflow run docs.yml -R "$REPO" --ref main
+          else
+            gh pr comment "$branch" -R "$REPO" --body "Not merged automatically: a server failed its check (see $RUN_URL)."
           fi

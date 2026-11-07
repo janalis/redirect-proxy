@@ -390,8 +390,9 @@ jobs:
     name: Benchmark
     needs: [meta, publish]
     permissions:
-      contents: write # push the results branch
+      contents: write # push the results branch, merge it
       pull-requests: write # open the pull request
+      actions: write # start the Docs workflow after merging
     uses: ./.github/workflows/bench.yml # zizmor: ignore[self-repository]
     with:
       ref: ${{ needs.meta.outputs.tag }}
