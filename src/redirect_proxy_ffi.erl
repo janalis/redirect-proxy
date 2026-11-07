@@ -21,7 +21,8 @@
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
-    normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1
+    normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
+    encode_cached/2
 ]).
 
 -include_lib("kernel/include/file.hrl").
@@ -950,3 +951,23 @@ binary_take(Bin, _N) -> Bin.
 binary_drop(Bin, N) when byte_size(Bin) >= N ->
     binary:part(Bin, N, byte_size(Bin) - N);
 binary_drop(_Bin, _N) -> <<>>.
+
+%% Encodes each of Items with Encode, reusing what the calling process
+%% encoded last time for an equal item (the whole term is the key, so a
+%% changed item is encoded again). Only the current items are kept: the
+%% cache never grows past one list. Returns the encodings, in order.
+encode_cached(Items, Encode) ->
+    Old = case erlang:get(redirect_proxy_encode_cache) of
+        undefined -> #{};
+        Map -> Map
+    end,
+    {Encoded, New} = lists:mapfoldl(
+        fun(Item, Acc) ->
+            Value = case Old of
+                #{Item := Cached} -> Cached;
+                _ -> Encode(Item)
+            end,
+            {Value, Acc#{Item => Value}}
+        end, #{}, Items),
+    erlang:put(redirect_proxy_encode_cache, New),
+    Encoded.

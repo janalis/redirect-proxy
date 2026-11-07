@@ -93,6 +93,21 @@ pub fn file_round_trip_test() {
   assert rule.file_from_string(rule.file_to_string(rules)) == Ok(rules)
 }
 
+/// The store's cached serialisation writes the same text, also after some
+/// rules changed, others were removed and the order moved.
+pub fn cached_file_text_is_the_same_test() {
+  use rules <- check(rules())
+  assert rule.file_to_string_cached(rules) == rule.file_to_string(rules)
+  let changed =
+    rules
+    |> list.drop(1)
+    |> list.map(fn(r) { Rule(..r, note: r.note <> "!") })
+    |> list.append(list.take(rules, 1))
+    |> list.reverse
+  assert rule.file_to_string_cached(changed) == rule.file_to_string(changed)
+  assert rule.file_to_string_cached(rules) == rule.file_to_string(rules)
+}
+
 /// The matcher agrees with a naive reference implementation for exact rules:
 /// the first enabled rule of the request host wins, then the wildcard host.
 pub fn matcher_agrees_with_reference_test() {

@@ -308,6 +308,11 @@ pub fn is_ascii(text: String) -> Bool
 @external(erlang, "redirect_proxy_ffi", "needs_trim")
 pub fn needs_trim(text: String) -> Bool
 
+/// `list.map(items, encode)`, reusing what the calling process encoded
+/// last time for an equal item. Only the last list's encodings are kept.
+@external(erlang, "redirect_proxy_ffi", "encode_cached")
+pub fn encode_cached(items: List(a), encode: fn(a) -> String) -> List(String)
+
 @external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
 pub fn encode_non_ascii(url: String) -> String
 
