@@ -149,3 +149,20 @@ pub fn start_fake_authorization_server() -> #(String, Key) {
   let assert Ok(port) = process.receive(ready, 5000)
   #("http://127.0.0.1:" <> int.to_string(port), key)
 }
+
+/// Sets the flag a SIGTERM sets: the node drains before it stops.
+@external(erlang, "redirect_proxy_sigterm", "set_draining")
+pub fn set_draining(value: Bool) -> Nil
+
+/// Waits until `condition` holds, checking every 20 ms for at most
+/// `timeout_ms`, and fails the test after that.
+pub fn wait_until(condition: fn() -> Bool, timeout_ms: Int) -> Nil {
+  case condition(), timeout_ms <= 0 {
+    True, _ -> Nil
+    False, True -> panic as "condition not met in time"
+    False, False -> {
+      process.sleep(20)
+      wait_until(condition, timeout_ms - 20)
+    }
+  }
+}

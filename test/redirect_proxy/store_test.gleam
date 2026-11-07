@@ -524,13 +524,13 @@ pub fn watched_file_is_reloaded_test() {
       s.rules_path,
       "[{\"source\": \"/watched\", \"target\": \"/reloaded\"}]",
     )
-  wait_until(fn() { redirect("/watched") == Ok("/reloaded") }, 100)
+  support.wait_until(fn() { redirect("/watched") == Ok("/reloaded") }, 2000)
   assert list.map(store.all(store), fn(r) { r.source }) == ["/watched"]
   assert reloads(dir) == 1
 
   // an invalid file is reported once and the rules are kept
   let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
-  wait_until(fn() { reload_failures(dir) == 1 }, 100)
+  support.wait_until(fn() { reload_failures(dir) == 1 }, 2000)
   process.sleep(100)
   assert reload_failures(dir) == 1
   assert redirect("/watched") == Ok("/reloaded")
@@ -551,17 +551,6 @@ fn reloads(dir: String) -> Int {
 
 fn reload_failures(dir: String) -> Int {
   audit_actions(dir, "rules.reload_failed")
-}
-
-fn wait_until(condition: fn() -> Bool, attempts: Int) -> Nil {
-  case condition(), attempts {
-    True, _ -> Nil
-    False, 0 -> panic as "condition not met in time"
-    False, _ -> {
-      process.sleep(20)
-      wait_until(condition, attempts - 1)
-    }
-  }
 }
 
 /// Imports and bulk changes based on an older version of the rule set are
@@ -601,9 +590,6 @@ pub fn versioned_set_changes_test() {
     == Error(store.Rejected(["ids: select at least one rule"]))
 }
 
-@external(erlang, "redirect_proxy_sigterm", "set_draining")
-fn set_draining(value: Bool) -> Nil
-
 /// Hit counts survive a restart: saved when a stop begins (and every
 /// minute), restored by the next start.
 pub fn hit_counts_survive_a_restart_test() {
@@ -612,9 +598,9 @@ pub fn hit_counts_survive_a_restart_test() {
   let assert Ok(created) = store.create(s, new_rule("/counted", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   matcher.record_hit(snapshot.current(), created.id)
-  set_draining(True)
+  support.set_draining(True)
   wait_for_file(dir <> "/hits.json", 30)
-  set_draining(False)
+  support.set_draining(False)
   let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
   assert string.contains(saved, created.id)
   // a fresh start (nothing published yet) restores them
@@ -631,13 +617,13 @@ pub fn hits_counted_while_draining_are_kept_test() {
   let s = start(settings(dir, 0))
   let assert Ok(created) = store.create(s, new_rule("/drained", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
-  set_draining(True)
+  support.set_draining(True)
   wait_for_file(dir <> "/hits.json", 30)
   // served during the grace period
   matcher.record_hit(snapshot.current(), created.id)
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
-  set_draining(False)
+  support.set_draining(False)
   snapshot.publish(matcher.empty())
   let _ = start(settings(dir, 0))
   assert matcher.hit_count(snapshot.current(), created.id) == 3
@@ -690,19 +676,8 @@ pub fn scheduled_rules_test() {
       by: "t",
     )
   assert redirect("/soon") == Error(Nil)
-  wait_for(fn() { redirect("/soon") == Ok("/started") }, 40)
-  wait_for(fn() { redirect("/soon") == Error(Nil) }, 40)
-}
-
-fn wait_for(condition: fn() -> Bool, attempts: Int) -> Nil {
-  case condition(), attempts {
-    True, _ -> Nil
-    False, 0 -> panic as "condition not met in time"
-    False, _ -> {
-      process.sleep(100)
-      wait_for(condition, attempts - 1)
-    }
-  }
+  support.wait_until(fn() { redirect("/soon") == Ok("/started") }, 4000)
+  support.wait_until(fn() { redirect("/soon") == Error(Nil) }, 4000)
 }
 
 /// Exact rules for one path with different query conditions are not in

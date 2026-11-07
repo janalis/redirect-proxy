@@ -9,7 +9,6 @@ import gleam/erlang/process
 import gleam/http
 import gleam/http/request
 import gleam/http/response
-import gleam/httpc
 import gleam/int
 import gleam/json
 import gleam/list
@@ -97,15 +96,7 @@ fn send(
   headers: List(#(String, String)),
   body: String,
 ) -> response.Response(String) {
-  let assert Ok(req) = request.to(url)
-  let req =
-    list.fold(headers, request.set_method(req, method), fn(req, h) {
-      request.set_header(req, h.0, h.1)
-    })
-    |> request.set_body(body)
-  let assert Ok(resp) =
-    httpc.configure() |> httpc.follow_redirects(False) |> httpc.dispatch(req)
-  resp
+  support.send(method, url, headers, body)
 }
 
 fn get(url: String, headers: List(#(String, String))) {
@@ -663,10 +654,10 @@ pub fn draining_before_a_stop_test() {
   let resp = get(env.redirect <> "/old", [])
   assert response.get_header(resp, "connection") != Ok("close")
   // what SIGTERM does before the grace period ends
-  set_draining(True)
+  support.set_draining(True)
   let ready = get(env.admin <> "/readyz", [])
   let resp = get(env.redirect <> "/old", [])
-  set_draining(False)
+  support.set_draining(False)
   assert ready.status == 503
   assert resp.status == 301
   assert response.get_header(resp, "connection") == Ok("close")
@@ -697,9 +688,9 @@ pub fn redirect_listener_health_path_test() {
   assert response.get_header(resp, "cache-control") == Ok("no-store")
   // probes are not counted as traffic
   assert metric(env, "redirect_proxy_requests_total") == requests
-  set_draining(True)
+  support.set_draining(True)
   let draining = get(env.redirect <> "/_health", [])
-  set_draining(False)
+  support.set_draining(False)
   assert draining.status == 503
 }
 
@@ -807,9 +798,6 @@ pub fn overlong_paths_get_414_test() {
   assert get(env.redirect <> "/old?" <> string.repeat("q", 400), []).status
     == 301
 }
-
-@external(erlang, "redirect_proxy_sigterm", "set_draining")
-fn set_draining(value: Bool) -> Nil
 
 pub fn https_admin_hardening_test() {
   // the admin behind a TLS-terminating proxy
@@ -1733,16 +1721,8 @@ pub fn header_auth_test() {
 
 // --- OIDC -------------------------------------------------------------------
 
-@external(erlang, "test_jwt_ffi", "keypair")
-fn keypair() -> #(String, Key)
-
-@external(erlang, "test_jwt_ffi", "sign")
-fn sign(key: Key, claims: String) -> String
-
-type Key
-
 fn start_fake_idp(email: String) -> String {
-  let #(jwks, key) = keypair()
+  let #(jwks, key) = support.keypair()
   let port_key = "fake_idp_port_" <> email
   let handler = fn(req: request.Request(mist.Connection)) {
     let issuer =
@@ -1793,7 +1773,7 @@ fn start_fake_idp(email: String) -> String {
             json.object([
               #(
                 "id_token",
-                json.string(sign(
+                json.string(support.sign(
                   key,
                   json.object([
                     #("iss", json.string(issuer)),
