@@ -327,7 +327,11 @@ window_take(Table, Key, Now, Window, Limit) ->
     case ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}) of
         Count when Count > Limit ->
             _ = ets:update_counter(T, Key, {3, -1, 0, 0}),
-            WindowEnd = ets:lookup_element(T, Key, 2),
+            %% the entry may have been purged since (an ended window)
+            WindowEnd = case ets:lookup(T, Key) of
+                [{_, End, _}] -> End;
+                [] -> Now + Window
+            end,
             {error, max(1, WindowEnd - Now)};
         _ -> {ok, nil}
     end.
@@ -340,19 +344,35 @@ window_forgive(Table, Key) ->
         error:badarg -> nil
     end.
 
-%% Runs Fun when fewer than Max calls hold the Key slot: {ok, Result}, or
-%% {error, nil} at once when they are all taken. The slot is given back even
-%% when Fun raises.
+%% Runs Fun when fewer than Max live processes hold a Key slot: {ok, Result},
+%% or {error, nil} at once when they are all taken. Each holder is an entry
+%% of its own ({Key, Pid, Ref}), added before the holders are counted, so
+%% that racing callers never exceed Max (at worst both are refused). The
+%% entry is removed when Fun returns or raises; the entry of a process
+%% killed in Fun (no `after` then) is removed by the next caller, so a slot
+%% is never lost for good.
 with_slot(Table, Key, Max, Fun) ->
     T = binary_to_existing_atom(Table),
-    case ets:update_counter(T, Key, {2, 1}, {Key, 0}) of
-        N when N > Max ->
-            _ = ets:update_counter(T, Key, {2, -1}),
+    Self = {Key, self(), make_ref()},
+    true = ets:insert(T, {Self}),
+    Holders = [H || {{_, Pid, _} = H} <- ets:match_object(T, {{Key, '_', '_'}}),
+                    holds_slot(T, H, Pid)],
+    case length(Holders) > Max of
+        true ->
+            ets:delete(T, Self),
             {error, nil};
-        _ ->
+        false ->
             try {ok, Fun()}
-            after _ = ets:update_counter(T, Key, {2, -1})
+            after ets:delete(T, Self)
             end
+    end.
+
+holds_slot(T, Holder, Pid) ->
+    case is_process_alive(Pid) of
+        true -> true;
+        false ->
+            ets:delete(T, Holder),
+            false
     end.
 
 %% Password hashes allowed at once: half the dirty CPU schedulers (where

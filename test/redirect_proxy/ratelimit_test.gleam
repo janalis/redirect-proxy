@@ -129,3 +129,23 @@ pub fn bounded_work_refuses_beyond_the_limit_test() {
 fn support_wait(condition: fn() -> Bool) -> Nil {
   support.wait_until(condition, 2000)
 }
+
+/// A process killed while it holds a slot (no `after` runs then) does not
+/// keep it: the next caller removes the dead holder.
+pub fn a_killed_holder_gives_its_slot_back_test() {
+  ratelimit.init()
+  let name = key("killed")
+  let started = process.new_subject()
+  let holder =
+    process.spawn_unlinked(fn() {
+      ratelimit.bounded(name, 1, fn() {
+        process.send(started, Nil)
+        process.sleep(10_000)
+      })
+    })
+  let assert Ok(Nil) = process.receive(started, 5000)
+  assert ratelimit.bounded(name, 1, fn() { Nil }) == Error(Nil)
+  process.kill(holder)
+  support_wait(fn() { !process.is_alive(holder) })
+  assert ratelimit.bounded(name, 1, fn() { 7 }) == Ok(7)
+}
