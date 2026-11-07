@@ -524,6 +524,29 @@ pub fn crosses_boundary(rules: List(Rule), after: Int, now: Int) -> Bool {
   })
 }
 
+/// The first `starts_at` or `expires_at` of an enabled rule later than
+/// `after` (a time far in the future when there is none): the rules change
+/// what applies at that time. `crosses_boundary(rules, after, now)` is
+/// `next_boundary(rules, after) <= now`.
+pub fn next_boundary(rules: List(Rule), after: Int) -> Int {
+  list.fold(rules, max_time, fn(next, r) {
+    case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
+      False -> next
+      True -> {
+        let #(from, until) = window(r)
+        let next = case from > after && from < next {
+          True -> from
+          False -> next
+        }
+        case until > after && until < next {
+          True -> until
+          False -> next
+        }
+      }
+    }
+  })
+}
+
 /// Whether the windows of two rules overlap (two exact rules for one path
 /// may take turns).
 pub fn windows_overlap(a: Rule, b: Rule) -> Bool {

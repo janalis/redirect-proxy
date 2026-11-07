@@ -731,3 +731,47 @@ fn bool_order(a: Bool, b: Bool) -> order.Order {
     _, _ -> order.Eq
   }
 }
+
+/// The next boundary tells the same as `crosses_boundary`: a rule starts or
+/// expires in `(after, now]` exactly when the next one after `after` is not
+/// later than `now`.
+pub fn next_boundary_agrees_with_crosses_boundary_test() {
+  let at = fn(seconds) {
+    case seconds {
+      0 -> ""
+      s -> ffi.rfc3339(1_800_000_000 + s * 60)
+    }
+  }
+  let scheduled =
+    qcheck.map3(
+      qcheck.bounded_int(0, 20),
+      qcheck.bounded_int(0, 20),
+      qcheck.bool(),
+      fn(from, until, enabled) {
+        Rule(
+          ..rule.blank(),
+          enabled:,
+          starts_at: at(from),
+          expires_at: at(until),
+        )
+      },
+    )
+  let input =
+    qcheck.map3(
+      qcheck.generic_list(scheduled, qcheck.bounded_int(0, 6)),
+      qcheck.bounded_int(-1, 21),
+      qcheck.bounded_int(0, 22),
+      fn(rules, after, span) {
+        #(
+          rules,
+          1_800_000_000 + after * 60,
+          1_800_000_000 + { after + span } * 60,
+        )
+      },
+    )
+  check_many(1000, input, fn(input) {
+    let #(rules, after, now) = input
+    assert rule.crosses_boundary(rules, after, now)
+      == { rule.next_boundary(rules, after) <= now }
+  })
+}

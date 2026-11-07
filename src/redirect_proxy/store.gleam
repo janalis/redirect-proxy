@@ -206,6 +206,10 @@ type State {
     /// When the published rules were last checked against the rules'
     /// `starts_at`/`expires_at` (`Schedule`).
     checked_at: Int,
+    /// The next `starts_at` or `expires_at` after `checked_at`, and the rules
+    /// it was found in: while the rules are the same term, the check each
+    /// second compares two numbers instead of reading every rule's dates.
+    next_boundary: #(List(Rule), Int),
   )
 }
 
@@ -246,16 +250,22 @@ pub fn start(
             <> " redirection rule(s) from "
             <> settings.rules_path,
           )
-          Ok(State(
-            settings:,
-            rules:,
-            fingerprint:,
-            stamp: ffi.file_stamp(settings.rules_path),
-            hits_saved_at: ffi.now_seconds(),
-            hits_saved_draining: False,
-            hits_written: hits.nothing_written,
-            checked_at: ffi.now_seconds(),
-          ))
+          Ok(
+            State(
+              settings:,
+              rules:,
+              fingerprint:,
+              stamp: ffi.file_stamp(settings.rules_path),
+              hits_saved_at: ffi.now_seconds(),
+              hits_saved_draining: False,
+              hits_written: hits.nothing_written,
+              checked_at: ffi.now_seconds(),
+              next_boundary: #(
+                rules,
+                rule.next_boundary(rules, ffi.now_seconds()),
+              ),
+            ),
+          )
         }
         Error(reason) ->
           // A restart after a crash: the last good rules are still being
@@ -272,16 +282,22 @@ pub fn start(
                 <> " rule(s) loaded before: "
                 <> reason,
               )
-              Ok(State(
-                settings:,
-                rules:,
-                fingerprint: "",
-                stamp: ffi.file_stamp(settings.rules_path),
-                hits_saved_at: ffi.now_seconds(),
-                hits_saved_draining: False,
-                hits_written: hits.nothing_written,
-                checked_at: ffi.now_seconds(),
-              ))
+              Ok(
+                State(
+                  settings:,
+                  rules:,
+                  fingerprint: "",
+                  stamp: ffi.file_stamp(settings.rules_path),
+                  hits_saved_at: ffi.now_seconds(),
+                  hits_saved_draining: False,
+                  hits_written: hits.nothing_written,
+                  checked_at: ffi.now_seconds(),
+                  next_boundary: #(
+                    rules,
+                    rule.next_boundary(rules, ffi.now_seconds()),
+                  ),
+                ),
+              )
             }
             Error(Nil) -> Error(reason)
           }
@@ -775,9 +791,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Schedule(self) -> {
       process.send_after(self, schedule_interval, Schedule(self))
       let now = ffi.now_seconds()
+      // computed again when the rules changed (another term: comparing
+      // the same term is immediate)
+      let next = case state.next_boundary {
+        #(rules, next) if rules == state.rules -> next
+        _ -> rule.next_boundary(state.rules, state.checked_at)
+      }
       // a change since the last check rebuilt the matcher already: then
       // this rebuild is redundant, but harmless
-      case rule.crosses_boundary(state.rules, state.checked_at, now) {
+      let crossed = next <= now
+      case crossed {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
@@ -790,7 +813,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           publish(built, state.settings, state.rules)
         }
       }
-      actor.continue(State(..state, checked_at: now))
+      let next = case crossed {
+        True -> rule.next_boundary(state.rules, now)
+        False -> next
+      }
+      actor.continue(
+        State(..state, checked_at: now, next_boundary: #(state.rules, next)),
+      )
     }
 
     Watch(self) -> {
