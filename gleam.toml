@@ -1,5 +1,5 @@
 name = "redirect_proxy"
-version = "0.5.0"
+version = "0.6.0"
 description = "High performance HTTP redirect server with an administration backend"
 licences = ["MIT"]
 repository = { type = "github", user = "janalis", repo = "redirect-proxy" }
