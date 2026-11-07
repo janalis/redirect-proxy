@@ -192,27 +192,72 @@ pub fn login_page(req: Request, ctx: Context) -> Response {
   }
 }
 
-/// The change-password form checks the current password: a wrong one
-/// counts as a failed login for that account and client, so a stolen
-/// session gets no more guesses than the login form gives. The seconds to
-/// wait while blocked.
-pub fn password_check_blocked(
+/// Starts a password check (login form, or the current password asked by
+/// the change-password form, so that a stolen session gets no more guesses
+/// than the login form gives). It is counted as a failure for the client,
+/// the address and the account before the password is hashed: checked and
+/// counted in one step, so that concurrent attempts cannot all pass the
+/// limits. `Error` holds the seconds to wait while blocked. A started check
+/// ends with `end_password_check`.
+pub fn start_password_check(
   req: Request,
   ctx: Context,
   username: String,
-) -> Result(Int, Nil) {
-  ratelimit.retry_after(login_checks(
-    ctx.client_ip,
-    username,
-    known_device(req, ctx, username),
+) -> Result(Nil, Int) {
+  let known = known_device(req, ctx, username)
+  use Nil <- result.try(ratelimit.take_all(
+    login_checks(ctx.client_ip, username, known),
+    login_window,
   ))
+  // a known device is not held back by the account's limit, but its
+  // failures count towards it
+  case known {
+    True -> ratelimit.record_failure(login_user_check(username).0, login_window)
+    False -> Nil
+  }
+  Ok(Nil)
+}
+
+pub type PasswordCheck {
+  /// The password was right: the attempt is taken back, and the client's
+  /// earlier failures forgiven.
+  Passed
+  /// The password was wrong: the attempt stays counted.
+  Failed
+  /// The password was not checked (the server was busy).
+  NotRun
+}
+
+pub fn end_password_check(
+  ctx: Context,
+  username: String,
+  outcome: PasswordCheck,
+) -> Nil {
+  let pair_key = login_pair_key(ctx.client_ip, username)
+  let others = [login_ip_key(ctx.client_ip), login_user_check(username).0]
+  case outcome {
+    Failed -> metrics.incr(metrics.LoginFailures)
+    Passed -> {
+      ratelimit.reset(pair_key)
+      list.each(others, ratelimit.forgive)
+    }
+    NotRun -> list.each([pair_key, ..others], ratelimit.forgive)
+  }
+}
+
+/// Runs a password hash (`password.verify`, `password.dummy_verify`) unless
+/// as many as the server allows are already running: each one takes a CPU
+/// for a fraction of a second, and a burst of logins must not starve the
+/// redirect listener. `Error` when busy: answer 503.
+pub fn hashing_password(work: fn() -> a) -> Result(a, Nil) {
+  ratelimit.bounded("password", ffi.password_check_slots(), work)
 }
 
 pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
   case ok {
-    True -> ratelimit.reset(login_pair_key(ctx.client_ip, username))
+    True -> end_password_check(ctx, username, Passed)
     False -> {
-      record_login_failure(ctx.client_ip, username)
+      end_password_check(ctx, username, Failed)
       log.warning(
         "wrong current password for user="
         <> log_value(username)
@@ -253,13 +298,6 @@ fn login_user_check(username: String) -> #(String, Int) {
   #("login-user:" <> username, login_user_limit)
 }
 
-fn record_login_failure(ip: String, username: String) -> Nil {
-  list.each(login_checks(ip, username, False), fn(check) {
-    ratelimit.record_failure(check.0, login_window)
-  })
-  metrics.incr(metrics.LoginFailures)
-}
-
 pub fn login(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.local_auth.enabled, fn() {
     wisp.not_found()
@@ -286,13 +324,10 @@ pub fn login(req: Request, ctx: Context) -> Response {
     ratelimit.record_failure(ip_key, login_window)
     fail("Invalid username or password.", 401, "")
   })
-  let pair_key = login_pair_key(ctx.client_ip, username)
   let who = log_value(username) <> " ip=" <> ctx.client_ip
 
-  let checks =
-    login_checks(ctx.client_ip, username, known_device(req, ctx, username))
-  case ratelimit.retry_after(checks) {
-    Ok(seconds) -> {
+  case start_password_check(req, ctx, username) {
+    Error(seconds) -> {
       log.warning("login throttled for user=" <> who)
       audit_once_per_window(ctx.client_ip, seconds, fn() {
         audit_auth(ctx, username, "auth.throttled", "local")
@@ -304,30 +339,39 @@ pub fn login(req: Request, ctx: Context) -> Response {
       )
       |> wisp.set_header("retry-after", int.to_string(seconds))
     }
-    Error(Nil) -> {
-      let user = case users.get(ctx.users, username) {
-        Ok(user) ->
-          case pass {
-            // as slow as a wrong password: the timing must not tell that
-            // the user exists
-            "" -> {
+    Ok(Nil) -> {
+      let checked =
+        hashing_password(fn() {
+          case users.get(ctx.users, username) {
+            Ok(user) ->
+              case pass {
+                // as slow as a wrong password: the timing must not tell that
+                // the user exists
+                "" -> {
+                  password.dummy_verify()
+                  Error(Nil)
+                }
+                _ ->
+                  case password.verify(pass, user.password_hash) {
+                    True -> Ok(user)
+                    False -> Error(Nil)
+                  }
+              }
+            Error(Nil) -> {
               password.dummy_verify()
               Error(Nil)
             }
-            _ ->
-              case password.verify(pass, user.password_hash) {
-                True -> Ok(user)
-                False -> Error(Nil)
-              }
           }
+        })
+      case checked {
         Error(Nil) -> {
-          password.dummy_verify()
-          Error(Nil)
+          end_password_check(ctx, username, NotRun)
+          log.warning("login refused, too many password checks running")
+          fail("The server is busy. Try again in a moment.", 503, username)
+          |> wisp.set_header("retry-after", "1")
         }
-      }
-      case user {
-        Ok(user) -> {
-          ratelimit.reset(pair_key)
+        Ok(Ok(user)) -> {
+          end_password_check(ctx, username, Passed)
           log.info("login: " <> who)
           audit_auth(ctx, username, "auth.login", "local")
           let user = rehash_if_needed(ctx, user, pass)
@@ -344,8 +388,8 @@ pub fn login(req: Request, ctx: Context) -> Response {
           |> set_session_cookie(req, ctx, s)
           |> set_device_cookie(req, ctx, user.username)
         }
-        Error(Nil) -> {
-          record_login_failure(ctx.client_ip, username)
+        Ok(Error(Nil)) -> {
+          end_password_check(ctx, username, Failed)
           log.warning("failed login for user=" <> who)
           audit_login_failure(
             ctx,

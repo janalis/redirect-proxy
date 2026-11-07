@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/ffi
+import support
 
 fn key(name: String) -> String {
   name <> "-" <> int.to_string(ffi.now_micros())
@@ -63,4 +64,68 @@ pub fn ended_windows_are_purged_test() {
   assert ratelimit.purge_expired() >= 1
   ratelimit.record_failure(k, 60)
   assert ratelimit.is_blocked(k, 1)
+}
+
+/// `take` checks and counts in one step: of many concurrent attempts, only
+/// the limit get through (a check made before counting lets them all pass).
+pub fn concurrent_takes_stay_within_the_limit_test() {
+  ratelimit.init()
+  let k = key("take")
+  let done = process.new_subject()
+  let attempts = 200
+  list.each(list.repeat(Nil, attempts), fn(_) {
+    process.spawn(fn() { process.send(done, ratelimit.take(k, 10, 60)) })
+  })
+  let passed =
+    list.repeat(Nil, attempts)
+    |> list.filter(fn(_) {
+      let assert Ok(taken) = process.receive(done, 5000)
+      taken
+    })
+  assert list.length(passed) == 10
+  assert ratelimit.is_blocked(k, 10)
+  assert !ratelimit.is_blocked(k, 11)
+}
+
+/// All or nothing: a spent check takes back the uses counted for the others.
+pub fn take_all_counts_nothing_when_one_is_spent_test() {
+  ratelimit.init()
+  let open = key("open")
+  let spent = key("spent")
+  ratelimit.record_failure(spent, 60)
+  let assert Error(wait) = ratelimit.take_all([#(open, 5), #(spent, 1)], 60)
+  assert wait > 0 && wait <= 60
+  assert !ratelimit.is_blocked(open, 1)
+  assert ratelimit.take_all([#(open, 1)], 60) == Ok(Nil)
+  assert ratelimit.is_blocked(open, 1)
+  ratelimit.forgive(open)
+  assert !ratelimit.is_blocked(open, 1)
+  // never below zero
+  ratelimit.forgive(open)
+  ratelimit.forgive(key("missing"))
+  assert ratelimit.take_all([#(open, 1)], 60) == Ok(Nil)
+}
+
+pub fn bounded_work_refuses_beyond_the_limit_test() {
+  ratelimit.init()
+  let name = key("slots")
+  let started = process.new_subject()
+  process.spawn(fn() {
+    let release = process.new_subject()
+    ratelimit.bounded(name, 1, fn() {
+      process.send(started, release)
+      process.receive(release, 5000)
+    })
+  })
+  let assert Ok(release) = process.receive(started, 5000)
+  assert ratelimit.bounded(name, 1, fn() { Nil }) == Error(Nil)
+  process.send(release, Nil)
+  // the slot is given back, even by work that crashes
+  support_wait(fn() { ratelimit.bounded(name, 1, fn() { Nil }) == Ok(Nil) })
+  let _ = ffi.rescue(fn() { ratelimit.bounded(name, 1, fn() { panic }) })
+  assert ratelimit.bounded(name, 1, fn() { 7 }) == Ok(7)
+}
+
+fn support_wait(condition: fn() -> Bool) -> Nil {
+  support.wait_until(condition, 2000)
 }

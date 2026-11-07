@@ -112,6 +112,29 @@ pub fn ets_delete_older(table: String, now: Int) -> Int
 pub fn window_record(table: String, key: String, now: Int, window: Int) -> Nil
 
 /// The end of `key`'s window and its failure count.
+@external(erlang, "redirect_proxy_ffi", "window_take")
+pub fn window_take(
+  table: String,
+  key: String,
+  now: Int,
+  window: Int,
+  limit: Int,
+) -> Result(Nil, Int)
+
+@external(erlang, "redirect_proxy_ffi", "window_forgive")
+pub fn window_forgive(table: String, key: String) -> Nil
+
+@external(erlang, "redirect_proxy_ffi", "with_slot")
+pub fn with_slot(
+  table: String,
+  key: String,
+  max: Int,
+  run: fn() -> a,
+) -> Result(a, Nil)
+
+@external(erlang, "redirect_proxy_ffi", "password_check_slots")
+pub fn password_check_slots() -> Int
+
 @external(erlang, "redirect_proxy_ffi", "window_get")
 pub fn window_get(table: String, key: String) -> Result(#(Int, Int), Nil)
 
