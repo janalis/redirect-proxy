@@ -25,6 +25,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_FALLBACK_URL` | (none) |
 | `RP_SERVER_NOT_FOUND_BODY` | `Not Found` (body of the 404 when no fallback is set) |
 | `RP_SERVER_HEALTH_PATH` | (none: off) |
+| `RP_SERVER_METRICS_PATH` | (none: off; needs `RP_ADMIN_METRICS_TOKEN`) |
 | `RP_SERVER_MAX_PATH_BYTES` | `8192` (longer paths get a 414) |
 | `RP_SERVER_HTTPS_REDIRECT` | `false` (redirect plain HTTP requests to HTTPS before any rule) |
 | `RP_ADMIN_ENABLED` | `true` |

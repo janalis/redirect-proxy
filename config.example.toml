@@ -24,6 +24,11 @@ trailing_slash = "strict"
 # can only probe the traffic port: 200 while serving, 503 while draining
 # before a stop. Empty: off (every path goes to the rules).
 health_path = ""
+# A path where this listener serves the Prometheus metrics before any rule,
+# for replicas without an admin or API listener. This listener is public:
+# it needs admin.metrics_token, sent as "Authorization: Bearer <token>".
+# Empty: off.
+metrics_path = ""
 # Requests with a longer path (in bytes) get a 414 without rule lookup.
 max_path_bytes = 8192
 # Redirect plain HTTP requests to the same URL over HTTPS (301, or 308 for

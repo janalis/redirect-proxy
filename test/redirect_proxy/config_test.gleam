@@ -627,3 +627,22 @@ pub fn plain_http_issuer_warns_test() {
   assert !warns("http://localhost:9000")
   assert !warns("http://[::1]:9000")
 }
+
+/// The redirect listener is public: its metrics path needs the token.
+pub fn metrics_path_needs_a_token_test() {
+  let d = config.default()
+  let with = fn(path, token) {
+    config.Config(
+      ..d,
+      admin: config.AdminConfig(..d.admin, metrics_token: token),
+      server: config.ServerConfig(..d.server, metrics_path: path),
+    )
+  }
+  let assert Error(message) = config_validate.validate(with("/_metrics", ""))
+  assert string.contains(message, "admin.metrics_token")
+  let assert Error(_) =
+    config_validate.validate(with("_metrics", "a-long-metrics-token"))
+  let assert Ok(_) =
+    config_validate.validate(with("/_metrics", "a-long-metrics-token"))
+  let assert Ok(_) = config_validate.validate(with("", ""))
+}

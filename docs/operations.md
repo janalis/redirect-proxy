@@ -108,6 +108,12 @@
   during the shutdown grace. Probes are not counted in
   `redirect_proxy_requests_total`. Off by default, so that every path stays
   available to rules.
+- **Metrics on the traffic port.** Replicas usually run without an admin or
+  API listener, so they have no `/metrics`. Set `server.metrics_path` (for
+  example `/_metrics`, `RP_SERVER_METRICS_PATH`) and the redirect listener
+  serves the metrics on that path, before any rule. The listener is public,
+  so this needs `admin.metrics_token`, sent as `Authorization: Bearer
+  <token>`; without the token the request gets a 401. Off by default.
 - **HTTP to HTTPS.** With `server.https_redirect` (`RP_SERVER_HTTPS_REDIRECT`),
   plain HTTP requests are redirected to the same host, path and query over
   HTTPS before any rule: 301 for `GET` and `HEAD`, 308 for other methods so
@@ -142,7 +148,10 @@ not share any of it, so run one writer and any number of replicas:
   the writer's volume mounted read-only), with `storage.watch_interval`
   (`RP_STORAGE_WATCH_INTERVAL`) to pick up changes. They write nothing
   there. Their hit counts are then not kept across restarts, and they log
-  that once.
+  that once. Set `server.metrics_path` to scrape their metrics (see
+  "Metrics on the traffic port"). Hit counts are per instance: the
+  writer's admin shows only its own, so judge unused rules from the
+  replicas that take the traffic.
 - The file must carry rule ids, since a replica cannot write the ids it
   would assign. Use the writer's file or `GET /api/redirects/export`, or
   give a hand-written file its ids with `redirect-proxy rules import` into

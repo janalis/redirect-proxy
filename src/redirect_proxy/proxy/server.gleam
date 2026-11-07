@@ -16,6 +16,7 @@ import redirect_proxy/ffi
 import redirect_proxy/listener
 import redirect_proxy/matcher
 import redirect_proxy/metrics
+import redirect_proxy/metrics_endpoint
 import redirect_proxy/rule
 import redirect_proxy/snapshot
 
@@ -23,15 +24,21 @@ import redirect_proxy/snapshot
 /// with the id of the matched rule.
 pub fn handler(
   config: ServerConfig,
+  metrics_token: String,
   access: Option(access_log.Settings),
 ) -> fn(Request(mist.Connection)) -> Response(mist.ResponseData) {
   let not_found_body = bytes_tree.from_string(config.not_found_body)
   let permanent_cache =
     "public, max-age=" <> int.to_string(config.cache_max_age)
-  fn(req) {
+  fn(req: Request(mist.Connection)) {
     let time_us = ffi.now_micros()
     let started = ffi.monotonic_micros()
-    let #(resp, rule_id) = respond(config, req, not_found_body, permanent_cache)
+    let #(resp, rule_id) = case
+      config.metrics_path != "" && req.path == config.metrics_path
+    {
+      True -> #(metrics_response(req, metrics_token), "")
+      False -> respond(config, req, not_found_body, permanent_cache)
+    }
     metrics.observe(listener.RedirectListener, ffi.monotonic_micros() - started)
     metrics.response(resp.status)
     case access {
@@ -92,6 +99,30 @@ fn route(
           }
       }
     }
+  }
+}
+
+/// `server.metrics_path`: the metrics of a replica that has no admin or API
+/// listener, with the bearer token (`admin.metrics_token`).
+fn metrics_response(
+  req: Request(mist.Connection),
+  token: String,
+) -> Response(mist.ResponseData) {
+  let #(status, body) = case metrics_endpoint.authorized(req, token) {
+    True -> #(200, metrics.render_prometheus())
+    False -> #(401, "Authentication required")
+  }
+  let resp =
+    response.new(status)
+    |> response.set_header("cache-control", "no-store")
+    |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+  case status {
+    200 ->
+      response.set_header(resp, "content-type", "text/plain; version=0.0.4")
+    _ ->
+      resp
+      |> response.set_header("content-type", "text/plain; charset=utf-8")
+      |> response.set_header("www-authenticate", "Bearer realm=\"metrics\"")
   }
 }
 

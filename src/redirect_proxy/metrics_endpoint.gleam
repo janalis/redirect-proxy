@@ -1,5 +1,7 @@
 //// `GET /metrics`, on the admin listener (or the API's when the admin is
-//// disabled): public unless `admin.metrics_token` is set, then it needs
+//// disabled), and `server.metrics_path` on the redirect listener: public
+//// unless `admin.metrics_token` is set (always, on the redirect listener),
+//// then it needs
 //// `Authorization: Bearer <token>` (Prometheus `authorization` /
 //// `bearer_token_file`).
 
@@ -24,7 +26,8 @@ pub fn respond(req: Request, token: String) -> Response {
   }
 }
 
-fn authorized(req: Request, token: String) -> Bool {
+/// True when `token` is "" or the request carries it as a bearer token.
+pub fn authorized(req: request.Request(body), token: String) -> Bool {
   case token {
     "" -> True
     _ ->
