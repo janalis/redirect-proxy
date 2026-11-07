@@ -24,6 +24,7 @@ pub fn audit_log(
   filters: AuditFilters,
   page: Int,
   pages: Int,
+  window: Int,
 ) -> String {
   let query = fn(page) {
     [
@@ -56,7 +57,9 @@ pub fn audit_log(
       ]),
       h.p([a.class("small fg-secondary")], [
         h.text(
-          "Among the 1000 most recent entries, newest first. Page "
+          "Among the "
+          <> int.to_string(window)
+          <> " most recent matching entries, newest first. Page "
           <> int.to_string(page)
           <> " of "
           <> int.to_string(pages)

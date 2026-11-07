@@ -53,6 +53,14 @@ pub fn audit_page(req: Request, ctx: Context, s: Session) -> Response {
     |> list.take(audit_page_size)
   html(
     200,
-    audit_view.audit_log(s, features(ctx), entries, filters, page, pages_count),
+    audit_view.audit_log(
+      s,
+      features(ctx),
+      entries,
+      filters,
+      page,
+      pages_count,
+      audit_window,
+    ),
   )
 }

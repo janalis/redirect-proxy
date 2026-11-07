@@ -1,5 +1,6 @@
 //// JSON and CSV import and export, and the import preview.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -187,7 +188,13 @@ pub fn import_preview(
         h.input([a.type_("hidden"), a.name("step"), a.value("apply")]),
         // applies exactly what is shown, or nothing if the rules changed
         h.input([a.type_("hidden"), a.name("version"), a.value(version)]),
-        h.textarea([a.name("content"), a.hidden(True)], content),
+        // base64: a form turns the line breaks of a textarea into CRLF (and
+        // drops a leading one), which would change multi-line cells
+        h.input([
+          a.type_("hidden"),
+          a.name("content_base64"),
+          a.value(bit_array.base64_encode(bit_array.from_string(content), True)),
+        ]),
         h.button([a.type_("submit"), a.class("btn btn-solid theme-primary")], [
           h.text("Apply"),
         ]),
