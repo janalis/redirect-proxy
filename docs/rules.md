@@ -137,7 +137,11 @@ are sent with `no-store`.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 
-At request time, each regex match also has a fixed backtracking budget.
+At request time, each regex match also has a fixed backtracking budget,
+and the regex rules of a host have a budget for the whole request: a path
+crafted to make every unindexed regex work hard is answered as a miss once
+it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). Real
+rules come nowhere near it.
 
 **Substitutions cannot leave the target's host.** Captures come from the
 request path, so they are checked after `$1`... are replaced (open redirect

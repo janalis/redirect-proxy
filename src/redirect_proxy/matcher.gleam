@@ -853,8 +853,21 @@ fn match_regex(
   let indexed =
     candidates(rules.regex, path)
     |> list.sort(fn(a, b) { int.compare(a.rank, b.rank) })
-  run_regexes(indexed, rules.regex_unindexed, path, vars, 0)
+  run_regexes(indexed, rules.regex_unindexed, path, vars, 0, 0, 0)
 }
+
+/// Reductions the regex rules of one host may cost a request in all. A run
+/// that exhausts the PCRE limit costs about 13 000, a usual one under 300:
+/// this is some 15 exhausted runs, far above what real rules spend, but it
+/// bounds a crafted path that costs every unindexed regex just under the
+/// limit (which `max_exhausted_runs` does not see).
+const regex_reductions_budget = 200_000
+
+/// Reading the reduction count costs about a hundred reductions: it is read
+/// every `budget_check_every` runs only, so that the usual handful of regex
+/// rules costs nothing more. The cost of the runs before the first reading
+/// is not counted (at most `budget_check_every` runs, each capped).
+const budget_check_every = 32
 
 /// Regex runs of one request that may exhaust their budget before the
 /// request stops trying the next regex rules: each run is capped, but a
@@ -862,13 +875,16 @@ fn match_regex(
 const max_exhausted_runs = 3
 
 /// Runs the regex rules of two lists sorted by rank, merged in rank order,
-/// until one matches.
+/// until one matches, or the request spent its regex budget: `runs` so far,
+/// and the reduction count past which it stops (`until`, 0 until measured).
 fn run_regexes(
   a: List(RegexRule),
   b: List(RegexRule),
   path: String,
   vars: template.RequestVars,
   exhausted: Int,
+  runs: Int,
+  until: Int,
 ) -> Result(Match, Nil) {
   let next = case a, b {
     [], [] -> Error(Nil)
@@ -877,8 +893,23 @@ fn run_regexes(
     [x, ..rest_a], [y, ..] if x.rank < y.rank -> Ok(#(x, rest_a, b))
     _, [y, ..rest_b] -> Ok(#(y, a, rest_b))
   }
+  let runs = runs + 1
+  let until = case runs % budget_check_every {
+    0 ->
+      case until, ffi.reductions() {
+        0, now -> now + regex_reductions_budget
+        until, now if now > until -> -1
+        until, _ -> until
+      }
+    _ -> until
+  }
   case next {
     Error(Nil) -> Error(Nil)
+    // over budget: a miss, counted like an exhausted run
+    Ok(_) if until < 0 -> {
+      ffi.count_regex_limit()
+      Error(Nil)
+    }
     Ok(#(entry, a, b)) ->
       case ffi.regex_run(entry.regex, path) {
         Ok(captures) ->
@@ -891,14 +922,15 @@ fn run_regexes(
           {
             Ok(location) -> Ok(Match(entry.rule, location))
             // the substitution would leave the target's host: try the next
-            Error(Nil) -> run_regexes(a, b, path, vars, exhausted)
+            Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
-        Error(ffi.NoMatch) -> run_regexes(a, b, path, vars, exhausted)
+        Error(ffi.NoMatch) ->
+          run_regexes(a, b, path, vars, exhausted, runs, until)
         // a run exhausting its budget is counted by `regex_run`
         Error(ffi.LimitExceeded) ->
           case exhausted + 1 >= max_exhausted_runs {
             True -> Error(Nil)
-            False -> run_regexes(a, b, path, vars, exhausted + 1)
+            False -> run_regexes(a, b, path, vars, exhausted + 1, runs, until)
           }
       }
   }

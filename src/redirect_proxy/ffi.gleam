@@ -28,6 +28,15 @@ pub fn regex_compile(
 
 /// Runs a compiled regex. On success returns every capture, group 0 first.
 /// Unset groups are returned as empty strings.
+/// Counts one regex run stopped by a budget (the
+/// `redirect_proxy_regex_limit_exceeded_total` metric).
+@external(erlang, "redirect_proxy_ffi", "count_regex_limit")
+pub fn count_regex_limit() -> Nil
+
+/// Reductions spent by the calling process so far.
+@external(erlang, "redirect_proxy_ffi", "reductions")
+pub fn reductions() -> Int
+
 @external(erlang, "redirect_proxy_ffi", "regex_run")
 pub fn regex_run(
   regex: CompiledRegex,

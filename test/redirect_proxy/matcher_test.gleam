@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/string
+import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 
@@ -670,4 +671,31 @@ pub fn prefix_index_with_many_lengths_test() {
   assert target("/" <> string.repeat("b", 7)) == ""
   assert target("/cc") == "/c"
   assert target("/d") == ""
+}
+
+/// A path crafted to cost every regex just under the PCRE limit (no run is
+/// stopped, so `max_exhausted_runs` does not apply) cannot cost a request
+/// more than the regex budget: past it the request is a miss, counted in
+/// the regex limit metric.
+pub fn regex_cost_per_request_is_bounded_test() {
+  let costly = fn(count) {
+    int.range(from: count, to: 0, with: [], run: list.prepend)
+    |> list.map(fn(i) {
+      let id = int.to_string(i)
+      r(id, "*", rule.Regex, "^/(?:q" <> id <> ")?(\\w+\\s?)*$", "/costly")
+    })
+  }
+  let last =
+    Rule(..r("last", "*", rule.Regex, "^/.*!$", "/caught"), priority: 1000)
+  let crafted = "/word word word word !"
+  // a few costly rules fit in the budget: the last rule is reached
+  let m = matcher.build(list.append(costly(20), [last]))
+  assert location(m, "h", crafted) == Ok("/caught")
+  // a hundred do not: the request stops, and it is counted
+  let m = matcher.build(list.append(costly(100), [last]))
+  let before = ffi.regex_limit_count()
+  assert location(m, "h", crafted) == Error(Nil)
+  assert ffi.regex_limit_count() == before + 1
+  // usual paths cost nothing near the budget
+  assert location(m, "h", "/plain!") == Ok("/caught")
 }
