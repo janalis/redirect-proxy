@@ -70,31 +70,45 @@
   (then `.2`...) once it reaches `storage.audit_max_bytes` (10 MB), keeping
   `storage.audit_files` (5) rotated files. The admin's audit page and
   `GET /api/audit` search all of them.
-- **Metrics.** `GET :8081/metrics` returns requests, redirects, misses,
-  fallbacks, login failures, reloads, API requests, issued tokens, API
-  authentication failures, regex runs stopped by the backtracking budget,
-  loaded rules, VM memory and process count, plus
-  `redirect_proxy_build_info{version}` and `process_start_time_seconds`.
-  Also:
-  - `redirect_proxy_request_duration_seconds{listener}`: a histogram of the
-    time to serve a request (5 µs to 1 s buckets) for the redirect, admin
-    and API listeners;
-  - `redirect_proxy_responses_total{class}`: redirect listener responses by
-    status class;
-  - `redirect_proxy_rules_by_kind{kind}`: enabled rules by match kind;
-  - `redirect_proxy_storage_write_failures_total`: changes not saved
-    because the redirections file could not be written (disk full,
-    permissions);
-  - `redirect_proxy_idp_fetch_failures_total`: failed fetches of an identity
-    provider's metadata or signing keys (SSO and external API tokens);
-  - `redirect_proxy_last_reload_timestamp_seconds` and
-    `redirect_proxy_reload_duration_seconds` for the last successful load of
-    the redirections file.
+- **Metrics.** `GET :8081/metrics` returns these series, in the
+  Prometheus text format:
+
+  | Metric | Type | What it counts |
+  | --- | --- | --- |
+  | `redirect_proxy_requests_total` | counter | Requests received on the redirect listener |
+  | `redirect_proxy_redirects_total` | counter | Requests answered with a matching rule |
+  | `redirect_proxy_not_found_total` | counter | Requests without a matching rule |
+  | `redirect_proxy_fallback_redirects_total` | counter | Unmatched requests redirected to `server.fallback_url` |
+  | `redirect_proxy_responses_total{class}` | counter | Redirect listener responses by status class (`2xx`...) |
+  | `redirect_proxy_request_duration_seconds{listener}` | histogram | Time to serve a request (5 µs to 1 s buckets), for the redirect, admin and API listeners |
+  | `redirect_proxy_regex_limit_exceeded_total` | counter | Regex runs stopped by the backtracking budget (counted as no match) |
+  | `redirect_proxy_admin_requests_total` | counter | Requests received on the admin listener |
+  | `redirect_proxy_login_failures_total` | counter | Failed admin logins and wrong current passwords |
+  | `redirect_proxy_api_requests_total` | counter | Requests to the REST API and the token endpoint |
+  | `redirect_proxy_api_tokens_issued_total` | counter | Access tokens issued by the built-in token endpoint |
+  | `redirect_proxy_api_auth_failures_total` | counter | Rejected API tokens and client authentications |
+  | `redirect_proxy_idp_fetch_failures_total` | counter | Failed fetches of an identity provider's metadata or signing keys (SSO and external API tokens) |
+  | `redirect_proxy_rules` | gauge | Enabled rules currently loaded |
+  | `redirect_proxy_rules_by_kind{kind}` | gauge | Enabled rules by match kind |
+  | `redirect_proxy_reloads_total` | counter | Successful loads of the redirections file |
+  | `redirect_proxy_reload_failures_total` | counter | Rejected loads of the redirections file |
+  | `redirect_proxy_last_reload_timestamp_seconds` | gauge | When the redirections file was last loaded successfully |
+  | `redirect_proxy_reload_duration_seconds` | gauge | Duration of that load |
+  | `redirect_proxy_storage_write_failures_total` | counter | Changes not saved because the redirections file could not be written (disk full, permissions) |
+  | `redirect_proxy_memory_bytes` | gauge | Memory allocated by the Erlang VM |
+  | `redirect_proxy_processes` | gauge | Erlang processes |
+  | `redirect_proxy_build_info{version}` | gauge | Always 1, labelled with the running version |
+  | `process_start_time_seconds` | gauge | Start time of the process, in seconds since the epoch |
+
+  Alerts worth having: `redirect_proxy_reload_failures_total` or
+  `redirect_proxy_storage_write_failures_total` increasing, and a rise of
+  `redirect_proxy_regex_limit_exceeded_total` or
+  `redirect_proxy_login_failures_total`.
 
   Per-rule hit counts are shown in the admin, not exported (one series per
   rule would be too many).
-  The endpoint is not authenticated: like the rest of the admin listener,
-  keep it off the public network. The container image binds the admin to
+  Without `admin.metrics_token` the endpoint is not authenticated: like the
+  rest of the admin listener, keep it off the public network. The container image binds the admin to
   `0.0.0.0` so that it can be published: publish it on `127.0.0.1` only, as
   in the quick start.
 - **Shutdown.** On `SIGTERM` the node drains for `server.shutdown_grace`
