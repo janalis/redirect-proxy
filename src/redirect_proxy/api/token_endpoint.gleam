@@ -64,9 +64,16 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
       ratelimit.record_failure(pair_key, window)
       ratelimit.record_failure(ip_key, window)
       metrics.incr(metrics.ApiAuthFailures)
+      // the client id is whatever the caller sent: only an existing
+      // client is named as the actor, so that anyone cannot file entries
+      // under a real client (the id typed stays the target)
+      let actor = case clients.get(ctx.clients, client_id) {
+        Ok(_) -> "client:" <> client_id
+        Error(Nil) -> ""
+      }
       audit.record_failure(
         config.audit_path(ctx.config),
-        "client:" <> client_id,
+        actor,
         "api.token_rejected",
         client_id,
         json.object([#("client_ip", json.string(ctx.client_ip))]),
