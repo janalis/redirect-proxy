@@ -353,6 +353,10 @@ pub fn header_value(value: String) -> String
 @external(erlang, "redirect_proxy_ffi", "strip_control")
 pub fn strip_control(value: String) -> String
 
+/// Whether a string has no control characters (below 32, and DEL).
+@external(erlang, "redirect_proxy_ffi", "no_control_chars")
+pub fn no_control_chars(value: String) -> Bool
+
 /// Forces a garbage collection of the calling process.
 @external(erlang, "redirect_proxy_ffi", "garbage_collect")
 pub fn garbage_collect() -> Nil

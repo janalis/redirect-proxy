@@ -18,6 +18,7 @@
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
     with_lock/2, with_file_lock/3, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
+    no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
@@ -35,14 +36,22 @@
 %% ---------------------------------------------------------------------------
 
 snapshot_put(Key, Value) ->
-    persistent_term:put({redirect_proxy, Key}, Value),
+    persistent_term:put(snapshot_key(Key), Value),
     nil.
 
 snapshot_get(Key) ->
-    case persistent_term:get({redirect_proxy, Key}, '$redirect_proxy_none') of
+    case persistent_term:get(snapshot_key(Key), '$redirect_proxy_none') of
         '$redirect_proxy_none' -> {error, nil};
         Value -> {ok, Value}
     end.
+
+%% The keys read on every request are atoms: `persistent_term` hashes its
+%% key on each read, and hashing `{redirect_proxy, <<"matcher">>}` costs
+%% more than the read itself.
+snapshot_key(<<"matcher">>) -> redirect_proxy_matcher;
+snapshot_key(<<"metrics">>) -> redirect_proxy_metrics;
+snapshot_key(<<"metrics_latency">>) -> redirect_proxy_metrics_latency;
+snapshot_key(Key) -> {redirect_proxy, Key}.
 
 %% ---------------------------------------------------------------------------
 %% Regular expressions with a backtracking budget (ReDoS guard)
@@ -834,6 +843,13 @@ needs_cleaning(<<>>) -> false.
 garbage_collect() ->
     erlang:garbage_collect(),
     nil.
+
+%% No byte below 32, nor DEL. The bytes of a multi-byte UTF-8 character are
+%% all 128 or more: the same as checking its code points, without listing
+%% them.
+no_control_chars(<<C, _/binary>>) when C < 32; C =:= 127 -> false;
+no_control_chars(<<_, Rest/binary>>) -> no_control_chars(Rest);
+no_control_chars(<<>>) -> true.
 
 %% Runs Fun, turning an exception into {error, Description}. gleam_httpc
 %% raises on errors it does not know (a peer closing the connection...).

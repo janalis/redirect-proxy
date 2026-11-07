@@ -1,7 +1,7 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2, session/3]).
+         raw_exchange/2, session/3, parse_outcome/1]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -75,4 +75,12 @@ read_until_closed(S, Acc, WaitMs) ->
         {ok, Data} -> read_until_closed(S, <<Acc/binary, Data/binary>>, WaitMs);
         {error, closed} -> {Acc, true};
         {error, _} -> {Acc, false}
+    end.
+
+%% The outcome of parsing a request head: "ok", "more" or "error:<status>".
+parse_outcome(Head) ->
+    case redirect_proxy_http:parse(Head) of
+        {ok, _, _, _, _} -> <<"ok">>;
+        more -> <<"more">>;
+        {error, Status} -> <<"error:", (integer_to_binary(Status))/binary>>
     end.

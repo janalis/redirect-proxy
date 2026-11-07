@@ -210,3 +210,60 @@ pub fn blank_lines_before_a_request_are_ignored_test() {
     exchange(["\r\nGET / HTTP/1.1\r\nhost: a\r\nconnection: close\r\n\r\n"])
   assert string.starts_with(text, "HTTP/1.1 200 ")
 }
+
+@external(erlang, "test_net_ffi", "parse_outcome")
+fn parse_outcome(head: BitArray) -> String
+
+pub fn every_partial_head_waits_for_more_test() {
+  let head =
+    "\r\nGET /a?b=1#c HTTP/1.1\r\nHost: a:81\r\nX-Name:  é v \t\r\nx-bare: lf\nconnection: keep-alive\r\n\r\n"
+  let bytes = bit_array.from_string(head)
+  let size = bit_array.byte_size(bytes)
+  assert parse_outcome(bytes) == "ok"
+  int.range(0, size, Nil, fn(_, n) {
+    let assert Ok(prefix) = bit_array.slice(bytes, 0, n)
+    assert parse_outcome(prefix) == "more"
+  })
+}
+
+pub fn header_values_are_trimmed_test() {
+  let #(text, _) =
+    exchange([
+      "GET /a#x?y HTTP/1.1\nhost: a\nX-Name: \t é v \t\nconnection: close\n\n",
+    ])
+  assert string.contains(text, "\r\nx-path: /a\r\n")
+  assert string.contains(text, "\r\nx-query: -\r\n")
+  assert string.contains(
+    text,
+    "\r\nx-headers: host=a;x-name=é v;connection=close\r\n",
+  )
+}
+
+pub fn lowercase_methods_are_other_methods_test() {
+  let #(text, _) =
+    exchange(["get / HTTP/1.1\r\nhost: a\r\nconnection: close\r\n\r\n"])
+  assert string.contains(text, "\r\nx-method: get\r\n")
+}
+
+pub fn malformed_header_names_are_rejected_test() {
+  assert parse_outcome(<<"GET / HTTP/1.1\r\nhost : a\r\n\r\n":utf8>>)
+    == "error:400"
+  assert parse_outcome(<<"GET / HTTP/1.1\r\n: a\r\n\r\n":utf8>>) == "error:400"
+  assert parse_outcome(<<"GET / HTTP/1.1\r\nhost: a\rb\r\n\r\n":utf8>>)
+    == "error:400"
+  assert parse_outcome(<<"GET / HTTP/1.1\r\nhost: a\r\nx: \u{7f}\r\n\r\n":utf8>>)
+    == "error:400"
+  // invalid UTF-8
+  assert parse_outcome(<<
+      "GET / HTTP/1.1\r\nhost: a\r\nx: ":utf8,
+      255,
+      254,
+      253,
+      252,
+      "\r\n\r\n":utf8,
+    >>)
+    == "error:400"
+  assert parse_outcome(<<"GET / HTTP/1.1 \r\nhost: a\r\n\r\n":utf8>>)
+    == "error:400"
+  assert parse_outcome(<<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>) == "ok"
+}

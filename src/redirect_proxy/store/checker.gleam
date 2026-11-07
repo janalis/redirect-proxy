@@ -75,6 +75,9 @@ fn loop(
     Ok(_) -> Nil
     Error(reason) -> log.warning("checking the rules failed: " <> reason)
   }
+  // A check leaves megabytes of garbage (9 MiB at 11 500 rules), kept until
+  // the next one: this process does nothing else to trigger a collection.
+  ffi.garbage_collect()
   loop(checks, fetch, ignore_trailing_slash)
 }
 

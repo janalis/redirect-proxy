@@ -741,12 +741,7 @@ fn valid_label(label: String) -> Bool {
 }
 
 fn no_control_chars(value: String) -> Bool {
-  value
-  |> string.to_utf_codepoints
-  |> list.all(fn(cp) {
-    let code = string.utf_codepoint_to_int(cp)
-    code >= 32 && code != 127
-  })
+  ffi.no_control_chars(value)
 }
 
 fn valid_target(target: String) -> Bool {
