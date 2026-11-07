@@ -3,7 +3,10 @@
 # Configuration
 
 Configuration is read from the TOML file given with `--config` or the
-`RP_CONFIG` environment variable. [`config.example.toml`](../config.example.toml) documents every
+`RP_CONFIG` environment variable, else from `/etc/redirect-proxy/config.toml`
+when it exists (where the packages install it: `sudo` drops `RP_CONFIG`),
+else defaults are used. Commands that change users, API clients or rules
+print the data directory they change. [`config.example.toml`](../config.example.toml) documents every
 option. Each option can be overridden with an environment variable named
 `RP_<SECTION>_<KEY>`; lists are comma separated. A number, a boolean
 (`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`) or a log level that does

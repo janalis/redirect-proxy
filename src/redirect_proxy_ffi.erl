@@ -22,7 +22,7 @@
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1,
     normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
-    encode_cached/2, strip_port/1
+    encode_cached/2, strip_port/1, data_dir_owner_mismatch/1
 ]).
 
 -include_lib("kernel/include/file.hrl").
@@ -992,4 +992,18 @@ strip_port(Host) ->
     case binary:split(Host, <<":">>) of
         [Name, _] -> Name;
         [_] -> Host
+    end.
+
+%% When the calling OS process runs as root and Dir belongs to another
+%% user: {ok, OwnerName}. Otherwise (or when it cannot be told) error.
+data_dir_owner_mismatch(Dir) ->
+    Uid = string:trim(os:cmd("id -u")),
+    case {Uid, file:read_file_info(Dir)} of
+        {"0", {ok, #file_info{uid = Owner}}} when Owner =/= 0 ->
+            Name = string:trim(os:cmd("id -nu " ++ integer_to_list(Owner) ++ " 2>/dev/null")),
+            {ok, unicode:characters_to_binary(case Name of
+                "" -> integer_to_list(Owner);
+                _ -> Name
+            end)};
+        _ -> {error, nil}
     end.
