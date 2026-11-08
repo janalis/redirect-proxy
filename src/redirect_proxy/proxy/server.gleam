@@ -352,7 +352,12 @@ fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
     Ok(proto) ->
       // the first value: the client side of the first proxy
       case string.split(proto, ",") {
-        [first, ..] -> string.lowercase(string.trim(first)) == "https"
+        // `wss`: Traefik's value for a WebSocket upgrade over TLS
+        [first, ..] ->
+          case string.lowercase(string.trim(first)) {
+            "https" | "wss" -> True
+            _ -> False
+          }
         [] -> False
       }
     Error(Nil) -> False

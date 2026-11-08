@@ -9,7 +9,8 @@ With `server.https_redirect` (`RP_SERVER_HTTPS_REDIRECT`),
 plain HTTP requests are redirected to the same host, path and query over
 HTTPS before any rule: 301 for `GET` and `HEAD`, 308 for other methods so
 that they are repeated as they were. Requests that a TLS proxy forwards
-with `X-Forwarded-Proto: https` go to the rules as usual. With
+with `X-Forwarded-Proto: https` (or `wss`, as Traefik marks WebSocket
+upgrades) go to the rules as usual. With
 `access_log.trusted_proxies` set, only the header of a trusted proxy
 counts; without, any peer's does, and a client sending that header itself
 only skips the upgrade. Rules cannot do this

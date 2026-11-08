@@ -276,6 +276,13 @@ pub fn https_redirect_test() {
   assert location(resp) == "https://example.com/new"
   assert get(env.redirect <> "/x", [#("x-forwarded-proto", "https")]).status
     == 404
+  // a WebSocket upgrade forwarded over TLS (Traefik sends `wss`)
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "wss")]).status
+    == 404
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "WSS, http")]).status
+    == 404
+  // `ws` is plain HTTP
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "ws")]).status == 301
   // a host that is not a host name is not redirected anywhere
   assert get(env.redirect <> "/old", [#("host", "evil.test/@x")]).status == 400
   // `_` is allowed, as in rule hosts
