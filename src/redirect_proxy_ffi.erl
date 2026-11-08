@@ -11,7 +11,9 @@
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
+    ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2,
+    cidrs_contain_peer_result/2,
+    is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
     on_sighup/1,
     plain_arguments/0, halt/1, read_password/1,
@@ -419,6 +421,60 @@ ip_in_cidr(IpBin, CidrBin) ->
         _ -> false
     end.
 
+%% CIDRs parsed once: {V4, V6}, each a list of {Prefix, Shift} where Prefix
+%% is the network as an integer shifted right by Shift (the host bits).
+%% Invalid entries never match (configuration validation rejects them).
+compile_cidrs(Bins) ->
+    lists:foldr(
+        fun(Bin, {V4, V6} = Acc) ->
+            case parse_cidr(Bin) of
+                {ok, {Net, Bits}} when tuple_size(Net) =:= 4 ->
+                    {[{ip_to_int(Net) bsr (32 - Bits), 32 - Bits} | V4], V6};
+                {ok, {Net, Bits}} ->
+                    {V4, [{ip_to_int(Net) bsr (128 - Bits), 128 - Bits} | V6]};
+                error -> Acc
+            end
+        end,
+        {[], []}, Bins).
+
+cidrs_empty({[], []}) -> true;
+cidrs_empty(_) -> false.
+
+%% Whether a mist IpAddress ({ip_v4, ...} or {ip_v6, ...}) is in the CIDRs.
+cidrs_contain_peer({[], []}, _) -> false;
+cidrs_contain_peer(Cidrs, {ip_v4, A, B, C, D}) -> cidrs_contain_ip({A, B, C, D}, Cidrs);
+cidrs_contain_peer(Cidrs, {ip_v6, A, B, C, D, E, F, G, H}) ->
+    cidrs_contain_ip({A, B, C, D, E, F, G, H}, Cidrs).
+
+%% cidrs_contain_peer/2 of a peer when known ({ok, IpAddress}).
+cidrs_contain_peer_result({[], []}, _) -> false;
+cidrs_contain_peer_result(Cidrs, {ok, Peer}) -> cidrs_contain_peer(Cidrs, Peer);
+cidrs_contain_peer_result(_, _) -> false.
+
+%% Whether an address (text) is in the CIDRs; false when it is not one.
+cidrs_contain({[], []}, _) -> false;
+cidrs_contain(Cidrs, IpBin) ->
+    case parse_ip(IpBin) of
+        {ok, Ip} -> cidrs_contain_ip(Ip, Cidrs);
+        _ -> false
+    end.
+
+%% As ip_in_cidr/2: IPv4 addresses match IPv4 networks, IPv6 addresses
+%% IPv6 networks, and IPv4-mapped IPv6 addresses both IPv6 networks and the
+%% IPv4 networks of their IPv4 address.
+cidrs_contain_ip({_, _, _, _} = Ip, {V4, _}) ->
+    V4 =/= [] andalso int_in_cidrs(ip_to_int(Ip), V4);
+cidrs_contain_ip({0, 0, 0, 0, 0, 16#ffff, A, B} = Ip, {V4, V6}) ->
+    (V4 =/= [] andalso int_in_cidrs((A bsl 16) bor B, V4))
+        orelse (V6 =/= [] andalso int_in_cidrs(ip_to_int(Ip), V6));
+cidrs_contain_ip(Ip, {_, V6}) when tuple_size(Ip) =:= 8 ->
+    V6 =/= [] andalso int_in_cidrs(ip_to_int(Ip), V6);
+cidrs_contain_ip(_, _) -> false.
+
+int_in_cidrs(_, []) -> false;
+int_in_cidrs(Int, [{Prefix, Shift} | Rest]) ->
+    (Int bsr Shift) =:= Prefix orelse int_in_cidrs(Int, Rest).
+
 %% The address that throttling counts failures for: IPv4 addresses as they
 %% are, IPv6 addresses by /64 (one host usually holds a whole /64, so
 %% counting single addresses would give it unlimited attempts). IPv4-mapped
@@ -488,8 +544,9 @@ parse_cidr(Bin) ->
     end.
 
 ip_to_int({A, B, C, D}) -> (A bsl 24) bor (B bsl 16) bor (C bsl 8) bor D;
-ip_to_int(T) when tuple_size(T) =:= 8 ->
-    lists:foldl(fun(X, Acc) -> (Acc bsl 16) bor X end, 0, tuple_to_list(T)).
+ip_to_int({A, B, C, D, E, F, G, H}) ->
+    (A bsl 112) bor (B bsl 96) bor (C bsl 80) bor (D bsl 64)
+        bor (E bsl 48) bor (F bsl 32) bor (G bsl 16) bor H.
 
 %% ---------------------------------------------------------------------------
 %% Time

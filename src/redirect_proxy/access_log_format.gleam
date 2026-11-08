@@ -7,6 +7,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/string_tree
+import redirect_proxy/cidr.{type Cidrs}
 import redirect_proxy/ffi
 
 /// How variable values are escaped.
@@ -339,39 +340,45 @@ fn escape(mode: Escape, value: String) -> String {
 pub fn client_ip(
   peer: String,
   headers: List(#(String, String)),
-  trusted: List(String),
+  trusted: Cidrs,
 ) -> String {
-  let is_trusted = fn(ip) { list.any(trusted, ffi.ip_in_cidr(ip, _)) }
-  case trusted != [] && is_trusted(peer) {
+  case cidr.contains(trusted, peer) {
     False -> peer
-    True -> {
-      // several header lines are one comma-separated list, in order: a
-      // client can send its own line ahead of the proxy's
-      let forwarded = case list.key_filter(headers, "x-forwarded-for") {
-        [_, ..] as lines -> {
-          let hops =
-            lines
-            |> string.join(",")
-            |> string.split(",")
-            |> list.map(string.trim)
-            |> list.filter(fn(h) { h != "" })
-            |> list.reverse
-          case list.find(hops, fn(h) { !is_trusted(h) }) {
-            Ok(ip) -> Ok(ip)
-            Error(Nil) -> list.last(hops)
-          }
-        }
-        [] -> list.key_find(headers, "x-real-ip") |> result.map(string.trim)
-      }
-      case forwarded {
-        Ok(ip) ->
-          case ffi.is_ip_address(ip) {
-            True -> ip
-            False -> peer
-          }
-        Error(Nil) -> peer
+    True -> forwarded_client_ip(peer, headers, trusted)
+  }
+}
+
+/// `client_ip` when the peer is known to be one of the `trusted` proxies.
+pub fn forwarded_client_ip(
+  peer: String,
+  headers: List(#(String, String)),
+  trusted: Cidrs,
+) -> String {
+  // several header lines are one comma-separated list, in order: a client
+  // can send its own line ahead of the proxy's
+  let forwarded = case list.key_filter(headers, "x-forwarded-for") {
+    [_, ..] as lines -> {
+      let hops =
+        lines
+        |> string.join(",")
+        |> string.split(",")
+        |> list.map(string.trim)
+        |> list.filter(fn(h) { h != "" })
+        |> list.reverse
+      case list.find(hops, fn(h) { !cidr.contains(trusted, h) }) {
+        Ok(ip) -> Ok(ip)
+        Error(Nil) -> list.last(hops)
       }
     }
+    [] -> list.key_find(headers, "x-real-ip") |> result.map(string.trim)
+  }
+  case forwarded {
+    Ok(ip) ->
+      case ffi.is_ip_address(ip) {
+        True -> ip
+        False -> peer
+      }
+    Error(Nil) -> peer
   }
 }
 

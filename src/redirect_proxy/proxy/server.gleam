@@ -14,6 +14,7 @@ import gleam/result
 import gleam/string
 import mist
 import redirect_proxy/access_log
+import redirect_proxy/cidr
 import redirect_proxy/config.{type ServerConfig}
 import redirect_proxy/ffi
 import redirect_proxy/listener
@@ -100,15 +101,20 @@ pub fn handler_with_identity(
     headers ->
       Identity(
         drop: list.unique(list.append(untrusted_headers, headers)),
-        proxies: identity_proxies,
+        proxies: cidr.compile(identity_proxies),
       )
   }
   let not_found_body = bytes_tree.from_string(config.not_found_body)
   let permanent_cache =
     "public, max-age=" <> int.to_string(config.cache_max_age)
   let upstream = config.upstream != ""
+  // parsed once: a request compares the peer address as integers
+  let trusted_listed = trusted_proxies != []
+  let trusted = cidr.compile(trusted_proxies)
   fn(req: Request(proxy_http.Peer)) {
     let started = ffi.monotonic_micros()
+    let peer_trusted =
+      trusted_listed && cidr.contains_peer_result(trusted, req.body)
     let routed = case
       config.metrics_path != "" && req.path == config.metrics_path
     {
@@ -117,7 +123,8 @@ pub fn handler_with_identity(
         route(
           config,
           upstream,
-          trusted_proxies,
+          trusted_listed,
+          peer_trusted,
           req,
           not_found_body,
           permanent_cache,
@@ -153,7 +160,7 @@ pub fn handler_with_identity(
         }
         proxy_http.Answer(resp)
       }
-      Unanswered -> forward(req, started, access, trusted_proxies, identity)
+      Unanswered -> forward(req, started, access, peer_trusted, identity)
     }
   }
 }
@@ -166,11 +173,10 @@ fn forward(
   req: Request(proxy_http.Peer),
   started: Int,
   access: Option(access_log.Settings),
-  trusted_proxies: List(String),
+  trusted: Bool,
   identity: Identity,
 ) -> proxy_http.Outcome {
   metrics.incr(metrics.UpstreamRequests)
-  let trusted = trusted_peer(req, trusted_proxies)
   proxy_http.Forward(
     close: ffi.draining(),
     headers: forwarded_headers(req, trusted),
@@ -178,7 +184,7 @@ fn forward(
       True, _ -> []
       False, NoIdentity -> untrusted_headers
       False, Identity(drop:, proxies:) ->
-        case trusted_peer(req, proxies) {
+        case cidr.contains_peer_result(proxies, req.body) {
           True -> untrusted_headers
           False -> drop
         }
@@ -225,7 +231,7 @@ fn forward(
 /// `access_log.trusted_proxies`).
 type Identity {
   NoIdentity
-  Identity(drop: List(String), proxies: List(String))
+  Identity(drop: List(String), proxies: cidr.Cidrs)
 }
 
 /// The other forwarding headers, and the ones naming the client: passed on
@@ -235,20 +241,6 @@ const untrusted_headers = [
   "forwarded", "x-real-ip", "x-forwarded-port", "x-forwarded-prefix",
   "x-forwarded-server", "x-forwarded-ssl", "x-client-ip", "true-client-ip",
 ]
-
-/// Whether the peer is one of `access_log.trusted_proxies`.
-fn trusted_peer(
-  req: Request(proxy_http.Peer),
-  trusted_proxies: List(String),
-) -> Bool {
-  case trusted_proxies, req.body {
-    [], _ | _, Error(Nil) -> False
-    _, Ok(ip) -> {
-      let peer = mist.ip_address_to_string(ip)
-      list.any(trusted_proxies, ffi.ip_in_cidr(peer, _))
-    }
-  }
-}
 
 /// `X-Forwarded-For` (the client address, appended to the incoming list
 /// when the peer is a trusted proxy), `X-Forwarded-Proto` and
@@ -309,7 +301,8 @@ pub fn forwarded_headers(
 fn route(
   config: ServerConfig,
   upstream: Bool,
-  trusted_proxies: List(String),
+  trusted_listed: Bool,
+  peer_trusted: Bool,
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
@@ -321,7 +314,10 @@ fn route(
       case string.byte_size(req.path) > config.max_path_bytes {
         True -> Answered(empty(414), "")
         False ->
-          case config.https_redirect && !forwarded_https(req, trusted_proxies) {
+          case
+            config.https_redirect
+            && !forwarded_https(req, trusted_listed, peer_trusted)
+          {
             True -> Answered(to_https(req, permanent_cache), "")
             False ->
               route_rules(
@@ -379,11 +375,11 @@ fn health() -> Response(BytesTree) {
 /// (a client sending the header itself only skips the upgrade).
 fn forwarded_https(
   req: Request(proxy_http.Peer),
-  trusted_proxies: List(String),
+  trusted_listed: Bool,
+  peer_trusted: Bool,
 ) -> Bool {
   case list.key_find(req.headers, "x-forwarded-proto") {
-    Ok(_) if trusted_proxies != [] ->
-      trusted_peer(req, trusted_proxies) && https_proto(req)
+    Ok(_) if trusted_listed -> peer_trusted && https_proto(req)
     Ok(_) -> https_proto(req)
     Error(Nil) -> False
   }

@@ -7,6 +7,7 @@ import qcheck
 import redirect_proxy/access_log_format.{
   type Entry, Entry, Header, Literal, Status, Var,
 } as fmt
+import redirect_proxy/cidr
 import redirect_proxy/ffi
 
 // 2026-11-06T09:30:05.123456Z
@@ -138,11 +139,11 @@ pub fn anonymize_test() {
 }
 
 pub fn client_ip_test() {
-  let trusted = ["10.0.0.0/8"]
+  let trusted = cidr.compile(["10.0.0.0/8"])
   let xff = [#("x-forwarded-for", "198.51.100.7, 203.0.113.9, 10.0.0.2")]
   // untrusted peer: headers are ignored
   assert fmt.client_ip("192.0.2.1", xff, trusted) == "192.0.2.1"
-  assert fmt.client_ip("192.0.2.1", xff, []) == "192.0.2.1"
+  assert fmt.client_ip("192.0.2.1", xff, cidr.compile([])) == "192.0.2.1"
   // trusted peer: rightmost untrusted hop
   assert fmt.client_ip("10.0.0.1", xff, trusted) == "203.0.113.9"
   assert fmt.client_ip(
