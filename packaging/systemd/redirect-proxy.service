@@ -19,6 +19,9 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15
+# SIGTERM to the VM only, so that it drains (server.shutdown_grace); every
+# process left in the unit gets SIGKILL after TimeoutStopSec
+KillMode=mixed
 LimitNOFILE=1048576
 
 # Allow binding privileged ports (80/443) without running as root
