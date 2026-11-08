@@ -20,7 +20,9 @@
 %% Pipelined requests are answered in order. The connection is closed after
 %% a response that says `connection: close` (draining), after a request with
 %% a body, after an HTTP/1.0 request without `connection: keep-alive`, after
-%% a 1.1 request with `connection: close`, and on any malformed request.
+%% a 1.1 request with `connection: close`, and on any malformed request. A
+%% request head must be complete within the idle timeout of its first
+%% bytes, however they trickle in: a 408 after that.
 %%
 %% With an upstream (`server.upstream`), the handler can leave a request to
 %% it instead of answering (`Forward`): see "Forwarding to the upstream".
@@ -77,6 +79,9 @@
     peer,
     idle_timeout,
     max_head,
+    %% none | the monotonic time (ms) by which the request head being read
+    %% must be complete: bytes trickled in do not extend it
+    deadline = none,
     %% {Second, Rendered} of the last `date` header
     date = {0, <<>>},
     %% none | #up{}: where unanswered requests are forwarded
@@ -230,20 +235,32 @@ peer(Socket) ->
         _ -> {error, nil}
     end.
 
-%% Waits for more bytes of a request head, then parses it again. The socket
-%% delivers up to ?ACTIVE packets as messages before it must be re-armed:
-%% no call to the port per request, and a bounded mailbox.
-more(Buffer, #conn{idle_timeout = Timeout} = C) ->
+%% Waits for the next request, or for more bytes of a request head, then
+%% parses it again. The socket delivers up to ?ACTIVE packets as messages
+%% before it must be re-armed: no call to the port per request, and a
+%% bounded mailbox. A head must be complete within the idle timeout of its
+%% first bytes (the deadline): a 408 after that.
+more(<<>>, #conn{idle_timeout = Timeout} = C) ->
     case hibernate_after(Timeout) of
-        After when After < Timeout -> wait(Buffer, C, After, hibernate);
-        _ -> wait(Buffer, C, Timeout, close)
+        After when After < Timeout -> wait(<<>>, C, After, hibernate);
+        _ -> wait(<<>>, C, Timeout, close)
+    end;
+more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
+    case Deadline - erlang:monotonic_time(millisecond) of
+        Left when Left =< 0 ->
+            expired(Buffer, C);
+        Left ->
+            case hibernate_after(Timeout) of
+                After when After < Left -> wait(Buffer, C, After, hibernate);
+                _ -> wait(Buffer, C, Left, close)
+            end
     end.
 
 %% Woken from hibernation: by the end of the idle timeout (Timer), or by
 %% another message, then waited for as before.
 idle(Buffer, C, Timer) ->
     receive
-        {timeout, Timer, idle} -> close(C)
+        {timeout, Timer, idle} -> expired(Buffer, C)
     after 0 ->
         case erlang:cancel_timer(Timer) of
             false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
@@ -261,7 +278,7 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp, Socket, Data} when Buffer =:= <<>> ->
             request(Data, C);
         {tcp, Socket, Data} ->
-            request(<<Buffer/binary, Data/binary>>, C);
+            more_head(<<Buffer/binary, Data/binary>>, Data, C);
         {tcp_passive, Socket} ->
             case inet:setopts(Socket, [{active, ?ACTIVE}]) of
                 ok -> more(Buffer, C);
@@ -280,22 +297,42 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
             close(C)
     after Timeout ->
         case Then of
-            close -> close(C);
+            close -> expired(Buffer, C);
             hibernate ->
-                %% the rest of the idle timeout, as a message: a hibernated
-                %% process only wakes up for one
-                Rest = C#conn.idle_timeout - Timeout,
-                Timer = erlang:start_timer(Rest, self(), idle),
+                %% the rest of the idle timeout (or of the time left to
+                %% complete the head), as a message: a hibernated process
+                %% only wakes up for one
+                Rest = case Buffer of
+                    <<>> -> C#conn.idle_timeout - Timeout;
+                    _ -> C#conn.deadline - erlang:monotonic_time(millisecond)
+                end,
+                Timer = erlang:start_timer(max(0, Rest), self(), idle),
                 erlang:hibernate(?MODULE, idle, [Buffer, C, Timer])
         end
+    end.
+
+%% The end of the idle timeout: an incomplete request head gets a 408.
+expired(<<>>, C) -> close(C);
+expired(_, C) -> reject(408, C).
+
+%% More bytes of an incomplete head. A head ends with a LF: without one in
+%% the new bytes, parsing it again would only say `more` (or find an error
+%% that the next parse finds too), so it is parsed again once one comes or
+%% the head reaches max_head.
+more_head(Buffer, Data, #conn{max_head = Max} = C) ->
+    case byte_size(Buffer) < Max andalso binary:match(Data, <<"\n">>) =:= nomatch of
+        true -> more(Buffer, C);
+        false -> request(Buffer, C)
     end.
 
 request(<<>>, C) ->
     more(<<>>, C);
 request(Buffer, #conn{max_head = Max} = C) ->
     case parse(Buffer) of
-        {ok, Request, Version, Close, Rest} ->
+        {ok, Request, Version, Close, Rest} when C#conn.deadline =:= none ->
             respond(Request, Version, Close, Rest, C);
+        {ok, Request, Version, Close, Rest} ->
+            respond(Request, Version, Close, Rest, C#conn{deadline = none});
         more when byte_size(Buffer) >= Max ->
             %% 414 while the request line itself is incomplete
             Status = case binary:match(Buffer, <<"\n">>) of
@@ -303,6 +340,9 @@ request(Buffer, #conn{max_head = Max} = C) ->
                 _ -> 431
             end,
             reject(Status, C);
+        more when C#conn.deadline =:= none ->
+            Deadline = erlang:monotonic_time(millisecond) + C#conn.idle_timeout,
+            more(Buffer, C#conn{deadline = Deadline});
         more ->
             more(Buffer, C);
         {error, Status} ->

@@ -1,7 +1,8 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1]).
+         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
+         trickle/3]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -114,3 +115,22 @@ parse_outcome(Head) ->
         more -> <<"more">>;
         {error, Status} -> <<"error:", (integer_to_binary(Status))/binary>>
     end.
+
+%% Sends Data one byte at a time, GapMs apart, until the server answers or
+%% closes the connection, then reads until it closes it or 1 s of silence.
+%% Returns {Received, Closed}.
+trickle(Port, Data, GapMs) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    Result = trickle_bytes(S, Data, GapMs),
+    gen_tcp:close(S),
+    Result.
+
+trickle_bytes(S, <<Byte, Rest/binary>>, GapMs) ->
+    _ = gen_tcp:send(S, <<Byte>>),
+    case gen_tcp:recv(S, 0, GapMs) of
+        {ok, Data} -> read_until_closed(S, Data, 1000);
+        {error, timeout} -> trickle_bytes(S, Rest, GapMs);
+        {error, _} -> {<<>>, true}
+    end;
+trickle_bytes(S, <<>>, _) ->
+    read_until_closed(S, <<>>, 1000).

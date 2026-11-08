@@ -140,9 +140,10 @@ pub fn idle_connections_are_closed_test() {
   let #(text, closed) = exchange([])
   assert text == ""
   assert closed
-  // an incomplete head too
+  // an incomplete head gets a 408
   let #(text, closed) = exchange(["GET / HTTP/1.1\r\nhost: a\r\n"])
-  assert text == ""
+  assert string.starts_with(text, "HTTP/1.1 408 Request Timeout\r\n")
+  assert string.contains(text, "\r\nconnection: close\r\n")
   assert closed
 }
 
@@ -340,4 +341,46 @@ pub fn half_closed_clients_get_their_responses_test() {
   assert responses(text) == 2
   assert string.contains(text, "x-path: /2\r\n")
   assert closed
+}
+
+@external(erlang, "test_net_ffi", "trickle")
+fn trickle(port: Int, data: BitArray, gap_ms: Int) -> #(BitArray, Bool)
+
+/// A head sent a byte at a time, each one within the idle timeout, still
+/// has to arrive within it (slowloris).
+pub fn trickled_heads_time_out_test() {
+  let #(received, closed) =
+    trickle(
+      start(),
+      <<"GET / HTTP/1.1\r\nhost: a\r\nconnection: close\r\n\r\n":utf8>>,
+      150,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 408 Request Timeout\r\n")
+  assert closed
+}
+
+pub fn heads_split_across_packets_are_parsed_test() {
+  let #(text, _) =
+    exchange([
+      "GET /a?b", "=1 HTTP/1.1\r", "\nHost: x\r\nX-Long: ", "value\r\n",
+      "connection: close\r\n\r", "\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-path: /a\r\n")
+  assert string.contains(text, "\r\nx-query: b=1\r\n")
+  assert string.contains(
+    text,
+    "\r\nx-headers: host=x;x-long=value;connection=close\r\n",
+  )
+  // and the 414 and 431 of a head sent in small parts
+  let #(text, _) =
+    exchange(["GET /", ..list.repeat(string.repeat("a", 300), 4)])
+  assert string.starts_with(text, "HTTP/1.1 414 ")
+  let #(text, _) =
+    exchange([
+      "GET / HTTP/1.1\r\nhost: a\r\nx: ",
+      ..list.repeat(string.repeat("a", 300), 4)
+    ])
+  assert string.starts_with(text, "HTTP/1.1 431 ")
 }
