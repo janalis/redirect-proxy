@@ -29,6 +29,9 @@ Rules are stored in `<data_dir>/redirects.json`:
 Only `source` and `target` are required, and a bare array of rules is also
 accepted. Ids and timestamps are added automatically.
 
+Moving redirects out of nginx or Apache? See
+[Migrating from nginx or Apache](migration).
+
 | Field | Default | Description |
 | --- | --- | --- |
 | `host` | `*` | Host name to match, case-insensitively and without a port (requests match whatever their port). `*` matches every host; `*.example.com` matches every subdomain of `example.com` (not `example.com` itself). International names are written in punycode (`xn--caf-dma.example`). |
@@ -128,8 +131,11 @@ removed. A rule for the exact form always wins.
 
 ## When nothing matches
 
-The server answers `404`, or redirects (302) to
-`server.fallback_url` if it is set.
+With `server.upstream` set, the request is forwarded to the website
+behind redirect-proxy (see
+[In front of a website](deployment#in-front-of-a-website)). Otherwise the
+server answers `404`, or redirects (302) to `server.fallback_url` if it is
+set (the two cannot be combined).
 
 ## Caching
 

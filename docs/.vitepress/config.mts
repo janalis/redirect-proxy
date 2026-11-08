@@ -63,6 +63,7 @@ export default defineConfig({
           text: 'Usage',
           items: [
             { text: 'Redirection rules', link: '/guide/rules' },
+            { text: 'Migrating from nginx or Apache', link: '/guide/migration' },
             { text: 'Configuration', link: '/guide/configuration' },
             { text: 'Administration', link: '/guide/administration' },
             { text: 'Authentication', link: '/guide/authentication' },

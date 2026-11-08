@@ -108,7 +108,10 @@ Caddy or Traefik, see
 [Web servers](https://janalis.github.io/redirect-proxy/guide/web-servers)
 for tested configurations: in front of a site, domains that only redirect,
 or the web server sending redirect-proxy only the pages a site no longer
-has.
+has. Moving redirects out of nginx or Apache configuration:
+[Migrating](https://janalis.github.io/redirect-proxy/guide/migration).
+Kubernetes and Docker Compose examples are in
+[Deployment](https://janalis.github.io/redirect-proxy/guide/deployment#kubernetes).
 
 ## Configuration
 
