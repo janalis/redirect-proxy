@@ -180,6 +180,14 @@ pub fn invalid_requests_are_rejected_test() {
   // only the characters of a URI, in an absolute path
   rejected("GET /a\\b HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("GET /é HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\"x\" HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=<x> HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\\x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\u{7f} HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\tb HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  // no CR or LF in a target, so none can reach a `location` header
+  rejected("GET /?a=1\rlocation:x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=1\nlocation:x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("GET http://a/ HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("OPTIONS * HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   // no control characters (or folded lines) in header values
@@ -193,6 +201,17 @@ pub fn invalid_requests_are_rejected_test() {
     "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100),
     "431",
   )
+}
+
+/// Characters browsers send unescaped in queries, outside RFC 3986.
+pub fn browser_query_characters_are_accepted_test() {
+  let #(text, _) =
+    exchange([
+      "GET /p[1]?a[]=1&b={x}|y^z`w HTTP/1.1\r\nhost: a\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-path: /p[1]\r\n")
+  assert string.contains(text, "\r\nx-query: a[]=1&b={x}|y^z`w\r\n")
 }
 
 pub fn handler_crashes_get_500_test() {

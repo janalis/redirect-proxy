@@ -162,6 +162,36 @@ pub fn fallback_url_test() {
 
 /// The redirect listener never reads request bodies: a body arriving after
 /// the headers must not be parsed as a second request on the same connection.
+/// A query with the characters browsers leave unescaped is kept as is in
+/// the `location` of a `preserve_query` rule; CR and LF never get there.
+pub fn preserved_queries_keep_browser_characters_test() {
+  let env = boot(config.default())
+  let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let assert Ok(received) =
+    raw_exchange(port, [
+      <<
+        "GET /v1/guide?a[]=1&b={x}|y^z`w HTTP/1.1\r\nhost: docs.test\r\nconnection: close\r\n\r\n":utf8,
+      >>,
+    ])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 302 ")
+  assert string.contains(
+    received,
+    "\r\nlocation: https://docs.example.com/v2/guide?a[]=1&b={x}|y^z`w\r\n",
+  )
+  let assert Ok(received) =
+    raw_exchange(port, [
+      <<
+        "GET /v1/guide?a=1\r\nset-cookie: x=1 HTTP/1.1\r\nhost: docs.test\r\n\r\n":utf8,
+      >>,
+    ])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 400 ")
+  assert !string.contains(string.lowercase(received), "set-cookie")
+  assert !string.contains(received, "location")
+}
+
 pub fn unread_bodies_close_the_connection_test() {
   let env = boot(config.default())
   let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")

@@ -31,7 +31,10 @@
 %% internal
 -export([init/5, parse/1]).
 
-%% unreserved, sub-delims, ":", "@", "/", "?", "%" and "#" (RFC 3986)
+%% unreserved, sub-delims, ":", "@", "/", "?", "%" and "#" (RFC 3986), and
+%% the printable characters browsers send unescaped in queries although
+%% RFC 3986 does not allow them there: "[", "]", "{", "}", "|", "^" and "`"
+%% (`?a[]=1` is common)
 -define(URI_CHAR(C),
     ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
      orelse (C >= $0 andalso C =< $9)
@@ -40,7 +43,8 @@
      orelse C =:= $& orelse C =:= $+ orelse C =:= $, orelse C =:= $;
      orelse C =:= $: orelse C =:= $@ orelse C =:= $! orelse C =:= $$
      orelse C =:= $' orelse C =:= $( orelse C =:= $) orelse C =:= $*
-     orelse C =:= $#)).
+     orelse C =:= $# orelse C =:= $[ orelse C =:= $] orelse C =:= ${
+     orelse C =:= $} orelse C =:= $| orelse C =:= $^ orelse C =:= $`)).
 
 %% token characters of methods and header names (RFC 9110 5.6.2)
 -define(TCHAR(C),
@@ -291,10 +295,11 @@ token(Bin, N) ->
         _ -> {N, more}
     end.
 
-%% An absolute path, with only the characters of a URI (RFC 3986): a raw
-%% backslash, space, quote or non-ASCII byte gets a 400, as
-%% `uri_string:parse` would reject it. The positions of the first `?` and
-%% `#` are noted on the way.
+%% An absolute path, with only the characters of a URI (RFC 3986), plus the
+%% ones browsers leave unescaped (`?URI_CHAR`): a raw backslash, space, `"`,
+%% `<`, `>`, DEL, control character or non-ASCII byte gets a 400, so that no
+%% CR or LF can reach a `location` header. The positions of the first `?`
+%% and `#` are noted on the way.
 target(<<$/, _/binary>> = Bin, Method) -> target(Bin, Method, 1, none, none);
 target(<<>>, _) -> more;
 target(_, _) -> {error, 400}.
