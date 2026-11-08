@@ -668,6 +668,16 @@ lowercase_name(<<"X-Forwarded-For">>) -> <<"x-forwarded-for">>;
 lowercase_name(<<"X-Forwarded-Proto">>) -> <<"x-forwarded-proto">>;
 lowercase_name(<<"X-Real-IP">>) -> <<"x-real-ip">>;
 lowercase_name(<<"Via">>) -> <<"via">>;
+%% and in responses
+lowercase_name(<<"Date">>) -> <<"date">>;
+lowercase_name(<<"Server">>) -> <<"server">>;
+lowercase_name(<<"Content-Encoding">>) -> <<"content-encoding">>;
+lowercase_name(<<"Last-Modified">>) -> <<"last-modified">>;
+lowercase_name(<<"ETag">>) -> <<"etag">>;
+lowercase_name(<<"Vary">>) -> <<"vary">>;
+lowercase_name(<<"Location">>) -> <<"location">>;
+lowercase_name(<<"Set-Cookie">>) -> <<"set-cookie">>;
+lowercase_name(<<"Keep-Alive">>) -> <<"keep-alive">>;
 lowercase_name(Name) -> lowercase(Name).
 
 skip_ows(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> skip_ows(Rest);
@@ -1242,8 +1252,8 @@ relay_body(close, _, Buffer, Socket, C) ->
     copy_close(Buffer, upstream_recv(Socket, C), client_emit(C), 0).
 
 %% {Lengths, Codings, ConnectionTokens, HasDate} of a response.
-response_fields([{Name, Value} | Rest], Lengths, Codings, Tokens, Date) ->
-    case lowercase(Name) of
+response_fields([{_, Lower, Value} | Rest], Lengths, Codings, Tokens, Date) ->
+    case Lower of
         <<"content-length">> -> response_fields(Rest, [Value | Lengths], Codings, Tokens, Date);
         <<"transfer-encoding">> -> response_fields(Rest, Lengths, [Value | Codings], Tokens, Date);
         <<"connection">> -> response_fields(Rest, Lengths, Codings, tokens(Value) ++ Tokens, Date);
@@ -1257,8 +1267,7 @@ response_fields([], Lengths, Codings, Tokens, Date) ->
 %% `Connection` header names (Tokens; `false` keeps `Connection` and
 %% `Upgrade`, for a 101), and without `Content-Length` next to a
 %% `Transfer-Encoding` (RFC 9112 6.3).
-response_headers([{Name, Value} | Rest], Tokens, DropLength) ->
-    Lower = lowercase(Name),
+response_headers([{Name, Lower, Value} | Rest], Tokens, DropLength) ->
     Drop = case Tokens of
         false ->
             Lower =/= <<"connection">> andalso Lower =/= <<"upgrade">>
@@ -1295,7 +1304,8 @@ read_head(Socket, Buffer, Timeout) ->
             end
     end.
 
-%% {ok, Status, Reason, Minor, Headers} | error
+%% {ok, Status, Reason, Minor, Headers} | error, Headers being
+%% [{Name, LowercaseName, Value}]: the name as sent, and lowercased once
 parse_response(Head) ->
     case binary:split(Head, [<<"\r\n">>, <<"\n">>], [global]) of
         [<<"HTTP/1.", Minor, $\s, A, B, D, Tail/binary>> | Lines]
@@ -1320,11 +1330,15 @@ response_lines([], Acc) ->
     {ok, lists:reverse(Acc)};
 response_lines([Line | Rest], Acc) ->
     case name(Line, 0, false) of
-        {Length, _} when Length > 0 ->
+        {Length, Upper} when Length > 0 ->
             <<Name:Length/binary, $:, Value/binary>> = Line,
+            Lower = case Upper of
+                true -> lowercase_name(Name);
+                false -> Name
+            end,
             %% a lone CR would end the line for some clients
             case printable(Value) of
-                true -> response_lines(Rest, [{Name, trim(Value)} | Acc]);
+                true -> response_lines(Rest, [{Name, Lower, trim(Value)} | Acc]);
                 false -> error
             end;
         _ ->
@@ -1341,7 +1355,7 @@ printable(<<>>) -> true.
 %% asked for (RFC 9110 7.8), compared without case.
 switched(Headers, Requested) ->
     Asked = tokens(Requested),
-    case [P || {Name, Value} <- Headers, lowercase(Name) =:= <<"upgrade">>, P <- tokens(Value)] of
+    case [P || {_, <<"upgrade">>, Value} <- Headers, P <- tokens(Value)] of
         [] -> false;
         Protocols -> lists:all(fun(P) -> lists:member(P, Asked) end, Protocols)
     end.
