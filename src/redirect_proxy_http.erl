@@ -755,7 +755,8 @@ lower(C) -> C.
     body,
     %% `Expect: 100-continue` from an HTTP/1.1 client with a body
     continue,
-    %% whether the client asked for an upgrade (`Connection: upgrade`)
+    %% none | the `Upgrade` header the client asked for (with
+    %% `Connection: upgrade`)
     upgrade,
     %% the client asked to close its connection after the response
     client_close,
@@ -810,7 +811,7 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
                 head = Head,
                 body = Body,
                 continue = Expect andalso HasBody andalso Version =:= {1, 1},
-                upgrade = Upgrade =/= none,
+                upgrade = Upgrade,
                 client_close = close_requested(Version, join(Tokens)),
                 close_after = CloseAfter,
                 version = Version,
@@ -829,7 +830,10 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
 %% `Content-Length` together, a transfer coding other than chunked, a
 %% `Transfer-Encoding` in an HTTP/1.0 request, and an invalid or ambiguous
 %% length are rejected rather than guessed. HTTP/1.0 requests cannot
-%% upgrade (RFC 9110 7.8).
+%% upgrade (RFC 9110 7.8), and an upgrade to HTTP/2 over cleartext (`h2c`)
+%% is not offered to the upstream: the request is forwarded as an ordinary
+%% one, since an HTTP/2 connection behind the proxy would bypass its
+%% checks.
 framing(Headers, Version) ->
     framing(Headers, Version, [], [], [], none, false, false).
 
@@ -852,7 +856,8 @@ framing([{Name, Value} | Rest], V, Lengths, Codings, Tokens, Upgrade, Expect, Ho
             framing(Rest, V, Lengths, Codings, Tokens, Upgrade, Expect, Host)
     end;
 framing([], Version, Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
-    Upgrade = case Version =:= {1, 1} andalso lists:member(<<"upgrade">>, Tokens) of
+    Upgrade = case Version =:= {1, 1} andalso lists:member(<<"upgrade">>, Tokens)
+                   andalso Upgrade0 =/= none andalso not has_token(Upgrade0, <<"h2c">>) of
         true -> Upgrade0;
         false -> none
     end,
@@ -1001,8 +1006,11 @@ send_body(chunked, Rest, Socket, C) ->
 %% BodyDone: the whole request body was sent.
 response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
     case read_head(Socket, Buffer, Up#up.timeout) of
-        {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade, BodyDone ->
-            tunnel(Socket, Reason, Headers, Buffer1, Rest, F, C);
+        {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade =/= none, BodyDone ->
+            case switched(Headers, F#fwd.upgrade) of
+                true -> tunnel(Socket, Reason, Headers, Buffer1, Rest, F, C);
+                false -> fail(502, invalid_response, unexpected_upgrade, F, C)
+            end;
         {ok, 101, _, _, _, _} ->
             fail(502, invalid_response, unexpected_upgrade, F, C);
         {ok, Status, Reason, _, Headers, Buffer1} when Status < 200 ->
@@ -1250,6 +1258,15 @@ response_lines([Line | Rest], Acc) ->
 printable(<<C, _/binary>>) when C < 32, C =/= $\t; C =:= 127 -> false;
 printable(<<_, Rest/binary>>) -> printable(Rest);
 printable(<<>>) -> true.
+
+%% Whether the `Upgrade` header of a 101 names only protocols the client
+%% asked for (RFC 9110 7.8), compared without case.
+switched(Headers, Requested) ->
+    Asked = tokens(Requested),
+    case [P || {Name, Value} <- Headers, lowercase(Name) =:= <<"upgrade">>, P <- tokens(Value)] of
+        [] -> false;
+        Protocols -> lists:all(fun(P) -> lists:member(P, Asked) end, Protocols)
+    end.
 
 %% A 101 from the upstream: the response is relayed, then bytes are copied
 %% both ways until either side closes, or none flows for upstream_timeout.

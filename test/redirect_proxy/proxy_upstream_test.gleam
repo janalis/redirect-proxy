@@ -417,6 +417,49 @@ pub fn upgrades_are_tunnelled_test() {
   assert !string.contains(text, "upgrade")
 }
 
+/// HTTP/2 over cleartext (`Upgrade: h2c`) is not offered to the upstream:
+/// the request is forwarded as an ordinary one.
+pub fn h2c_upgrades_are_not_forwarded_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: H2C\r\nHTTP2-Settings: AAMAAABkAAQAoAAAAAIAAAAA\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  let text = string.lowercase(text)
+  assert !string.contains(text, "upgrade")
+  assert !string.contains(text, "h2c")
+  assert !string.contains(text, "http2-settings")
+  // among other protocols too
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: upgrade\r\nUpgrade: websocket, h2c\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(string.lowercase(text), "upgrade")
+}
+
+/// A 101 switching to another protocol than the one asked for is not
+/// tunnelled.
+pub fn mismatched_101_is_a_502_test() {
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, [
+      "GET /ws-h2c HTTP/1.1\r\nhost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+      "ping",
+    ])
+  assert_failed(text, closed, "502")
+  assert forwarded(proxy).error == option.Some(proxy_http.InvalidResponse)
+  // the protocol is compared without case
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: Upgrade\r\nUpgrade: WebSocket\r\n\r\n",
+      "ping",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 101 Switching Protocols\r\n")
+  assert string.ends_with(text, "\r\n\r\nping")
+}
+
 pub fn https_upstreams_test() {
   let #(port, counter) = start_tls_upstream()
   let proxy =
