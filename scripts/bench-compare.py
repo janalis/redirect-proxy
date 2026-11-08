@@ -23,7 +23,22 @@ WARMUP=2s RUNS=3 CONCURRENCY=100 (load), SERVER_CPUS=<n> (default half),
 RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev (built by `make docker`),
 RP_PULL=1 (RP_IMAGE is a published image: pull it, record its digest),
 RP_VERSION=<label> (shown instead of the version the image reports, e.g.
-`main (7c2583c)` for an image built from main).
+`main (7c2583c)` for an image built from main), RP_ERL_FLAGS=<flags> (VM
+flags of redirect-proxy, through ERL_FLAGS).
+
+Variants of redirect-proxy, for an A/B on the same machine (runners differ
+from run to run: only numbers from one run compare):
+
+    RP_VARIANTS='sbwt-short=+sbwt short; main@ghcr.io/janalis/redirect-proxy:main'
+
+Each `label[@image][=ERL_FLAGS]` entry (`;` or newline separated) is
+measured after redirect-proxy itself, as `redirect-proxy (label)`, with
+RP_IMAGE when it names no image. The results then go to
+build/benchmark-variants.json, never to the documentation.
+
+--profile: during the first run of the exact scenario, microstate accounting
+of each redirect-proxy (where its schedulers spend their time) and, when
+`sudo perf` works, a CPU profile, written to build/profile-<label>.txt.
 """
 import argparse
 import datetime
@@ -59,6 +74,7 @@ CONCURRENCY = int(os.environ.get("CONCURRENCY", "100"))
 RP_IMAGE = os.environ.get("RP_IMAGE", "ghcr.io/janalis/redirect-proxy:dev")
 RP_PULL = os.environ.get("RP_PULL") == "1"
 RP_VERSION = os.environ.get("RP_VERSION", "")
+RP_ERL_FLAGS = os.environ.get("RP_ERL_FLAGS", "")
 
 # name -> (path, expected status, expected Location)
 SCENARIOS = {
@@ -101,6 +117,7 @@ def redirect_proxy(d):
             "RP_ACCESS_LOG_ENABLED": "false",
             "RP_STORAGE_BACKUPS": "0",
             "RP_LOG_LEVEL": "warning",
+            **({"ERL_FLAGS": RP_ERL_FLAGS} if RP_ERL_FLAGS else {}),
         },
         "version": ["/opt/redirect-proxy/bin/redirect-proxy", "version"],
         "notes": [],
@@ -321,6 +338,37 @@ PRODUCTS = {
 }
 
 
+def variants(spec):
+    """`label[@image][=ERL_FLAGS]` entries -> [(key, name, configure)]."""
+    out = []
+    for entry in re.split(r"[;\n]", spec):
+        entry = entry.strip()
+        if not entry:
+            continue
+        head, _, flags = entry.partition("=")
+        label, _, image = head.strip().partition("@")
+        label, image, flags = label.strip(), image.strip(), flags.strip()
+        if not label:
+            sys.exit(f"RP_VARIANTS: no label in {entry!r}")
+
+        def configure(d, image=image, flags=flags, label=label):
+            spec = redirect_proxy(d)
+            if image:
+                spec["image"] = image
+                # a published image, unless it was built here
+                spec["pull"] = docker("image", "inspect", image,
+                                      check=False).returncode != 0
+            if flags:
+                spec["env"]["ERL_FLAGS"] = flags
+            spec["label"] = label
+            spec["notes"] = [f"ERL_FLAGS={flags}"] if flags else []
+            return spec
+
+        out.append((f"redirect-proxy:{label}", f"redirect-proxy ({label})",
+                    configure))
+    return out
+
+
 # --- running -----------------------------------------------------------------
 
 def docker(*args, check=True, capture=True):
@@ -426,11 +474,23 @@ def load(path, duration, cpus):
     return json.loads(out)
 
 
-def measure(name, path, status, client_cpus):
+def seconds(duration):
+    match = re.fullmatch(r"(\d+)(ms|s|m)?", duration)
+    if not match:
+        sys.exit(f"cannot read the duration {duration!r}")
+    n, unit = int(match.group(1)), match.group(2) or "s"
+    return max(1, {"ms": n // 1000, "s": n, "m": n * 60}[unit])
+
+
+def measure(name, path, status, client_cpus, profile=None):
     load(path, WARMUP, client_cpus)
     runs = []
-    for _ in range(RUNS):
-        r = load(path, DURATION, client_cpus)
+    for i in range(RUNS):
+        if profile is not None and i == 0:
+            with profile():
+                r = load(path, DURATION, client_cpus)
+        else:
+            r = load(path, DURATION, client_cpus)
         codes = r.get("statusCodeDistribution", {})
         total = sum(codes.values()) + sum(r.get("errorDistribution", {}).values())
         expected = codes.get(str(status), 0)
@@ -456,6 +516,85 @@ def measure(name, path, status, client_cpus):
     }
 
 
+def idle_cpu_pct():
+    """CPU used by the server once the load stopped (busy-waiting
+    schedulers, timers), in % of one CPU."""
+    time.sleep(5)
+    out = docker("stats", "--no-stream", "--format", "{{.CPUPerc}}",
+                 SERVER).stdout.strip().rstrip("%")
+    try:
+        return round(float(out), 1)
+    except ValueError:
+        return None
+
+
+class Profile:
+    """Microstate accounting (RP_BENCH_MSACC, see redirect_proxy_msacc.erl)
+    and, when `sudo perf` works, a perf profile of the server during one
+    load run."""
+
+    def __init__(self, label):
+        self.label = label
+        slug = re.sub(r"[^\w.-]+", "-", label).strip("-")
+        self.out = ROOT / "build" / f"profile-{slug}.txt"
+        self.perf = None
+
+    def __enter__(self):
+        docker("exec", SERVER, "touch", "/tmp/rp-msacc-start")
+        pid = docker("inspect", "--format", "{{.State.Pid}}", SERVER).stdout.strip()
+        self.pid = pid
+        self.data = pathlib.Path(tempfile.mkdtemp(prefix="bench-perf-")) / "perf.data"
+        if shutil.which("perf") or shutil.which("sudo"):
+            try:
+                self.perf = subprocess.Popen(
+                    ["sudo", "-n", "perf", "record", "-F", "999", "-g",
+                     "-o", str(self.data), "-p", pid, "--", "sleep",
+                     str(seconds(DURATION) - 1)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            except OSError:
+                self.perf = None
+        return self
+
+    def __exit__(self, *exc):
+        report = []
+        if self.perf is not None:
+            _, err = self.perf.communicate()
+            if self.perf.returncode == 0:
+                # JIT symbols: the map the VM wrote (+JPperf true) as PID 1 of
+                # its container, under the PID perf saw
+                docker("cp", f"{SERVER}:/tmp/perf-1.map",
+                       f"/tmp/perf-{self.pid}.map", check=False)
+                def perf_report(*sort):
+                    return subprocess.run(
+                        ["sudo", "-n", "perf", "report", "-f", "-i",
+                         str(self.data), "--no-children", "--stdio", "-q",
+                         "-g", "none", "--percent-limit", "0.3", *sort],
+                        capture_output=True, text=True, check=False).stdout
+                report += ["== perf, by shared object (self time)",
+                           perf_report("--sort", "dso"),
+                           "== perf, by symbol (self time, >= 0.3 %)",
+                           perf_report("--sort", "dso,symbol")]
+            else:
+                report += ["== perf unavailable: " + (err or "").strip()[-300:]]
+        # the measurement ends a second after the run
+        time.sleep(2)
+        msacc = [line for line in logs_all().splitlines() if line.startswith("msacc ")]
+        report = ["== microstate accounting (share of each thread type's time)",
+                  *msacc, ""] + report
+        self.out.parent.mkdir(parents=True, exist_ok=True)
+        self.out.write_text("\n".join(report) + "\n")
+        print(f"  profile: {self.out.relative_to(ROOT)}", flush=True)
+        for line in msacc:
+            print(f"  {line}", flush=True)
+        shutil.rmtree(self.data.parent, ignore_errors=True)
+        return False
+
+
+def logs_all():
+    out = docker("logs", SERVER, check=False)
+    return out.stdout + out.stderr
+
+
 def memory_mib():
     out = docker("stats", "--no-stream", "--format", "{{.MemUsage}}",
                  SERVER).stdout
@@ -467,8 +606,7 @@ def memory_mib():
     return round(float(match.group(1)) * scale.get(match.group(2), 1), 1)
 
 
-def bench(key, server_cpus, client_cpus):
-    label, configure = PRODUCTS[key]
+def bench(key, label, configure, server_cpus, client_cpus, profile=False):
     print(f"\n== {label}", flush=True)
     work = pathlib.Path(tempfile.mkdtemp(prefix="bench-compare-"))
     # read by the servers' own users (haproxy, daemon...), not ours
@@ -481,14 +619,22 @@ def bench(key, server_cpus, client_cpus):
         result = {"key": key, "name": label, "image": spec["image"],
                   "version": version, "digest": digest,
                   "notes": list(spec["notes"])}
+        profiled = profile and key.startswith("redirect-proxy")
+        if profiled:
+            env = spec["env"]
+            env["RP_BENCH_MSACC"] = str(max(1, seconds(DURATION) - 1))
+            env["ERL_FLAGS"] = (env.get("ERL_FLAGS", "") + " +JPperf true").strip()
         try:
             port, startup = start(spec, work, server_cpus)
             result["notes"] += check(port)
             result["startup_ms"] = startup
             result["scenarios"] = {
-                name: measure(name, path, status, client_cpus)
+                name: measure(name, path, status, client_cpus,
+                              (lambda: Profile(label))
+                              if profiled and name == "exact" else None)
                 for name, (path, status, _) in SCENARIOS.items()}
             result["memory_mib"] = memory_mib()
+            result["idle_cpu_pct"] = idle_cpu_pct()
             result["status"] = "ok"
         except (RuntimeError, subprocess.CalledProcessError, OSError,
                 json.JSONDecodeError, KeyError) as e:
@@ -587,7 +733,12 @@ def main():
                         help="rewrite the table in README.md")
     parser.add_argument("--from", dest="source", type=pathlib.Path,
                         help="do not run: read results from this file")
+    parser.add_argument("--profile", action="store_true",
+                        help="profile redirect-proxy during the exact scenario")
     args = parser.parse_args()
+    extra = variants(os.environ.get("RP_VARIANTS", ""))
+    if extra and args.readme:
+        parser.error("RP_VARIANTS: the results are not for the README")
     if args.source:
         results = json.loads(args.source.read_text())
         print(table(results))
@@ -601,14 +752,18 @@ def main():
         if unknown:
             parser.error(f"unknown: {', '.join(unknown)}")
     output = args.output or (
-        ROOT / "build" / "benchmark.json" if args.only else OUTPUT)
+        ROOT / "build" / "benchmark-variants.json" if extra
+        else ROOT / "build" / "benchmark.json" if args.only else OUTPUT)
+    runs = [(k, *PRODUCTS[k]) for k in keys] + extra
 
     server_cpus, client_cpus, n_server, _ = cpu_split()
     docker("pull", "-q", OHA)
     docker("network", "rm", NETWORK, check=False)
     docker("network", "create", NETWORK)
     try:
-        products = [bench(k, server_cpus, client_cpus) for k in keys]
+        products = [bench(k, label, configure, server_cpus, client_cpus,
+                          args.profile)
+                    for k, label, configure in runs]
     finally:
         docker("rm", "-f", SERVER, check=False)
         docker("network", "rm", NETWORK, check=False)
@@ -630,9 +785,10 @@ def main():
     print(f"\n{table(results)}\n\nwritten to {output}")
     if args.readme:
         write_readme(results)
-    ours = next((p for p in products if p["key"] == "redirect-proxy"), None)
-    if ours is not None and ours["status"] != "ok":
-        sys.exit("redirect-proxy failed")
+    failed = [p["name"] for p in products
+              if p["key"].startswith("redirect-proxy") and p["status"] != "ok"]
+    if failed:
+        sys.exit(f"failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

@@ -195,9 +195,15 @@ fn serve(config_path: String) -> Result(Nil, String) {
       True, False -> ", API on the admin listener"
     },
   )
+  // the Benchmark workflow's scheduler profile (RP_BENCH_MSACC), off
+  // otherwise
+  bench_msacc()
   process.sleep_forever()
   Ok(Nil)
 }
+
+@external(erlang, "redirect_proxy_msacc", "start")
+fn bench_msacc() -> Nil
 
 fn check_config(config_path: String) -> Result(Nil, String) {
   use cfg <- result.try(load(config_path))
