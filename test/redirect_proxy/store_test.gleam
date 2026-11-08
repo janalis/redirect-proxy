@@ -845,6 +845,29 @@ pub fn changes_of_callers_gone_are_not_made_test() {
   assert !string.contains(audit, "/gone")
 }
 
+/// A change the store started, but whose caller gave up while the store
+/// waited for the file lock, is not made either: the caller was told it
+/// failed (503), so a retry must not find it made.
+pub fn changes_abandoned_while_waiting_for_the_lock_are_not_made_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let gone =
+    process.spawn_unlinked(fn() {
+      store.create(s, new_rule("/gone", "/t"), by: "gone")
+    })
+  // the store has taken the change and waits for the lock
+  process.sleep(200)
+  process.kill(gone)
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Ok(_) = store.create(s, new_rule("/after", "/t"), by: "after")
+
+  assert list.map(store.all(s), fn(r) { r.source }) == ["/after"]
+  let assert Ok(audit) = simplifile.read(dir <> "/audit.jsonl")
+  assert !string.contains(audit, "/gone")
+}
+
 /// A lock held longer than the stale delay (a long change by the CLI) is kept
 /// fresh while it is held: a writer waiting for it does not take it over,
 /// and both changes are kept.

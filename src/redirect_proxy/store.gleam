@@ -65,7 +65,7 @@ fn call(
   waiting default: Int,
   sending make: fn(Subject(reply)) -> Message,
 ) -> reply {
-  let assert Ok(store_pid) = process.subject_owner(store)
+  let store_pid = store_pid(store)
   let caller = process.self()
   let forwarded = process.new_subject()
   let forwarder =
@@ -107,6 +107,41 @@ fn call(
         Error(Nil), False -> ffi.store_timeout()
       }
     }
+  }
+}
+
+/// Calls the store for a read, waiting up to `waiting` milliseconds: the
+/// reply comes straight back (a read has nothing to skip, and the rule list
+/// is not copied twice). A reply arriving after the timeout stays in the
+/// caller's mailbox, as with `process.call`; callers are request processes.
+fn read(
+  store: Store,
+  waiting default: Int,
+  sending make: fn(Subject(reply)) -> Message,
+) -> reply {
+  let store_down = process.monitor(store_pid(store))
+  let reply = process.new_subject()
+  process.send(store, make(reply))
+  let outcome =
+    process.new_selector()
+    |> process.select_map(reply, Ok)
+    |> process.select_specific_monitor(store_down, fn(_) { Error(True) })
+    |> process.selector_receive(ffi.tunable("store_call_timeout", default))
+    |> result.unwrap(Error(False))
+  process.demonitor_process(store_down)
+  case outcome {
+    Ok(value) -> value
+    Error(True) -> panic as "the store exited before replying"
+    Error(False) -> ffi.store_timeout()
+  }
+}
+
+/// The store's process; while the supervisor restarts it, the store is
+/// unavailable, as when it is too busy.
+fn store_pid(store: Store) -> process.Pid {
+  case process.subject_owner(store) {
+    Ok(pid) -> pid
+    Error(Nil) -> ffi.store_timeout()
   }
 }
 
@@ -377,17 +412,17 @@ pub fn start(
 }
 
 pub fn all(store: Store) -> List(Rule) {
-  call(store, timeout, All)
+  read(store, timeout, All)
 }
 
 /// Every rule and the version of the rule set (the fingerprint of the file
 /// last read or written), for `import_rules_versioned` and `bulk_versioned`.
 pub fn versioned(store: Store) -> #(List(Rule), String) {
-  call(store, timeout, Versioned)
+  read(store, timeout, Versioned)
 }
 
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
-  call(store, timeout, Get(id, _))
+  read(store, timeout, Get(id, _))
 }
 
 pub fn create(
@@ -509,7 +544,7 @@ pub fn preview_import(
   by actor_name: String,
 ) -> Result(#(store_rules.Diff, String), List(String)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
-  call(store, 60_000, PreviewImport(prepared, mode, _))
+  read(store, 60_000, PreviewImport(prepared, mode, _))
 }
 
 /// Enables, disables or deletes several rules in one write, recorded as one
@@ -988,6 +1023,11 @@ fn mutate(
   })
   let outcome =
     ffi.with_file_lock(state.settings.rules_path, lock_timeout, fn() {
+      // the lock may have taken long enough for the caller to give up
+      use <- bool.lazy_guard(abandoned(reply), fn() {
+        log.warning("a change was skipped: its caller stopped waiting for it")
+        #(state, Error(to_error("the caller stopped waiting")))
+      })
       case refresh(state) {
         Error(reason) -> #(state, Error(to_error(reason)))
         Ok(state) ->
