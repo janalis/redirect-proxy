@@ -4,7 +4,7 @@ layout: home
 hero:
   name: redirect-proxy
   text: Fast HTTP redirect server
-  tagline: Rules in a plain file, managed from a web administration, a REST API or the command line. One self-contained OTP release, for Docker, Debian and Homebrew.
+  tagline: In front of your website, it answers the redirects and passes everything else on. Rules in a plain file, managed from a web administration, a REST API or the command line. One self-contained OTP release, for Docker, Debian and Homebrew.
   image:
     src: /logo.png
     alt: redirect-proxy, a star riding a router between two arrows
@@ -12,6 +12,9 @@ hero:
     - theme: brand
       text: Get started
       link: /guide/getting-started
+    - theme: alt
+      text: In front of your site
+      link: /guide/web-servers
     - theme: alt
       text: Redirection rules
       link: /guide/rules

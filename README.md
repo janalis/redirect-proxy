@@ -27,10 +27,11 @@
 
 ---
 
-redirect-proxy answers HTTP requests with `301`/`302`/`303`/`307`/`308`
-redirections based on rules; in front of a website (`server.upstream`), it
-passes every other request on to the website, as a reverse proxy. It is
-written in [Gleam](https://gleam.run) for the Erlang VM: the compiled rule
+redirect-proxy sits in front of your website, behind the web server or
+load balancer that terminates TLS: it answers the requests its rules match
+with `301`/`302`/`303`/`307`/`308` redirections, and passes every other
+request on to the website (`server.upstream`), as a reverse proxy. Domains
+that only redirect need no website behind it. It is written in [Gleam](https://gleam.run) for the Erlang VM: the compiled rule
 set is read by every request without locks, exact rules are O(1) lookups,
 and one OS process with no database serves hundreds of thousands of
 concurrent connections.
@@ -101,10 +102,13 @@ The redirect listener (`8080`) is meant to be public; keep the admin
 listener (`8081`) on a trusted network. The
 [getting started guide](https://janalis.github.io/redirect-proxy/guide/getting-started)
 walks through it, including what to do with the bootstrap password.
-Behind nginx, HAProxy, Apache httpd, Caddy or Traefik, see
+In front of your website, add `-e RP_SERVER_UPSTREAM=http://your-site:3000`:
+requests no rule matches go on to it. Behind nginx, HAProxy, Apache httpd,
+Caddy or Traefik, see
 [Web servers](https://janalis.github.io/redirect-proxy/guide/web-servers)
-for tested configurations: whole domains, or only the pages a site no
-longer has.
+for tested configurations: in front of a site, domains that only redirect,
+or the web server sending redirect-proxy only the pages a site no longer
+has.
 
 ## Configuration
 
