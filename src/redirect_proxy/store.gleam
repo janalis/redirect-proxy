@@ -362,7 +362,7 @@ pub fn start(
         store_file.load_locked(
           files(settings),
           store_file.FirstStart,
-          start_lock_timeout,
+          ffi.tunable("start_lock_timeout", start_lock_timeout),
         )
       {
         Ok(#(rules, fingerprint)) -> {

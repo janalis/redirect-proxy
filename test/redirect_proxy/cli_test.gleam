@@ -6,6 +6,7 @@ import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/config
 import redirect_proxy/config/loader as config_loader
+import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/rule
@@ -108,6 +109,47 @@ pub fn rules_commands_test() {
   let assert Ok(Nil) = simplifile.write(import_file, "[{\"source\": \"bad\"}]")
   let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
   let _ = config.default()
+}
+
+/// `rules import` while another process holds the file lock past the wait:
+/// a clear error (exit 1 from `main`) and no change, not a crash.
+pub fn rules_import_while_locked_test() {
+  let #(dir, config_path) = setup()
+  let import_file = dir <> "/import.json"
+  let assert Ok(Nil) =
+    simplifile.write(import_file, "[{\"source\": \"/a\", \"target\": \"/b\"}]")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/data")
+  let lock = dir <> "/data/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 server@host\n")
+  ffi.set_tunable("start_lock_timeout", 100)
+  let outcome =
+    redirect_proxy.run(["rules", "import", import_file, "--config", config_path])
+  ffi.clear_tunable("start_lock_timeout")
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Error(message) = outcome
+  assert string.starts_with(
+    message,
+    "the rules are busy (another change holds the lock); nothing was changed, retry",
+  )
+  assert string.contains(message, "12345 server@host")
+  let assert Error(_) = simplifile.read(dir <> "/data/redirects.json")
+}
+
+/// `rules import` when the store does not answer in time: the busy error,
+/// not a crash.
+pub fn rules_import_store_timeout_test() {
+  let #(dir, config_path) = setup()
+  let import_file = dir <> "/import.json"
+  let assert Ok(Nil) =
+    simplifile.write(import_file, "[{\"source\": \"/a\", \"target\": \"/b\"}]")
+  ffi.set_tunable("store_call_timeout", 0)
+  let outcome =
+    redirect_proxy.run(["rules", "import", import_file, "--config", config_path])
+  ffi.clear_tunable("store_call_timeout")
+  assert outcome
+    == Error(
+      "the rules are busy (another change holds the lock); nothing was changed, retry",
+    )
 }
 
 fn list_length(items: List(a)) -> Int {
