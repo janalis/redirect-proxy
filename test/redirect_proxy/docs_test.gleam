@@ -1,12 +1,15 @@
-//// Keeps the documented environment variables and metrics (README.md and
-//// docs/) in step with the code.
+//// Keeps the documented environment variables, metrics and commands
+//// (README.md and docs/), and config.example.toml, in step with the code.
 
+import gleam/dict
 import gleam/list
 import gleam/option
 import gleam/regexp
 import gleam/string
+import redirect_proxy/config/file as config_file
 import redirect_proxy/metrics
 import simplifile
+import tom
 
 /// The README and the pages of docs/, as one text. The site's installed
 /// packages and build output are not documentation.
@@ -200,4 +203,96 @@ pub fn every_metric_is_documented_test() {
   let missing =
     list.filter(exported, fn(name) { !string.contains(docs, "`" <> name) })
   assert missing == []
+}
+
+/// Every command of the `help` usage has a section, with an example, in
+/// docs/guide/cli.md.
+pub fn every_command_is_documented_test() {
+  let assert Ok(cli) = simplifile.read("docs/guide/cli.md")
+  let commands = usage_commands()
+  // serve, check-config, version, help and the user, client and rules
+  // subcommands
+  assert list.length(commands) >= 15
+  let missing =
+    list.filter(commands, fn(command) {
+      !string.contains(cli, "redirect-proxy " <> command)
+      || !string.contains(cli, "## `" <> command <> "`")
+    })
+  assert missing == []
+}
+
+/// The commands of the usage text in src/redirect_proxy.gleam: for each
+/// `redirect-proxy …` line, its words (`client list|rotate <client_id>…`
+/// gives `client list` and `client rotate`).
+fn usage_commands() -> List(String) {
+  let assert Ok(source) = simplifile.read("src/redirect_proxy.gleam")
+  let assert Ok(#(_, after)) = string.split_once(source, "\nUsage:\n")
+  let assert Ok(#(lines, _)) = string.split_once(after, "\n\n")
+  string.split(lines, "\n")
+  |> list.flat_map(fn(line) {
+    // a description follows the command after two spaces or more
+    let command = case string.split_once(string.trim(line), "  ") {
+      Ok(#(command, _description)) -> command
+      Error(Nil) -> string.trim(line)
+    }
+    case string.split(command, " ") {
+      ["redirect-proxy", ..tokens] ->
+        case command_words(tokens) {
+          [] -> []
+          [command] -> [command]
+          [command, ..subcommands] ->
+            list.map(subcommands, fn(sub) { command <> " " <> sub })
+        }
+      _ -> []
+    }
+  })
+  |> list.unique
+}
+
+fn command_words(tokens: List(String)) -> List(String) {
+  let assert Ok(word) = regexp.from_string("^[a-z][a-z-]*$")
+  tokens
+  |> list.flat_map(string.split(_, "|"))
+  |> list.map(fn(piece) {
+    // `[serve]`: an optional command word
+    case string.starts_with(piece, "[") && string.ends_with(piece, "]") {
+      True -> piece |> string.drop_start(1) |> string.drop_end(1)
+      False -> piece
+    }
+  })
+  |> list.filter(regexp.check(word, _))
+}
+
+pub fn usage_commands_test() {
+  let commands = usage_commands()
+  assert list.contains(commands, "serve")
+  assert list.contains(commands, "client rotate")
+  assert list.contains(commands, "rules import")
+  assert list.contains(commands, "user role")
+  // arguments and options are not commands
+  assert !list.contains(commands, "rules replace")
+  assert !list.contains(commands, "client client_id")
+}
+
+/// Every key the configuration file may hold is in config.example.toml,
+/// and the example holds no other.
+pub fn every_config_key_is_in_the_example_test() {
+  let assert Ok(example) = config_file.read_toml("config.example.toml")
+  let present = toml_keys(example, "")
+  let missing =
+    list.filter(config_file.known_keys, fn(key) { !list.contains(present, key) })
+  assert missing == []
+  assert config_file.unknown_keys(example) == []
+}
+
+fn toml_keys(t: dict.Dict(String, tom.Toml), prefix: String) -> List(String) {
+  dict.to_list(t)
+  |> list.flat_map(fn(entry) {
+    let #(name, value) = entry
+    case value {
+      tom.Table(sub) | tom.InlineTable(sub) ->
+        toml_keys(sub, prefix <> name <> ".")
+      _ -> [prefix <> name]
+    }
+  })
 }
