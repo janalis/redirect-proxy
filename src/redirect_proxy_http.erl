@@ -228,6 +228,9 @@ peer(Socket) ->
 %% no call to the port per request, and a bounded mailbox.
 more(Buffer, #conn{socket = Socket, idle_timeout = Timeout} = C) ->
     receive
+        %% usually a whole request: parsed as it came, not copied first
+        {tcp, Socket, Data} when Buffer =:= <<>> ->
+            request(Data, C);
         {tcp, Socket, Data} ->
             request(<<Buffer/binary, Data/binary>>, C);
         {tcp_passive, Socket} ->
