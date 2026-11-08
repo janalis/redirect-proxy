@@ -3,9 +3,13 @@
 A fast HTTP redirect server written in [Gleam](https://gleam.run) for the
 Erlang VM, with a web administration backend.
 
-It answers requests with `301`/`302`/`303`/`307`/`308` redirections based on
-rules. In front of a website (`server.upstream`), it passes every request
-no rule answers on to the website, as a reverse proxy.
+It sits in front of your website, behind the web server or load balancer
+that terminates TLS: it answers the requests its rules match with
+`301`/`302`/`303`/`307`/`308` redirections, and passes every other request
+on to the website (`server.upstream`), as a reverse proxy. The redirects
+live in one place, whatever the site is built with. Domains that only
+redirect need no website behind it. [Web servers](web-servers) shows the
+setup with nginx, HAProxy, Apache httpd, Caddy and Traefik.
 
 - **Fast and highly concurrent.** The compiled rule set lives in
   `persistent_term`, so every request process reads it without locks, copies

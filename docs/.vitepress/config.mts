@@ -76,6 +76,7 @@ export default defineConfig({
             { text: 'Operations', link: '/guide/operations' },
             { text: 'Monitoring', link: '/guide/monitoring' },
             { text: 'Deployment', link: '/guide/deployment' },
+            { text: 'Web servers', link: '/guide/web-servers' },
             { text: 'Access logs', link: '/guide/access-logs' },
             { text: 'Performance', link: '/guide/performance' },
           ],
