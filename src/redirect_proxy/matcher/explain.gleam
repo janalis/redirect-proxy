@@ -183,10 +183,11 @@ fn matches_path(r: Rule, path: String) -> Bool {
       string.starts_with(path, source)
       && case r.whole_segments {
         False -> True
-        True -> {
-          let rest = string.drop_start(path, string.length(source))
-          rest == "" || string.starts_with(rest, "/")
-        }
+        True ->
+          rule.on_segment_boundary(
+            source,
+            string.drop_start(path, string.length(source)),
+          )
       }
     }
     Regex ->

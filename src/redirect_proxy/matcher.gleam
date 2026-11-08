@@ -800,8 +800,7 @@ fn match_prefix(
       // whole segments: `/blog` matches `/blog` and `/blog/…`, not `/blogger`
       case
         !p.rule.whole_segments
-        || remainder == ""
-        || string.starts_with(remainder, "/")
+        || rule.on_segment_boundary(p.rule.source, remainder)
       {
         True -> Ok(#(p, remainder))
         False -> Error(Nil)
