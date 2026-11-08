@@ -13,6 +13,10 @@ on:
       requests:
         description: Requests per scenario (redirect-proxy alone)
         default: "200000"
+      ref:
+        description: Release tag to measure, with its published image (e.g. v0.7.0); empty for the branch
+        type: string
+        required: false
   schedule:
     - cron: "17 3 * * 1"
   workflow_call:
@@ -54,6 +58,8 @@ jobs:
           oha --version
       - run: gleam deps download
       - name: Run benchmark
+        # pipefail: a failed run must fail the job, not be hidden by `tee`
+        shell: bash
         env:
           REQUESTS: ${{ inputs.requests || '200000' }}
         run: |
@@ -77,6 +83,9 @@ jobs:
       # After a release, its published image is measured, under its version;
       # otherwise an image built from the checkout, as "<branch> (<commit>)".
       - name: Run comparison
+        # pipefail: a failed run must fail the job rather than upload the
+        # results file of the checkout as if it were new
+        shell: bash
         env:
           REF: ${{ inputs.ref }}
           REPO: ${{ github.repository }}

@@ -388,7 +388,8 @@ jobs:
   # opens a pull request with the results (see bench.yml).
   benchmark:
     name: Benchmark
-    needs: [meta, publish]
+    # the published image is measured: wait for it to be pushed
+    needs: [meta, publish, container]
     permissions:
       contents: write # push the results branch, merge it
       pull-requests: write # open the pull request
