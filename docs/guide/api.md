@@ -46,6 +46,48 @@ shows how to call the API. A new secret is shown once:
 | `GET /api/test?url=` | `redirects:read` | Which rule matches a URL and where it redirects, every matching rule with its verdict (applied, shadowed, disabled), and the redirect chain. |
 | `GET /api/audit` | `audit:read` | Audit entries as recorded, newest first, from the current and rotated files. Filters `actor` (exact), `action` (prefix: `rule.`), `target` (contains), `since` and `until` (RFC 3339); pages via `page` and `per_page` (max 500), with `meta.has_more` and a `Link` header for the next page. |
 
+## Scripted changes
+
+Every write (create, update, delete, bulk, import) checks the whole rule
+set, writes `redirects.json` (with a backup) and republishes the matcher.
+A script that changes many rules should send them in one request: an
+import (`mode=merge` changes only the rules it names, by `id`) or a bulk
+action, rather than one `PUT` or `DELETE` per rule. It is faster, records
+one audit entry, and applies all or nothing.
+
+### Rules in git
+
+With the rules kept in a repository as `redirects.csv` (or a
+`redirects.json`), validate them on every pull request, show what would
+change, and apply them when the pull request is merged. The client needs
+`redirects:write` (a dry run is an import that writes nothing).
+
+```sh
+# Pull request: the file parses and every rule is valid (no server needed).
+redirect-proxy rules validate redirects.csv
+
+# Pull request: what merging would change on the server.
+TOKEN=$(curl -s -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials \
+  "$API/oauth/token" | jq -r .access_token)
+curl -sf -D headers.txt -o plan.json -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: text/csv' --data-binary @redirects.csv \
+  "$API/api/redirects/import?mode=replace&dry_run=true"
+cat plan.json   # {"dry_run":true,"added":4,"added_ids":[...],"removed":0,...}
+
+# Merge: apply exactly the change that was reviewed.
+ETAG=$(awk 'tolower($1) == "etag:" { print $2 }' headers.txt | tr -d '\r')
+curl -sf -H "Authorization: Bearer $TOKEN" -H "If-Match: $ETAG" \
+  -H 'content-type: text/csv' --data-binary @redirects.csv \
+  "$API/api/redirects/import?mode=replace"
+```
+
+`mode=replace` makes the file the whole rule set: rules created in the
+admin meanwhile are removed. The `If-Match` of the dry run makes the apply
+fail with `412` if anyone changed the rules after it: run the dry run
+again (in the merge job, if the plan was made earlier) and apply its
+`ETag`. Send JSON as `application/json`. Keep the `id` column, so that the
+plan shows changed rules rather than removals and additions.
+
 ## Tokens
 
 - Tokens from `/oauth/token` are opaque and expire after `api.token_ttl`.

@@ -50,6 +50,20 @@ cookie). A user and role have one session: a client that does not keep
 cookies (a script, a monitoring check) reuses it rather than starting a
 session, and an `auth.login` audit entry, on every request.
 
+::: warning Narrow `trusted_proxies`
+The default, `["127.0.0.1/32", "::1/128"]`, trusts every process on the
+host, not only the authenticating proxy: any local service that can be
+made to send a request to the admin port (a website behind
+`server.upstream` with a server-side fetch, a monitoring agent, a shell
+user), and redirect-proxy's own upstream connections when
+`server.upstream` points at the admin port, can sign in as anyone by
+setting the header. Set `trusted_proxies` to the address the proxy
+connects from, and only that: its container or pod address, or a
+dedicated address no other process uses (a separate network or
+interface). Keep the admin listener (`admin.listen`) off addresses other
+clients can reach, and never point `server.upstream` at the admin port.
+:::
+
 ## Roles
 
 Every session has a role, and each includes the one before:
