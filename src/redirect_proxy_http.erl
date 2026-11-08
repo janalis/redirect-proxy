@@ -910,14 +910,20 @@ essential(_) -> false.
 
 %% The client's headers, without the hop-by-hop ones, `Expect` (answered
 %% here), `Content-Length` (sent once, normalised) and the ones in Drop:
-%% named by its `Connection` header, set or dropped by the handler.
+%% named by its `Connection` header, set or dropped by the handler. Some
+%% servers read `_` in a header name as `-` (CGI variables): `x_real_ip`
+%% is dropped with `x-real-ip`.
 request_headers([{Name, Value} | Rest], Drop) ->
     case Name of
         _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
         <<"expect">> -> request_headers(Rest, Drop);
         <<"content-length">> -> request_headers(Rest, Drop);
         _ ->
-            case lists:member(Name, Drop) of
+            Dropped = lists:member(Name, Drop) orelse case binary:match(Name, <<"_">>) of
+                nomatch -> false;
+                _ -> lists:member(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
+            end,
+            case Dropped of
                 true -> request_headers(Rest, Drop);
                 false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
             end

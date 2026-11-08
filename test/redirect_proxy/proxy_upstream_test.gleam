@@ -11,7 +11,9 @@ import gleam/http/response.{Response}
 import gleam/list
 import gleam/option
 import gleam/string
+import redirect_proxy/config
 import redirect_proxy/proxy/http as proxy_http
+import redirect_proxy/proxy/server
 
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
@@ -648,4 +650,61 @@ pub fn content_length_is_sent_once_test() {
       "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
     ])
   assert string.contains(text, "\ncontent-length: 0\nframing=length\nbody=")
+}
+
+/// The redirect listener's own handler (`proxy/server`) in front of the
+/// test upstream, with these trusted proxies.
+fn start_server(trusted: List(String)) -> Int {
+  let #(port, _) = start_upstream()
+  let d = config.default().server
+  let cfg =
+    config.ServerConfig(
+      ..d,
+      upstream: "http://127.0.0.1:" <> string.inspect(port),
+    )
+  let assert Ok(started) =
+    proxy_http.start(
+      "127.0.0.1",
+      0,
+      server.handler_with_identity(cfg, "", option.None, trusted, [
+        "X-Forwarded-User", "x-auth-role", "",
+      ]),
+      server.http_options(cfg, option.None, trusted),
+    )
+  started.data
+}
+
+const identity_request =
+  "GET /echo HTTP/1.1\r\nhost: a\r\nX-Client-IP: 6.6.6.1\r\nTrue-Client-IP: 6.6.6.2\r\nX_Real_IP: 6.6.6.3\r\nX_Forwarded-For: 6.6.6.4\r\nx-forwarded_proto: https\r\nX-Forwarded-User: alice\r\nX_Auth_Role: admin\r\nX-Other: kept\r\nconnection: close\r\n\r\n"
+
+/// Headers that name the client from untrusted peers: an upstream could
+/// take them for the proxy's, so they are dropped, along with their
+/// variants spelled with `_` (which some servers read as `-`).
+pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
+  let #(received, _) =
+    session(start_server([]), [bit_array.from_string(identity_request)], 800)
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(text, "6.6.6.")
+  assert !string.contains(text, "https")
+  assert !string.contains(text, "alice")
+  assert !string.contains(text, "admin")
+  assert string.contains(text, "\nx-other: kept\n")
+  assert string.contains(text, "\nx-forwarded-for: 127.0.0.1\n")
+  // trusted proxies pass them on, but for the `_` variants of the
+  // headers this server sets
+  let #(received, _) =
+    session(
+      start_server(["127.0.0.1/32"]),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.contains(text, "\nx-client-ip: 6.6.6.1\n")
+  assert string.contains(text, "\ntrue-client-ip: 6.6.6.2\n")
+  assert string.contains(text, "\nx_real_ip: 6.6.6.3\n")
+  assert string.contains(text, "\nx-forwarded-user: alice\n")
+  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "6.6.6.4")
+  assert !string.contains(text, "https")
 }
