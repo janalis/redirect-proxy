@@ -46,7 +46,12 @@ answering 404 (`server.fallback_url` cannot be set as well).
   the incoming `X-Forwarded-Proto` and `X-Forwarded-Host` are kept, as
   are `Forwarded`, `X-Real-IP`, `X-Forwarded-Port`, `X-Forwarded-Prefix`,
   `X-Forwarded-Server` and `X-Forwarded-Ssl`. From any other peer the first
-  three are replaced (`http` and the `Host`) and the others dropped.
+  three are replaced (`http` and the `Host`) and the others dropped, with
+  `X-Client-IP`, `True-Client-IP` and the user, email and role headers of
+  `auth.header`, so that the upstream cannot be handed a forged identity.
+  A header spelled with `_` instead of `-` (`X_Forwarded_For`), which some
+  applications read as the same one, is dropped whenever its `-` spelling
+  is set or dropped.
 - The response is relayed as it comes, streamed, without hop-by-hop
   headers (a `Connection` header cannot remove its framing). Transfer
   codings other than `chunked` are kept; an HTTP/1.0 client cannot get
@@ -59,11 +64,14 @@ answering 404 (`server.fallback_url` cannot be set as well).
   may wait `server.upstream_timeout` (an idle timeout, like nginx's
   `client_body_timeout`, not a limit on the whole upload); then 408.
 - WebSockets and other upgrades (`Connection: upgrade`) are tunnelled once
-  the upstream answers 101, until either side closes or no byte flows for
+  the upstream answers 101 with the protocol asked for (a 101 to another
+  protocol gets 502), until either side closes or no byte flows for
   `server.upstream_timeout`: have the application ping more often than
   that. A tunnel counts as one upstream request; its lifetime is the
   duration of its access log line, but is not in
   `redirect_proxy_upstream_duration_seconds`.
+- `Upgrade: h2c` is never forwarded: the request goes on as plain
+  HTTP/1.1, so that HTTP/2 cannot bypass the forwarding headers.
 - An upstream that cannot be reached gets the client a 502, one that does
   not send its response head within `server.upstream_timeout` (default 60
   seconds) a 504, one that closes the connection before a complete head a
