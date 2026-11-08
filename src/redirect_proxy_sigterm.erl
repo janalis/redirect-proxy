@@ -12,7 +12,9 @@
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(FLAG, {redirect_proxy, draining}).
+%% an atom: read on every answered request, and `persistent_term` hashes its
+%% key on each read (a tuple costs more than the read itself)
+-define(FLAG, redirect_proxy_draining).
 
 install(GraceMs, BeforeStop) ->
     _ = gen_event:delete_handler(erl_signal_server, ?MODULE, remove),

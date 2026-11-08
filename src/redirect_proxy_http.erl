@@ -362,17 +362,31 @@ more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
 %% Woken from hibernation: at the end of the idle timeout (or the deadline
 %% of the head) by its timer, or by another message, then waited for until
 %% End, that same end: a message that is not a request does not restart it.
-%% (A `drain` from the listener is such a message: see `drained/3`.)
+%% (A `drain` from the listener is such a message: see `drained/3`.) A
+%% message of the kept upstream connection (closed by the upstream, or bytes
+%% nothing asked for) is not: the connection is dropped, and the process
+%% hibernates again.
 idle(Buffer, C, Timer, End) ->
     receive
         {timeout, Timer, idle} -> pending(Buffer, C, fun() -> expired(Buffer, C) end)
     after 0 ->
-        case erlang:cancel_timer(Timer) of
-            false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
-            _ -> ok
-        end,
-        wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+        case upstream_event(C) of
+            true ->
+                erlang:hibernate(?MODULE, idle, [Buffer, close_upstream(C), Timer, End]);
+            false ->
+                case erlang:cancel_timer(Timer) of
+                    false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
+                    _ -> ok
+                end,
+                wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+        end
     end.
+
+%% Whether the kept upstream connection sent a message (it is then of no use).
+upstream_event(#conn{up = none}) ->
+    false;
+upstream_event(#conn{up = Up}) ->
+    up_await(Up, 0) =/= {error, timeout}.
 
 %% Bytes that came with the message that woke the connection up are read
 %% before it gives up on them: else Then().
@@ -399,6 +413,7 @@ drained(C, Timeout, Then) ->
 hibernate_after(Timeout) -> min(1000, Timeout div 2).
 
 wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
+    Up = up_socket(C),
     receive
         %% usually a whole request: parsed as it came, not copied first
         {tcp, Socket, Data} when Buffer =:= <<>> ->
@@ -422,7 +437,14 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp_error, Socket, _} ->
             close(C);
         drain when Buffer =:= <<>> ->
-            drained(C, Timeout, Then)
+            drained(C, Timeout, Then);
+        %% the kept upstream connection, closed by the upstream or sending
+        %% bytes nothing asked for: dropped (more/2 then waits as before:
+        %% the head keeps its deadline, and the process hibernates)
+        {Tag, Up, _} when Tag =:= tcp; Tag =:= ssl; Tag =:= tcp_error; Tag =:= ssl_error ->
+            more(Buffer, close_upstream(C));
+        {Tag, Up} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+            more(Buffer, close_upstream(C))
     after Timeout ->
         case Then of
             close -> expired(Buffer, C);
@@ -668,6 +690,16 @@ lowercase_name(<<"X-Forwarded-For">>) -> <<"x-forwarded-for">>;
 lowercase_name(<<"X-Forwarded-Proto">>) -> <<"x-forwarded-proto">>;
 lowercase_name(<<"X-Real-IP">>) -> <<"x-real-ip">>;
 lowercase_name(<<"Via">>) -> <<"via">>;
+%% and in responses
+lowercase_name(<<"Date">>) -> <<"date">>;
+lowercase_name(<<"Server">>) -> <<"server">>;
+lowercase_name(<<"Content-Encoding">>) -> <<"content-encoding">>;
+lowercase_name(<<"Last-Modified">>) -> <<"last-modified">>;
+lowercase_name(<<"ETag">>) -> <<"etag">>;
+lowercase_name(<<"Vary">>) -> <<"vary">>;
+lowercase_name(<<"Location">>) -> <<"location">>;
+lowercase_name(<<"Set-Cookie">>) -> <<"set-cookie">>;
+lowercase_name(<<"Keep-Alive">>) -> <<"keep-alive">>;
 lowercase_name(Name) -> lowercase(Name).
 
 skip_ows(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> skip_ows(Rest);
@@ -804,10 +836,20 @@ lower(C) -> C.
 %% headers dropped, `x-forwarded-*` set by the handler), its body streamed
 %% (re-chunked, so that the upstream never sees framing it could read
 %% differently), then the response head relayed and its body streamed back.
-%% The upstream socket is passive: `upstream_timeout` is the wait for the
-%% response head, and the idle timeout of every read and write.
+%% `upstream_timeout` is the wait for the response head, and the idle
+%% timeout of every read and write.
+%%
+%% Between requests the upstream socket is armed (`{active, once}`): if the
+%% upstream closes the connection, or sends bytes nothing asked for, a
+%% message says so, and the next request, seeing it, opens a new connection
+%% instead (no call to the socket to find out). The first bytes of the
+%% response come as that message; the socket is passive for the rest of the
+%% exchange, and armed again when the connection is kept.
 
 -define(CONNECT_TIMEOUT, 5000).
+%% the process dictionary key of the bytes a relayed response has yet to
+%% send to the client (relay_body/6)
+-define(RELAYED, '$redirect_proxy_relayed').
 -define(MAX_RESPONSE_HEAD, 65536).
 
 %% headers that only concern one connection (RFC 9110 7.6.1), and the ones
@@ -1028,11 +1070,11 @@ send_request(Socket, Reused, Rest, F, C) ->
             end,
             case send_body(F#fwd.body, Rest, Socket, C) of
                 {ok, Rest1} ->
-                    response(Socket, Reused, <<>>, Rest1, true, F, C);
+                    response(Socket, Reused, armed, Rest1, true, F, C);
                 {error, {upstream, _}} ->
                     %% the upstream may have answered without reading the
                     %% whole body: relay its answer, then close
-                    response(Socket, false, <<>>, <<>>, false, F#fwd{retry = false}, C);
+                    response(Socket, false, armed, <<>>, false, F#fwd{retry = false}, C);
                 {error, {client, timeout}} ->
                     done(F#fwd.done, 408, 0, none),
                     reject(408, C);
@@ -1081,7 +1123,9 @@ send_body(chunked, Rest, Socket, C) ->
     end.
 
 %% Reads the response head (after 1xx interim responses), then relays it.
-%% BodyDone: the whole request body was sent.
+%% Buffer: the bytes read after the previous head, or `armed` for the first
+%% read (the message of the armed socket). BodyDone: the whole request body
+%% was sent.
 response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
     case read_head(Socket, Buffer, Up#up.timeout) of
         {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade =/= none, BodyDone ->
@@ -1173,15 +1217,12 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                         {true, _} -> []
                     end,
                     <<"\r\n">>],
-            Client = C1#conn.socket,
-            Sent = case gen_tcp:send(Client, Head) of
-                ok -> relay_body(Framing, Chunked, Buffer, Socket, C1);
-                {error, _} -> {error, {client, closed}, 0}
-            end,
-            case Sent of
+            case relay_body(Framing, Chunked, Head, Buffer, Socket, C1) of
                 {ok, Left, Bytes} ->
                     done(F#fwd.done, Status, Bytes, none),
-                    C2 = case UpKeep andalso Left =:= <<>> of
+                    %% kept: armed until the next request
+                    C2 = case UpKeep andalso Left =:= <<>>
+                              andalso up_setopts(Socket, [{active, once}]) =:= ok of
                         true -> C1;
                         false -> close_upstream(C1)
                     end,
@@ -1218,32 +1259,86 @@ delimited(none) -> true;
 delimited({length, _}) -> true;
 delimited(_) -> false.
 
-%% {ok, UpstreamLeftover, Bytes} | {error, Reason, Bytes}
-relay_body(none, _, Buffer, _, _) ->
+%% Sends the response head and relays the body: {ok, UpstreamLeftover,
+%% Bytes} | {error, Reason, Bytes}, Bytes the body bytes sent to the client.
+%%
+%% What is to be sent to the client (the head, then what the copy emits) is
+%% gathered under ?RELAYED in the process dictionary, with the number of
+%% body bytes in it, and sent before each wait for more bytes from the
+%% upstream, and at the end: the head and the body bytes read with it go in
+%% one send, a small response in one segment.
+relay_body(Framing, Chunked, Head, Buffer, Socket, C) ->
+    put(?RELAYED, {Head, 0}),
+    Read = upstream_recv(Socket, C),
+    Recv = fun() ->
+        case flush(C) of
+            ok -> Read();
+            Error -> Error
+        end
+    end,
+    Result = copy_body(Framing, Chunked, Buffer, Recv),
+    %% what was read is sent, even when the rest cannot be
+    Flushed = flush(C),
+    %% the body bytes a failed send dropped
+    {_, Unsent} = erase(?RELAYED),
+    case {Result, Flushed} of
+        {{ok, _, Bytes}, {error, Reason}} -> {error, Reason, Bytes - Unsent};
+        {{error, Reason, Bytes}, _} -> {error, Reason, Bytes - Unsent};
+        _ -> Result
+    end.
+
+copy_body(none, _, Buffer, _) ->
     {ok, Buffer, 0};
-relay_body({length, N}, _, Buffer, Socket, C) ->
-    copy_length(Buffer, N, upstream_recv(Socket, C), client_emit(C), 0);
-relay_body(chunked, true, Buffer, Socket, C) ->
-    Emit = client_emit(C),
-    case copy_chunked(Buffer, upstream_recv(Socket, C), chunk_emit(Emit), 0) of
+copy_body({length, N}, _, Buffer, Recv) ->
+    copy_length(Buffer, N, Recv, fun relayed/1, 0);
+copy_body(chunked, true, Buffer, Recv) ->
+    case copy_chunked(Buffer, Recv, fun relayed_chunk/1, 0) of
         {ok, Left, Bytes} ->
-            case Emit(<<"0\r\n\r\n">>) of
-                ok -> {ok, Left, Bytes};
-                {error, Reason} -> {error, Reason, Bytes}
-            end;
+            gather(<<"0\r\n\r\n">>, 0),
+            {ok, Left, Bytes};
         Error ->
             Error
     end;
-relay_body(chunked, false, Buffer, Socket, C) ->
+copy_body(chunked, false, Buffer, Recv) ->
     %% an HTTP/1.0 client: the body without its chunks, then the end of the
     %% connection
-    copy_chunked(Buffer, upstream_recv(Socket, C), client_emit(C), 0);
-relay_body(close, _, Buffer, Socket, C) ->
-    copy_close(Buffer, upstream_recv(Socket, C), client_emit(C), 0).
+    copy_chunked(Buffer, Recv, fun relayed/1, 0);
+copy_body(close, _, Buffer, Recv) ->
+    copy_close(Buffer, Recv, fun relayed/1, 0).
+
+%% The emitters of relay_body/6: body bytes, as they are or in a chunk.
+relayed(Data) ->
+    gather(Data, byte_size(Data)).
+
+relayed_chunk(Data) ->
+    gather([integer_to_binary(byte_size(Data), 16), <<"\r\n">>, Data, <<"\r\n">>],
+           byte_size(Data)).
+
+gather(Data, Bytes) ->
+    {Pending, Unsent} = get(?RELAYED),
+    put(?RELAYED, {[Pending | Data], Unsent + Bytes}),
+    ok.
+
+%% Sends what relay_body/6 gathered: ok | {error, {client, Reason}}. A failed
+%% send keeps the count of the body bytes it dropped.
+flush(#conn{socket = Socket}) ->
+    case get(?RELAYED) of
+        {[], _} ->
+            ok;
+        {Pending, Unsent} ->
+            case gen_tcp:send(Socket, Pending) of
+                ok ->
+                    put(?RELAYED, {[], 0}),
+                    ok;
+                {error, Reason} ->
+                    put(?RELAYED, {[], Unsent}),
+                    {error, {client, Reason}}
+            end
+    end.
 
 %% {Lengths, Codings, ConnectionTokens, HasDate} of a response.
-response_fields([{Name, Value} | Rest], Lengths, Codings, Tokens, Date) ->
-    case lowercase(Name) of
+response_fields([{_, Lower, Value} | Rest], Lengths, Codings, Tokens, Date) ->
+    case Lower of
         <<"content-length">> -> response_fields(Rest, [Value | Lengths], Codings, Tokens, Date);
         <<"transfer-encoding">> -> response_fields(Rest, Lengths, [Value | Codings], Tokens, Date);
         <<"connection">> -> response_fields(Rest, Lengths, Codings, tokens(Value) ++ Tokens, Date);
@@ -1257,8 +1352,7 @@ response_fields([], Lengths, Codings, Tokens, Date) ->
 %% `Connection` header names (Tokens; `false` keeps `Connection` and
 %% `Upgrade`, for a 101), and without `Content-Length` next to a
 %% `Transfer-Encoding` (RFC 9112 6.3).
-response_headers([{Name, Value} | Rest], Tokens, DropLength) ->
-    Lower = lowercase(Name),
+response_headers([{Name, Lower, Value} | Rest], Tokens, DropLength) ->
     Drop = case Tokens of
         false ->
             Lower =/= <<"connection">> andalso Lower =/= <<"upgrade">>
@@ -1276,6 +1370,12 @@ response_headers([], _, _) ->
     [].
 
 %% {ok, Status, Reason, Minor, Headers, Rest} | {error, timeout | closed | Reason}
+read_head(Socket, armed, Timeout) ->
+    case up_await(Socket, Timeout) of
+        {ok, Data} -> read_head(Socket, Data, Timeout);
+        {error, timeout} -> {error, timeout};
+        {error, _} -> {error, closed}
+    end;
 read_head(Socket, Buffer, Timeout) ->
     case binary:match(Buffer, [<<"\r\n\r\n">>, <<"\n\n">>]) of
         {At, Length} ->
@@ -1295,7 +1395,8 @@ read_head(Socket, Buffer, Timeout) ->
             end
     end.
 
-%% {ok, Status, Reason, Minor, Headers} | error
+%% {ok, Status, Reason, Minor, Headers} | error, Headers being
+%% [{Name, LowercaseName, Value}]: the name as sent, and lowercased once
 parse_response(Head) ->
     case binary:split(Head, [<<"\r\n">>, <<"\n">>], [global]) of
         [<<"HTTP/1.", Minor, $\s, A, B, D, Tail/binary>> | Lines]
@@ -1320,11 +1421,15 @@ response_lines([], Acc) ->
     {ok, lists:reverse(Acc)};
 response_lines([Line | Rest], Acc) ->
     case name(Line, 0, false) of
-        {Length, _} when Length > 0 ->
+        {Length, Upper} when Length > 0 ->
             <<Name:Length/binary, $:, Value/binary>> = Line,
+            Lower = case Upper of
+                true -> lowercase_name(Name);
+                false -> Name
+            end,
             %% a lone CR would end the line for some clients
             case printable(Value) of
-                true -> response_lines(Rest, [{Name, trim(Value)} | Acc]);
+                true -> response_lines(Rest, [{Name, Lower, trim(Value)} | Acc]);
                 false -> error
             end;
         _ ->
@@ -1341,7 +1446,7 @@ printable(<<>>) -> true.
 %% asked for (RFC 9110 7.8), compared without case.
 switched(Headers, Requested) ->
     Asked = tokens(Requested),
-    case [P || {Name, Value} <- Headers, lowercase(Name) =:= <<"upgrade">>, P <- tokens(Value)] of
+    case [P || {_, <<"upgrade">>, Value} <- Headers, P <- tokens(Value)] of
         [] -> false;
         Protocols -> lists:all(fun(P) -> lists:member(P, Asked) end, Protocols)
     end.
@@ -1383,9 +1488,13 @@ tunnel_loop(Client, {_, Raw} = Socket, Timeout, Bytes) ->
         {Tag, Raw} when Tag =:= tcp_passive; Tag =:= ssl_passive ->
             _ = up_setopts(Socket, [{active, ?ACTIVE}]),
             tunnel_loop(Client, Socket, Timeout, Bytes);
-        {Tag, _} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+        {tcp_closed, Client} ->
             Bytes;
-        {Tag, _, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
+        {tcp_error, Client, _} ->
+            Bytes;
+        {Tag, Raw} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+            Bytes;
+        {Tag, Raw, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
             Bytes
     after Timeout ->
         Bytes
@@ -1638,14 +1747,6 @@ client_recv(#conn{socket = Socket, upstream = #up{timeout = Timeout}}) ->
         end
     end.
 
-client_emit(#conn{socket = Socket}) ->
-    fun(Data) ->
-        case gen_tcp:send(Socket, Data) of
-            ok -> ok;
-            {error, Reason} -> {error, {client, Reason}}
-        end
-    end.
-
 upstream_recv(Socket, #conn{upstream = #up{timeout = Timeout}}) ->
     fun() ->
         case up_recv(Socket, Timeout) of
@@ -1672,14 +1773,15 @@ open(#conn{up = none, upstream = Up} = C) ->
         Error -> Error
     end;
 open(#conn{up = Socket} = C) ->
-    %% a closed connection or unexpected bytes: not reusable
-    case up_recv(Socket, 0) of
+    %% the armed socket got nothing: else a closed connection, or unexpected
+    %% bytes, and it is not reusable
+    case up_await(Socket, 0) of
         {error, timeout} -> {ok, Socket, true, C};
         _ -> open(close_upstream(C))
     end.
 
 connect(#up{tls = Tls, address = Address, port = Port, timeout = Timeout} = Up) ->
-    Tcp = [binary, {packet, raw}, {active, false}, {nodelay, true},
+    Tcp = [binary, {packet, raw}, {active, once}, {nodelay, true},
            {send_timeout, Timeout}, {send_timeout_close, true}],
     case Tls of
         false ->
@@ -1694,17 +1796,45 @@ connect(#up{tls = Tls, address = Address, port = Port, timeout = Timeout} = Up) 
             end
     end.
 
+%% The socket of the kept upstream connection, that its messages carry.
+up_socket(#conn{up = none}) -> none;
+up_socket(#conn{up = {_, S}}) -> S.
+
 close_upstream(#conn{up = none} = C) ->
     C;
 close_upstream(#conn{up = Socket} = C) ->
     _ = up_close(Socket),
+    flush_upstream(Socket),
     C#conn{up = none}.
+
+%% The messages an armed socket sent before it was closed.
+flush_upstream(Socket) ->
+    case up_await(Socket, 0) of
+        {error, timeout} -> ok;
+        _ -> flush_upstream(Socket)
+    end.
 
 up_send({gen_tcp, S}, Data) -> gen_tcp:send(S, Data);
 up_send({ssl, S}, Data) -> ssl:send(S, Data).
 
 up_recv({gen_tcp, S}, Timeout) -> gen_tcp:recv(S, 0, Timeout);
 up_recv({ssl, S}, Timeout) -> ssl:recv(S, 0, Timeout).
+
+%% The message of an armed socket.
+up_await({gen_tcp, S}, Timeout) ->
+    receive
+        {tcp, S, Data} -> {ok, Data};
+        {tcp_closed, S} -> {error, closed};
+        {tcp_error, S, Reason} -> {error, Reason}
+    after Timeout -> {error, timeout}
+    end;
+up_await({ssl, S}, Timeout) ->
+    receive
+        {ssl, S, Data} -> {ok, Data};
+        {ssl_closed, S} -> {error, closed};
+        {ssl_error, S, Reason} -> {error, Reason}
+    after Timeout -> {error, timeout}
+    end.
 
 up_setopts({gen_tcp, S}, Opts) -> inet:setopts(S, Opts);
 up_setopts({ssl, S}, Opts) -> ssl:setopts(S, Opts).

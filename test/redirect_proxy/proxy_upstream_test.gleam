@@ -18,11 +18,39 @@ import redirect_proxy/proxy/server
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
 
+@external(erlang, "test_net_ffi", "paced_session")
+fn paced_session(
+  port: Int,
+  chunks: List(BitArray),
+  gap_ms: Int,
+  wait_ms: Int,
+) -> #(BitArray, Bool)
+
 @external(erlang, "test_net_ffi", "reset_after")
 fn reset_after(port: Int, data: BitArray, wait_ms: Int) -> Nil
 
 @external(erlang, "test_net_ffi", "half_closed")
 fn half_closed(port: Int, data: BitArray, wait_ms: Int) -> #(BitArray, Bool)
+
+type Socket
+
+@external(erlang, "test_net_ffi", "open")
+fn open(port: Int) -> Socket
+
+@external(erlang, "test_net_ffi", "send")
+fn send(socket: Socket, data: BitArray) -> Nil
+
+@external(erlang, "test_net_ffi", "read")
+fn read(socket: Socket, wait_ms: Int) -> #(BitArray, Bool)
+
+@external(erlang, "test_net_ffi", "close")
+fn close(socket: Socket) -> Nil
+
+@external(erlang, "test_net_ffi", "connection_process")
+fn connection_process(socket: Socket) -> process.Pid
+
+@external(erlang, "test_net_ffi", "hibernated")
+fn hibernated(pid: process.Pid) -> Bool
 
 type Counter
 
@@ -78,6 +106,14 @@ fn handler(
 }
 
 fn start_with(up: proxy_http.Upstream, counter: Counter) -> Proxy {
+  start_idle(up, counter, 300)
+}
+
+fn start_idle(
+  up: proxy_http.Upstream,
+  counter: Counter,
+  idle_ms: Int,
+) -> Proxy {
   let done = process.new_subject()
   let assert Ok(started) =
     proxy_http.start(
@@ -85,7 +121,7 @@ fn start_with(up: proxy_http.Upstream, counter: Counter) -> Proxy {
       0,
       handler(done),
       proxy_http.Options(
-        idle_timeout_ms: 300,
+        idle_timeout_ms: idle_ms,
         max_head_bytes: 4096,
         peer: True,
         upstream: option.Some(up),
@@ -102,6 +138,16 @@ fn start() -> Proxy {
 fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
   let #(received, closed) =
     session(proxy.port, list.map(chunks, bit_array.from_string), 800)
+  let assert Ok(text) = bit_array.to_string(received)
+  #(text, closed)
+}
+
+/// Like exchange/2, with 200 ms between the chunks: for an upstream that
+/// does something 20 ms after a response (/idle-close, /linger), even one
+/// that needs a TLS handshake first.
+fn paced_exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
+  let #(received, closed) =
+    paced_session(proxy.port, list.map(chunks, bit_array.from_string), 200, 800)
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -219,6 +265,71 @@ pub fn closed_upstream_connections_are_replaced_test() {
   assert string.contains(text, "GET /again\nconn=2\n")
 }
 
+/// A kept-alive upstream connection the upstream closes while it is idle:
+/// the next request, even one that could not be sent again, goes on a new
+/// one.
+pub fn idle_upstream_connections_closed_by_the_upstream_are_replaced_test() {
+  let proxy = start()
+  let #(text, _) =
+    paced_exchange(proxy, [
+      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+      "POST /after HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
+      "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert string.contains(text, "GET /idle-close\nconn=1\n")
+  assert string.contains(text, "POST /after\nconn=2\n")
+  assert string.contains(text, "body=hi")
+  assert string.contains(text, "GET /again\nconn=2\n")
+  assert count(text, "HTTP/1.1 200 OK\r\n") == 3
+  assert connections(proxy.upstream) == 2
+}
+
+/// The message of a kept upstream connection the upstream closes does not
+/// keep the idle client connection from hibernating: before it hibernates
+/// (closed after 20 ms), or once it has (after 1.3 s).
+pub fn idle_upstream_closes_do_not_keep_connections_awake_test() {
+  let #(port, counter) = start_upstream()
+  let proxy = start_idle(upstream(port), counter, 10_000)
+  let socket = open(proxy.port)
+  send(socket, <<"GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(first, _) = read(socket, 100)
+  let assert Ok(first) = bit_array.to_string(first)
+  assert string.contains(first, "GET /idle-close\nconn=1\n")
+  // hibernated 1 s after the close
+  process.sleep(1300)
+  let pid = connection_process(socket)
+  assert hibernated(pid)
+  // the next request goes on a new upstream connection
+  send(socket, <<"GET /idle-close-late HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(second, _) = read(socket, 100)
+  let assert Ok(second) = bit_array.to_string(second)
+  assert string.contains(second, "GET /idle-close-late\nconn=2\n")
+  // hibernated after 1 s, then woken by the close at 1.3 s: hibernated again
+  process.sleep(1600)
+  assert hibernated(pid)
+  send(socket, <<"GET /last HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(third, _) = read(socket, 100)
+  let assert Ok(third) = bit_array.to_string(third)
+  assert string.contains(third, "GET /last\nconn=3\n")
+  close(socket)
+  assert connections(counter) == 3
+}
+
+/// Bytes an idle upstream connection sends unasked are not taken for the
+/// response to the next request: the connection is not reused.
+pub fn unsolicited_upstream_bytes_are_not_relayed_test() {
+  let proxy = start()
+  let #(text, _) =
+    paced_exchange(proxy, [
+      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /next HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert !string.contains(text, "bogus")
+  assert string.contains(text, "GET /linger\nconn=1\n")
+  assert string.contains(text, "GET /next\nconn=2\n")
+  assert count(text, "HTTP/1.1 200 OK\r\n") == 2
+}
+
 pub fn chunked_responses_are_relayed_test() {
   let proxy = start()
   let #(text, _) = exchange(proxy, ["GET /chunked HTTP/1.1\r\nhost: a\r\n\r\n"])
@@ -238,6 +349,22 @@ pub fn chunked_responses_are_relayed_test() {
   assert string.contains(text, "\r\nconnection: close\r\n")
   assert string.ends_with(text, "\r\n\r\nhello world")
   assert closed
+}
+
+/// The head and the bytes read with it are sent together, but before the
+/// rest of the body is waited for.
+pub fn responses_are_relayed_as_they_come_test() {
+  let proxy = start()
+  let socket = open(proxy.port)
+  send(socket, <<"GET /stream HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(first, _) = read(socket, 120)
+  let assert Ok(first) = bit_array.to_string(first)
+  assert string.starts_with(first, "HTTP/1.1 200 OK\r\n")
+  assert string.ends_with(first, "\r\n\r\n5\r\nhello\r\n")
+  let #(rest, _) = read(socket, 300)
+  close(socket)
+  assert rest == <<"6\r\n world\r\n0\r\n\r\n":utf8>>
+  assert forwarded(proxy).bytes == 11
 }
 
 pub fn close_delimited_responses_close_the_connection_test() {
@@ -477,6 +604,17 @@ pub fn https_upstreams_test() {
   assert string.contains(text, "POST /tls\nconn=1\n")
   assert string.contains(text, "body=hi")
   assert string.contains(text, "GET /again\nconn=1\n")
+  // closed by the upstream, or sent unasked bytes, while idle: replaced
+  let #(text, _) =
+    paced_exchange(proxy, [
+      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert string.contains(text, "GET /idle-close\nconn=2\n")
+  assert string.contains(text, "GET /linger\nconn=3\n")
+  assert string.contains(text, "GET /last\nconn=4\n")
+  assert !string.contains(text, "bogus")
   // a self-signed certificate is refused when it is verified
   let proxy =
     start_with(proxy_http.Upstream(..upstream(port), tls: True), counter)
