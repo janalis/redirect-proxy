@@ -1,6 +1,7 @@
 //// The public redirect listener. Deliberately minimal: no body reads, no
 //// framework, one lock-free snapshot read and a single response, served by
-//// a dedicated HTTP/1.1 server (`proxy/http`).
+//// a dedicated HTTP/1.1 server (`proxy/http`). With `server.upstream`, the
+//// requests no rule answers are left to that server, which forwards them.
 
 import gleam/bytes_tree.{type BytesTree}
 import gleam/http
@@ -11,6 +12,7 @@ import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
+import mist
 import redirect_proxy/access_log
 import redirect_proxy/config.{type ServerConfig}
 import redirect_proxy/ffi
@@ -27,92 +29,225 @@ pub fn http_options(
   config: ServerConfig,
   access: Option(access_log.Settings),
 ) -> proxy_http.Options {
+  let upstream = case config.parse_upstream(config.upstream) {
+    Ok(url) if config.upstream != "" ->
+      option.Some(proxy_http.Upstream(
+        tls: url.tls,
+        host: url.host,
+        port: url.port,
+        timeout_ms: config.upstream_timeout * 1000,
+        tls_verify: config.upstream_tls_verify,
+      ))
+    _ -> option.None
+  }
   proxy_http.Options(
     idle_timeout_ms: 10_000,
     // the query string and the headers do not count in `max_path_bytes`
     max_head_bytes: config.max_path_bytes + 65_536,
-    peer: option.is_some(access),
+    // `X-Forwarded-For` needs the client address
+    peer: option.is_some(access) || option.is_some(upstream),
+    upstream:,
   )
 }
 
+/// What the listener does with a request: answer it (with the id of the
+/// matched rule, "" when none), or leave it to the upstream.
+type Routed {
+  Answered(Response(BytesTree), String)
+  Unanswered
+}
+
 /// The request handler. With access log settings each request is logged,
-/// with the id of the matched rule.
+/// with the id of the matched rule. With `server.upstream`, the requests no
+/// rule answers (whatever their method) are forwarded to it; the
+/// `x-forwarded-*` values of the peers in `trusted_proxies` are kept.
 ///
-/// The server closes the connection after a request with a body: the body
-/// is never read, and on a kept-alive connection its bytes would be parsed as
-/// the next request (request smuggling behind a reverse proxy that reuses
-/// connections).
+/// The server closes the connection after an answered request with a body:
+/// the body is never read, and on a kept-alive connection its bytes would be
+/// parsed as the next request (request smuggling behind a reverse proxy that
+/// reuses connections). The body of a forwarded request is forwarded.
 pub fn handler(
   config: ServerConfig,
   metrics_token: String,
   access: Option(access_log.Settings),
+  trusted_proxies: List(String),
 ) -> proxy_http.Handler {
   let not_found_body = bytes_tree.from_string(config.not_found_body)
   let permanent_cache =
     "public, max-age=" <> int.to_string(config.cache_max_age)
+  let upstream = config.upstream != ""
   fn(req: Request(proxy_http.Peer)) {
     let started = ffi.monotonic_micros()
-    let #(resp, rule_id) = case
+    let routed = case
       config.metrics_path != "" && req.path == config.metrics_path
     {
-      True -> #(metrics_response(req, metrics_token), "")
-      False -> respond(config, req, not_found_body, permanent_cache)
+      True -> Answered(metrics_response(req, metrics_token), "")
+      False -> route(config, upstream, req, not_found_body, permanent_cache)
     }
-    let finished = ffi.monotonic_micros()
-    metrics.observe(listener.RedirectListener, finished - started)
-    metrics.response(resp.status)
-    case access {
-      option.None -> Nil
-      option.Some(settings) -> {
-        let duration_us = finished - started
-        access_log.record(
-          settings,
-          req,
-          req.body,
-          resp,
-          bytes_tree.byte_size(resp.body),
-          rule_id,
-          ffi.now_micros() - duration_us,
-          duration_us,
-        )
+    case routed {
+      Answered(resp, rule_id) -> {
+        // while the node drains before stopping (SIGTERM), connections are
+        // closed after each response so that clients reconnect to another
+        // instance
+        let resp = case ffi.draining() {
+          False -> resp
+          True -> response.set_header(resp, "connection", "close")
+        }
+        let finished = ffi.monotonic_micros()
+        metrics.observe(listener.RedirectListener, finished - started)
+        metrics.response(resp.status)
+        case access {
+          option.None -> Nil
+          option.Some(settings) -> {
+            let duration_us = finished - started
+            access_log.record(
+              settings,
+              req,
+              req.body,
+              resp,
+              bytes_tree.byte_size(resp.body),
+              rule_id,
+              ffi.now_micros() - duration_us,
+              duration_us,
+            )
+          }
+        }
+        proxy_http.Answer(resp)
       }
+      Unanswered -> forward(req, started, access, trusted_proxies)
     }
-    resp
   }
 }
 
-/// The response and the id of the matched rule ("" when none). While the
-/// node drains before stopping (SIGTERM), connections are closed after each
-/// response so that clients reconnect to another instance.
-fn respond(
-  config: ServerConfig,
+/// Leaves the request to the upstream. Its time is recorded in
+/// `redirect_proxy_upstream_duration_seconds`, not in the redirect
+/// listener's histogram, and the access log line gets the upstream's status
+/// and the full duration once the response is relayed.
+fn forward(
   req: Request(proxy_http.Peer),
-  not_found_body: BytesTree,
-  permanent_cache: String,
-) -> #(Response(BytesTree), String) {
-  let #(resp, rule_id) = route(config, req, not_found_body, permanent_cache)
-  case ffi.draining() {
-    False -> #(resp, rule_id)
-    True -> #(response.set_header(resp, "connection", "close"), rule_id)
+  started: Int,
+  access: Option(access_log.Settings),
+  trusted_proxies: List(String),
+) -> proxy_http.Outcome {
+  metrics.incr(metrics.UpstreamRequests)
+  proxy_http.Forward(
+    close: ffi.draining(),
+    headers: forwarded_headers(req, trusted_proxies),
+    done: fn(forwarded: proxy_http.Forwarded) {
+      let duration_us = ffi.monotonic_micros() - started
+      metrics.observe_upstream(duration_us)
+      metrics.response(forwarded.status)
+      case forwarded.error {
+        option.None -> Nil
+        option.Some(proxy_http.Unreachable) ->
+          metrics.incr(metrics.UpstreamUnreachable)
+        option.Some(proxy_http.TimedOut) ->
+          metrics.incr(metrics.UpstreamTimeouts)
+        option.Some(proxy_http.InvalidResponse) ->
+          metrics.incr(metrics.UpstreamInvalidResponses)
+      }
+      case access {
+        option.None -> Nil
+        option.Some(settings) ->
+          access_log.record(
+            settings,
+            req,
+            req.body,
+            Response(forwarded.status, [], Nil),
+            forwarded.bytes,
+            "",
+            ffi.now_micros() - duration_us,
+            duration_us,
+          )
+      }
+    },
+  )
+}
+
+/// `X-Forwarded-For` (the client address, appended to the incoming list
+/// when the peer is a trusted proxy), `X-Forwarded-Proto` and
+/// `X-Forwarded-Host` (the incoming values from a trusted proxy, else `http`
+/// and the `Host`). Values from other peers are dropped: they could be
+/// forged.
+pub fn forwarded_headers(
+  req: Request(proxy_http.Peer),
+  trusted_proxies: List(String),
+) -> List(#(String, String)) {
+  let peer = case req.body {
+    Ok(ip) -> mist.ip_address_to_string(ip)
+    Error(Nil) -> ""
   }
+  let trusted =
+    peer != ""
+    && trusted_proxies != []
+    && list.any(trusted_proxies, ffi.ip_in_cidr(peer, _))
+  let incoming = fn(name) {
+    case trusted {
+      True -> list.key_find(req.headers, name)
+      False -> Error(Nil)
+    }
+  }
+  let prior_for = case trusted {
+    True ->
+      list.filter_map(req.headers, fn(h) {
+        case h.0 == "x-forwarded-for" {
+          True -> Ok(h.1)
+          False -> Error(Nil)
+        }
+      })
+    False -> []
+  }
+  let for = case prior_for, peer {
+    [], "" -> []
+    [], _ -> [#("x-forwarded-for", peer)]
+    _, _ -> [
+      #("x-forwarded-for", string.join(list.append(prior_for, [peer]), ", ")),
+    ]
+  }
+  let host = case incoming("x-forwarded-host") {
+    Ok(host) -> [#("x-forwarded-host", host)]
+    Error(Nil) ->
+      case list.key_find(req.headers, "host") {
+        Ok(host) -> [#("x-forwarded-host", host)]
+        Error(Nil) -> []
+      }
+  }
+  list.flatten([
+    for,
+    [
+      #(
+        "x-forwarded-proto",
+        incoming("x-forwarded-proto") |> result.unwrap("http"),
+      ),
+    ],
+    host,
+  ])
 }
 
 fn route(
   config: ServerConfig,
+  upstream: Bool,
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
-) -> #(Response(BytesTree), String) {
+) -> Routed {
   case config.health_path != "" && req.path == config.health_path {
-    True -> #(health(), "")
+    True -> Answered(health(), "")
     False -> {
       metrics.incr(metrics.Requests)
       case string.byte_size(req.path) > config.max_path_bytes {
-        True -> #(empty(414), "")
+        True -> Answered(empty(414), "")
         False ->
           case config.https_redirect && !forwarded_https(req) {
-            True -> #(to_https(req, permanent_cache), "")
-            False -> route_rules(config, req, not_found_body, permanent_cache)
+            True -> Answered(to_https(req, permanent_cache), "")
+            False ->
+              route_rules(
+                config,
+                upstream,
+                req,
+                not_found_body,
+                permanent_cache,
+              )
           }
       }
     }
@@ -205,10 +340,11 @@ fn empty(status: Int) -> Response(BytesTree) {
 
 fn route_rules(
   config: ServerConfig,
+  upstream: Bool,
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
-) -> #(Response(BytesTree), String) {
+) -> Routed {
   // header names are lower case: `request.get_header` would lower-case
   // the name on every request
   let host = list.key_find(req.headers, "host") |> result.unwrap(req.host)
@@ -220,7 +356,7 @@ fn route_rules(
         Ok(m) -> {
           metrics.incr(metrics.Redirects)
           matcher.record_hit(current, m.rule.id)
-          #(
+          Answered(
             redirect(
               m.rule.status,
               matcher.location(m, option_to_result(req.query)),
@@ -229,21 +365,25 @@ fn route_rules(
             m.rule.id,
           )
         }
-        Error(Nil) -> #(unmatched(config, not_found_body), "")
+        Error(Nil) if upstream -> Unanswered
+        Error(Nil) -> Answered(unmatched(config, not_found_body), "")
       }
     }
-    http.Options -> #(
-      response.new(204)
-        |> response.set_header("allow", allowed_methods)
-        |> response.set_body(bytes_tree.new()),
-      "",
-    )
-    _ -> #(
-      response.new(405)
-        |> response.set_header("allow", allowed_methods)
-        |> response.set_body(bytes_tree.new()),
-      "",
-    )
+    _ if upstream -> Unanswered
+    http.Options ->
+      Answered(
+        response.new(204)
+          |> response.set_header("allow", allowed_methods)
+          |> response.set_body(bytes_tree.new()),
+        "",
+      )
+    _ ->
+      Answered(
+        response.new(405)
+          |> response.set_header("allow", allowed_methods)
+          |> response.set_body(bytes_tree.new()),
+        "",
+      )
   }
 }
 

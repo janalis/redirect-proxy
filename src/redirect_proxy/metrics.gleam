@@ -49,6 +49,12 @@ pub type Metric {
   StorageWriteFailures
   /// Fetches of an identity provider's metadata or keys that failed.
   IdpFetchFailures
+  /// Requests forwarded to `server.upstream`.
+  UpstreamRequests
+  /// Forwarded requests that failed on the upstream side, by reason.
+  UpstreamUnreachable
+  UpstreamTimeouts
+  UpstreamInvalidResponses
 }
 
 fn index(metric: Metric) -> Int {
@@ -72,6 +78,10 @@ fn index(metric: Metric) -> Int {
     Responses2xx -> 17
     StorageWriteFailures -> 18
     IdpFetchFailures -> 19
+    UpstreamRequests -> 20
+    UpstreamUnreachable -> 21
+    UpstreamTimeouts -> 22
+    UpstreamInvalidResponses -> 23
   }
 }
 
@@ -86,7 +96,8 @@ fn latency() -> ffi.Counters {
   case ffi.snapshot_get(latency_key) {
     Ok(c) -> c
     Error(Nil) -> {
-      let c = ffi.counter_new(latency_slots * list.length(listener.all))
+      // one more series for the forwarded requests
+      let c = ffi.counter_new(latency_slots * { list.length(listener.all) + 1 })
       ffi.snapshot_put(latency_key, c)
       c
     }
@@ -103,8 +114,20 @@ fn listener_offset(l: Listener) -> Int {
 
 /// Records how long a request took (lock-free).
 pub fn observe(l: Listener, duration_us: Int) -> Nil {
+  observe_at(listener_offset(l), duration_us)
+}
+
+/// After the three listeners.
+const upstream_offset = 60
+
+/// Records how long a forwarded request took, from the handler's decision
+/// to the end of the relayed response (lock-free).
+pub fn observe_upstream(duration_us: Int) -> Nil {
+  observe_at(upstream_offset, duration_us)
+}
+
+fn observe_at(base: Int, duration_us: Int) -> Nil {
   let c = latency()
-  let base = listener_offset(l)
   ffi.counter_add(c, base + bucket(buckets_us, duration_us, 1), 1)
   ffi.counter_add(c, base + latency_slots - 1, duration_us)
   ffi.counter_add(c, base + latency_slots, 1)
@@ -142,7 +165,7 @@ fn counters() -> ffi.Counters {
   case ffi.snapshot_get(key) {
     Ok(c) -> c
     Error(Nil) -> {
-      let c = ffi.counter_new(19)
+      let c = ffi.counter_new(23)
       ffi.snapshot_put(key, c)
       c
     }
@@ -213,46 +236,20 @@ fn trim_zeros(digits: String) -> String {
 }
 
 /// `redirect_proxy_request_duration_seconds`, per listener (cumulative
-/// buckets, as Prometheus expects).
+/// buckets, as Prometheus expects). Forwarded requests are not in the
+/// redirect listener's series: they have their own histogram.
 fn histogram() -> String {
   let name = "redirect_proxy_request_duration_seconds"
   let c = latency()
   let series =
     listener.all
     |> list.map(fn(l) {
-      let base = listener_offset(l)
-      let label = "listener=\"" <> listener.name(l) <> "\""
-      let bounds = list.map(buckets_us, seconds) |> list.append(["+Inf"])
-      let #(_, lines) =
-        list.index_fold(bounds, #(0, []), fn(acc, bound, i) {
-          let #(total, lines) = acc
-          let total = total + ffi.counter_get(c, base + i + 1)
-          let line =
-            name
-            <> "_bucket{"
-            <> label
-            <> ",le=\""
-            <> bound
-            <> "\"} "
-            <> int.to_string(total)
-          #(total, [line, ..lines])
-        })
-      list.flatten([
-        list.reverse(lines),
-        [
-          name
-            <> "_sum{"
-            <> label
-            <> "} "
-            <> seconds(ffi.counter_get(c, base + latency_slots - 1)),
-          name
-            <> "_count{"
-            <> label
-            <> "} "
-            <> int.to_string(ffi.counter_get(c, base + latency_slots)),
-        ],
-      ])
-      |> string.join("\n")
+      labelled_series(
+        c,
+        name,
+        listener_offset(l),
+        "listener=\"" <> listener.name(l) <> "\"",
+      )
     })
   "# HELP "
   <> name
@@ -260,6 +257,71 @@ fn histogram() -> String {
   <> name
   <> " histogram\n"
   <> string.join(series, "\n")
+}
+
+/// `redirect_proxy_upstream_duration_seconds`.
+fn upstream_histogram() -> String {
+  let name = "redirect_proxy_upstream_duration_seconds"
+  "# HELP "
+  <> name
+  <> " Time to forward a request to the upstream and relay its response.\n# TYPE "
+  <> name
+  <> " histogram\n"
+  <> series_lines(latency(), name, upstream_offset, "")
+}
+
+fn labelled_series(
+  c: ffi.Counters,
+  name: String,
+  base: Int,
+  label: String,
+) -> String {
+  series_lines(c, name, base, label <> ",")
+}
+
+/// The bucket, sum and count lines of one series; `label` is empty or ends
+/// with a comma.
+fn series_lines(
+  c: ffi.Counters,
+  name: String,
+  base: Int,
+  label: String,
+) -> String {
+  let bounds = list.map(buckets_us, seconds) |> list.append(["+Inf"])
+  let #(_, lines) =
+    list.index_fold(bounds, #(0, []), fn(acc, bound, i) {
+      let #(total, lines) = acc
+      let total = total + ffi.counter_get(c, base + i + 1)
+      let line =
+        name
+        <> "_bucket{"
+        <> label
+        <> "le=\""
+        <> bound
+        <> "\"} "
+        <> int.to_string(total)
+      #(total, [line, ..lines])
+    })
+  let plain = case label {
+    "" -> ""
+    _ -> "{" <> string.drop_end(label, 1) <> "}"
+  }
+  list.flatten([
+    list.reverse(lines),
+    [
+      name
+        <> "_sum"
+        <> plain
+        <> " "
+        <> seconds(ffi.counter_get(c, base + latency_slots - 1)),
+      name
+        <> "_count"
+        <> plain
+        <> " "
+        <> int.to_string(ffi.counter_get(c, base + latency_slots)),
+    ],
+  ])
+  |> string.join("\n")
 }
 
 pub fn render_prometheus() -> String {
@@ -302,6 +364,22 @@ pub fn render_prometheus() -> String {
       "Unmatched requests redirected to the fallback URL.",
       "counter",
       get(FallbackRedirects),
+    ),
+    line(
+      "redirect_proxy_upstream_requests_total",
+      "Requests forwarded to the upstream (server.upstream).",
+      "counter",
+      get(UpstreamRequests),
+    ),
+    labelled(
+      "redirect_proxy_upstream_errors_total",
+      "Forwarded requests that failed on the upstream side, by reason (unreachable: 502, timeout: 504, invalid_response: 502).",
+      "counter",
+      [
+        #("reason=\"unreachable\"", get(UpstreamUnreachable)),
+        #("reason=\"timeout\"", get(UpstreamTimeouts)),
+        #("reason=\"invalid_response\"", get(UpstreamInvalidResponses)),
+      ],
     ),
     line(
       "redirect_proxy_admin_requests_total",
@@ -403,6 +481,7 @@ pub fn render_prometheus() -> String {
       <> seconds(get(ReloadDurationMicros))
       <> "\n",
     histogram(),
+    upstream_histogram(),
     "# HELP redirect_proxy_build_info Version of the running server.\n# TYPE redirect_proxy_build_info gauge\nredirect_proxy_build_info{version=\""
       <> ffi.app_version()
       <> "\"} 1\n",

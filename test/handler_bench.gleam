@@ -91,7 +91,7 @@ fn head(path: String) -> BitArray {
 
 pub fn main() -> Nil {
   snapshot.publish(matcher.build(rules()))
-  let handler = server.handler(config.default().server, "", option.None)
+  let handler = server.handler(config.default().server, "", option.None, [])
   [
     #("exact", "/exact/9999"),
     #("prefix", "/prefix/999/some/page"),

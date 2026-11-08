@@ -1,7 +1,7 @@
 %% The HTTP/1.1 server of the redirect listener.
 %%
-%% The redirect listener only answers small requests with small responses:
-%% no TLS, no request bodies (they are never read: the connection is closed
+%% The redirect listener answers small requests with small responses: no
+%% TLS, no request bodies (they are never read: the connection is closed
 %% after the response), no upgrades. This server does just that, with as
 %% little work per request as possible:
 %%
@@ -20,6 +20,11 @@
 %% a response that says `connection: close` (draining), after a request with
 %% a body, after an HTTP/1.0 request without `connection: keep-alive`, after
 %% a 1.1 request with `connection: close`, and on any malformed request.
+%%
+%% With an upstream (`server.upstream`), the handler can leave a request to
+%% it instead of answering (`Forward`): see "Forwarding to the upstream".
+%% The body of a forwarded request is read and forwarded, and the connection
+%% kept alive after it when its framing was unambiguous.
 -module(redirect_proxy_http).
 
 -export([start/4]).
@@ -56,8 +61,29 @@
     idle_timeout,
     max_head,
     %% {Second, Rendered} of the last `date` header
-    date = {0, <<>>}
+    date = {0, <<>>},
+    %% none | #up{}: where unanswered requests are forwarded
+    upstream = none,
+    %% none | {gen_tcp | ssl, Socket}: the open upstream connection
+    up = none
 }).
+
+%% The upstream, resolved when the listener starts.
+-record(up, {
+    tls,
+    %% an IP tuple, or a host name to resolve on each connect
+    address,
+    port,
+    timeout,
+    %% `host[:port]`, sent when the client sent no Host
+    authority,
+    %% for the log
+    url,
+    tls_options
+}).
+
+%% atomics: the second of the last upstream warning
+-define(WARNED, {?MODULE, warned}).
 
 %% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer)`.
 %% Returns the `actor.Started(Int)` (the bound port) of a gleam_otp child, or
@@ -77,8 +103,13 @@ describe(Reason) ->
 %% Listener: owns the listening socket and the acceptors
 %% ---------------------------------------------------------------------------
 
-init(Parent, Address, Port, Handler, Opts) ->
+init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) ->
     process_flag(trap_exit, true),
+    case persistent_term:get(?WARNED, undefined) of
+        undefined -> persistent_term:put(?WARNED, atomics:new(1, []));
+        _ -> ok
+    end,
+    Opts = {options, Idle, MaxHead, Peer, upstream_settings(Upstream)},
     Listened = case ip(Address) of
         {ok, Ip} ->
             gen_tcp:listen(Port, [
@@ -158,7 +189,7 @@ accept(Listen, Handler, Opts) ->
 %% Connection
 %% ---------------------------------------------------------------------------
 
-connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer}) ->
+connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream}) ->
     Peer = case WithPeer of
         true -> peer(Socket);
         false -> {error, nil}
@@ -169,7 +200,8 @@ connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer}) ->
         handler = Handler,
         peer = Peer,
         idle_timeout = IdleTimeout,
-        max_head = MaxHead
+        max_head = MaxHead,
+        upstream = Upstream
     }).
 
 peer(Socket) ->
@@ -533,6 +565,868 @@ lower(C) when C >= $A, C =< $Z -> C + 32;
 lower(C) -> C.
 
 %% ---------------------------------------------------------------------------
+%% Forwarding to the upstream
+%% ---------------------------------------------------------------------------
+%%
+%% The connection process forwards the request itself: it opens one upstream
+%% connection (lazily, on the first forwarded request) and reuses it while
+%% both sides keep their connection alive, so that pipelined requests are
+%% still answered in order. The request head is re-encoded (hop-by-hop
+%% headers dropped, `x-forwarded-*` set by the handler), its body streamed
+%% (re-chunked, so that the upstream never sees framing it could read
+%% differently), then the response head relayed and its body streamed back.
+%% The upstream socket is passive: `upstream_timeout` is the wait for the
+%% response head, and the idle timeout of every read and write.
+
+-define(CONNECT_TIMEOUT, 5000).
+-define(MAX_RESPONSE_HEAD, 65536).
+
+%% headers that only concern one connection (RFC 9110 7.6.1), and the ones
+%% the server sets itself
+-define(HOP_BY_HOP(N),
+    (N =:= <<"connection">> orelse N =:= <<"keep-alive">>
+     orelse N =:= <<"proxy-connection">> orelse N =:= <<"te">>
+     orelse N =:= <<"trailer">> orelse N =:= <<"transfer-encoding">>
+     orelse N =:= <<"upgrade">>)).
+
+%% One forwarded request.
+-record(fwd, {
+    method,
+    %% the request head sent upstream (iodata)
+    head,
+    %% none | {length, N} | chunked
+    body,
+    %% `Expect: 100-continue` from an HTTP/1.1 client with a body
+    continue,
+    %% whether the client asked for an upgrade (`Connection: upgrade`)
+    upgrade,
+    %% the client asked to close its connection after the response
+    client_close,
+    %% draining: close the client connection after the response
+    close_after,
+    version,
+    done,
+    %% a request without a body that may be sent again on a new connection
+    %% when a reused one turns out to be closed
+    retry
+}).
+
+%% The request a handler leaves to the upstream.
+forward(_, _, _, _, _, Done, #conn{upstream = none} = C) ->
+    done(Done, 502, 0, {some, unreachable}),
+    reject(502, C);
+forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C) ->
+    {request, Method, Headers, _, _, _, _, Path, Query} = Request,
+    case framing(Headers) of
+        {error, Status} ->
+            done(Done, Status, 0, none),
+            reject(Status, C);
+        {ok, Body, Tokens, Upgrade, Expect, HasHost} ->
+            Up = C#conn.upstream,
+            Drop = [T || T <- Tokens, not essential(T)],
+            Head = [method_name(Method), $\s, Path,
+                    case Query of none -> []; {some, Q} -> [$?, Q] end,
+                    <<" HTTP/1.1\r\n">>,
+                    case HasHost of
+                        true -> [];
+                        false -> [<<"host: ">>, Up#up.authority, <<"\r\n">>]
+                    end,
+                    request_headers(Headers, Drop),
+                    [[N, <<": ">>, V, <<"\r\n">>] || {N, V} <- XForwarded],
+                    case Upgrade of
+                        none -> [];
+                        _ -> [<<"connection: upgrade\r\nupgrade: ">>, Upgrade, <<"\r\n">>]
+                    end,
+                    case Body of
+                        chunked -> <<"transfer-encoding: chunked\r\n">>;
+                        _ -> []
+                    end,
+                    <<"\r\n">>],
+            F = #fwd{
+                method = Method,
+                head = Head,
+                body = Body,
+                continue = Expect andalso Body =/= none andalso Version =:= {1, 1},
+                upgrade = Upgrade =/= none,
+                client_close = close_requested(Version, join(Tokens)),
+                close_after = CloseAfter,
+                version = Version,
+                done = Done,
+                retry = Body =:= none andalso Upgrade =:= none andalso idempotent(Method)
+            },
+            case open(C) of
+                {ok, Socket, Reused, C1} -> send_request(Socket, Reused, Rest, F, C1);
+                {error, Reason} -> fail(502, unreachable, Reason, F, C)
+            end
+    end.
+
+%% {ok, Body, ConnectionTokens, Upgrade, Expect, HasHost} | {error, Status}
+%%
+%% The framing of the request body (RFC 9112 6): `Transfer-Encoding` and
+%% `Content-Length` together, a transfer coding other than chunked, and an
+%% invalid or ambiguous length are rejected rather than guessed.
+framing(Headers) ->
+    framing(Headers, [], [], [], none, false, false).
+
+framing([{Name, Value} | Rest], Lengths, Codings, Tokens, Upgrade, Expect, Host) ->
+    case Name of
+        <<"content-length">> ->
+            framing(Rest, [Value | Lengths], Codings, Tokens, Upgrade, Expect, Host);
+        <<"transfer-encoding">> ->
+            framing(Rest, Lengths, [Value | Codings], Tokens, Upgrade, Expect, Host);
+        <<"connection">> ->
+            framing(Rest, Lengths, Codings, tokens(Value) ++ Tokens, Upgrade, Expect, Host);
+        <<"upgrade">> ->
+            framing(Rest, Lengths, Codings, Tokens, Value, Expect, Host);
+        <<"expect">> ->
+            framing(Rest, Lengths, Codings, Tokens, Upgrade,
+                    Expect orelse has_token(Value, <<"100-continue">>), Host);
+        <<"host">> ->
+            framing(Rest, Lengths, Codings, Tokens, Upgrade, Expect, true);
+        _ ->
+            framing(Rest, Lengths, Codings, Tokens, Upgrade, Expect, Host)
+    end;
+framing([], Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
+    Upgrade = case lists:member(<<"upgrade">>, Tokens) of
+        true -> Upgrade0;
+        false -> none
+    end,
+    case {Lengths, Codings} of
+        {[], []} ->
+            {ok, none, Tokens, Upgrade, Expect, Host};
+        {[], _} ->
+            case tokens(join(lists:reverse(Codings))) of
+                [<<"chunked">>] -> {ok, chunked, Tokens, Upgrade, Expect, Host};
+                _ -> {error, 400}
+            end;
+        {_, []} ->
+            case content_length(Lengths) of
+                {ok, 0} -> {ok, none, Tokens, Upgrade, Expect, Host};
+                {ok, N} -> {ok, {length, N}, Tokens, Upgrade, Expect, Host};
+                error -> {error, 400}
+            end;
+        _ ->
+            {error, 400}
+    end.
+
+%% The length of one or more `Content-Length` values: the same digits
+%% everywhere (`5, 5` is 5).
+content_length(Values) ->
+    case lists:usort([trim(V) || Value <- Values, V <- binary:split(Value, <<",">>, [global])]) of
+        [Digits] when byte_size(Digits) > 0, byte_size(Digits) =< 18 ->
+            case lists:all(fun(D) -> D >= $0 andalso D =< $9 end, binary_to_list(Digits)) of
+                true -> {ok, binary_to_integer(Digits)};
+                false -> error
+            end;
+        _ ->
+            error
+    end.
+
+%% Lowercase items of a comma-separated header value.
+tokens(Value) ->
+    [lowercase(T) || Item <- binary:split(Value, <<",">>, [global]),
+                     T <- [trim(Item)], T =/= <<>>].
+
+join([]) -> <<>>;
+join(Items) -> iolist_to_binary(lists:join(<<",">>, Items)).
+
+%% Headers a `Connection` header cannot remove: dropping the framing or the
+%% host would make the upstream read another request than the one checked.
+essential(<<"host">>) -> true;
+essential(<<"content-length">>) -> true;
+essential(<<"x-forwarded-for">>) -> true;
+essential(<<"x-forwarded-proto">>) -> true;
+essential(<<"x-forwarded-host">>) -> true;
+essential(_) -> false.
+
+%% The client's headers, without the hop-by-hop ones, the ones its
+%% `Connection` header names, `Expect` (answered here) and the
+%% `x-forwarded-*` ones (replaced).
+request_headers([{Name, Value} | Rest], Drop) ->
+    case Name of
+        _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
+        <<"expect">> -> request_headers(Rest, Drop);
+        <<"x-forwarded-for">> -> request_headers(Rest, Drop);
+        <<"x-forwarded-proto">> -> request_headers(Rest, Drop);
+        <<"x-forwarded-host">> -> request_headers(Rest, Drop);
+        _ ->
+            case Drop =/= [] andalso lists:member(Name, Drop) of
+                true -> request_headers(Rest, Drop);
+                false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
+            end
+    end;
+request_headers([], _) ->
+    [].
+
+method_name(get) -> <<"GET">>;
+method_name(head) -> <<"HEAD">>;
+method_name(post) -> <<"POST">>;
+method_name(put) -> <<"PUT">>;
+method_name(delete) -> <<"DELETE">>;
+method_name(options) -> <<"OPTIONS">>;
+method_name(patch) -> <<"PATCH">>;
+method_name(trace) -> <<"TRACE">>;
+method_name(connect) -> <<"CONNECT">>;
+method_name({other, Method}) -> Method.
+
+idempotent(Method) ->
+    Method =:= get orelse Method =:= head orelse Method =:= options
+        orelse Method =:= trace orelse Method =:= put orelse Method =:= delete.
+
+%% Sends the request head and body, then relays the response.
+send_request(Socket, Reused, Rest, F, C) ->
+    case up_send(Socket, F#fwd.head) of
+        ok ->
+            case F#fwd.continue of
+                true -> _ = gen_tcp:send(C#conn.socket, <<"HTTP/1.1 100 Continue\r\n\r\n">>);
+                false -> ok
+            end,
+            case send_body(F#fwd.body, Rest, Socket, C) of
+                {ok, Rest1} ->
+                    response(Socket, Reused, <<>>, Rest1, true, F, C);
+                {error, {upstream, _}} ->
+                    %% the upstream may have answered without reading the
+                    %% whole body: relay its answer, then close
+                    response(Socket, false, <<>>, <<>>, false, F#fwd{retry = false}, C);
+                {error, {client, timeout}} ->
+                    done(F#fwd.done, 408, 0, none),
+                    reject(408, C);
+                {error, {client, _}} ->
+                    %% the client went away before its request was complete
+                    done(F#fwd.done, 499, 0, none),
+                    close(C);
+                {error, bad_chunk} ->
+                    done(F#fwd.done, 400, 0, none),
+                    reject(400, C)
+            end;
+        {error, _} when Reused, F#fwd.retry ->
+            again(Rest, F, C);
+        {error, Reason} ->
+            fail(502, invalid_response, Reason, F, C)
+    end.
+
+%% Sends the request again on a new connection: the reused one was closed.
+again(Rest, F, C) ->
+    C1 = close_upstream(C),
+    case connect(C1#conn.upstream) of
+        {ok, Socket} ->
+            send_request(Socket, false, Rest, F#fwd{retry = false}, C1#conn{up = Socket});
+        {error, Reason} ->
+            fail(502, unreachable, Reason, F, C1)
+    end.
+
+%% {ok, Rest} | {error, {client | upstream, Reason}} | {error, bad_chunk}
+send_body(none, Rest, _, _) ->
+    {ok, Rest};
+send_body({length, N}, Rest, Socket, C) ->
+    case copy_length(Rest, N, client_recv(C), upstream_emit(Socket), 0) of
+        {ok, Rest1, _} -> {ok, Rest1};
+        {error, Reason, _} -> {error, Reason}
+    end;
+send_body(chunked, Rest, Socket, C) ->
+    Emit = upstream_emit(Socket),
+    case copy_chunked(Rest, client_recv(C), chunk_emit(Emit), 0) of
+        {ok, Rest1, _} ->
+            case Emit(<<"0\r\n\r\n">>) of
+                ok -> {ok, Rest1};
+                Error -> Error
+            end;
+        {error, Reason, _} ->
+            {error, Reason}
+    end.
+
+%% Reads the response head (after 1xx interim responses), then relays it.
+%% BodyDone: the whole request body was sent.
+response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
+    case read_head(Socket, Buffer, Up#up.timeout) of
+        {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade, BodyDone ->
+            tunnel(Socket, Reason, Headers, Buffer1, Rest, F, C);
+        {ok, 101, _, _, _, _} ->
+            fail(502, invalid_response, unexpected_upgrade, F, C);
+        {ok, Status, Reason, _, Headers, Buffer1} when Status < 200 ->
+            %% interim responses (103 Early Hints...); the 100 Continue of
+            %% the upstream is not: the client already got one
+            case Status =/= 100 andalso F#fwd.version =:= {1, 1} of
+                true ->
+                    _ = gen_tcp:send(C#conn.socket, [
+                        status_line(Status, Reason),
+                        response_headers(Headers, [], false), <<"\r\n">>]);
+                false ->
+                    ok
+            end,
+            response(Socket, false, Buffer1, Rest, BodyDone, F, C);
+        {ok, Status, Reason, Minor, Headers, Buffer1} ->
+            relay(Socket, Status, Reason, Minor, Headers, Buffer1, Rest, BodyDone, F, C);
+        {error, closed} when Reused, F#fwd.retry ->
+            again(Rest, F, C);
+        {error, timeout} ->
+            fail(504, timed_out, timeout, F, C);
+        {error, Reason} ->
+            fail(502, invalid_response, Reason, F, C)
+    end.
+
+relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
+    {Lengths, Codings, Tokens, HasDate} = response_fields(Headers, [], [], [], false),
+    Framing = if
+        F#fwd.method =:= head; Status =:= 204; Status =:= 304 -> none;
+        Codings =/= [] ->
+            case lists:reverse(tokens(join(lists:reverse(Codings)))) of
+                [<<"chunked">> | _] -> chunked;
+                _ -> close
+            end;
+        Lengths =/= [] ->
+            case content_length(Lengths) of
+                {ok, N} -> {length, N};
+                error -> invalid
+            end;
+        true -> close
+    end,
+    case Framing of
+        invalid ->
+            fail(502, invalid_response, invalid_content_length, F, C);
+        _ ->
+            Chunked = Framing =:= chunked andalso F#fwd.version =:= {1, 1},
+            ClientKeep = BodyDone andalso not F#fwd.client_close
+                andalso not F#fwd.close_after
+                andalso (Chunked orelse delimited(Framing)),
+            UpKeep = BodyDone andalso Framing =/= close
+                andalso not lists:member(<<"close">>, Tokens)
+                andalso (Minor =:= 1 orelse lists:member(<<"keep-alive">>, Tokens))
+                andalso not (Codings =/= [] andalso Lengths =/= []),
+            {Date, C1} = case HasDate of
+                true -> {[], C};
+                false ->
+                    {D, Cd} = date(C),
+                    {[<<"date: ">>, D, <<"\r\n">>], Cd}
+            end,
+            Head = [status_line(Status, Reason),
+                    response_headers(Headers, Tokens, Codings =/= []),
+                    Date,
+                    case Chunked of
+                        true -> <<"transfer-encoding: chunked\r\n">>;
+                        false -> []
+                    end,
+                    case {ClientKeep, F#fwd.version} of
+                        {false, _} -> <<"connection: close\r\n">>;
+                        {true, {1, 0}} -> <<"connection: keep-alive\r\n">>;
+                        {true, _} -> []
+                    end,
+                    <<"\r\n">>],
+            Client = C1#conn.socket,
+            Sent = case gen_tcp:send(Client, Head) of
+                ok -> relay_body(Framing, Chunked, Buffer, Socket, C1);
+                {error, _} -> {error, {client, closed}, 0}
+            end,
+            case Sent of
+                {ok, Left, Bytes} ->
+                    done(F#fwd.done, Status, Bytes, none),
+                    C2 = case UpKeep andalso Left =:= <<>> of
+                        true -> C1;
+                        false -> close_upstream(C1)
+                    end,
+                    case ClientKeep of
+                        true -> request(Rest, C2);
+                        false -> close(C2)
+                    end;
+                {error, Why, Bytes} ->
+                    Error = case Why of
+                        {upstream, timeout} ->
+                            warn(C1, "timed out while relaying a response", []),
+                            {some, timed_out};
+                        {upstream, _} ->
+                            warn(C1, "closed while relaying a response", []),
+                            {some, invalid_response};
+                        bad_chunk ->
+                            warn(C1, "sent an invalid chunked response", []),
+                            {some, invalid_response};
+                        {client, _} ->
+                            none
+                    end,
+                    done(F#fwd.done, Status, Bytes, Error),
+                    close(C1)
+            end
+    end.
+
+%% Whether the end of a response is known without the end of the connection.
+delimited(none) -> true;
+delimited({length, _}) -> true;
+delimited(_) -> false.
+
+%% {ok, UpstreamLeftover, Bytes} | {error, Reason, Bytes}
+relay_body(none, _, Buffer, _, _) ->
+    {ok, Buffer, 0};
+relay_body({length, N}, _, Buffer, Socket, C) ->
+    copy_length(Buffer, N, upstream_recv(Socket, C), client_emit(C), 0);
+relay_body(chunked, true, Buffer, Socket, C) ->
+    Emit = client_emit(C),
+    case copy_chunked(Buffer, upstream_recv(Socket, C), chunk_emit(Emit), 0) of
+        {ok, Left, Bytes} ->
+            case Emit(<<"0\r\n\r\n">>) of
+                ok -> {ok, Left, Bytes};
+                {error, Reason} -> {error, Reason, Bytes}
+            end;
+        Error ->
+            Error
+    end;
+relay_body(chunked, false, Buffer, Socket, C) ->
+    %% an HTTP/1.0 client: the body without its chunks, then the end of the
+    %% connection
+    copy_chunked(Buffer, upstream_recv(Socket, C), client_emit(C), 0);
+relay_body(close, _, Buffer, Socket, C) ->
+    copy_close(Buffer, upstream_recv(Socket, C), client_emit(C), 0).
+
+%% {Lengths, Codings, ConnectionTokens, HasDate} of a response.
+response_fields([{Name, Value} | Rest], Lengths, Codings, Tokens, Date) ->
+    case lowercase(Name) of
+        <<"content-length">> -> response_fields(Rest, [Value | Lengths], Codings, Tokens, Date);
+        <<"transfer-encoding">> -> response_fields(Rest, Lengths, [Value | Codings], Tokens, Date);
+        <<"connection">> -> response_fields(Rest, Lengths, Codings, tokens(Value) ++ Tokens, Date);
+        <<"date">> -> response_fields(Rest, Lengths, Codings, Tokens, true);
+        _ -> response_fields(Rest, Lengths, Codings, Tokens, Date)
+    end;
+response_fields([], Lengths, Codings, Tokens, Date) ->
+    {Lengths, Codings, Tokens, Date}.
+
+%% The upstream's headers without the hop-by-hop ones and the ones its
+%% `Connection` header names (Tokens; `false` keeps `Connection` and
+%% `Upgrade`, for a 101), and without `Content-Length` next to a
+%% `Transfer-Encoding` (RFC 9112 6.3).
+response_headers([{Name, Value} | Rest], Tokens, DropLength) ->
+    Lower = lowercase(Name),
+    Drop = case Tokens of
+        false ->
+            Lower =/= <<"connection">> andalso Lower =/= <<"upgrade">>
+                andalso ?HOP_BY_HOP(Lower);
+        _ ->
+            ?HOP_BY_HOP(Lower) orelse lists:member(Lower, Tokens)
+                orelse (DropLength andalso Lower =:= <<"content-length">>)
+    end,
+    case Drop of
+        true -> response_headers(Rest, Tokens, DropLength);
+        false -> [Name, <<": ">>, Value, <<"\r\n">> | response_headers(Rest, Tokens, DropLength)]
+    end;
+response_headers([], _, _) ->
+    [].
+
+%% {ok, Status, Reason, Minor, Headers, Rest} | {error, timeout | closed | Reason}
+read_head(Socket, Buffer, Timeout) ->
+    case binary:match(Buffer, [<<"\r\n\r\n">>, <<"\n\n">>]) of
+        {At, Length} ->
+            <<Head:At/binary, _:Length/binary, Rest/binary>> = Buffer,
+            case parse_response(Head) of
+                {ok, Status, Reason, Minor, Headers} -> {ok, Status, Reason, Minor, Headers, Rest};
+                error -> {error, invalid_response_head}
+            end;
+        nomatch when byte_size(Buffer) > ?MAX_RESPONSE_HEAD ->
+            {error, response_head_too_large};
+        nomatch ->
+            case up_recv(Socket, Timeout) of
+                {ok, Data} -> read_head(Socket, <<Buffer/binary, Data/binary>>, Timeout);
+                {error, timeout} -> {error, timeout};
+                {error, _} when Buffer =:= <<>> -> {error, closed};
+                {error, _} -> {error, incomplete_response_head}
+            end
+    end.
+
+%% {ok, Status, Reason, Minor, Headers} | error
+parse_response(Head) ->
+    case binary:split(Head, [<<"\r\n">>, <<"\n">>], [global]) of
+        [<<"HTTP/1.", Minor, $\s, A, B, D, Tail/binary>> | Lines]
+          when (Minor =:= $0 orelse Minor =:= $1),
+               A >= $1, A =< $5, B >= $0, B =< $9, D >= $0, D =< $9 ->
+            Reason = case Tail of
+                <<$\s, R/binary>> -> R;
+                _ -> <<>>
+            end,
+            case response_lines(Lines, []) of
+                {ok, Headers} ->
+                    {ok, (A - $0) * 100 + (B - $0) * 10 + (D - $0), Reason, Minor - $0, Headers};
+                error ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+response_lines([], Acc) ->
+    {ok, lists:reverse(Acc)};
+response_lines([Line | Rest], Acc) ->
+    case name(Line, 0, false) of
+        {Length, _} when Length > 0 ->
+            <<Name:Length/binary, $:, Value/binary>> = Line,
+            %% a lone CR would end the line for some clients
+            case binary:match(Value, [<<"\r">>, <<0>>]) of
+                nomatch -> response_lines(Rest, [{Name, trim(Value)} | Acc]);
+                _ -> error
+            end;
+        _ ->
+            error
+    end.
+
+%% A 101 from the upstream: the response is relayed, then bytes are copied
+%% both ways until either side closes, or none flows for upstream_timeout.
+tunnel(Socket, Reason, Headers, Buffer, Rest, F, #conn{socket = Client, upstream = Up} = C) ->
+    Head = [status_line(101, Reason), response_headers(Headers, false, false), <<"\r\n">>],
+    Bytes = case gen_tcp:send(Client, [Head | Buffer]) of
+        ok ->
+            case Rest =:= <<>> orelse up_send(Socket, Rest) =:= ok of
+                true ->
+                    _ = up_setopts(Socket, [{active, ?ACTIVE}]),
+                    tunnel_loop(Client, Socket, Up#up.timeout, byte_size(Buffer));
+                false ->
+                    byte_size(Buffer)
+            end;
+        {error, _} ->
+            0
+    end,
+    done(F#fwd.done, 101, Bytes, none),
+    close(C).
+
+tunnel_loop(Client, {_, Raw} = Socket, Timeout, Bytes) ->
+    receive
+        {tcp, Client, Data} ->
+            case up_send(Socket, Data) of
+                ok -> tunnel_loop(Client, Socket, Timeout, Bytes);
+                {error, _} -> Bytes
+            end;
+        {tcp_passive, Client} ->
+            _ = inet:setopts(Client, [{active, ?ACTIVE}]),
+            tunnel_loop(Client, Socket, Timeout, Bytes);
+        {Tag, Raw, Data} when Tag =:= tcp; Tag =:= ssl ->
+            case gen_tcp:send(Client, Data) of
+                ok -> tunnel_loop(Client, Socket, Timeout, Bytes + byte_size(Data));
+                {error, _} -> Bytes
+            end;
+        {Tag, Raw} when Tag =:= tcp_passive; Tag =:= ssl_passive ->
+            _ = up_setopts(Socket, [{active, ?ACTIVE}]),
+            tunnel_loop(Client, Socket, Timeout, Bytes);
+        {Tag, _} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+            Bytes;
+        {Tag, _, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
+            Bytes
+    after Timeout ->
+        Bytes
+    end.
+
+%% An upstream failure before anything was relayed: an empty 502 or 504, and
+%% the client connection closed.
+fail(Status, Error, Reason, F, C) ->
+    warn(C, "~ts", [describe_failure(Reason)]),
+    done(F#fwd.done, Status, 0, {some, Error}),
+    reject(Status, C).
+
+describe_failure(timeout) -> <<"no response in time">>;
+describe_failure(closed) -> <<"closed the connection without a response">>;
+describe_failure(econnrefused) -> <<"connection refused">>;
+describe_failure(nxdomain) -> <<"unknown host">>;
+describe_failure(Reason) -> iolist_to_binary(io_lib:format("~0p", [Reason])).
+
+done(Done, Status, Bytes, Error) ->
+    try
+        Done({forwarded, Status, Bytes, Error})
+    catch
+        Class:Reason:Stack ->
+            logger:error(iolist_to_binary(io_lib:format(
+                "redirect listener forward callback failed: ~0p: ~0p~n~0p",
+                [Class, Reason, Stack])))
+    end.
+
+%% A warning about the upstream, at most one a second for the whole node:
+%% an upstream that is down must not flood the log.
+warn(#conn{upstream = Up}, Format, Args) ->
+    Now = erlang:system_time(second),
+    case atomics:exchange(persistent_term:get(?WARNED), 1, Now) of
+        Now ->
+            ok;
+        _ ->
+            logger:warning(iolist_to_binary(io_lib:format(
+                "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
+                [Up#up.url | Args])))
+    end.
+
+%% Body copies. Recv() -> {ok, Data} | {error, Reason};
+%% Emit(Data) -> ok | {error, Reason}. They return {ok, Rest, Bytes} (Rest:
+%% the bytes after the body) or {error, Reason, Bytes}, Bytes being the
+%% payload emitted.
+
+copy_length(Buffer, N, _, Emit, Bytes) when byte_size(Buffer) >= N ->
+    <<Data:N/binary, Rest/binary>> = Buffer,
+    case emit(Emit, Data) of
+        ok -> {ok, Rest, Bytes + N};
+        {error, Reason} -> {error, Reason, Bytes}
+    end;
+copy_length(Buffer, N, Recv, Emit, Bytes) ->
+    case emit(Emit, Buffer) of
+        ok ->
+            Size = byte_size(Buffer),
+            case Recv() of
+                {ok, Data} -> copy_length(Data, N - Size, Recv, Emit, Bytes + Size);
+                {error, Reason} -> {error, Reason, Bytes + Size}
+            end;
+        {error, Reason} ->
+            {error, Reason, Bytes}
+    end.
+
+%% Until the upstream closes the connection.
+copy_close(Buffer, Recv, Emit, Bytes) ->
+    case emit(Emit, Buffer) of
+        ok ->
+            case Recv() of
+                {ok, Data} -> copy_close(Data, Recv, Emit, Bytes + byte_size(Buffer));
+                {error, {upstream, closed}} -> {ok, <<>>, Bytes + byte_size(Buffer)};
+                {error, Reason} -> {error, Reason, Bytes + byte_size(Buffer)}
+            end;
+        {error, Reason} ->
+            {error, Reason, Bytes}
+    end.
+
+%% A chunked body (RFC 9112 7.1), its payload emitted: extensions and
+%% trailers are dropped.
+copy_chunked(Buffer, Recv, Emit, Bytes) ->
+    case chunk_size(Buffer) of
+        {ok, 0, Rest} -> trailers(Rest, Recv, Bytes, 0);
+        {ok, Size, Rest} -> chunk_data(Rest, Size, Recv, Emit, Bytes);
+        more -> refill(Buffer, Recv, Bytes, fun(B) -> copy_chunked(B, Recv, Emit, Bytes) end);
+        error -> {error, bad_chunk, Bytes}
+    end.
+
+chunk_size(Buffer) ->
+    case binary:match(Buffer, <<"\n">>) of
+        nomatch when byte_size(Buffer) > 1024 ->
+            error;
+        nomatch ->
+            more;
+        {At, 1} ->
+            <<Line:At/binary, $\n, Rest/binary>> = Buffer,
+            case hex(strip_cr(Line), 0, 0) of
+                {ok, Size} -> {ok, Size, Rest};
+                error -> error
+            end
+    end.
+
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $0, C =< $9 ->
+    hex(Rest, N * 16 + C - $0, Digits + 1);
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $a, C =< $f ->
+    hex(Rest, N * 16 + C - $a + 10, Digits + 1);
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $A, C =< $F ->
+    hex(Rest, N * 16 + C - $A + 10, Digits + 1);
+%% a chunk extension
+hex(<<C, _/binary>>, N, Digits) when Digits > 0, (C =:= $; orelse C =:= $\s orelse C =:= $\t) ->
+    {ok, N};
+hex(<<>>, N, Digits) when Digits > 0 ->
+    {ok, N};
+hex(_, _, _) ->
+    error.
+
+strip_cr(<<>>) -> <<>>;
+strip_cr(Line) ->
+    case binary:last(Line) of
+        $\r -> binary:part(Line, 0, byte_size(Line) - 1);
+        _ -> Line
+    end.
+
+chunk_data(Buffer, Size, Recv, Emit, Bytes) when byte_size(Buffer) >= Size ->
+    <<Data:Size/binary, Rest/binary>> = Buffer,
+    case emit(Emit, Data) of
+        ok -> chunk_end(Rest, Recv, Emit, Bytes + Size);
+        {error, Reason} -> {error, Reason, Bytes}
+    end;
+chunk_data(Buffer, Size, Recv, Emit, Bytes) ->
+    case emit(Emit, Buffer) of
+        ok ->
+            Got = byte_size(Buffer),
+            refill(<<>>, Recv, Bytes + Got,
+                   fun(B) -> chunk_data(B, Size - Got, Recv, Emit, Bytes + Got) end);
+        {error, Reason} ->
+            {error, Reason, Bytes}
+    end.
+
+chunk_end(<<"\r\n", Rest/binary>>, Recv, Emit, Bytes) ->
+    copy_chunked(Rest, Recv, Emit, Bytes);
+chunk_end(<<"\n", Rest/binary>>, Recv, Emit, Bytes) ->
+    copy_chunked(Rest, Recv, Emit, Bytes);
+chunk_end(Buffer, Recv, Emit, Bytes) when Buffer =:= <<>>; Buffer =:= <<"\r">> ->
+    refill(Buffer, Recv, Bytes, fun(B) -> chunk_end(B, Recv, Emit, Bytes) end);
+chunk_end(_, _, _, Bytes) ->
+    {error, bad_chunk, Bytes}.
+
+trailers(<<"\r\n", Rest/binary>>, _, Bytes, _) ->
+    {ok, Rest, Bytes};
+trailers(<<"\n", Rest/binary>>, _, Bytes, _) ->
+    {ok, Rest, Bytes};
+trailers(Buffer, _, Bytes, Seen) when Seen + byte_size(Buffer) > 65536 ->
+    {error, bad_chunk, Bytes};
+trailers(Buffer, Recv, Bytes, Seen) ->
+    case binary:match(Buffer, <<"\n">>) of
+        nomatch ->
+            refill(Buffer, Recv, Bytes, fun(B) -> trailers(B, Recv, Bytes, Seen) end);
+        {At, 1} ->
+            <<_:At/binary, $\n, Rest/binary>> = Buffer,
+            trailers(Rest, Recv, Bytes, Seen + At + 1)
+    end.
+
+refill(Buffer, Recv, Bytes, Next) ->
+    case Recv() of
+        {ok, Data} -> Next(<<Buffer/binary, Data/binary>>);
+        {error, Reason} -> {error, Reason, Bytes}
+    end.
+
+emit(_, <<>>) -> ok;
+emit(Emit, Data) -> Emit(Data).
+
+chunk_emit(Emit) ->
+    fun(Data) ->
+        Emit([integer_to_binary(byte_size(Data), 16), <<"\r\n">>, Data, <<"\r\n">>])
+    end.
+
+%% The client's bytes, from the socket's messages.
+client_recv(#conn{socket = Socket, upstream = #up{timeout = Timeout}}) ->
+    fun Recv() ->
+        receive
+            {tcp, Socket, Data} ->
+                {ok, Data};
+            {tcp_passive, Socket} ->
+                case inet:setopts(Socket, [{active, ?ACTIVE}]) of
+                    ok -> Recv();
+                    {error, _} -> {error, {client, closed}}
+                end;
+            {tcp_closed, Socket} ->
+                {error, {client, closed}};
+            {tcp_error, Socket, _} ->
+                {error, {client, closed}}
+        after Timeout ->
+            {error, {client, timeout}}
+        end
+    end.
+
+client_emit(#conn{socket = Socket}) ->
+    fun(Data) ->
+        case gen_tcp:send(Socket, Data) of
+            ok -> ok;
+            {error, Reason} -> {error, {client, Reason}}
+        end
+    end.
+
+upstream_recv(Socket, #conn{upstream = #up{timeout = Timeout}}) ->
+    fun() ->
+        case up_recv(Socket, Timeout) of
+            {ok, Data} -> {ok, Data};
+            {error, timeout} -> {error, {upstream, timeout}};
+            {error, _} -> {error, {upstream, closed}}
+        end
+    end.
+
+upstream_emit(Socket) ->
+    fun(Data) ->
+        case up_send(Socket, Data) of
+            ok -> ok;
+            {error, timeout} -> {error, {upstream, timeout}};
+            {error, Reason} -> {error, {upstream, Reason}}
+        end
+    end.
+
+%% The upstream connection: the open one when the upstream has not closed
+%% it, else a new one. {ok, Socket, Reused, Conn} | {error, Reason}
+open(#conn{up = none, upstream = Up} = C) ->
+    case connect(Up) of
+        {ok, Socket} -> {ok, Socket, false, C#conn{up = Socket}};
+        Error -> Error
+    end;
+open(#conn{up = Socket} = C) ->
+    %% a closed connection or unexpected bytes: not reusable
+    case up_recv(Socket, 0) of
+        {error, timeout} -> {ok, Socket, true, C};
+        _ -> open(close_upstream(C))
+    end.
+
+connect(#up{tls = Tls, address = Address, port = Port, timeout = Timeout} = Up) ->
+    Tcp = [binary, {packet, raw}, {active, false}, {nodelay, true},
+           {send_timeout, Timeout}, {send_timeout_close, true}],
+    case Tls of
+        false ->
+            case gen_tcp:connect(Address, Port, Tcp, ?CONNECT_TIMEOUT) of
+                {ok, Socket} -> {ok, {gen_tcp, Socket}};
+                Error -> Error
+            end;
+        true ->
+            case ssl:connect(Address, Port, Tcp ++ Up#up.tls_options, ?CONNECT_TIMEOUT) of
+                {ok, Socket} -> {ok, {ssl, Socket}};
+                Error -> Error
+            end
+    end.
+
+close_upstream(#conn{up = none} = C) ->
+    C;
+close_upstream(#conn{up = Socket} = C) ->
+    _ = up_close(Socket),
+    C#conn{up = none}.
+
+up_send({gen_tcp, S}, Data) -> gen_tcp:send(S, Data);
+up_send({ssl, S}, Data) -> ssl:send(S, Data).
+
+up_recv({gen_tcp, S}, Timeout) -> gen_tcp:recv(S, 0, Timeout);
+up_recv({ssl, S}, Timeout) -> ssl:recv(S, 0, Timeout).
+
+up_setopts({gen_tcp, S}, Opts) -> inet:setopts(S, Opts);
+up_setopts({ssl, S}, Opts) -> ssl:setopts(S, Opts).
+
+up_close({gen_tcp, S}) -> gen_tcp:close(S);
+up_close({ssl, S}) -> ssl:close(S).
+
+%% The upstream settings of the Gleam `Upstream`, resolved once.
+upstream_settings(none) ->
+    none;
+upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify}}) ->
+    Name = binary_to_list(Host),
+    {Address, IsIp} = case inet:parse_address(Name) of
+        {ok, Ip} -> {Ip, true};
+        {error, _} -> {Name, false}
+    end,
+    Default = case Tls of true -> 443; false -> 80 end,
+    Authority = case {Port, IsIp andalso tuple_size(Address) =:= 8} of
+        {Default, false} -> Host;
+        {Default, true} -> <<"[", Host/binary, "]">>;
+        {_, false} -> <<Host/binary, ":", (integer_to_binary(Port))/binary>>;
+        {_, true} -> <<"[", Host/binary, "]:", (integer_to_binary(Port))/binary>>
+    end,
+    Scheme = case Tls of true -> <<"https://">>; false -> <<"http://">> end,
+    TlsOptions = case Tls of
+        false ->
+            [];
+        true ->
+            {ok, _} = application:ensure_all_started(ssl),
+            Sni = case IsIp of
+                true -> [];
+                false -> [{server_name_indication, Name}]
+            end,
+            case Verify of
+                true ->
+                    [{verify, verify_peer}, {cacerts, public_key:cacerts_get()},
+                     {customize_hostname_check,
+                      [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+                     | Sni];
+                false ->
+                    [{verify, verify_none} | Sni]
+            end
+    end,
+    #up{tls = Tls, address = Address, port = Port, timeout = Timeout,
+        authority = Authority, url = <<Scheme/binary, Authority/binary>>,
+        tls_options = TlsOptions}.
+
+trim(Bin) -> trim_end(skip_ows(Bin)).
+
+trim_end(<<>>) -> <<>>;
+trim_end(Bin) ->
+    case binary:last(Bin) of
+        C when C =:= $\s; C =:= $\t -> trim_end(binary:part(Bin, 0, byte_size(Bin) - 1));
+        _ -> Bin
+    end.
+
+%% The status line of a relayed response, with the upstream's reason phrase.
+status_line(Status, Reason) ->
+    [<<"HTTP/1.1 ">>, integer_to_binary(Status), $\s, Reason, <<"\r\n">>].
+
+%% ---------------------------------------------------------------------------
 %% Responses
 %% ---------------------------------------------------------------------------
 
@@ -541,7 +1435,7 @@ respond(Request0, Version, Close0, Rest,
     Request = setelement(4, Request0, Peer),
     Head = element(2, Request) =:= head,
     case call(Handler, Request) of
-        {ok, {response, Status, Headers, Body}} ->
+        {ok, {answer, {response, Status, Headers, Body}}} ->
             Close = Close0 orelse lists:member({<<"connection">>, <<"close">>}, Headers),
             {Date, C1} = date(C),
             Connection = case {Close, Version} of
@@ -564,6 +1458,8 @@ respond(Request0, Version, Close0, Rest,
                 ok -> request(Rest, C1);
                 {error, _} -> close(C1)
             end;
+        {ok, {forward, CloseAfter, XForwarded, Done}} ->
+            forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C);
         error ->
             reject(500, C)
     end.
@@ -589,7 +1485,8 @@ reject(Status, C) ->
     ]),
     close(C1).
 
-close(#conn{socket = Socket}) ->
+close(#conn{socket = Socket} = C) ->
+    _ = close_upstream(C),
     gen_tcp:close(Socket),
     exit(normal).
 
@@ -631,6 +1528,8 @@ month(4) -> <<"Apr">>; month(5) -> <<"May">>; month(6) -> <<"Jun">>;
 month(7) -> <<"Jul">>; month(8) -> <<"Aug">>; month(9) -> <<"Sep">>;
 month(10) -> <<"Oct">>; month(11) -> <<"Nov">>; month(12) -> <<"Dec">>.
 
+status_line(100) -> <<"HTTP/1.1 100 Continue\r\n">>;
+status_line(101) -> <<"HTTP/1.1 101 Switching Protocols\r\n">>;
 status_line(200) -> <<"HTTP/1.1 200 OK\r\n">>;
 status_line(204) -> <<"HTTP/1.1 204 No Content\r\n">>;
 status_line(301) -> <<"HTTP/1.1 301 Moved Permanently\r\n">>;
@@ -642,12 +1541,15 @@ status_line(400) -> <<"HTTP/1.1 400 Bad Request\r\n">>;
 status_line(401) -> <<"HTTP/1.1 401 Unauthorized\r\n">>;
 status_line(404) -> <<"HTTP/1.1 404 Not Found\r\n">>;
 status_line(405) -> <<"HTTP/1.1 405 Method Not Allowed\r\n">>;
+status_line(408) -> <<"HTTP/1.1 408 Request Timeout\r\n">>;
 status_line(410) -> <<"HTTP/1.1 410 Gone\r\n">>;
 status_line(414) -> <<"HTTP/1.1 414 URI Too Long\r\n">>;
 status_line(431) -> <<"HTTP/1.1 431 Request Header Fields Too Large\r\n">>;
 status_line(451) -> <<"HTTP/1.1 451 Unavailable For Legal Reasons\r\n">>;
 status_line(500) -> <<"HTTP/1.1 500 Internal Server Error\r\n">>;
+status_line(502) -> <<"HTTP/1.1 502 Bad Gateway\r\n">>;
 status_line(503) -> <<"HTTP/1.1 503 Service Unavailable\r\n">>;
+status_line(504) -> <<"HTTP/1.1 504 Gateway Timeout\r\n">>;
 status_line(505) -> <<"HTTP/1.1 505 HTTP Version Not Supported\r\n">>;
 status_line(Status) ->
     [<<"HTTP/1.1 ">>, integer_to_binary(Status), <<" ">>,

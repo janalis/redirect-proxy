@@ -114,7 +114,12 @@ pub fn start(cfg: Config) -> Result(Running, String) {
 
   let redirect_child =
     proxy_http.supervised(
-      server.handler(cfg.server, cfg.admin.metrics_token, access.redirect),
+      server.handler(
+        cfg.server,
+        cfg.admin.metrics_token,
+        access.redirect,
+        cfg.access_log.trusted_proxies,
+      ),
       cfg.server.listen,
       cfg.server.port,
       server.http_options(cfg.server, access.redirect),

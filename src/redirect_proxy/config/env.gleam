@@ -27,6 +27,7 @@ pub const int_env_vars = [
   "RP_SERVER_MAX_PATH_BYTES",
   "RP_SERVER_PORT",
   "RP_SERVER_SHUTDOWN_GRACE",
+  "RP_SERVER_UPSTREAM_TIMEOUT",
   "RP_STORAGE_AUDIT_FILES",
   "RP_STORAGE_AUDIT_MAX_BYTES",
   "RP_STORAGE_BACKUPS",
@@ -47,6 +48,7 @@ pub const bool_env_vars = [
   "RP_AUTH_OIDC_ENABLED",
   "RP_AUTH_OIDC_LOGOUT_AT_PROVIDER",
   "RP_SERVER_HTTPS_REDIRECT",
+  "RP_SERVER_UPSTREAM_TLS_VERIFY",
 ]
 
 /// An integer override (surrounding spaces ignored).
@@ -262,6 +264,12 @@ pub fn apply_env(
       metrics_path: s("RP_SERVER_METRICS_PATH", server.metrics_path),
       max_path_bytes: i("RP_SERVER_MAX_PATH_BYTES", server.max_path_bytes),
       https_redirect: b("RP_SERVER_HTTPS_REDIRECT", server.https_redirect),
+      upstream: s("RP_SERVER_UPSTREAM", server.upstream),
+      upstream_timeout: i("RP_SERVER_UPSTREAM_TIMEOUT", server.upstream_timeout),
+      upstream_tls_verify: b(
+        "RP_SERVER_UPSTREAM_TLS_VERIFY",
+        server.upstream_tls_verify,
+      ),
     ),
     admin: AdminConfig(
       enabled: b("RP_ADMIN_ENABLED", admin.enabled),

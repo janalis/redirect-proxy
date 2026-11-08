@@ -11,7 +11,7 @@ import gleam/uri
 import redirect_proxy/access_log_format
 import redirect_proxy/config.{
   type AccessLogConfig, type Config, access_log_format, access_log_output,
-  api_dedicated, api_on_admin, api_port,
+  api_dedicated, api_on_admin, api_port, parse_upstream,
 } as _
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
@@ -274,6 +274,20 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.server.fallback_url != "" && !is_http_url(config.server.fallback_url),
     Error("server.fallback_url must be an http:// or https:// URL"),
+  )
+  use Nil <- result.try(case config.server.upstream {
+    "" -> Ok(Nil)
+    url -> parse_upstream(url) |> result.replace(Nil)
+  })
+  use <- bool.guard(
+    config.server.upstream != "" && config.server.fallback_url != "",
+    Error(
+      "server.upstream and server.fallback_url cannot both be set: unmatched requests go to the upstream",
+    ),
+  )
+  use <- bool.guard(
+    config.server.upstream_timeout < 1 || config.server.upstream_timeout > 3600,
+    Error("server.upstream_timeout must be between 1 and 3600 seconds"),
   )
   use <- bool.guard(
     !is_http_url(config.admin.public_url),

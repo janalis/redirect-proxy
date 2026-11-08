@@ -20,7 +20,7 @@ fn echo_handler(req: Request(proxy_http.Peer)) {
     "/crash" -> panic as "handler crash (expected by the test)"
     _ -> Nil
   }
-  Response(
+  proxy_http.Answer(Response(
     200,
     [
       #("x-method", http.method_to_string(req.method)),
@@ -38,7 +38,7 @@ fn echo_handler(req: Request(proxy_http.Peer)) {
       }),
     ],
     bytes_tree.from_string("hello"),
-  )
+  ))
 }
 
 fn start() -> Int {
@@ -47,7 +47,12 @@ fn start() -> Int {
       "127.0.0.1",
       0,
       echo_handler,
-      proxy_http.Options(idle_timeout_ms: 300, max_head_bytes: 1024, peer: True),
+      proxy_http.Options(
+        idle_timeout_ms: 300,
+        max_head_bytes: 1024,
+        peer: True,
+        upstream: option.None,
+      ),
     )
   started.data
 }
