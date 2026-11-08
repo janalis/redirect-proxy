@@ -102,6 +102,19 @@ fn errors(codes: List(#(String, String))) -> List(#(String, Json)) {
   ]
 }
 
+/// Errors of operations that call the rule store, which answers 503 while
+/// too busy to take the request in time.
+fn store_errors(codes: List(#(String, String))) -> List(#(String, Json)) {
+  errors(
+    list.append(codes, [
+      #(
+        "503",
+        "The rule store is busy (code store_busy); a change not started is not made. Retry-After gives the seconds to wait.",
+      ),
+    ]),
+  )
+}
+
 /// Responses of operations that read a request body.
 fn body_errors() -> List(#(String, Json)) {
   [
@@ -403,7 +416,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ),
                 ]),
               ),
-              ..errors([#("400", "Invalid match, enabled or sort value.")])
+              ..store_errors([#("400", "Invalid match, enabled or sort value.")])
             ]),
           ),
         ]),
@@ -436,7 +449,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               ),
               ..list.append(
                 body_errors(),
-                errors([
+                store_errors([
                   #(
                     "409",
                     "A redirection with the id given already exists (a retried request). Location points to it.",
@@ -464,7 +477,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ref("Rule"),
                 ),
               ),
-              ..errors([#("404", "Not found.")])
+              ..store_errors([#("404", "Not found.")])
             ]),
           ),
         ]),
@@ -480,7 +493,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               #("200", response("Updated.", ref("Rule"))),
               ..list.append(
                 body_errors(),
-                errors([
+                store_errors([
                   #("404", "Not found."),
                   #("412", "Version mismatch."),
                   #(
@@ -509,7 +522,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 #("200", response("Updated.", ref("Rule"))),
                 ..list.append(
                   body_errors(),
-                  errors([
+                  store_errors([
                     #("404", "Not found."),
                     #("412", "Version mismatch."),
                     #("422", "Validation failed."),
@@ -528,7 +541,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             "responses",
             json.object([
               #("204", json.object([#("description", json.string("Deleted."))])),
-              ..errors([
+              ..store_errors([
                 #("404", "Not found."),
                 #("412", "Version mismatch."),
                 #("428", "If-Match is missing and api.require_if_match is on."),
@@ -597,7 +610,9 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ]),
                 ),
                 not_modified(),
-                ..errors([#("400", "Invalid match, enabled or format value.")])
+                ..store_errors([
+                  #("400", "Invalid match, enabled or format value."),
+                ])
               ]),
             ),
           ],
@@ -685,7 +700,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ),
                 ..list.append(
                   body_errors(),
-                  errors([
+                  store_errors([
                     #("400", "mode is not merge or replace."),
                     #("412", "The rules changed since the If-Match version."),
                     #(
@@ -745,7 +760,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ),
                 ..list.append(
                   body_errors(),
-                  errors([
+                  store_errors([
                     #("412", "The rules changed since the If-Match version."),
                     #(
                       "428",
@@ -777,7 +792,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ]),
                 ),
               ),
-              ..errors([#("422", "The file is invalid; rules unchanged.")])
+              ..store_errors([#("422", "The file is invalid; rules unchanged.")])
             ]),
           ),
         ]),
@@ -797,7 +812,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             "responses",
             json.object([
               #("200", response("Resolution.", ref("TestResult"))),
-              ..errors([#("400", "Invalid URL.")])
+              ..store_errors([#("400", "Invalid URL.")])
             ]),
           ),
         ]),

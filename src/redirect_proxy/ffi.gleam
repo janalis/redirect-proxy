@@ -53,10 +53,6 @@ pub fn regex_limit_init() -> Nil
 @external(erlang, "redirect_proxy_ffi", "regex_limit_count")
 pub fn regex_limit_count() -> Int
 
-/// The whole lines within the last `max_bytes` bytes of a file.
-@external(erlang, "redirect_proxy_ffi", "read_tail")
-pub fn read_tail(path: String, max_bytes: Int) -> Result(BitArray, Nil)
-
 /// `compute()` for a file, cached until the file is written again. On an
 /// error, the last successful value is returned when there is one.
 @external(erlang, "redirect_proxy_ffi", "memo_file")
@@ -269,14 +265,29 @@ pub fn jwt_peek_header(token: String) -> Result(String, Nil)
 pub fn with_lock(name: String, f: fn() -> a) -> a
 
 /// Runs `f` holding `<path>.lock`, an exclusive lock shared by every OS
-/// process writing `path` (the server, the CLI). Locks older than 10 seconds
-/// are considered stale. Errors when the lock is not acquired in time.
+/// process writing `path` (the server, the CLI). The lock is refreshed while
+/// `f` runs; one not refreshed for 10 seconds is left over by a crashed
+/// process and is taken over. Errors when the lock is not acquired in time.
 @external(erlang, "redirect_proxy_ffi", "with_file_lock")
 pub fn with_file_lock(
   path: String,
   timeout_ms: Int,
   f: fn() -> a,
 ) -> Result(a, String)
+
+/// Overrides a delay for tests: `stale_lock_seconds` (10), after which a
+/// lock is taken over, and `store_call_timeout` (milliseconds), how long a
+/// store call waits.
+@external(erlang, "redirect_proxy_ffi", "set_tunable")
+pub fn set_tunable(name: String, value: Int) -> Nil
+
+/// Restores a delay's default.
+@external(erlang, "redirect_proxy_ffi", "clear_tunable")
+pub fn clear_tunable(name: String) -> Nil
+
+/// A delay's override, or `default`.
+@external(erlang, "redirect_proxy_ffi", "tunable")
+pub fn tunable(name: String, default: Int) -> Int
 
 /// Read-modify-write of a data file that other OS processes (the CLI) may
 /// write too: holds the node-wide lock of `path`, then `<path>.lock`, for up
@@ -323,8 +334,14 @@ pub fn strip_port(host: String) -> String
 @external(erlang, "redirect_proxy_ffi", "encode_cached")
 pub fn encode_cached(items: List(a), encode: fn(a) -> String) -> List(String)
 
-@external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
-pub fn encode_non_ascii(url: String) -> String
+/// Raises the error of a store call that timed out.
+@external(erlang, "redirect_proxy_ffi", "store_timeout")
+pub fn store_timeout() -> a
+
+/// Runs `f`, or `unavailable` when a store call in it timed out
+/// (`store_timeout`).
+@external(erlang, "redirect_proxy_ffi", "rescue_store_timeout")
+pub fn rescue_store_timeout(f: fn() -> a, unavailable: fn() -> a) -> a
 
 /// Runs `f`, returning an exception as `Error` with its description.
 @external(erlang, "redirect_proxy_ffi", "rescue")
@@ -334,6 +351,15 @@ pub fn rescue(f: fn() -> a) -> Result(a, String)
 /// may end inside a UTF-8 sequence: use it only as a lookup key.
 @external(erlang, "redirect_proxy_ffi", "binary_take")
 pub fn byte_take(string: String, bytes: Int) -> String
+
+/// Whether `string` holds the bytes of `pattern`. Unlike `string.contains`,
+/// which compares graphemes, it finds `"` in `"` followed by a combining mark.
+@external(erlang, "redirect_proxy_ffi", "binary_contains")
+pub fn byte_contains(string: String, pattern: String) -> Bool
+
+/// Replaces every occurrence of the bytes of `pattern` (see `byte_contains`).
+@external(erlang, "redirect_proxy_ffi", "binary_replace_all")
+pub fn byte_replace(string: String, pattern: String, with: String) -> String
 
 /// A string without its first `bytes` bytes, which must end on a character
 /// boundary.
@@ -345,8 +371,8 @@ pub fn byte_drop(string: String, bytes: Int) -> String
 @external(erlang, "redirect_proxy_ffi", "strip_url_whitespace")
 pub fn strip_url_whitespace(url: String) -> String
 
-/// `strip_control` then `encode_non_ascii`, in one scan for the usual value
-/// that needs neither.
+/// `strip_control`, then non-ASCII bytes percent-encoded, in one scan for
+/// the usual value that needs neither.
 @external(erlang, "redirect_proxy_ffi", "header_value")
 pub fn header_value(value: String) -> String
 

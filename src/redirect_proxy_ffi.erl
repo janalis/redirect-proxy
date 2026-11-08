@@ -4,7 +4,7 @@
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
-    atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
+    atomic_write/2, atomic_write_private/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
@@ -17,12 +17,12 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
+    with_lock/2, with_file_lock/3, tunable/2, set_tunable/2, clear_tunable/1, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
     no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
-    binary_take/2, binary_drop/2, rescue/1,
-    normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
+    binary_take/2, binary_drop/2, binary_contains/2, binary_replace_all/3, rescue/1, store_timeout/0, rescue_store_timeout/2,
+    normalise_path/1, is_ascii/1, needs_trim/1,
     encode_cached/2, strip_port/1, data_dir_owner_mismatch/1
 ]).
 
@@ -202,7 +202,7 @@ file_stamp(Path) ->
 %% Whether a stamp's modification time is within the last two seconds:
 %% another write in that same second would leave the stamp as it is (the
 %% time has a one second resolution) when it keeps the size and the inode.
-stamp_is_recent({_, MTime, _}) -> MTime >= erlang:system_time(second) - 2;
+stamp_is_recent({_, MTime, _}) -> MTime >= os:system_time(second) - 2;
 stamp_is_recent(missing) -> false.
 
 memo_file(Path, Fun) ->
@@ -242,31 +242,6 @@ memo_table() ->
         _ -> ok
     end,
     redirect_proxy_memo.
-
-%% The whole lines within the last MaxBytes bytes of a file (all of it when
-%% smaller): a partial first line, which may start inside a UTF-8 sequence,
-%% is dropped.
-read_tail(Path, MaxBytes) ->
-    case file:open(Path, [read, raw, binary]) of
-        {ok, Fd} ->
-            try
-                {ok, Size} = file:position(Fd, eof),
-                Start = max(0, Size - MaxBytes),
-                case file:pread(Fd, Start, Size - Start) of
-                    {ok, Data} when Start =:= 0 -> {ok, Data};
-                    {ok, Data} ->
-                        case binary:split(Data, <<"\n">>) of
-                            [_Partial, Rest] -> {ok, Rest};
-                            [_] -> {ok, <<>>}
-                        end;
-                    eof -> {ok, <<>>};
-                    {error, _} -> {error, nil}
-                end
-            after
-                file:close(Fd)
-            end;
-        {error, _} -> {error, nil}
-    end.
 
 atom_to_binary_safe(A) when is_atom(A) -> atom_to_binary(A);
 atom_to_binary_safe(T) -> unicode:characters_to_binary(io_lib:format("~p", [T])).
@@ -692,9 +667,22 @@ with_lock(Name, Fun) ->
 %% Cross-process file lock (<Path>.lock, created with O_EXCL)
 %% ---------------------------------------------------------------------------
 
-%% A lock older than this is left over by a crashed process: writes hold the
-%% lock for milliseconds.
+%% A lock not refreshed for this long is left over by a crashed process: its
+%% holder refreshes it while it runs (`start_lock_refresher`).
 -define(STALE_LOCK_SECONDS, 10).
+
+%% A delay that tests shorten (`set_tunable`): read where a lock is judged
+%% stale or a store call starts, never on the request path.
+tunable(Name, Default) ->
+    persistent_term:get({?MODULE, tunable, Name}, Default).
+
+set_tunable(Name, Value) ->
+    persistent_term:put({?MODULE, tunable, Name}, Value),
+    nil.
+
+clear_tunable(Name) ->
+    _ = persistent_term:erase({?MODULE, tunable, Name}),
+    nil.
 
 %% Runs Fun while holding <Path>.lock, shared by every OS process (server,
 %% CLI) that writes Path. Returns {ok, Result} or {error, Reason} when the
@@ -711,8 +699,11 @@ with_file_lock(Path, TimeoutMs, Fun) ->
     Token = lock_token(),
     case acquire_lock(Lock, Token, Deadline) of
         ok ->
+            Refresher = start_lock_refresher(Lock, Token),
             try {ok, Fun()}
-            after release_lock(Lock, Token)
+            after
+                stop_lock_refresher(Refresher),
+                release_lock(Lock, Token)
             end;
         %% A directory this process cannot create files in is one it cannot
         %% write the rules to either (writes are a temp file and a rename):
@@ -790,6 +781,31 @@ break_stale_lock(Lock) ->
             end
     end.
 
+%% While the lock is held (a matcher build, fsyncs and the audit may take
+%% longer than the stale delay on a large rule set), a linked process sets
+%% its modification time to now, five times per stale delay, so that no
+%% waiter takes it over. It dies with the holder.
+start_lock_refresher(Lock, Token) ->
+    Interval = max(100, stale_lock_seconds() * 200),
+    spawn_link(fun() -> refresh_lock(Lock, Token, Interval) end).
+
+stop_lock_refresher(Refresher) ->
+    unlink(Refresher),
+    exit(Refresher, kill),
+    ok.
+
+refresh_lock(Lock, Token, Interval) ->
+    receive after Interval -> ok end,
+    %% only this acquisition's lock: never one taken over meanwhile
+    _ = case file:read_file(Lock) of
+        {ok, Token} ->
+            Now = os:system_time(second),
+            file:write_file_info(Lock, #file_info{atime = Now, mtime = Now},
+                                 [{time, posix}]);
+        _ -> ok
+    end,
+    refresh_lock(Lock, Token, Interval).
+
 %% Releases the lock only while it still holds this acquisition's token.
 release_lock(Lock, Token) ->
     case file:read_file(Lock) of
@@ -797,12 +813,18 @@ release_lock(Lock, Token) ->
         _ -> ok
     end.
 
+%% File times come from the OS clock: compared with it, not with the VM's
+%% system time, which lags or leads it after the OS clock is stepped (no
+%% time warp), and would then take a fresh lock for a stale one.
 is_stale_file(Path) ->
     case file:read_file_info(Path, [{time, posix}]) of
         {ok, {file_info, _, _, _, _, MTime, _, _, _, _, _, _, _, _}} ->
-            MTime < erlang:system_time(second) - ?STALE_LOCK_SECONDS;
+            MTime < os:system_time(second) - stale_lock_seconds();
         _ -> false
     end.
+
+stale_lock_seconds() ->
+    tunable(<<"stale_lock_seconds">>, ?STALE_LOCK_SECONDS).
 
 lock_owner(Lock) ->
     case file:read_file(Lock) of
@@ -858,6 +880,18 @@ rescue(Fun) ->
     catch Class:Reason ->
         {error, unicode:characters_to_binary(
                   io_lib:format("~p: ~0p", [Class, Reason]))}
+    end.
+
+%% A store call that timed out: an error that `rescue_store_timeout` turns
+%% into an answer (503), and that crashes the caller anywhere else.
+store_timeout() ->
+    erlang:error(redirect_proxy_store_timeout).
+
+%% Runs Fun, or Unavailable when a store call in it timed out. Any other
+%% exception goes through as it was.
+rescue_store_timeout(Fun, Unavailable) ->
+    try Fun()
+    catch error:redirect_proxy_store_timeout -> Unavailable()
     end.
 
 %% ---------------------------------------------------------------------------
@@ -1046,6 +1080,13 @@ split_lines(Bin) -> binary:split(Bin, <<"\n">>, [global]).
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.
 binary_take(Bin, N) when byte_size(Bin) >= N -> binary:part(Bin, 0, N);
 binary_take(Bin, _N) -> Bin.
+
+%% Byte-wise search and replace: `string` functions compare graphemes, and a
+%% quote or comma followed by a combining mark is one grapheme with it.
+binary_contains(Bin, Pattern) -> binary:match(Bin, Pattern) =/= nomatch.
+
+binary_replace_all(Bin, Pattern, Replacement) ->
+    binary:replace(Bin, Pattern, Replacement, [global]).
 
 binary_drop(Bin, N) when byte_size(Bin) >= N ->
     binary:part(Bin, N, byte_size(Bin) - N);

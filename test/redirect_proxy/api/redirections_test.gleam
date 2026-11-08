@@ -4,18 +4,22 @@
 import api_support.{
   access_token, api, env_client, field, get_rule_enabled, header, import_set,
 }
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/http/response
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/string
 import gleam/uri
+import integration_support
 import redirect_proxy/api/rule_json as api_rule_json
 import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/rule
+import simplifile
 import support
 
 pub fn crud_round_trip_test() {
@@ -803,4 +807,40 @@ pub fn imported_ids_are_reachable_by_url_test() {
       "{\"id\":\"bulk\",\"source\":\"/b\",\"target\":\"/c\"}",
     )
   assert created.status == 422
+}
+
+/// A store too busy to answer in time (here waiting for the lock another
+/// process holds): 503 with Retry-After, not a crash. Sent over a raw socket:
+/// httpc before OTP 28.4 retries a 503 with Retry-After until it succeeds.
+pub fn a_busy_store_answers_503_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  ffi.set_tunable("store_call_timeout", 200)
+  let body = "{\"source\":\"/busy\",\"target\":\"/t\"}"
+  let assert [_, port] = string.split(env.api, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let raw =
+    integration_support.raw_exchange(port, [
+      <<
+        "POST /api/redirects HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n",
+        "authorization: Bearer ",
+        token:utf8,
+        "\r\ncontent-type: application/json\r\ncontent-length: ",
+        int.to_string(string.byte_size(body)):utf8,
+        "\r\n\r\n",
+        body:utf8,
+      >>,
+    ])
+  ffi.clear_tunable("store_call_timeout")
+  let assert Ok(Nil) = simplifile.delete(lock)
+
+  let assert Ok(raw) = bit_array.to_string(raw)
+  let assert Ok(#(head, resp_body)) = string.split_once(raw, "\r\n\r\n")
+  let head = string.lowercase(head)
+  assert string.starts_with(head, "http/1.1 503")
+  assert string.contains(head, "\r\nretry-after: 1\r\n")
+  assert string.contains(head, "\r\ncontent-type: application/problem+json")
+  assert field(resp_body, ["code"], decode.string) == "store_busy"
 }

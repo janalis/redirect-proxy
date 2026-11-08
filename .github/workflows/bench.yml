@@ -9,8 +9,10 @@ name: Benchmark
 #
 # A/B (manual runs): `variants` and `baseline` add redirect-proxy variants,
 # measured in the same job (runners differ from run to run), and `profile`
-# records where its schedulers spend their time. Their results are an
-# artifact only: nothing is published.
+# records where its schedulers spend their time. `scenarios` and `upstream`
+# add scenarios (mixed traffic, a connection per request, forwarding to an
+# upstream), `soak` replaces them with a long mixed run that tracks memory.
+# Their results are an artifact only: nothing is published.
 
 on:
   workflow_dispatch:
@@ -23,7 +25,7 @@ on:
         type: string
         required: false
       variants:
-        description: "redirect-proxy variants, `label[@image][=ERL_FLAGS]` separated by `;` (e.g. `sbwt-short=+sbwt short`)"
+        description: "redirect-proxy variants, `label[@image][=ERL_FLAGS][|K=V,K=V]` separated by `;` (e.g. `sbwt-short=+sbwt short`, `log|RP_ACCESS_LOG_ENABLED=true`)"
         type: string
         required: false
       baseline:
@@ -31,9 +33,25 @@ on:
         type: string
         required: false
       profile:
-        description: Profile redirect-proxy during the exact scenario (microstate accounting, perf)
+        description: Profile redirect-proxy during one scenario (microstate accounting, perf)
         type: boolean
         default: false
+      profile_scenario:
+        description: Scenario to profile (exact, prefix, regex, miss, or one of `scenarios` or `upstream`)
+        type: string
+        default: exact
+      scenarios:
+        description: "Extra scenarios, comma separated: `mixed` (random hits and misses, browser headers, then a fixed-rate pass), `exact-churn` (a connection per request)"
+        type: string
+        required: false
+      upstream:
+        description: Also measure misses forwarded to an upstream (nginx), with keep-alive and a connection per request
+        type: boolean
+        default: false
+      soak:
+        description: Soak duration (e.g. 10m; per variant, at most 90m in all) instead of the scenarios (not with `scenarios`, `upstream` or `profile`), mixed traffic with the access log on, memory sampled every 15 s
+        type: string
+        required: false
   schedule:
     - cron: "17 3 * * 1"
   workflow_call:
@@ -91,6 +109,11 @@ jobs:
   compare:
     name: Compare with other servers
     runs-on: ubuntu-24.04
+    # a comparison takes about 15 minutes; a soak, its duration on top
+    timeout-minutes: 120
+    env:
+      # a manual A/B run: redirect-proxy only, results as an artifact
+      AB: ${{ inputs.variants != '' || inputs.baseline != '' || inputs.profile || inputs.scenarios != '' || inputs.upstream || inputs.soak != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,7 +135,7 @@ jobs:
       # otherwise an image built from the checkout, as "<branch> (<commit>)".
       # With variants, only redirect-proxy is measured, in each variant.
       - name: Run comparison
-        if: inputs.variants == '' && inputs.baseline == '' && !inputs.profile
+        if: env.AB != 'true'
         # pipefail: a failed run must fail the job rather than upload the
         # results file of the checkout as if it were new
         shell: bash
@@ -135,27 +158,39 @@ jobs:
             sed -n '/^| Server/,$p' compare.txt
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: inputs.variants == '' && inputs.baseline == '' && !inputs.profile
+        if: env.AB != 'true'
         with:
           name: benchmark
           path: docs/data/benchmark.json
           if-no-files-found: error
       - name: Run variants
-        if: inputs.variants != '' || inputs.baseline != '' || inputs.profile
+        if: env.AB == 'true'
+        # fails (rather than cancels) the job in time to upload compare.txt,
+        # which holds the soak samples printed so far
+        timeout-minutes: 110
         shell: bash
         env:
           VARIANTS: ${{ inputs.variants }}
           BASELINE: ${{ inputs.baseline }}
           PROFILE: ${{ inputs.profile }}
+          PROFILE_SCENARIO: ${{ inputs.profile_scenario || 'exact' }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          UPSTREAM: ${{ inputs.upstream }}
+          SOAK: ${{ inputs.soak }}
         run: |
           if [ -n "$BASELINE" ]; then
             VARIANTS="${BASELINE}@redirect-proxy:baseline${VARIANTS:+;$VARIANTS}"
+          fi
+          if [ "$UPSTREAM" = true ]; then
+            SCENARIOS="${SCENARIOS:+$SCENARIOS,}upstream,upstream-churn"
           fi
           args=(--only redirect-proxy)
           [ "$PROFILE" = true ] && args+=(--profile)
           make docker
           RP_VERSION="${GITHUB_REF_NAME} ($(git rev-parse --short HEAD))" \
             RP_VARIANTS="$VARIANTS" RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev \
+            EXTRA_SCENARIOS="$SCENARIOS" PROFILE_SCENARIO="$PROFILE_SCENARIO" \
+            SOAK="$SOAK" \
             python3 scripts/bench-compare.py "${args[@]}" | tee compare.txt
           {
             echo '### redirect-proxy variants (requests/s)'
@@ -170,18 +205,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       # also when a variant failed: the others' results are still there
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() && (inputs.variants != '' || inputs.baseline != '' || inputs.profile) }}
+        if: ${{ !cancelled() && env.AB == 'true' }}
         with:
           name: benchmark-variants
           path: |
             build/benchmark*.json
             build/profile-*.txt
+            compare.txt
           if-no-files-found: error
 
   publish:
     name: Publish results
     needs: compare
-    if: github.ref == 'refs/heads/main' && inputs.variants == '' && inputs.baseline == '' && !inputs.profile
+    if: github.ref == 'refs/heads/main' && inputs.variants == '' && inputs.baseline == '' && !inputs.profile && inputs.scenarios == '' && !inputs.upstream && inputs.soak == ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write # push the results branch, merge it

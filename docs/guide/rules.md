@@ -29,6 +29,9 @@ Rules are stored in `<data_dir>/redirects.json`:
 Only `source` and `target` are required, and a bare array of rules is also
 accepted. Ids and timestamps are added automatically.
 
+Moving redirects out of nginx or Apache? See
+[Migrating from nginx or Apache](migration).
+
 | Field | Default | Description |
 | --- | --- | --- |
 | `host` | `*` | Host name to match, case-insensitively and without a port (requests match whatever their port). `*` matches every host; `*.example.com` matches every subdomain of `example.com` (not `example.com` itself). International names are written in punycode (`xn--caf-dma.example`). |
@@ -39,7 +42,7 @@ accepted. Ids and timestamps are added automatically.
 | `preserve_query` | `false` | Append the request query string to the target. Parameters the target sets itself win: a request parameter of the same name is dropped (`/new?lang=fr` with `?lang=en&utm=x` gives `/new?lang=fr&utm=x`). |
 | `case_insensitive` | `false` | Match the source without regard to case. |
 | `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed). For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
-| `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`. Written to the file only when `true`. |
+| `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`, unless the source itself ends with `/` (`/blog/` matches everything below `/blog/`). Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |
 | `starts_at` | `""` | RFC 3339 date-time with a time zone (`2026-12-01T00:00:00Z`) from which the rule applies. Empty: always. |
@@ -128,8 +131,11 @@ removed. A rule for the exact form always wins.
 
 ## When nothing matches
 
-The server answers `404`, or redirects (302) to
-`server.fallback_url` if it is set.
+With `server.upstream` set, the request is forwarded to the website
+behind redirect-proxy (see
+[In front of a website](deployment#in-front-of-a-website)). Otherwise the
+server answers `404`, or redirects (302) to `server.fallback_url` if it is
+set (the two cannot be combined).
 
 ## Caching
 

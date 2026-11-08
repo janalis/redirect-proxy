@@ -13,6 +13,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule, Rule}
 
 /// The columns of an export, in order. An import takes any of them.
@@ -403,14 +404,15 @@ fn cell(value: String) -> String {
     True -> "'" <> value
     False -> value
   }
+  // bytes, not graphemes: a quote followed by a combining mark is one grapheme
   case
-    string.contains(value, ",")
-    || string.contains(value, "\"")
-    || string.contains(value, "\n")
-    || string.contains(value, "\r")
+    ffi.byte_contains(value, ",")
+    || ffi.byte_contains(value, "\"")
+    || ffi.byte_contains(value, "\n")
+    || ffi.byte_contains(value, "\r")
     || string.trim(value) != value
   {
-    True -> "\"" <> string.replace(value, "\"", "\"\"") <> "\""
+    True -> "\"" <> ffi.byte_replace(value, "\"", "\"\"") <> "\""
     False -> value
   }
 }

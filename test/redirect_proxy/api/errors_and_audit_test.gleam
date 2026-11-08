@@ -142,3 +142,45 @@ pub fn problems_have_a_stable_code_test() {
   assert field(page("1"), ["meta", "has_more"], decode.bool)
   assert !field(page("2"), ["meta", "has_more"], decode.bool)
 }
+
+/// 422 responses name the invalid fields in `errors[].field`, taken from
+/// the `field: message` convention of rule validation (`problem.validation`):
+/// clients highlight form fields by these names. A message that names no
+/// field (a JSON type error) has an empty one.
+pub fn validation_errors_name_their_fields_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let fields = fn(body) {
+    let resp = api(env, Post, "/api/redirects", token, body)
+    assert resp.status == 422
+    let errors =
+      field(
+        resp.body,
+        ["errors"],
+        decode.list({
+          use name <- decode.field("field", decode.string)
+          use message <- decode.field("message", decode.string)
+          decode.success(#(name, message))
+        }),
+      )
+    // the message is what follows the field name
+    list.each(errors, fn(e) {
+      assert e.1 != ""
+      assert e.0 == "" || !string.starts_with(e.1, e.0 <> ":")
+    })
+    list.map(errors, fn(e) { e.0 }) |> list.unique |> list.sort(string.compare)
+  }
+  assert fields("{\"source\":\"\",\"target\":\"\",\"status\":999}")
+    == ["source", "status", "target"]
+  assert fields("{\"id\":\"a b\",\"source\":\"/a\",\"target\":\"/b\"}")
+    == ["id"]
+  assert fields(
+      "{\"source\":\"/a\",\"target\":\"/b\",\"match\":\"prefix\",\"query\":\"a=1\"}",
+    )
+    == ["query"]
+  assert fields(
+      "{\"source\":\"/a\",\"target\":\"/b\",\"starts_at\":\"soon\",\"priority\":-1}",
+    )
+    == ["priority", "starts_at"]
+  assert fields("{\"source\":1,\"target\":\"/b\"}") == [""]
+}

@@ -57,6 +57,18 @@ RP_SERVER_HEALTH_PATH=/healthz
 RP_ACCESS_LOG_TRUSTED_PROXIES=127.0.0.1/32
 ```
 
+::: warning Trust the address the web server connects from
+`access_log.trusted_proxies` decides whose `X-Forwarded-Proto` counts for
+`server.https_redirect`. When the web server and redirect-proxy run in
+different containers (Docker, Compose, Kubernetes), the web server
+connects from its container's address, not from `127.0.0.1`: with
+`127.0.0.1/32` its `X-Forwarded-Proto: https` is ignored, every request is
+redirected to HTTPS again, and browsers end in a redirect loop. List the
+network's CIDR instead (for example the Compose network's subnet,
+`docker network inspect <network>`, or the cluster's pod CIDR), and keep
+that network private to the web server.
+:::
+
 What it needs from the web server:
 
 - **The `Host` header the client sent.** Rules match on it, and the
@@ -96,10 +108,15 @@ upstream redirect_proxy {
     keepalive 32;
 }
 
-# "upgrade" for WebSockets, none otherwise (the connection is kept open)
+# Upgrade and "Connection: upgrade" for WebSockets only; nothing otherwise
+# (the connection is kept open, and no other protocol upgrade is passed on)
+map $http_upgrade $websocket_upgrade {
+    ~*^websocket$ $http_upgrade;
+    default       "";
+}
 map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ""      "";
+    ~*^websocket$ upgrade;
+    default       "";
 }
 
 server {
@@ -114,7 +131,8 @@ server {
     location / {
         proxy_pass http://redirect_proxy;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        # an empty value is not sent
+        proxy_set_header Upgrade $websocket_upgrade;
         proxy_set_header Connection $connection_upgrade;
         # rules match on the host the client asked for
         proxy_set_header Host $host;
