@@ -36,7 +36,8 @@ nginx,caddy` measures some of the servers, and `EXACT`, `PREFIX`, `REGEX`,
 
 The runners are not all the same machine: numbers from two runs do not
 compare. To compare versions or VM flags of redirect-proxy, measure them in
-the same run: `RP_VARIANTS='short=+sbwt short; main@redirect-proxy:main'`
+the same run:
+`RP_VARIANTS='short=+sbwt short; 0.7.0@ghcr.io/janalis/redirect-proxy:0.7.0'`
 adds a `redirect-proxy (label)` per `label[@image][=ERL_FLAGS]` entry (the
 *Benchmark* workflow takes `variants`, and `baseline`, a git ref it builds
 and measures as a variant). `--profile` (the workflow's `profile`) also
