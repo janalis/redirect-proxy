@@ -75,8 +75,11 @@ stats` memory, which also counts the page cache of the access log, and the
 server's own metrics (`redirect_proxy_memory_bytes`,
 `redirect_proxy_processes`, requests per second) every 15 s. It reports
 how fast memory grows under load, in MiB per minute after the first
-minute: a leak shows as an `anon` or VM slope that does not flatten. The
-sample taken once the load has stopped is kept apart (`after`).
+minute, over the whole run and over its second half alone. The allocator
+keeps freed memory, so `anon` often rises in steps, then levels off: that
+gives a positive slope overall but a flat second half. A leak keeps
+growing in both. The sample taken once the load has stopped is kept apart
+(`after`).
 
 ## redirect-proxy alone
 

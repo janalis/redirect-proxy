@@ -63,7 +63,10 @@ anonymous memory (cgroup `anon`, without the log's page cache), `docker
 stats` (page cache included) and the server's metrics (memory, processes,
 requests) every SOAK_INTERVAL=15 s; reports the memory slopes in MiB/min
 after the first SOAK_WARMUP=60 s, under load only (the sample taken once
-the load stopped is reported apart, as `after`).
+the load stopped is reported apart, as `after`), and the slopes of the
+second half of those samples alone: memory that grows in steps then
+levels off (allocator carriers) has a positive slope overall but a flat
+second half, a leak keeps growing in both.
 
 --profile: during the first run of the PROFILE_SCENARIO scenario (default
 exact), microstate accounting of each redirect-proxy (where its schedulers
@@ -888,7 +891,9 @@ def soak(port, client_cpus):
     print(f"  soak: {result['rps']:,} req/s  p99 {result['p99_ms']:.2f} ms  "
           f"p99.9 {result['p999_ms']:.2f} ms  max {result['max_ms']:.1f} ms  "
           f"errors {result['errors']}  memory {result['anon_mib_per_min']} "
-          f"MiB/min (anon), {result['vm_mib_per_min']} MiB/min (VM), "
+          f"MiB/min (anon; second half {result['anon_mib_per_min_late']}), "
+          f"{result['vm_mib_per_min']} MiB/min (VM; second half "
+          f"{result['vm_mib_per_min_late']}), "
           f"{result['docker_mib_per_min']} MiB/min (docker, page cache "
           f"included)", flush=True)
     return result
@@ -920,8 +925,10 @@ def soak_summary(samples):
     if len(steady) < 3:
         steady = samples
 
-    def per_min(field):
-        rate = slope([(s["t_s"] / 60, s.get(field)) for s in steady])
+    late = steady[len(steady) // 2:]
+
+    def per_min(field, among=steady):
+        rate = slope([(s["t_s"] / 60, s.get(field)) for s in among])
         return None if rate is None else round(rate, 3)
 
     return {
@@ -929,6 +936,8 @@ def soak_summary(samples):
         "anon_mib_per_min": per_min("anon_mib"),
         "vm_mib_per_min": per_min("vm_mib"),
         "docker_mib_per_min": per_min("docker_mib"),
+        "anon_mib_per_min_late": per_min("anon_mib", late),
+        "vm_mib_per_min_late": per_min("vm_mib", late),
         "max_processes": max((s.get("processes", 0) for s in samples),
                              default=0),
         "first": steady[0] if steady else None,
@@ -1238,14 +1247,18 @@ def soak_table(results):
                      ms(s["p999_ms"]), ms(s["max_ms"]), str(s["errors"]),
                      f"{first.get(field)} → {last.get(field)} MiB "
                      f"({field.removesuffix('_mib')})",
-                     str(s.get("anon_mib_per_min")), str(s["vm_mib_per_min"]),
+                     str(s.get("anon_mib_per_min")),
+                     str(s.get("anon_mib_per_min_late")),
+                     str(s["vm_mib_per_min"]),
+                     str(s.get("vm_mib_per_min_late")),
                      str(s["docker_mib_per_min"]),
                      str(s["max_processes"])])
     if not rows:
         return ""
     return markdown_table(["Server", "Requests/s", "p99", "p99.9", "Max",
                            "Errors", "Memory (under load)", "MiB/min (anon)",
-                           "MiB/min (VM)", "MiB/min (docker, with cache)",
+                           "2nd half (anon)", "MiB/min (VM)",
+                           "2nd half (VM)", "MiB/min (docker, with cache)",
                            "Processes (max)"], rows, 1)
 
 
