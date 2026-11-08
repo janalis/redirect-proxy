@@ -21,6 +21,7 @@
 %% - /once: the echo, then the connection closed (without saying so)
 %% - /abrupt: the connection closed without a response
 %% - /idle-close: the echo, then the connection closed 20 ms later, idle
+%% - /idle-close-late: the same, 1300 ms later
 %% - /linger: the echo, then 20 ms later the bytes of a response nothing
 %%   asked for
 %% - /stream: a chunked response whose last chunk comes 200 ms after the
@@ -122,6 +123,10 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
         <<"/idle-close">> ->
             echo_only(Socket, N, Method, Echo),
             timer:sleep(20),
+            close(Socket);
+        <<"/idle-close-late">> ->
+            echo_only(Socket, N, Method, Echo),
+            timer:sleep(1300),
             close(Socket);
         <<"/linger">> ->
             echo_only(Socket, N, Method, Echo),

@@ -362,17 +362,31 @@ more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
 %% Woken from hibernation: at the end of the idle timeout (or the deadline
 %% of the head) by its timer, or by another message, then waited for until
 %% End, that same end: a message that is not a request does not restart it.
-%% (A `drain` from the listener is such a message: see `drained/3`.)
+%% (A `drain` from the listener is such a message: see `drained/3`.) A
+%% message of the kept upstream connection (closed by the upstream, or bytes
+%% nothing asked for) is not: the connection is dropped, and the process
+%% hibernates again.
 idle(Buffer, C, Timer, End) ->
     receive
         {timeout, Timer, idle} -> pending(Buffer, C, fun() -> expired(Buffer, C) end)
     after 0 ->
-        case erlang:cancel_timer(Timer) of
-            false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
-            _ -> ok
-        end,
-        wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+        case upstream_event(C) of
+            true ->
+                erlang:hibernate(?MODULE, idle, [Buffer, close_upstream(C), Timer, End]);
+            false ->
+                case erlang:cancel_timer(Timer) of
+                    false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
+                    _ -> ok
+                end,
+                wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+        end
     end.
+
+%% Whether the kept upstream connection sent a message (it is then of no use).
+upstream_event(#conn{up = none}) ->
+    false;
+upstream_event(#conn{up = Up}) ->
+    up_await(Up, 0) =/= {error, timeout}.
 
 %% Bytes that came with the message that woke the connection up are read
 %% before it gives up on them: else Then().
@@ -399,6 +413,7 @@ drained(C, Timeout, Then) ->
 hibernate_after(Timeout) -> min(1000, Timeout div 2).
 
 wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
+    Up = up_socket(C),
     receive
         %% usually a whole request: parsed as it came, not copied first
         {tcp, Socket, Data} when Buffer =:= <<>> ->
@@ -422,7 +437,14 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp_error, Socket, _} ->
             close(C);
         drain when Buffer =:= <<>> ->
-            drained(C, Timeout, Then)
+            drained(C, Timeout, Then);
+        %% the kept upstream connection, closed by the upstream or sending
+        %% bytes nothing asked for: dropped (more/2 then waits as before:
+        %% the head keeps its deadline, and the process hibernates)
+        {Tag, Up, _} when Tag =:= tcp; Tag =:= ssl; Tag =:= tcp_error; Tag =:= ssl_error ->
+            more(Buffer, close_upstream(C));
+        {Tag, Up} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+            more(Buffer, close_upstream(C))
     after Timeout ->
         case Then of
             close -> expired(Buffer, C);
@@ -1238,14 +1260,15 @@ delimited({length, _}) -> true;
 delimited(_) -> false.
 
 %% Sends the response head and relays the body: {ok, UpstreamLeftover,
-%% Bytes} | {error, Reason, Bytes}.
+%% Bytes} | {error, Reason, Bytes}, Bytes the body bytes sent to the client.
 %%
 %% What is to be sent to the client (the head, then what the copy emits) is
-%% gathered under ?RELAYED in the process dictionary, and sent before each
-%% wait for more bytes from the upstream, and at the end: the head and the
-%% body bytes read with it go in one send, a small response in one segment.
+%% gathered under ?RELAYED in the process dictionary, with the number of
+%% body bytes in it, and sent before each wait for more bytes from the
+%% upstream, and at the end: the head and the body bytes read with it go in
+%% one send, a small response in one segment.
 relay_body(Framing, Chunked, Head, Buffer, Socket, C) ->
-    put(?RELAYED, Head),
+    put(?RELAYED, {Head, 0}),
     Read = upstream_recv(Socket, C),
     Recv = fun() ->
         case flush(C) of
@@ -1253,44 +1276,63 @@ relay_body(Framing, Chunked, Head, Buffer, Socket, C) ->
             Error -> Error
         end
     end,
-    Emit = fun(Data) -> put(?RELAYED, [get(?RELAYED) | Data]), ok end,
-    Result = copy_body(Framing, Chunked, Buffer, Recv, Emit),
+    Result = copy_body(Framing, Chunked, Buffer, Recv),
     %% what was read is sent, even when the rest cannot be
     Flushed = flush(C),
-    erase(?RELAYED),
+    %% the body bytes a failed send dropped
+    {_, Unsent} = erase(?RELAYED),
     case {Result, Flushed} of
-        {{ok, _, Bytes}, {error, Reason}} -> {error, Reason, Bytes};
+        {{ok, _, Bytes}, {error, Reason}} -> {error, Reason, Bytes - Unsent};
+        {{error, Reason, Bytes}, _} -> {error, Reason, Bytes - Unsent};
         _ -> Result
     end.
 
-copy_body(none, _, Buffer, _, _) ->
+copy_body(none, _, Buffer, _) ->
     {ok, Buffer, 0};
-copy_body({length, N}, _, Buffer, Recv, Emit) ->
-    copy_length(Buffer, N, Recv, Emit, 0);
-copy_body(chunked, true, Buffer, Recv, Emit) ->
-    case copy_chunked(Buffer, Recv, chunk_emit(Emit), 0) of
+copy_body({length, N}, _, Buffer, Recv) ->
+    copy_length(Buffer, N, Recv, fun relayed/1, 0);
+copy_body(chunked, true, Buffer, Recv) ->
+    case copy_chunked(Buffer, Recv, fun relayed_chunk/1, 0) of
         {ok, Left, Bytes} ->
-            ok = Emit(<<"0\r\n\r\n">>),
+            gather(<<"0\r\n\r\n">>, 0),
             {ok, Left, Bytes};
         Error ->
             Error
     end;
-copy_body(chunked, false, Buffer, Recv, Emit) ->
+copy_body(chunked, false, Buffer, Recv) ->
     %% an HTTP/1.0 client: the body without its chunks, then the end of the
     %% connection
-    copy_chunked(Buffer, Recv, Emit, 0);
-copy_body(close, _, Buffer, Recv, Emit) ->
-    copy_close(Buffer, Recv, Emit, 0).
+    copy_chunked(Buffer, Recv, fun relayed/1, 0);
+copy_body(close, _, Buffer, Recv) ->
+    copy_close(Buffer, Recv, fun relayed/1, 0).
 
-%% Sends what relay_body/6 gathered: ok | {error, {client, Reason}}
+%% The emitters of relay_body/6: body bytes, as they are or in a chunk.
+relayed(Data) ->
+    gather(Data, byte_size(Data)).
+
+relayed_chunk(Data) ->
+    gather([integer_to_binary(byte_size(Data), 16), <<"\r\n">>, Data, <<"\r\n">>],
+           byte_size(Data)).
+
+gather(Data, Bytes) ->
+    {Pending, Unsent} = get(?RELAYED),
+    put(?RELAYED, {[Pending | Data], Unsent + Bytes}),
+    ok.
+
+%% Sends what relay_body/6 gathered: ok | {error, {client, Reason}}. A failed
+%% send keeps the count of the body bytes it dropped.
 flush(#conn{socket = Socket}) ->
-    case put(?RELAYED, []) of
-        [] ->
+    case get(?RELAYED) of
+        {[], _} ->
             ok;
-        Pending ->
+        {Pending, Unsent} ->
             case gen_tcp:send(Socket, Pending) of
-                ok -> ok;
-                {error, Reason} -> {error, {client, Reason}}
+                ok ->
+                    put(?RELAYED, {[], 0}),
+                    ok;
+                {error, Reason} ->
+                    put(?RELAYED, {[], Unsent}),
+                    {error, {client, Reason}}
             end
     end.
 
@@ -1446,9 +1488,13 @@ tunnel_loop(Client, {_, Raw} = Socket, Timeout, Bytes) ->
         {Tag, Raw} when Tag =:= tcp_passive; Tag =:= ssl_passive ->
             _ = up_setopts(Socket, [{active, ?ACTIVE}]),
             tunnel_loop(Client, Socket, Timeout, Bytes);
-        {Tag, _} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+        {tcp_closed, Client} ->
             Bytes;
-        {Tag, _, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
+        {tcp_error, Client, _} ->
+            Bytes;
+        {Tag, Raw} when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+            Bytes;
+        {Tag, Raw, _} when Tag =:= tcp_error; Tag =:= ssl_error ->
             Bytes
     after Timeout ->
         Bytes
@@ -1749,6 +1795,10 @@ connect(#up{tls = Tls, address = Address, port = Port, timeout = Timeout} = Up) 
                 Error -> Error
             end
     end.
+
+%% The socket of the kept upstream connection, that its messages carry.
+up_socket(#conn{up = none}) -> none;
+up_socket(#conn{up = {_, S}}) -> S.
 
 close_upstream(#conn{up = none} = C) ->
     C;
