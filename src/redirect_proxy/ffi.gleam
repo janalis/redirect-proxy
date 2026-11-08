@@ -269,14 +269,29 @@ pub fn jwt_peek_header(token: String) -> Result(String, Nil)
 pub fn with_lock(name: String, f: fn() -> a) -> a
 
 /// Runs `f` holding `<path>.lock`, an exclusive lock shared by every OS
-/// process writing `path` (the server, the CLI). Locks older than 10 seconds
-/// are considered stale. Errors when the lock is not acquired in time.
+/// process writing `path` (the server, the CLI). The lock is refreshed while
+/// `f` runs; one not refreshed for 10 seconds is left over by a crashed
+/// process and is taken over. Errors when the lock is not acquired in time.
 @external(erlang, "redirect_proxy_ffi", "with_file_lock")
 pub fn with_file_lock(
   path: String,
   timeout_ms: Int,
   f: fn() -> a,
 ) -> Result(a, String)
+
+/// Overrides a delay for tests: `stale_lock_seconds` (10), after which a
+/// lock is taken over, and `store_call_timeout` (milliseconds), how long a
+/// store call waits.
+@external(erlang, "redirect_proxy_ffi", "set_tunable")
+pub fn set_tunable(name: String, value: Int) -> Nil
+
+/// Restores a delay's default.
+@external(erlang, "redirect_proxy_ffi", "clear_tunable")
+pub fn clear_tunable(name: String) -> Nil
+
+/// A delay's override, or `default`.
+@external(erlang, "redirect_proxy_ffi", "tunable")
+pub fn tunable(name: String, default: Int) -> Int
 
 /// Read-modify-write of a data file that other OS processes (the CLI) may
 /// write too: holds the node-wide lock of `path`, then `<path>.lock`, for up

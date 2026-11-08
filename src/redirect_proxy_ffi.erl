@@ -17,7 +17,7 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
+    with_lock/2, with_file_lock/3, tunable/2, set_tunable/2, clear_tunable/1, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
     no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
@@ -692,9 +692,22 @@ with_lock(Name, Fun) ->
 %% Cross-process file lock (<Path>.lock, created with O_EXCL)
 %% ---------------------------------------------------------------------------
 
-%% A lock older than this is left over by a crashed process: writes hold the
-%% lock for milliseconds.
+%% A lock not refreshed for this long is left over by a crashed process: its
+%% holder refreshes it while it runs (`start_lock_refresher`).
 -define(STALE_LOCK_SECONDS, 10).
+
+%% A delay that tests shorten (`set_tunable`): read where a lock is judged
+%% stale or a store call starts, never on the request path.
+tunable(Name, Default) ->
+    persistent_term:get({?MODULE, tunable, Name}, Default).
+
+set_tunable(Name, Value) ->
+    persistent_term:put({?MODULE, tunable, Name}, Value),
+    nil.
+
+clear_tunable(Name) ->
+    _ = persistent_term:erase({?MODULE, tunable, Name}),
+    nil.
 
 %% Runs Fun while holding <Path>.lock, shared by every OS process (server,
 %% CLI) that writes Path. Returns {ok, Result} or {error, Reason} when the
@@ -711,8 +724,11 @@ with_file_lock(Path, TimeoutMs, Fun) ->
     Token = lock_token(),
     case acquire_lock(Lock, Token, Deadline) of
         ok ->
+            Refresher = start_lock_refresher(Lock, Token),
             try {ok, Fun()}
-            after release_lock(Lock, Token)
+            after
+                stop_lock_refresher(Refresher),
+                release_lock(Lock, Token)
             end;
         %% A directory this process cannot create files in is one it cannot
         %% write the rules to either (writes are a temp file and a rename):
@@ -790,6 +806,31 @@ break_stale_lock(Lock) ->
             end
     end.
 
+%% While the lock is held (a matcher build, fsyncs and the audit may take
+%% longer than the stale delay on a large rule set), a linked process sets
+%% its modification time to now, five times per stale delay, so that no
+%% waiter takes it over. It dies with the holder.
+start_lock_refresher(Lock, Token) ->
+    Interval = max(100, stale_lock_seconds() * 200),
+    spawn_link(fun() -> refresh_lock(Lock, Token, Interval) end).
+
+stop_lock_refresher(Refresher) ->
+    unlink(Refresher),
+    exit(Refresher, kill),
+    ok.
+
+refresh_lock(Lock, Token, Interval) ->
+    receive after Interval -> ok end,
+    %% only this acquisition's lock: never one taken over meanwhile
+    _ = case file:read_file(Lock) of
+        {ok, Token} ->
+            Now = erlang:system_time(second),
+            file:write_file_info(Lock, #file_info{atime = Now, mtime = Now},
+                                 [{time, posix}]);
+        _ -> ok
+    end,
+    refresh_lock(Lock, Token, Interval).
+
 %% Releases the lock only while it still holds this acquisition's token.
 release_lock(Lock, Token) ->
     case file:read_file(Lock) of
@@ -800,9 +841,12 @@ release_lock(Lock, Token) ->
 is_stale_file(Path) ->
     case file:read_file_info(Path, [{time, posix}]) of
         {ok, {file_info, _, _, _, _, MTime, _, _, _, _, _, _, _, _}} ->
-            MTime < erlang:system_time(second) - ?STALE_LOCK_SECONDS;
+            MTime < erlang:system_time(second) - stale_lock_seconds();
         _ -> false
     end.
+
+stale_lock_seconds() ->
+    tunable(<<"stale_lock_seconds">>, ?STALE_LOCK_SECONDS).
 
 lock_owner(Lock) ->
     case file:read_file(Lock) of

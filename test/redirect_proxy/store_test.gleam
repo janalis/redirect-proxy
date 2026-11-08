@@ -814,3 +814,38 @@ pub fn same_second_same_size_edits_are_seen_test() {
   write("/again")
   support.wait_until(fn() { redirect("/watched") == Ok("/again") }, 2000)
 }
+
+/// A lock held longer than the stale delay (a long change by the CLI) is kept
+/// fresh while it is held: a writer waiting for it does not take it over,
+/// and both changes are kept.
+pub fn a_lock_held_long_is_not_taken_over_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/redirects.json"
+  let s = start(settings(dir, 0))
+  ffi.set_tunable("stale_lock_seconds", 1)
+  let held = process.new_subject()
+  process.spawn(fn() {
+    let assert Ok(Nil) =
+      ffi.with_file_lock(path, 1000, fn() {
+        let assert Ok(content) = simplifile.read(path)
+        let assert Ok(rules) = rule.file_from_string(content)
+        process.send(held, Nil)
+        process.sleep(3000)
+        let cli = Rule(..new_rule("/cli", "/t"), id: "cli")
+        let assert Ok(Nil) =
+          simplifile.write(path, rule.file_to_string(list.append(rules, [cli])))
+        Nil
+      })
+    process.send(held, Nil)
+  })
+  let assert Ok(Nil) = process.receive(held, 1000)
+  let created = store.create(s, new_rule("/server", "/t"), by: "server")
+  let released = process.receive(held, 5000)
+  ffi.clear_tunable("stale_lock_seconds")
+  let assert Ok(_) = created
+  let assert Ok(Nil) = released
+
+  let assert Ok(content) = simplifile.read(path)
+  let assert Ok(on_disk) = rule.file_from_string(content)
+  assert list.map(on_disk, fn(r) { r.source }) == ["/cli", "/server"]
+}
