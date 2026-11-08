@@ -6,6 +6,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/otp/actor
 import gleam/result
 import gleam/string
 import redirect_proxy/api/clients
@@ -496,6 +497,19 @@ fn rules_export(config_path: String) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+const store_busy =
+  "the rules are busy (another change holds the lock); nothing was changed, retry"
+
+/// The busy message when `reason` is the file lock that another process
+/// (a server making a change, another command) holds past the wait: the
+/// command made no change and can be retried.
+fn busy_or(reason: String) -> String {
+  case string.contains(reason, " is held by another process") {
+    True -> store_busy <> "\n" <> reason
+    False -> reason
+  }
+}
+
 fn rules_import(
   config_path: String,
   file: String,
@@ -518,12 +532,20 @@ fn rules_import(
   app.init_tables()
   use started <- result.try(
     store.start(app.store_settings(cfg), process.new_name("rp_cli_store"))
-    |> result.map_error(fn(e) { string.inspect(e) }),
+    |> result.map_error(fn(e) {
+      case e {
+        actor.InitFailed(reason) -> busy_or(reason)
+        _ -> string.inspect(e)
+      }
+    }),
   )
-  use count <- result.try(
-    store.import_rules(started.data, incoming, mode, "cli")
-    |> result.map_error(string.join(_, "\n")),
-  )
+  use count <- result.try({
+    use <- store.or_unavailable(fn() {
+      store.import_rules(started.data, incoming, mode, "cli")
+      |> result.map_error(fn(errors) { busy_or(string.join(errors, "\n")) })
+    })
+    Error(store_busy)
+  })
   io.println(
     int.to_string(count)
     <> " rule(s) imported into "

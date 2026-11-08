@@ -1,8 +1,10 @@
 //// End-to-end tests of managing rules in the admin: forms, bulk actions,
 //// imports, the audit page.
 
+import gleam/bit_array
 import gleam/http
 import gleam/http/response
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -12,6 +14,7 @@ import integration_support.{
   post_form, send,
 }
 import redirect_proxy/config
+import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/users
@@ -742,4 +745,56 @@ pub fn rule_details_leave_out_unknown_dates_test() {
     page("dated"),
     "Created 2026-01-02T03:04:05Z, updated 2026-02-03T04:05:06Z by ann · 0 hit(s)",
   )
+}
+
+/// A store too busy to answer in time (here waiting for the lock another
+/// process holds): a 503 page with Retry-After and the change not made,
+/// rather than a crash. Sent over a raw socket: httpc before OTP 28.4 retries
+/// a 503 with Retry-After until it succeeds.
+pub fn admin_busy_store_answers_503_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  ffi.set_tunable("store_call_timeout", 200)
+  let body =
+    uri.query_to_string([
+      #("csrf_token", csrf),
+      #("match", "exact"),
+      #("source", "/busy"),
+      #("target", "/t"),
+      #("status", "301"),
+    ])
+  let assert [_, port] = string.split(env.admin, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let raw =
+    integration_support.raw_exchange(port, [
+      <<
+        "POST /rules HTTP/1.1\r\nhost: 127.0.0.1:",
+        int.to_string(port):utf8,
+        "\r\nconnection: close\r\norigin: ",
+        env.admin:utf8,
+        "\r\ncookie: ",
+        cookie:utf8,
+        "\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: ",
+        int.to_string(string.byte_size(body)):utf8,
+        "\r\n\r\n",
+        body:utf8,
+      >>,
+    ])
+  ffi.clear_tunable("store_call_timeout")
+  let assert Ok(Nil) = simplifile.delete(lock)
+
+  let assert Ok(raw) = bit_array.to_string(raw)
+  let assert Ok(#(head, page)) = string.split_once(raw, "\r\n\r\n")
+  let head = string.lowercase(head)
+  assert string.starts_with(head, "http/1.1 503")
+  assert string.contains(head, "\r\nretry-after: 1\r\n")
+  assert string.contains(page, "your change was not made")
+  // the change was skipped: the list (queued behind it) does not show it
+  let rules = get(env.admin <> "/rules", [#("cookie", cookie)])
+  assert rules.status == 200
+  assert !string.contains(rules.body, "/busy")
+  let assert Ok(content) = simplifile.read(env.dir <> "/redirects.json")
+  assert !string.contains(content, "/busy")
 }
