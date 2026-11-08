@@ -818,6 +818,9 @@ lower(C) -> C.
 %% response head, and the idle timeout of every read and write.
 
 -define(CONNECT_TIMEOUT, 5000).
+%% the process dictionary key of the bytes a relayed response has yet to
+%% send to the client (relay_body/6)
+-define(RELAYED, '$redirect_proxy_relayed').
 -define(MAX_RESPONSE_HEAD, 65536).
 
 %% headers that only concern one connection (RFC 9110 7.6.1), and the ones
@@ -1183,12 +1186,7 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                         {true, _} -> []
                     end,
                     <<"\r\n">>],
-            Client = C1#conn.socket,
-            Sent = case gen_tcp:send(Client, Head) of
-                ok -> relay_body(Framing, Chunked, Buffer, Socket, C1);
-                {error, _} -> {error, {client, closed}, 0}
-            end,
-            case Sent of
+            case relay_body(Framing, Chunked, Head, Buffer, Socket, C1) of
                 {ok, Left, Bytes} ->
                     done(F#fwd.done, Status, Bytes, none),
                     C2 = case UpKeep andalso Left =:= <<>> of
@@ -1228,28 +1226,62 @@ delimited(none) -> true;
 delimited({length, _}) -> true;
 delimited(_) -> false.
 
-%% {ok, UpstreamLeftover, Bytes} | {error, Reason, Bytes}
-relay_body(none, _, Buffer, _, _) ->
+%% Sends the response head and relays the body: {ok, UpstreamLeftover,
+%% Bytes} | {error, Reason, Bytes}.
+%%
+%% What is to be sent to the client (the head, then what the copy emits) is
+%% gathered under ?RELAYED in the process dictionary, and sent before each
+%% wait for more bytes from the upstream, and at the end: the head and the
+%% body bytes read with it go in one send, a small response in one segment.
+relay_body(Framing, Chunked, Head, Buffer, Socket, C) ->
+    put(?RELAYED, Head),
+    Read = upstream_recv(Socket, C),
+    Recv = fun() ->
+        case flush(C) of
+            ok -> Read();
+            Error -> Error
+        end
+    end,
+    Emit = fun(Data) -> put(?RELAYED, [get(?RELAYED) | Data]), ok end,
+    Result = copy_body(Framing, Chunked, Buffer, Recv, Emit),
+    %% what was read is sent, even when the rest cannot be
+    Flushed = flush(C),
+    erase(?RELAYED),
+    case {Result, Flushed} of
+        {{ok, _, Bytes}, {error, Reason}} -> {error, Reason, Bytes};
+        _ -> Result
+    end.
+
+copy_body(none, _, Buffer, _, _) ->
     {ok, Buffer, 0};
-relay_body({length, N}, _, Buffer, Socket, C) ->
-    copy_length(Buffer, N, upstream_recv(Socket, C), client_emit(C), 0);
-relay_body(chunked, true, Buffer, Socket, C) ->
-    Emit = client_emit(C),
-    case copy_chunked(Buffer, upstream_recv(Socket, C), chunk_emit(Emit), 0) of
+copy_body({length, N}, _, Buffer, Recv, Emit) ->
+    copy_length(Buffer, N, Recv, Emit, 0);
+copy_body(chunked, true, Buffer, Recv, Emit) ->
+    case copy_chunked(Buffer, Recv, chunk_emit(Emit), 0) of
         {ok, Left, Bytes} ->
-            case Emit(<<"0\r\n\r\n">>) of
-                ok -> {ok, Left, Bytes};
-                {error, Reason} -> {error, Reason, Bytes}
-            end;
+            ok = Emit(<<"0\r\n\r\n">>),
+            {ok, Left, Bytes};
         Error ->
             Error
     end;
-relay_body(chunked, false, Buffer, Socket, C) ->
+copy_body(chunked, false, Buffer, Recv, Emit) ->
     %% an HTTP/1.0 client: the body without its chunks, then the end of the
     %% connection
-    copy_chunked(Buffer, upstream_recv(Socket, C), client_emit(C), 0);
-relay_body(close, _, Buffer, Socket, C) ->
-    copy_close(Buffer, upstream_recv(Socket, C), client_emit(C), 0).
+    copy_chunked(Buffer, Recv, Emit, 0);
+copy_body(close, _, Buffer, Recv, Emit) ->
+    copy_close(Buffer, Recv, Emit, 0).
+
+%% Sends what relay_body/6 gathered: ok | {error, {client, Reason}}
+flush(#conn{socket = Socket}) ->
+    case put(?RELAYED, []) of
+        [] ->
+            ok;
+        Pending ->
+            case gen_tcp:send(Socket, Pending) of
+                ok -> ok;
+                {error, Reason} -> {error, {client, Reason}}
+            end
+    end.
 
 %% {Lengths, Codings, ConnectionTokens, HasDate} of a response.
 response_fields([{_, Lower, Value} | Rest], Lengths, Codings, Tokens, Date) ->
@@ -1649,14 +1681,6 @@ client_recv(#conn{socket = Socket, upstream = #up{timeout = Timeout}}) ->
                 {error, {client, closed}}
         after Timeout ->
             {error, {client, timeout}}
-        end
-    end.
-
-client_emit(#conn{socket = Socket}) ->
-    fun(Data) ->
-        case gen_tcp:send(Socket, Data) of
-            ok -> ok;
-            {error, Reason} -> {error, {client, Reason}}
         end
     end.
 

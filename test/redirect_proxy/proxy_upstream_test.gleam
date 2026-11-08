@@ -24,6 +24,20 @@ fn reset_after(port: Int, data: BitArray, wait_ms: Int) -> Nil
 @external(erlang, "test_net_ffi", "half_closed")
 fn half_closed(port: Int, data: BitArray, wait_ms: Int) -> #(BitArray, Bool)
 
+type Socket
+
+@external(erlang, "test_net_ffi", "open")
+fn open(port: Int) -> Socket
+
+@external(erlang, "test_net_ffi", "send")
+fn send(socket: Socket, data: BitArray) -> Nil
+
+@external(erlang, "test_net_ffi", "read")
+fn read(socket: Socket, wait_ms: Int) -> #(BitArray, Bool)
+
+@external(erlang, "test_net_ffi", "close")
+fn close(socket: Socket) -> Nil
+
 type Counter
 
 @external(erlang, "test_upstream_ffi", "start")
@@ -238,6 +252,22 @@ pub fn chunked_responses_are_relayed_test() {
   assert string.contains(text, "\r\nconnection: close\r\n")
   assert string.ends_with(text, "\r\n\r\nhello world")
   assert closed
+}
+
+/// The head and the bytes read with it are sent together, but before the
+/// rest of the body is waited for.
+pub fn responses_are_relayed_as_they_come_test() {
+  let proxy = start()
+  let socket = open(proxy.port)
+  send(socket, <<"GET /stream HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(first, _) = read(socket, 120)
+  let assert Ok(first) = bit_array.to_string(first)
+  assert string.starts_with(first, "HTTP/1.1 200 OK\r\n")
+  assert string.ends_with(first, "\r\n\r\n5\r\nhello\r\n")
+  let #(rest, _) = read(socket, 300)
+  close(socket)
+  assert rest == <<"6\r\n world\r\n0\r\n\r\n":utf8>>
+  assert forwarded(proxy).bytes == 11
 }
 
 pub fn close_delimited_responses_close_the_connection_test() {
