@@ -29,6 +29,7 @@ the requests its rules match (and `server.health_path`,
 `server.metrics_path`, `server.https_redirect`, 414s) itself, and forwards
 every other request to the upstream, whatever its method, instead of
 answering 404 (`server.fallback_url` cannot be set as well).
+[Web servers](web-servers) has the web server's side.
 
 - The request goes as it came (method, path and query, `Host`, headers,
   body streamed), over HTTP/1.1, without the hop-by-hop headers
