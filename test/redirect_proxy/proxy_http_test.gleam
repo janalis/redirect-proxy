@@ -372,6 +372,21 @@ fn connection_process(socket: Socket) -> process.Pid
 @external(erlang, "test_net_ffi", "poke")
 fn poke(pid: process.Pid) -> Nil
 
+@external(erlang, "test_net_ffi", "hibernated")
+fn hibernated(pid: process.Pid) -> Bool
+
+@external(erlang, "test_net_ffi", "reductions")
+fn reductions(pid: process.Pid) -> Int
+
+@external(erlang, "test_net_ffi", "suspend")
+fn suspend(pid: process.Pid) -> Nil
+
+@external(erlang, "test_net_ffi", "resume")
+fn resume(pid: process.Pid) -> Nil
+
+@external(erlang, "test_net_ffi", "queued")
+fn queued(pid: process.Pid) -> Int
+
 @external(erlang, "test_net_ffi", "start_capped")
 fn start_capped(
   handler: fn(Request(proxy_http.Peer)) -> proxy_http.Outcome,
@@ -477,4 +492,47 @@ pub fn connections_over_the_cap_are_closed_test() {
   assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
   close(second)
   close(fourth)
+}
+
+/// A hibernated connection sleeps until its idle timeout or a message: it
+/// does not wake up to check whether the node drains (the listener tells
+/// it), which would cost 50 000 wake-ups a second for 50 000 connections.
+pub fn idle_connections_stay_hibernated_test() {
+  let socket = open(start_with_idle_timeout(10_000))
+  let #(text, _) = get(socket, 100)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  // hibernated after 1 s
+  process.sleep(1100)
+  let pid = connection_process(socket)
+  assert hibernated(pid)
+  let before = reductions(pid)
+  process.sleep(2000)
+  assert hibernated(pid)
+  // a wake-up costs a dozen reductions; reading them may count one
+  assert reductions(pid) - before < 4
+  close(socket)
+}
+
+/// A request already received when the drain wakes an idle connection up
+/// is answered, not dropped (the handler closes the connection after it).
+pub fn requests_received_before_draining_are_answered_test() {
+  let socket = open(start_with_idle_timeout(10_000))
+  let #(text, _) = get(socket, 100)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  process.sleep(1100)
+  let pid = connection_process(socket)
+  // the `drain` lands in its mailbox ahead of the request
+  suspend(pid)
+  let #(text, _) =
+    support.with_draining(fn() {
+      support.wait_until(fn() { queued(pid) == 1 }, 1000)
+      send(socket, <<"GET /next HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+      support.wait_until(fn() { queued(pid) == 2 }, 1000)
+      resume(pid)
+      read(socket, 1000)
+    })
+  close(socket)
+  let assert Ok(text) = bit_array.to_string(text)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-path: /next\r\n")
 }

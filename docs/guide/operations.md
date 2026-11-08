@@ -101,8 +101,7 @@ imports are recorded with the reason (`rules.reload_failed`,
 On `SIGTERM` the node drains for `server.shutdown_grace`
 seconds (default 5, `RP_SERVER_SHUTDOWN_GRACE`): `/readyz` answers 503 and
 the redirect listener closes connections after each response, and idle
-kept-alive connections within a second, so load balancers move traffic
-away. Then the VM stops. A second `SIGTERM` stops
+kept-alive connections at once, so load balancers move traffic away. Then the VM stops. A second `SIGTERM` stops
 it at once. Keep the grace below the stop timeout of your supervisor
 (systemd `TimeoutStopSec=15`, Docker 10 s by default).
 
@@ -115,10 +114,10 @@ Requests whose path is longer than `server.max_path_bytes`
 
 A request head must arrive whole within the idle timeout (10 seconds),
 however slowly it trickles in; then 408 and the connection is closed. The
-redirect listener closes new connections beyond 90% of the VM's port limit
-(`+Q`, `ERL_MAX_PORTS`), keeping room for upstream connections, files and
-the other listeners; each forwarded client connection may use a second port
-to the upstream. The open files limit of the process (`ulimit -n`,
+redirect listener closes new connections while the VM uses more than 90%
+of its port limit (`+Q`, `ERL_MAX_PORTS`), keeping room for files and the
+other listeners; each forwarded client connection, and each tunnel, uses a
+second port to the upstream. The open files limit of the process (`ulimit -n`,
 `LimitNOFILE`) may be lower: raise both together.
 
 ## Tuning

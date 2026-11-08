@@ -5,9 +5,9 @@
 %% after the response), no upgrades. This server does just that, with as
 %% little work per request as possible:
 %%
-%% - a pool of acceptors, up to a number of open connections (90 % of the
-%%   VM's port limit: a connection over it is closed at once, rather than
-%%   the VM running out of ports); one process per connection, its socket in
+%% - a pool of acceptors, up to a number of open connections, and of ports
+%%   in the VM (90 % of its port limit: a connection over it is closed at
+%%   once, rather than the VM running out of ports); one process per connection, its socket in
 %%   `{active, N}` mode, so a request costs one message (the receive timeout
 %%   is the idle timeout: no timer) and one `send`
 %% - the head parsed in one pass (`parse/1`), headers kept as a list
@@ -32,7 +32,7 @@
 %% kept alive after it when its framing was unambiguous.
 -module(redirect_proxy_http).
 
--export([start/4]).
+-export([start/4, drain/0]).
 %% internal
 -export([init/5, parse/1, idle/4]).
 
@@ -112,6 +112,9 @@
 -define(UPSTREAM_LOG, 1).
 -define(LISTENER_LOG, 2).
 
+%% The pg scope, and group, of the redirect listeners (`drain/0`).
+-define(SCOPE, redirect_proxy_listeners).
+
 %% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer, upstream)`;
 %% tests can add the connection cap (`{options, ..., MaxConnections}`).
 %% Returns the `actor.Started(Int)` (the bound port) of a gleam_otp child, or
@@ -132,7 +135,7 @@ describe(Reason) ->
 %% ---------------------------------------------------------------------------
 
 init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) ->
-    Cap = max(1, erlang:system_info(port_limit) * 9 div 10),
+    Cap = max(1, port_cap()),
     init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap});
 init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap}) ->
     process_flag(trap_exit, true),
@@ -158,8 +161,9 @@ init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Ca
             {ok, Bound} = inet:port(Listen),
             Count = max(4, erlang:system_info(schedulers_online)),
             [spawn_acceptor(Listen, Handler, Opts, Limit) || _ <- lists:seq(1, Count)],
+            join_listeners(),
             proc_lib:init_ack(Parent, {ok, self(), Bound}),
-            listener_loop(Parent, Listen, Handler, Opts, Limit);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, #{});
         {error, Reason} ->
             proc_lib:init_ack(Parent, {error, Reason}),
             exit(normal)
@@ -176,19 +180,23 @@ ip(Address) ->
 %% The listener also counts the open connections: it monitors each one (the
 %% acceptors are busy accepting), and its count goes down when one ends,
 %% whatever the way (a monitor is not lost in hibernation, as a `try` is).
-listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit) ->
+%% It keeps their pids (Conns) to tell them when the node drains (`drain/0`).
+listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit, Conns) ->
     receive
         {connection, Pid} ->
             _ = erlang:monitor(process, Pid),
-            listener_loop(Parent, Listen, Handler, Opts, Limit);
-        {'DOWN', _, process, _, _} ->
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns#{Pid => []});
+        {'DOWN', _, process, Pid, _} ->
             atomics:sub(Count, 1, 1),
-            listener_loop(Parent, Listen, Handler, Opts, Limit);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, maps:remove(Pid, Conns));
+        drain ->
+            maps:foreach(fun(Pid, _) -> Pid ! drain end, Conns),
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         {'EXIT', Parent, Reason} ->
             gen_tcp:close(Listen),
             exit(Reason);
         {'EXIT', _Acceptor, normal} ->
-            listener_loop(Parent, Listen, Handler, Opts, Limit);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         {'EXIT', _Acceptor, Reason} ->
             limited(?LISTENER_LOG, fun() ->
                 logger:error(iolist_to_binary(io_lib:format(
@@ -196,58 +204,111 @@ listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit) ->
                     " (at most one such error a second is logged)", [Reason])))
             end),
             spawn_acceptor(Listen, Handler, Opts, Limit),
-            listener_loop(Parent, Listen, Handler, Opts, Limit);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         _ ->
-            listener_loop(Parent, Listen, Handler, Opts, Limit)
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns)
     end.
+
+%% Tells the connections of every redirect listener of the node that it
+%% drains (SIGTERM): the idle ones close at once, rather than at the end of
+%% their idle timeout, so that their clients reconnect to another instance;
+%% the others close after their response, as the handler says.
+drain() ->
+    Listeners = try pg:get_members(?SCOPE, ?SCOPE)
+                catch error:badarg -> [] % no listener started yet
+                end,
+    lists:foreach(fun(Pid) -> Pid ! drain end, Listeners),
+    nil.
+
+%% Joins the pg group of the listeners, starting its scope with the first
+%% one (pg scopes are not started by default). pg forgets a listener that
+%% stops.
+join_listeners() ->
+    case whereis(?SCOPE) of
+        undefined ->
+            case pg:start(?SCOPE) of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok
+            end;
+        _ ->
+            ok
+    end,
+    ok = pg:join(?SCOPE, ?SCOPE, self()).
 
 spawn_acceptor(Listen, Handler, Opts, Limit) ->
     spawn_link(fun() -> accept(Listen, Handler, Opts, Limit) end).
 
-accept(Listen, Handler, Opts, {Listener, Count, Cap} = Limit) ->
+accept(Listen, Handler, Opts, {_, Count, Cap} = Limit) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            case atomics:add_get(Count, 1, 1) > Cap of
+            %% the connections of this listener, and the ports of the whole
+            %% VM: upstream connections, tunnels and files use ports too
+            case atomics:add_get(Count, 1, 1) > Cap
+                 orelse erlang:system_info(port_count) > port_cap() of
                 true ->
                     %% closed before it costs a process
                     atomics:sub(Count, 1, 1),
                     gen_tcp:close(Socket),
                     limited(?LISTENER_LOG, fun() ->
                         logger:warning(iolist_to_binary(io_lib:format(
-                            "redirect listener has ~B open connections: closing new ones"
-                            " (at most one such warning a second is logged)", [Cap])))
-                    end);
+                            "redirect listener has ~B open connections, the VM ~B ports"
+                            " of ~B: closing new connections"
+                            " (at most one such warning a second is logged)",
+                            [atomics:get(Count, 1), erlang:system_info(port_count),
+                             erlang:system_info(port_limit)])))
+                    end),
+                    accept(Listen, Handler, Opts, Limit);
                 false ->
-                    Pid = spawn_opt(fun() ->
-                        receive
-                            {go, S} -> connection(S, Handler, Opts)
-                        after 5000 ->
-                            exit(normal)
-                        end
-                    end, [{min_heap_size, ?CONN_HEAP}]),
-                    Listener ! {connection, Pid},
-                    case gen_tcp:controlling_process(Socket, Pid) of
-                        ok -> Pid ! {go, Socket};
-                        {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
-                    end
-            end,
-            accept(Listen, Handler, Opts, Limit);
+                    try
+                        serve(Socket, Handler, Opts, Limit)
+                    catch
+                        error:Reason ->
+                            %% no process for it (system_limit): not counted
+                            atomics:sub(Count, 1, 1),
+                            gen_tcp:close(Socket),
+                            backoff(Reason)
+                    end,
+                    accept(Listen, Handler, Opts, Limit)
+            end;
         {error, closed} ->
             ok;
         {error, econnaborted} ->
             %% the client gave up before the connection was accepted
             accept(Listen, Handler, Opts, Limit);
         {error, Reason} ->
-            %% out of file descriptors (emfile, enfile), or of memory: a
-            %% pause rather than a loop that fails at once
-            limited(?LISTENER_LOG, fun() ->
-                logger:warning(iolist_to_binary(io_lib:format(
-                    "redirect listener cannot accept connections: ~p"
-                    " (at most one such warning a second is logged)", [Reason])))
-            end),
-            timer:sleep(100),
+            %% out of file descriptors (emfile, enfile), or of memory
+            backoff(Reason),
             accept(Listen, Handler, Opts, Limit)
     end.
+
+%% A process for the accepted Socket, which the listener monitors.
+serve(Socket, Handler, Opts, {Listener, _, _}) ->
+    Pid = spawn_opt(fun() ->
+        receive
+            {go, S} -> connection(S, Handler, Opts)
+        after 5000 ->
+            exit(normal)
+        end
+    end, [{min_heap_size, ?CONN_HEAP}]),
+    Listener ! {connection, Pid},
+    case gen_tcp:controlling_process(Socket, Pid) of
+        ok -> Pid ! {go, Socket};
+        {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
+    end.
+
+%% 90% of the VM's port limit: room left for the other listeners, the
+%% upstream connections and files.
+port_cap() ->
+    erlang:system_info(port_limit) * 9 div 10.
+
+%% A pause rather than a loop that fails at once.
+backoff(Reason) ->
+    limited(?LISTENER_LOG, fun() ->
+        logger:warning(iolist_to_binary(io_lib:format(
+            "redirect listener cannot accept connections: ~0p"
+            " (at most one such warning a second is logged)", [Reason])))
+    end),
+    timer:sleep(100).
 
 %% ---------------------------------------------------------------------------
 %% Connection
@@ -298,12 +359,13 @@ more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
             end
     end.
 
-%% Woken from hibernation: by its timer (Timer), or by another message,
-%% then waited for until End, the end of the idle timeout (or the deadline
-%% of the head): a message that is not a request does not restart it.
+%% Woken from hibernation: at the end of the idle timeout (or the deadline
+%% of the head) by its timer, or by another message, then waited for until
+%% End, that same end: a message that is not a request does not restart it.
+%% (A `drain` from the listener is such a message: see `drained/3`.)
 idle(Buffer, C, Timer, End) ->
     receive
-        {timeout, Timer, idle} -> hibernate_until(Buffer, C, End)
+        {timeout, Timer, idle} -> pending(Buffer, C, fun() -> expired(Buffer, C) end)
     after 0 ->
         case erlang:cancel_timer(Timer) of
             false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
@@ -312,20 +374,25 @@ idle(Buffer, C, Timer, End) ->
         wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
     end.
 
-%% Hibernates until End (monotonic ms), waking up every `hibernate_after/1`:
-%% an idle connection is closed as soon as the node drains (SIGTERM), so
-%% that its client reconnects to another instance before this one stops.
-hibernate_until(Buffer, #conn{idle_timeout = Timeout} = C, End) ->
-    Left = End - erlang:monotonic_time(millisecond),
-    case Buffer =:= <<>> andalso redirect_proxy_sigterm:draining() of
-        true ->
-            close(C);
-        false when Left =< 0 ->
-            expired(Buffer, C);
-        false ->
-            %% a message: a hibernated process only wakes up for one
-            Timer = erlang:start_timer(min(Left, hibernate_after(Timeout)), self(), idle),
-            erlang:hibernate(?MODULE, idle, [Buffer, C, Timer, End])
+%% Bytes that came with the message that woke the connection up are read
+%% before it gives up on them: else Then().
+pending(Buffer, #conn{socket = Socket} = C, Then) ->
+    receive
+        {tcp, Socket, Data} when Buffer =:= <<>> -> request(Data, C);
+        {tcp, Socket, Data} -> more_head(<<Buffer/binary, Data/binary>>, Data, C)
+    after 0 ->
+        Then()
+    end.
+
+%% The listener says the node drains (SIGTERM, `drain/0`): a connection
+%% between requests closes, so that its client reconnects to another
+%% instance before this one stops. One reading a request head ignores it
+%% (`wait/4` only takes it between requests), and closes after the
+%% response; so does one whose `drain` is stale (tests clear the flag).
+drained(C, Timeout, Then) ->
+    case redirect_proxy_sigterm:draining() of
+        true -> pending(<<>>, C, fun() -> close(C) end);
+        false -> wait(<<>>, C, Timeout, Then)
     end.
 
 %% 1 s, or half the idle timeout when it is shorter (tests)
@@ -353,7 +420,9 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp_closed, Socket} ->
             close(C);
         {tcp_error, Socket, _} ->
-            close(C)
+            close(C);
+        drain when Buffer =:= <<>> ->
+            drained(C, Timeout, Then)
     after Timeout ->
         case Then of
             close -> expired(Buffer, C);
@@ -364,7 +433,10 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
                     <<>> -> erlang:monotonic_time(millisecond) + C#conn.idle_timeout - Timeout;
                     _ -> C#conn.deadline
                 end,
-                hibernate_until(Buffer, C, End)
+                %% a message: a hibernated process only wakes up for one
+                Timer = erlang:start_timer(
+                    max(0, End - erlang:monotonic_time(millisecond)), self(), idle),
+                erlang:hibernate(?MODULE, idle, [Buffer, C, Timer, End])
         end
     end.
 

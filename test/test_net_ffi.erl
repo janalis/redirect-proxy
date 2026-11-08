@@ -3,7 +3,7 @@
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
          trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
-         start_capped/2]).
+         start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -174,3 +174,25 @@ start_capped(Handler, Cap) ->
     {ok, {started, _, Port}} = redirect_proxy_http:start(
         <<"127.0.0.1">>, 0, Handler, {options, 300, 1024, false, none, Cap}),
     Port.
+
+%% Whether the process is hibernated, without waking it up.
+hibernated(Pid) ->
+    erlang:process_info(Pid, current_function) =:= {current_function, {erlang, hibernate, 3}}.
+
+%% The reductions of the process so far: they grow whenever it runs.
+reductions(Pid) ->
+    {reductions, N} = erlang:process_info(Pid, reductions),
+    N.
+
+suspend(Pid) ->
+    true = erlang:suspend_process(Pid),
+    nil.
+
+resume(Pid) ->
+    true = erlang:resume_process(Pid),
+    nil.
+
+%% The number of messages in the mailbox of the process.
+queued(Pid) ->
+    {message_queue_len, N} = erlang:process_info(Pid, message_queue_len),
+    N.
