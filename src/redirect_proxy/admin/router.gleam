@@ -23,14 +23,14 @@ import redirect_proxy/admin/routes/users.{
   list_users, set_user_role,
 } as _
 import redirect_proxy/admin/web.{
-  type Context, error_page, limit_body, not_found, plain, security_headers,
+  type Context, error_page, limit_body, not_found, security_headers,
   strict_transport_security,
 } as _
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/web as api_web
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/health
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
 import redirect_proxy/role.{type Role}
@@ -51,13 +51,8 @@ pub fn handle(req: Request, ctx: Context) -> Response {
 
   case req.method, wisp.path_segments(req) {
     // Public endpoints
-    Get, ["healthz"] -> plain(200, "ok")
-    // 503 while draining before a stop, so that load balancers move away
-    Get, ["readyz"] ->
-      case ffi.draining() {
-        True -> plain(503, "draining")
-        False -> plain(200, "ready")
-      }
+    Get, ["healthz"] -> health.live()
+    Get, ["readyz"] -> health.ready()
     Get, ["metrics"] ->
       metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
     Get, ["login"] -> login_page(req, ctx)
