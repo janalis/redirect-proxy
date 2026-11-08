@@ -34,7 +34,8 @@ from run to run: only numbers from one run compare):
 
 Each `label[@image][=ERL_FLAGS][|K=V,K=V]` entry (`;` or newline separated)
 is measured after redirect-proxy itself, as `redirect-proxy (label)`, with
-RP_IMAGE when it names no image, and the environment variables after `|`.
+RP_IMAGE when it names no image, and the environment variables after `|`
+(upper-case names; a value may hold commas, `;` and `|` are reserved).
 The results then go to build/benchmark-variants.json, never to the
 documentation.
 
@@ -43,21 +44,26 @@ adds scenarios that are never published either (same file as variants):
 
 - `mixed`: MIXED_URLS (10000) random URLs, 70 % exact hits, 15 % prefix
   hits, 5 % regex hits and 10 % misses, with browser-like headers (about
-  600 bytes). It is followed by `mixed-rate`: the same requests at a fixed
-  rate, FIXED_RATE req/s (default: FIXED_RATE_SHARE=0.5 of the first
-  server's `mixed` median, then the same rate for every server), latencies
-  corrected for coordinated omission.
+  600 bytes); a sample of each kind is checked first. It is followed by
+  `mixed-rate`: the same requests at a fixed rate, FIXED_RATE req/s
+  (default: FIXED_RATE_SHARE=0.5 of the first server's `mixed` median, then
+  the same rate for every server), latencies corrected for coordinated
+  omission. `mixed-rate` alone needs FIXED_RATE.
 - `exact-churn`: the exact hit, one connection per request.
 - `upstream`, `upstream-churn` (redirect-proxy only): a miss forwarded to
   an nginx upstream (RP_SERVER_UPSTREAM) answering 200 with a small body,
   with keep-alive and with one connection per request. redirect-proxy is
   restarted with the upstream after its other scenarios.
 
-SOAK=10m (redirect-proxy only): instead of the scenarios, the `mixed`
-requests for that long (at SOAK_RATE req/s, default as fast as possible)
-with the access log on (rotated file), sampling `docker stats` and the
-server's metrics (memory, processes, requests) every SOAK_INTERVAL=15 s;
-reports the memory slope in MiB/min after the first SOAK_WARMUP=60 s.
+SOAK=10m (redirect-proxy only, no EXTRA_SCENARIOS or --profile): instead
+of the scenarios, the `mixed` requests for that long (at SOAK_RATE req/s,
+default as fast as possible) with the access log on (rotated file; a
+variant's environment overrides these settings), sampling the container's
+anonymous memory (cgroup `anon`, without the log's page cache), `docker
+stats` (page cache included) and the server's metrics (memory, processes,
+requests) every SOAK_INTERVAL=15 s; reports the memory slopes in MiB/min
+after the first SOAK_WARMUP=60 s, under load only (the sample taken once
+the load stopped is reported apart, as `after`).
 
 --profile: during the first run of the PROFILE_SCENARIO scenario (default
 exact), microstate accounting of each redirect-proxy (where its schedulers
@@ -209,6 +215,8 @@ def redirect_proxy(d):
             "RP_STORAGE_BACKUPS": "0",
             "RP_LOG_LEVEL": "warning",
             **({"ERL_FLAGS": RP_ERL_FLAGS} if RP_ERL_FLAGS else {}),
+            # before a variant's environment, which wins
+            **(SOAK_ENV if SOAK else {}),
         },
         "version": ["/opt/redirect-proxy/bin/redirect-proxy", "version"],
         "notes": [],
@@ -429,17 +437,18 @@ PRODUCTS = {
 }
 
 
-ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 def parse_variant(entry):
     """`label[@image][=ERL_FLAGS][|K=V,K=V]` -> (label, image, flags, env).
-    A value may hold commas (lists) when what follows is not `NAME=`."""
+    Names are upper case; a value may hold commas (lists) when what follows
+    is not `NAME=` (`,b=2` in a URL is not)."""
     head, _, env_spec = entry.partition("|")
     head, _, flags = head.partition("=")
     label, _, image = head.partition("@")
     env = {}
-    for pair in re.split(r",\s*(?=[A-Za-z_][A-Za-z0-9_]*=)", env_spec.strip()):
+    for pair in re.split(r",\s*(?=[A-Z_][A-Z0-9_]*=)", env_spec.strip()):
         if not pair.strip():
             continue
         key, sep, value = pair.partition("=")
@@ -486,19 +495,24 @@ def variants(spec):
 
 def extra_scenarios(spec):
     """EXTRA_SCENARIOS -> the names to measure, in order; `mixed` brings
-    its fixed-rate pass, `mixed-rate`."""
+    its fixed-rate pass, `mixed-rate`, right after it (its rate comes from
+    the `mixed` median, unless FIXED_RATE)."""
     names = []
     for name in (n.strip() for n in spec.split(",")):
-        if not name or name in names:
+        if not name or name in names or name == "mixed-rate":
             continue
         if name not in EXTRA:
             sys.exit(f"EXTRA_SCENARIOS: unknown {name!r} "
                      f"(known: {', '.join(EXTRA)})")
         names.append(name)
-        if name == "mixed" and "mixed-rate" not in names:
+        if name == "mixed":
             names.append("mixed-rate")
-    if "mixed-rate" in names and "mixed" not in names and not FIXED_RATE:
-        sys.exit("EXTRA_SCENARIOS: mixed-rate without mixed needs FIXED_RATE")
+    if "mixed-rate" in (n.strip() for n in spec.split(",")) \
+            and "mixed" not in names:
+        if not FIXED_RATE:
+            sys.exit("EXTRA_SCENARIOS: mixed-rate without mixed needs "
+                     "FIXED_RATE")
+        names.append("mixed-rate")
     return names
 
 
@@ -518,6 +532,29 @@ def mixed_paths(n, seed=1):
         + [f"/missing/{rng.randrange(1000000)}" for _ in range(counts["miss"])])
     rng.shuffle(paths)
     return paths
+
+
+def mixed_expected(path):
+    """(kind, status, Location) a mixed path must be answered with."""
+    for kind, pattern, status, target in (
+            ("exact", r"/exact/(\d+)", 301, "/e/{0}"),
+            ("prefix", r"/prefix/(\d+)/(.*)", 302, "/p/{0}/{1}"),
+            ("regex", r"/regex/(\d+)/(\d+)", 308, "/r/{0}/{1}")):
+        match = re.fullmatch(pattern, path)
+        if match:
+            return kind, status, TARGET + target.format(*match.groups())
+    return "miss", 404, None
+
+
+def mixed_sample(paths, per_kind=20):
+    """The first `per_kind` paths of each kind of a mixed URL list."""
+    out, seen = [], {}
+    for path in paths:
+        kind = mixed_expected(path)[0]
+        if seen.get(kind, 0) < per_kind:
+            seen[kind] = seen.get(kind, 0) + 1
+            out.append(path)
+    return out
 
 
 def parse_metrics(text):
@@ -638,17 +675,34 @@ def check(port):
     notes for redirections with the right Location but another 3xx."""
     notes = []
     for name, (path, status, location) in SCENARIOS.items():
-        got_status, got_location = get(port, path)
-        if got_location != location or (
-                got_status != status
-                and not (300 <= got_status < 400 and 300 <= status < 400)):
-            raise RuntimeError(
-                f"{name}: {path} answered {got_status} {got_location}, "
-                f"expected {status} {location}")
-        if got_status != status:
-            notes.append(f"answers {got_status} instead of {status} "
-                         f"for the {name} rule")
+        note = verify(port, name, path, status, location)
+        if note:
+            notes.append(note)
     return notes
+
+
+def verify(port, name, path, status, location):
+    """Raises unless `path` answers `status` (or another 3xx for a 3xx)
+    with `location`; returns a note for another 3xx, else None."""
+    got_status, got_location = get(port, path)
+    if got_location != location or (
+            got_status != status
+            and not (300 <= got_status < 400 and 300 <= status < 400)):
+        raise RuntimeError(
+            f"{name}: {path} answered {got_status} {got_location}, "
+            f"expected {status} {location}")
+    if got_status != status:
+        return (f"answers {got_status} instead of {status} "
+                f"for the {name} rule")
+    return None
+
+
+def check_mixed(port):
+    """A sample of every kind of mixed URL answers as check() requires
+    (the load test only counts unexpected statuses, not wrong Locations)."""
+    for path in mixed_sample(mixed_paths(MIXED_URLS)):
+        kind, status, location = mixed_expected(path)
+        verify(port, f"mixed {kind}", path, status, location)
 
 
 def check_upstream(port):
@@ -733,11 +787,11 @@ def summarize(r, statuses):
 
 
 def seconds(duration):
-    match = re.fullmatch(r"(\d+)(ms|s|m)?", duration)
+    match = re.fullmatch(r"(\d+)(ms|s|m|h)?", duration)
     if not match:
         sys.exit(f"cannot read the duration {duration!r}")
     n, unit = int(match.group(1)), match.group(2) or "s"
-    return max(1, {"ms": n // 1000, "s": n, "m": n * 60}[unit])
+    return max(1, {"ms": n // 1000, "s": n, "m": n * 60, "h": n * 3600}[unit])
 
 
 def measure(name, client_cpus, profile=None):
@@ -790,42 +844,78 @@ def soak(port, client_cpus):
     if SOAK_RATE:
         args = ["-q", str(SOAK_RATE), "--latency-correction", *args]
     out = SHARED / "soak.json"
+    requests = metrics_sample(port).get("redirect_proxy_requests_total")
     with out.open("w") as f:
         proc = subprocess.Popen(
             ["docker", *oha_command(args, SOAK, client_cpus)],
             stdout=f, stderr=subprocess.PIPE, text=True)
-    began, samples, previous = time.monotonic(), [], None
-    print(f"  {'t':>6} {'docker':>10} {'VM':>10} {'processes':>10} "
-          f"{'req/s':>10}", flush=True)
+    began, samples = time.monotonic(), []
+    previous = None if requests is None else (0, requests)
+    print(f"  {'t':>6} {'anon':>10} {'docker':>10} {'VM':>10} "
+          f"{'processes':>10} {'req/s':>10}", flush=True)
     while True:
         try:
-            proc.wait(timeout=SOAK_INTERVAL if samples else 1)
+            proc.wait(timeout=SOAK_INTERVAL)
             done = True
         except subprocess.TimeoutExpired:
             done = False
         t = time.monotonic() - began
-        m = metrics_sample(port)
-        sample = {"t_s": round(t), "docker_mib": memory_mib()}
-        if "redirect_proxy_memory_bytes" in m:
-            sample["vm_mib"] = round(m["redirect_proxy_memory_bytes"] / 2**20, 1)
-        if "redirect_proxy_processes" in m:
-            sample["processes"] = int(m["redirect_proxy_processes"])
-        requests = m.get("redirect_proxy_requests_total")
-        if previous is not None and requests is not None and t > previous[0]:
-            sample["rps"] = round((requests - previous[1]) / (t - previous[0]))
-        if requests is not None:
-            previous = (t, requests)
-        samples.append(sample)
-        print(f"  {sample['t_s']:>5}s {sample['docker_mib'] or 0:>6.1f} MiB "
+        sample, previous = soak_sample(port, t, previous)
+        print(f"  {sample['t_s']:>5}s {sample.get('anon_mib') or 0:>6.1f} MiB "
+              f"{sample.get('docker_mib') or 0:>6.1f} MiB "
               f"{sample.get('vm_mib', 0):>6.1f} MiB "
-              f"{sample.get('processes', 0):>10} {sample.get('rps', 0):>10,}",
-              flush=True)
+              f"{sample.get('processes', 0):>10} {sample.get('rps', 0):>10,}"
+              + ("  (load stopped)" if done else ""), flush=True)
         if done:
+            # after the load: not a steady-state sample
+            after = sample
             break
+        samples.append(sample)
     stderr = proc.stderr.read()
     if proc.returncode != 0:
         raise RuntimeError(f"oha exited {proc.returncode}: {stderr[-300:]}")
     summary = summarize(json.loads(out.read_text()), MIXED_STATUSES)
+    result = {
+        "duration": SOAK, "interval_s": SOAK_INTERVAL,
+        "rate": SOAK_RATE or None,
+        "rps": round(summary["rps"]),
+        **{k: round(v, 3) for k, v in summary.items() if k.endswith("_ms")},
+        "errors": summary["errors"],
+        **soak_summary(samples),
+        "samples": samples,
+        "after": after,
+    }
+    print(f"  soak: {result['rps']:,} req/s  p99 {result['p99_ms']:.2f} ms  "
+          f"p99.9 {result['p999_ms']:.2f} ms  max {result['max_ms']:.1f} ms  "
+          f"errors {result['errors']}  memory {result['anon_mib_per_min']} "
+          f"MiB/min (anon), {result['vm_mib_per_min']} MiB/min (VM), "
+          f"{result['docker_mib_per_min']} MiB/min (docker, page cache "
+          f"included)", flush=True)
+    return result
+
+
+def soak_sample(port, t, previous):
+    """One soak sample at `t` s; `previous` is (t, requests) of the last
+    one. Returns the sample and the new `previous`."""
+    m = metrics_sample(port)
+    sample = {"t_s": round(t), "anon_mib": anon_mib(),
+              "docker_mib": memory_mib()}
+    if "redirect_proxy_memory_bytes" in m:
+        sample["vm_mib"] = round(m["redirect_proxy_memory_bytes"] / 2**20, 1)
+    if "redirect_proxy_processes" in m:
+        sample["processes"] = int(m["redirect_proxy_processes"])
+    requests = m.get("redirect_proxy_requests_total")
+    if previous is not None and requests is not None and t > previous[0]:
+        sample["rps"] = round((requests - previous[1]) / (t - previous[0]))
+    if requests is not None:
+        previous = (t, requests)
+    return sample, previous
+
+
+def soak_summary(samples):
+    """Memory slopes (MiB/min) of the samples taken under load after
+    SOAK_WARMUP (all of them when fewer than 3), and the first and last of
+    those samples."""
     steady = [s for s in samples if s["t_s"] >= SOAK_WARMUP]
     if len(steady) < 3:
         steady = samples
@@ -834,24 +924,16 @@ def soak(port, client_cpus):
         rate = slope([(s["t_s"] / 60, s.get(field)) for s in steady])
         return None if rate is None else round(rate, 3)
 
-    result = {
-        "duration": SOAK, "interval_s": SOAK_INTERVAL,
-        "rate": SOAK_RATE or None,
-        "rps": round(summary["rps"]),
-        **{k: round(v, 3) for k, v in summary.items() if k.endswith("_ms")},
-        "errors": summary["errors"],
-        "docker_mib_per_min": per_min("docker_mib"),
+    return {
+        "warmup_s": SOAK_WARMUP,
+        "anon_mib_per_min": per_min("anon_mib"),
         "vm_mib_per_min": per_min("vm_mib"),
+        "docker_mib_per_min": per_min("docker_mib"),
         "max_processes": max((s.get("processes", 0) for s in samples),
                              default=0),
-        "samples": samples,
+        "first": steady[0] if steady else None,
+        "last": steady[-1] if steady else None,
     }
-    print(f"  soak: {result['rps']:,} req/s  p99 {result['p99_ms']:.2f} ms  "
-          f"p99.9 {result['p999_ms']:.2f} ms  max {result['max_ms']:.1f} ms  "
-          f"errors {result['errors']}  memory {result['docker_mib_per_min']} "
-          f"MiB/min (docker), {result['vm_mib_per_min']} MiB/min (VM)",
-          flush=True)
-    return result
 
 
 def idle_cpu_pct():
@@ -934,6 +1016,15 @@ def logs_all():
     return out.stdout + out.stderr
 
 
+def anon_mib():
+    """The container's anonymous memory (cgroup v2 `anon`: heap and stacks,
+    not the page cache of the files it writes), None when unreadable."""
+    out = docker("exec", SERVER, "cat", "/sys/fs/cgroup/memory.stat",
+                 check=False).stdout
+    match = re.search(r"^anon (\d+)$", out, re.M)
+    return round(int(match.group(1)) / 2**20, 1) if match else None
+
+
 def memory_mib():
     out = docker("stats", "--no-stream", "--format", "{{.MemUsage}}",
                  SERVER).stdout
@@ -1007,8 +1098,6 @@ def bench(key, label, configure, server_cpus, client_cpus, profile=False,
             env = spec["env"]
             env["RP_BENCH_MSACC"] = str(max(1, seconds(DURATION) - 1))
             env["ERL_FLAGS"] = (env.get("ERL_FLAGS", "") + " +JPperf true").strip()
-        if SOAK:
-            spec["env"].update(SOAK_ENV)
         upstream = [n for n in extras if EXTRA[n].get("upstream")]
         if upstream and not rp:
             result["notes"].append("upstream scenarios: redirect-proxy only")
@@ -1022,6 +1111,8 @@ def bench(key, label, configure, server_cpus, client_cpus, profile=False,
         try:
             port, startup = start(spec, work, server_cpus)
             result["notes"] += check(port)
+            if SOAK or "mixed" in extras or "mixed-rate" in extras:
+                check_mixed(port)
             result["startup_ms"] = startup
             if SOAK:
                 result["soak"] = soak(port, client_cpus)
@@ -1139,17 +1230,23 @@ def soak_table(results):
         s = r.get("soak")
         if not s:
             continue
-        first, last = s["samples"][0], s["samples"][-1]
+        first, last = s.get("first") or {}, s.get("last") or {}
+        # anon (no page cache) when the cgroup could be read, else the VM's
+        field = "anon_mib" if s.get("anon_mib_per_min") is not None \
+            else "vm_mib"
         rows.append([r["name"], kilo(s["rps"]), ms(s["p99_ms"]),
                      ms(s["p999_ms"]), ms(s["max_ms"]), str(s["errors"]),
-                     f"{first.get('docker_mib')} → {last.get('docker_mib')} MiB",
-                     str(s["docker_mib_per_min"]), str(s["vm_mib_per_min"]),
+                     f"{first.get(field)} → {last.get(field)} MiB "
+                     f"({field.removesuffix('_mib')})",
+                     str(s.get("anon_mib_per_min")), str(s["vm_mib_per_min"]),
+                     str(s["docker_mib_per_min"]),
                      str(s["max_processes"])])
     if not rows:
         return ""
     return markdown_table(["Server", "Requests/s", "p99", "p99.9", "Max",
-                           "Errors", "Memory (docker)", "MiB/min (docker)",
-                           "MiB/min (VM)", "Processes (max)"], rows, 1)
+                           "Errors", "Memory (under load)", "MiB/min (anon)",
+                           "MiB/min (VM)", "MiB/min (docker, with cache)",
+                           "Processes (max)"], rows, 1)
 
 
 def report(results):
@@ -1212,6 +1309,12 @@ def main():
         return
     if SOAK:
         seconds(SOAK)  # exits when it does not parse
+        if args.profile:
+            parser.error("SOAK and --profile: the profile is of a scenario, "
+                         "and a soak runs none")
+        if extras:
+            parser.error("SOAK replaces the scenarios: no EXTRA_SCENARIOS "
+                         "(nor the workflow's scenarios or upstream)")
     if args.profile and PROFILE_SCENARIO not in [*SCENARIOS, *extras]:
         parser.error(f"PROFILE_SCENARIO={PROFILE_SCENARIO} is not measured "
                      f"(scenarios: {', '.join([*SCENARIOS, *extras])})")

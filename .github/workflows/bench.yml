@@ -49,7 +49,7 @@ on:
         type: boolean
         default: false
       soak:
-        description: Soak duration (e.g. 10m) instead of the scenarios, mixed traffic with the access log on, memory sampled every 15 s
+        description: Soak duration (e.g. 10m; per variant, at most 90m in all) instead of the scenarios (not with `scenarios`, `upstream` or `profile`), mixed traffic with the access log on, memory sampled every 15 s
         type: string
         required: false
   schedule:
@@ -109,6 +109,8 @@ jobs:
   compare:
     name: Compare with other servers
     runs-on: ubuntu-24.04
+    # a comparison takes about 15 minutes; a soak, its duration on top
+    timeout-minutes: 120
     env:
       # a manual A/B run: redirect-proxy only, results as an artifact
       AB: ${{ inputs.variants != '' || inputs.baseline != '' || inputs.profile || inputs.scenarios != '' || inputs.upstream || inputs.soak != '' }}
@@ -163,6 +165,9 @@ jobs:
           if-no-files-found: error
       - name: Run variants
         if: env.AB == 'true'
+        # fails (rather than cancels) the job in time to upload compare.txt,
+        # which holds the soak samples printed so far
+        timeout-minutes: 110
         shell: bash
         env:
           VARIANTS: ${{ inputs.variants }}
@@ -206,6 +211,7 @@ jobs:
           path: |
             build/benchmark*.json
             build/profile-*.txt
+            compare.txt
           if-no-files-found: error
 
   publish:
