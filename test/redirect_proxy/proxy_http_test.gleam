@@ -144,6 +144,13 @@ pub fn keep_alive_by_version_test() {
     ])
   assert responses(text) == 1
   assert string.contains(text, "\r\nconnection: close\r\n")
+  // repeated Connection headers are one list
+  let #(text, _) =
+    exchange([
+      "GET / HTTP/1.1\r\nhost: a\r\nconnection: close\r\nconnection: keep-alive\r\n\r\nGET / HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert responses(text) == 1
+  assert string.contains(text, "\r\nconnection: close\r\n")
 }
 
 pub fn idle_connections_are_closed_test() {

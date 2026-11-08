@@ -641,8 +641,12 @@ headers(Bin, Acc, Host, Body, Connection) ->
                             Body orelse Value =/= <<"0">>, Connection);
                 <<"transfer-encoding">> ->
                     headers(Rest, [Header | Acc], Host, true, Connection);
-                <<"connection">> ->
+                %% repeated: one list, as when forwarding (framing/8)
+                <<"connection">> when Connection =:= <<>> ->
                     headers(Rest, [Header | Acc], Host, Body, Value);
+                <<"connection">> ->
+                    headers(Rest, [Header | Acc], Host, Body,
+                            <<Connection/binary, ", ", Value/binary>>);
                 _ ->
                     headers(Rest, [Header | Acc], Host, Body, Connection)
             end;
