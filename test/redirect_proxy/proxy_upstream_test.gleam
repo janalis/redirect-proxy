@@ -653,8 +653,9 @@ pub fn content_length_is_sent_once_test() {
 }
 
 /// The redirect listener's own handler (`proxy/server`) in front of the
-/// test upstream, with these trusted proxies.
-fn start_server(trusted: List(String)) -> Int {
+/// test upstream, with these trusted proxies (`access_log`), and the
+/// identity headers of `auth.header` with its trusted proxies (`identity`).
+fn start_server(trusted: List(String), identity: List(String)) -> Int {
   let #(port, _) = start_upstream()
   let d = config.default().server
   let cfg =
@@ -666,9 +667,14 @@ fn start_server(trusted: List(String)) -> Int {
     proxy_http.start(
       "127.0.0.1",
       0,
-      server.handler_with_identity(cfg, "", option.None, trusted, [
-        "X-Forwarded-User", "x-auth-role", "",
-      ]),
+      server.handler_with_identity(
+        cfg,
+        "",
+        option.None,
+        trusted,
+        ["X-Forwarded-User", "x-auth-role", ""],
+        identity,
+      ),
       server.http_options(cfg, option.None, trusted),
     )
   started.data
@@ -682,7 +688,11 @@ const identity_request =
 /// variants spelled with `_` (which some servers read as `-`).
 pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   let #(received, _) =
-    session(start_server([]), [bit_array.from_string(identity_request)], 800)
+    session(
+      start_server([], ["10.0.0.0/8"]),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
   let assert Ok(text) = bit_array.to_string(received)
   assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
   assert !string.contains(text, "6.6.6.")
@@ -695,7 +705,7 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   // headers this server sets
   let #(received, _) =
     session(
-      start_server(["127.0.0.1/32"]),
+      start_server(["127.0.0.1/32"], []),
       [bit_array.from_string(identity_request)],
       800,
     )
@@ -706,5 +716,23 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   assert string.contains(text, "\nx-forwarded-user: alice\n")
   assert string.contains(text, "\nx_auth_role: admin\n")
   assert !string.contains(text, "6.6.6.4")
+  assert !string.contains(text, "https")
+}
+
+/// The identity headers of `auth.header` are taken from its own trusted
+/// proxies too (an authenticating proxy in front of both), but not the
+/// other headers naming the client.
+pub fn identity_headers_from_auth_proxies_are_kept_test() {
+  let #(received, _) =
+    session(
+      start_server([], ["10.0.0.0/8", "127.0.0.1/32"]),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\nx-forwarded-user: alice\n")
+  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "6.6.6.")
   assert !string.contains(text, "https")
 }

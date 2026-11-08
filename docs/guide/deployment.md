@@ -47,8 +47,12 @@ answering 404 (`server.fallback_url` cannot be set as well).
   are `Forwarded`, `X-Real-IP`, `X-Forwarded-Port`, `X-Forwarded-Prefix`,
   `X-Forwarded-Server` and `X-Forwarded-Ssl`. From any other peer the first
   three are replaced (`http` and the `Host`) and the others dropped, with
-  `X-Client-IP`, `True-Client-IP` and the user, email and role headers of
-  `auth.header`, so that the upstream cannot be handed a forged identity.
+  `X-Client-IP` and `True-Client-IP`, so that the upstream cannot be
+  handed a forged address. When `auth.header` is enabled, its user, email
+  and role headers are dropped too from peers in neither
+  `access_log.trusted_proxies` nor `auth.header.trusted_proxies`, so that
+  the upstream cannot be handed a forged identity (with `auth.header`
+  disabled, they are passed on: an authenticating proxy may set them).
   A header spelled with `_` instead of `-` (`X_Forwarded_For`), which some
   applications read as the same one, is dropped whenever its `-` spelling
   is set or dropped.

@@ -183,3 +183,41 @@ pub fn tunnels_are_not_response_times_test() {
   assert metrics.get(metrics.UpstreamRequests) - requests == 1
   assert upstream_duration_count() == before
 }
+
+/// The identity headers of `auth.header` are dropped from untrusted peers
+/// only when it is enabled: else they may be an authenticating proxy's
+/// (oauth2-proxy) for the upstream.
+pub fn identity_headers_are_dropped_with_header_auth_only_test() {
+  let #(port, _) = start_upstream()
+  let headers = [
+    #("x-forwarded-user", "alice"),
+    #("x-forwarded-email", "alice@example.com"),
+    #("x-client-ip", "6.6.6.6"),
+  ]
+  let env = boot_with(port, [])
+  let resp = get(env.redirect <> "/page", headers)
+  assert string.contains(resp.body, "\nx-forwarded-user: alice\n")
+  assert string.contains(resp.body, "\nx-forwarded-email: alice@example.com\n")
+  assert !string.contains(resp.body, "6.6.6.6")
+
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(
+          ..d.server,
+          upstream: "http://127.0.0.1:" <> int.to_string(port),
+        ),
+        header_auth: config.HeaderAuthConfig(
+          ..d.header_auth,
+          enabled: True,
+          trusted_proxies: ["10.0.0.0/8"],
+        ),
+      ),
+    )
+  let resp = get(env.redirect <> "/page", headers)
+  assert resp.status == 200
+  assert !string.contains(resp.body, "alice")
+  assert !string.contains(resp.body, "6.6.6.6")
+}

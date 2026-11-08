@@ -119,11 +119,17 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         cfg.admin.metrics_token,
         access.redirect,
         cfg.access_log.trusted_proxies,
-        [
-          cfg.header_auth.user_header,
-          cfg.header_auth.email_header,
-          cfg.header_auth.role_header,
-        ],
+        // only an enabled `auth.header` makes them the admin's identity:
+        // else they may be an authenticating proxy's for the upstream
+        case cfg.header_auth.enabled {
+          True -> [
+            cfg.header_auth.user_header,
+            cfg.header_auth.email_header,
+            cfg.header_auth.role_header,
+          ]
+          False -> []
+        },
+        cfg.header_auth.trusted_proxies,
       ),
       cfg.server.listen,
       cfg.server.port,
