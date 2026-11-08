@@ -814,8 +814,15 @@ lower(C) -> C.
 %% headers dropped, `x-forwarded-*` set by the handler), its body streamed
 %% (re-chunked, so that the upstream never sees framing it could read
 %% differently), then the response head relayed and its body streamed back.
-%% The upstream socket is passive: `upstream_timeout` is the wait for the
-%% response head, and the idle timeout of every read and write.
+%% `upstream_timeout` is the wait for the response head, and the idle
+%% timeout of every read and write.
+%%
+%% Between requests the upstream socket is armed (`{active, once}`): if the
+%% upstream closes the connection, or sends bytes nothing asked for, a
+%% message says so, and the next request, seeing it, opens a new connection
+%% instead (no call to the socket to find out). The first bytes of the
+%% response come as that message; the socket is passive for the rest of the
+%% exchange, and armed again when the connection is kept.
 
 -define(CONNECT_TIMEOUT, 5000).
 %% the process dictionary key of the bytes a relayed response has yet to
@@ -1041,11 +1048,11 @@ send_request(Socket, Reused, Rest, F, C) ->
             end,
             case send_body(F#fwd.body, Rest, Socket, C) of
                 {ok, Rest1} ->
-                    response(Socket, Reused, <<>>, Rest1, true, F, C);
+                    response(Socket, Reused, armed, Rest1, true, F, C);
                 {error, {upstream, _}} ->
                     %% the upstream may have answered without reading the
                     %% whole body: relay its answer, then close
-                    response(Socket, false, <<>>, <<>>, false, F#fwd{retry = false}, C);
+                    response(Socket, false, armed, <<>>, false, F#fwd{retry = false}, C);
                 {error, {client, timeout}} ->
                     done(F#fwd.done, 408, 0, none),
                     reject(408, C);
@@ -1094,7 +1101,9 @@ send_body(chunked, Rest, Socket, C) ->
     end.
 
 %% Reads the response head (after 1xx interim responses), then relays it.
-%% BodyDone: the whole request body was sent.
+%% Buffer: the bytes read after the previous head, or `armed` for the first
+%% read (the message of the armed socket). BodyDone: the whole request body
+%% was sent.
 response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
     case read_head(Socket, Buffer, Up#up.timeout) of
         {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade =/= none, BodyDone ->
@@ -1189,7 +1198,9 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
             case relay_body(Framing, Chunked, Head, Buffer, Socket, C1) of
                 {ok, Left, Bytes} ->
                     done(F#fwd.done, Status, Bytes, none),
-                    C2 = case UpKeep andalso Left =:= <<>> of
+                    %% kept: armed until the next request
+                    C2 = case UpKeep andalso Left =:= <<>>
+                              andalso up_setopts(Socket, [{active, once}]) =:= ok of
                         true -> C1;
                         false -> close_upstream(C1)
                     end,
@@ -1317,6 +1328,12 @@ response_headers([], _, _) ->
     [].
 
 %% {ok, Status, Reason, Minor, Headers, Rest} | {error, timeout | closed | Reason}
+read_head(Socket, armed, Timeout) ->
+    case up_await(Socket, Timeout) of
+        {ok, Data} -> read_head(Socket, Data, Timeout);
+        {error, timeout} -> {error, timeout};
+        {error, _} -> {error, closed}
+    end;
 read_head(Socket, Buffer, Timeout) ->
     case binary:match(Buffer, [<<"\r\n\r\n">>, <<"\n\n">>]) of
         {At, Length} ->
@@ -1710,14 +1727,15 @@ open(#conn{up = none, upstream = Up} = C) ->
         Error -> Error
     end;
 open(#conn{up = Socket} = C) ->
-    %% a closed connection or unexpected bytes: not reusable
-    case up_recv(Socket, 0) of
+    %% the armed socket got nothing: else a closed connection, or unexpected
+    %% bytes, and it is not reusable
+    case up_await(Socket, 0) of
         {error, timeout} -> {ok, Socket, true, C};
         _ -> open(close_upstream(C))
     end.
 
 connect(#up{tls = Tls, address = Address, port = Port, timeout = Timeout} = Up) ->
-    Tcp = [binary, {packet, raw}, {active, false}, {nodelay, true},
+    Tcp = [binary, {packet, raw}, {active, once}, {nodelay, true},
            {send_timeout, Timeout}, {send_timeout_close, true}],
     case Tls of
         false ->
@@ -1736,13 +1754,37 @@ close_upstream(#conn{up = none} = C) ->
     C;
 close_upstream(#conn{up = Socket} = C) ->
     _ = up_close(Socket),
+    flush_upstream(Socket),
     C#conn{up = none}.
+
+%% The messages an armed socket sent before it was closed.
+flush_upstream(Socket) ->
+    case up_await(Socket, 0) of
+        {error, timeout} -> ok;
+        _ -> flush_upstream(Socket)
+    end.
 
 up_send({gen_tcp, S}, Data) -> gen_tcp:send(S, Data);
 up_send({ssl, S}, Data) -> ssl:send(S, Data).
 
 up_recv({gen_tcp, S}, Timeout) -> gen_tcp:recv(S, 0, Timeout);
 up_recv({ssl, S}, Timeout) -> ssl:recv(S, 0, Timeout).
+
+%% The message of an armed socket.
+up_await({gen_tcp, S}, Timeout) ->
+    receive
+        {tcp, S, Data} -> {ok, Data};
+        {tcp_closed, S} -> {error, closed};
+        {tcp_error, S, Reason} -> {error, Reason}
+    after Timeout -> {error, timeout}
+    end;
+up_await({ssl, S}, Timeout) ->
+    receive
+        {ssl, S, Data} -> {ok, Data};
+        {ssl_closed, S} -> {error, closed};
+        {ssl_error, S, Reason} -> {error, Reason}
+    after Timeout -> {error, timeout}
+    end.
 
 up_setopts({gen_tcp, S}, Opts) -> inet:setopts(S, Opts);
 up_setopts({ssl, S}, Opts) -> ssl:setopts(S, Opts).

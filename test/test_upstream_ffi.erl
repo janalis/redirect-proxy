@@ -20,6 +20,9 @@
 %% - /slow: the echo after 1.5 s
 %% - /once: the echo, then the connection closed (without saying so)
 %% - /abrupt: the connection closed without a response
+%% - /idle-close: the echo, then the connection closed 20 ms later, idle
+%% - /linger: the echo, then 20 ms later the bytes of a response nothing
+%%   asked for
 %% - /stream: a chunked response whose last chunk comes 200 ms after the
 %%   head and the first one
 -module(test_upstream_ffi).
@@ -116,6 +119,15 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
         <<"/chunked">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nx-trailer: 1\r\n\r\n">>),
             serve(Socket, N, Rest);
+        <<"/idle-close">> ->
+            echo_only(Socket, N, Method, Echo),
+            timer:sleep(20),
+            close(Socket);
+        <<"/linger">> ->
+            echo_only(Socket, N, Method, Echo),
+            timer:sleep(20),
+            send(Socket, <<"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nbogus">>),
+            serve(Socket, N, Rest);
         <<"/stream">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n">>),
             timer:sleep(200),
@@ -187,10 +199,13 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
     end.
 
 echo(Socket, N, Method, Echo, Rest) ->
+    echo_only(Socket, N, Method, Echo),
+    serve(Socket, N, Rest).
+
+echo_only(Socket, _, Method, Echo) ->
     send(Socket, [<<"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ">>,
                   integer_to_binary(byte_size(Echo)), <<"\r\n\r\n">>,
-                  case Method of <<"HEAD">> -> <<>>; _ -> Echo end]),
-    serve(Socket, N, Rest).
+                  case Method of <<"HEAD">> -> <<>>; _ -> Echo end]).
 
 tunnel(Socket) ->
     case recv(Socket) of

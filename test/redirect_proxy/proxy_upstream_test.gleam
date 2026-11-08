@@ -233,6 +233,40 @@ pub fn closed_upstream_connections_are_replaced_test() {
   assert string.contains(text, "GET /again\nconn=2\n")
 }
 
+/// A kept-alive upstream connection the upstream closes while it is idle:
+/// the next request, even one that could not be sent again, goes on a new
+/// one.
+pub fn idle_upstream_connections_closed_by_the_upstream_are_replaced_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+      "POST /after HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
+      "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert string.contains(text, "GET /idle-close\nconn=1\n")
+  assert string.contains(text, "POST /after\nconn=2\n")
+  assert string.contains(text, "body=hi")
+  assert string.contains(text, "GET /again\nconn=2\n")
+  assert count(text, "HTTP/1.1 200 OK\r\n") == 3
+  assert connections(proxy.upstream) == 2
+}
+
+/// Bytes an idle upstream connection sends unasked are not taken for the
+/// response to the next request: the connection is not reused.
+pub fn unsolicited_upstream_bytes_are_not_relayed_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /next HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert !string.contains(text, "bogus")
+  assert string.contains(text, "GET /linger\nconn=1\n")
+  assert string.contains(text, "GET /next\nconn=2\n")
+  assert count(text, "HTTP/1.1 200 OK\r\n") == 2
+}
+
 pub fn chunked_responses_are_relayed_test() {
   let proxy = start()
   let #(text, _) = exchange(proxy, ["GET /chunked HTTP/1.1\r\nhost: a\r\n\r\n"])
@@ -507,6 +541,17 @@ pub fn https_upstreams_test() {
   assert string.contains(text, "POST /tls\nconn=1\n")
   assert string.contains(text, "body=hi")
   assert string.contains(text, "GET /again\nconn=1\n")
+  // closed by the upstream, or sent unasked bytes, while idle: replaced
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert string.contains(text, "GET /idle-close\nconn=2\n")
+  assert string.contains(text, "GET /linger\nconn=3\n")
+  assert string.contains(text, "GET /last\nconn=4\n")
+  assert !string.contains(text, "bogus")
   // a self-signed certificate is refused when it is verified
   let proxy =
     start_with(proxy_http.Upstream(..upstream(port), tls: True), counter)
