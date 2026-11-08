@@ -415,7 +415,9 @@ pub fn login(req: Request, ctx: Context) -> Response {
 }
 
 /// Re-hashes a password stored with fewer iterations than the current
-/// default, now that it is known. Returns the user as stored.
+/// default, now that it is known. Returns the user as stored, or as it was
+/// checked when its password changed meanwhile: the session then belongs to
+/// the old password, and ends at once.
 fn rehash_if_needed(
   ctx: Context,
   user: users.User,
@@ -425,9 +427,18 @@ fn rehash_if_needed(
     False -> user
     True -> {
       let stored =
-        users.rehash_password(ctx.users, user.username, password.hash(pass))
-        |> result.try(fn(_) {
-          users.get(ctx.users, user.username) |> result.replace_error("")
+        users.rehash_password(
+          ctx.users,
+          user.username,
+          user.password_hash,
+          password.hash(pass),
+        )
+        |> result.try(fn(rehashed) {
+          case rehashed {
+            False -> Ok(user)
+            True ->
+              users.get(ctx.users, user.username) |> result.replace_error("")
+          }
         })
       case stored {
         Ok(updated) -> updated

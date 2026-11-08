@@ -44,6 +44,29 @@ pub fn password_change_test() {
   let assert Error(_) = users.set_password(s, "nobody", "x", by: "t")
 }
 
+pub fn rehash_keeps_a_password_changed_meanwhile_test() {
+  let s = settings()
+  let old = password.hash_with("old", 10)
+  let assert Ok(_) = users.create(s, "bob", old, by: "t")
+  // the hash checked at login is still stored: replaced
+  let stronger = password.hash_with("old", 20)
+  assert users.rehash_password(s, "bob", old, stronger) == Ok(True)
+  let assert Ok(bob) = users.get(s, "bob")
+  assert bob.password_hash == stronger
+  // an administrator reset the password during the login: kept
+  let reset = password.hash_with("new", 10)
+  let assert Ok(Nil) = users.set_password(s, "bob", reset, by: "admin")
+  assert users.rehash_password(
+      s,
+      "bob",
+      stronger,
+      password.hash_with("old", 30),
+    )
+    == Ok(False)
+  let assert Ok(bob) = users.get(s, "bob")
+  assert bob.password_hash == reset
+}
+
 pub fn last_user_cannot_be_deleted_test() {
   let s = settings()
   let assert Ok(_) = users.create(s, "one", "x", by: "t")
