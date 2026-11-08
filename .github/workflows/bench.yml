@@ -6,6 +6,11 @@ name: Benchmark
 # each release. On main, `publish` opens (or updates) a pull request with
 # the new docs/data/benchmark.json and README table, and merges it when every
 # server passed its check (then redeploys the docs).
+#
+# A/B (manual runs): `variants` and `baseline` add redirect-proxy variants,
+# measured in the same job (runners differ from run to run), and `profile`
+# records where its schedulers spend their time. Their results are an
+# artifact only: nothing is published.
 
 on:
   workflow_dispatch:
@@ -17,6 +22,18 @@ on:
         description: Release tag to measure, with its published image (e.g. v0.7.0); empty for the branch
         type: string
         required: false
+      variants:
+        description: "redirect-proxy variants, `label[@image][=ERL_FLAGS]` separated by `;` (e.g. `sbwt-short=+sbwt short`)"
+        type: string
+        required: false
+      baseline:
+        description: Git ref to build and measure as a variant, e.g. main (A/B of a code change)
+        type: string
+        required: false
+      profile:
+        description: Profile redirect-proxy during the exact scenario (microstate accounting, perf)
+        type: boolean
+        default: false
   schedule:
     - cron: "17 3 * * 1"
   workflow_call:
@@ -79,10 +96,23 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref }}
+      - name: Build the baseline image
+        if: inputs.baseline != ''
+        env:
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASELINE"
+          git worktree add ../baseline FETCH_HEAD
+          docker build -t redirect-proxy:baseline ../baseline
+      - name: Install perf
+        if: inputs.profile
+        run: sudo apt-get install -y --no-install-recommends "linux-tools-$(uname -r)" || echo "perf unavailable"
       # The servers and oha run in containers (scripts/bench-compare.py).
       # After a release, its published image is measured, under its version;
       # otherwise an image built from the checkout, as "<branch> (<commit>)".
+      # With variants, only redirect-proxy is measured, in each variant.
       - name: Run comparison
+        if: inputs.variants == '' && inputs.baseline == '' && !inputs.profile
         # pipefail: a failed run must fail the job rather than upload the
         # results file of the checkout as if it were new
         shell: bash
@@ -105,15 +135,53 @@ jobs:
             sed -n '/^| Server/,$p' compare.txt
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.variants == '' && inputs.baseline == '' && !inputs.profile
         with:
           name: benchmark
           path: docs/data/benchmark.json
+          if-no-files-found: error
+      - name: Run variants
+        if: inputs.variants != '' || inputs.baseline != '' || inputs.profile
+        shell: bash
+        env:
+          VARIANTS: ${{ inputs.variants }}
+          BASELINE: ${{ inputs.baseline }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          if [ -n "$BASELINE" ]; then
+            VARIANTS="${BASELINE}@redirect-proxy:baseline${VARIANTS:+;$VARIANTS}"
+          fi
+          args=(--only redirect-proxy)
+          [ "$PROFILE" = true ] && args+=(--profile)
+          make docker
+          RP_VERSION="${GITHUB_REF_NAME} ($(git rev-parse --short HEAD))" \
+            RP_VARIANTS="$VARIANTS" RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev \
+            python3 scripts/bench-compare.py "${args[@]}" | tee compare.txt
+          {
+            echo '### redirect-proxy variants (requests/s)'
+            sed -n '/^| Server/,$p' compare.txt
+            for f in build/profile-*.txt; do
+              [ -e "$f" ] || continue
+              echo "#### $(basename "$f" .txt)"
+              echo '```'
+              head -60 "$f"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      # also when a variant failed: the others' results are still there
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && (inputs.variants != '' || inputs.baseline != '' || inputs.profile) }}
+        with:
+          name: benchmark-variants
+          path: |
+            build/benchmark*.json
+            build/profile-*.txt
           if-no-files-found: error
 
   publish:
     name: Publish results
     needs: compare
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.variants == '' && inputs.baseline == '' && !inputs.profile
     runs-on: ubuntu-24.04
     permissions:
       contents: write # push the results branch, merge it
