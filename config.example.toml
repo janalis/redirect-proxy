@@ -33,8 +33,21 @@ metrics_path = ""
 max_path_bytes = 8192
 # Redirect plain HTTP requests to the same URL over HTTPS (301, or 308 for
 # methods other than GET and HEAD), before any rule. Requests that a TLS
-# proxy marks with X-Forwarded-Proto: https go to the rules.
+# proxy marks with X-Forwarded-Proto: https go to the rules (only from
+# access_log.trusted_proxies when that list is set).
 https_redirect = false
+# The website behind this listener: requests no rule answers (whatever
+# their method) are forwarded to it, as a reverse proxy, instead of getting
+# a 404. An http:// or https:// origin: scheme, host and optional port, no
+# path. Empty: off. Cannot be combined with fallback_url.
+upstream = ""
+# Seconds to wait for the upstream's response head, and the idle timeout
+# of every read and write while a request is forwarded (and of upgraded
+# connections, such as WebSockets). The connect timeout is 5 seconds.
+upstream_timeout = 60
+# For an https:// upstream: check its certificate (system CAs, host name).
+# false for an internal upstream with a self-signed certificate.
+upstream_tls_verify = true
 
 [access_log]
 # Traffic logs, one line per request, of the redirect, admin and API

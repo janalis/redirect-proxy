@@ -3,6 +3,9 @@
 //// overrides (`config/env`), then checks (`config/validate`).
 
 import gleam/int
+import gleam/option
+import gleam/string
+import gleam/uri
 import redirect_proxy/listener.{
   type Listener, AdminListener, ApiListener, RedirectListener,
 }
@@ -126,7 +129,71 @@ pub type ServerConfig {
     /// Plain HTTP requests are redirected to the same URL over HTTPS before
     /// any rule (requests a proxy marks `X-Forwarded-Proto: https` are not).
     https_redirect: Bool,
+    /// Optional `http://` or `https://` origin (scheme, host, port) that
+    /// requests no rule answers are forwarded to, as a reverse proxy ("":
+    /// off: they get a 404, or a 302 to `fallback_url`).
+    upstream: String,
+    /// Seconds to wait for the upstream's response head, and the idle
+    /// timeout of a read or a write to the upstream.
+    upstream_timeout: Int,
+    /// Check the certificate of an https upstream against the system CAs.
+    upstream_tls_verify: Bool,
   )
+}
+
+/// The origin of `server.upstream`.
+pub type UpstreamUrl {
+  UpstreamUrl(tls: Bool, host: String, port: Int)
+}
+
+/// Parses `server.upstream`: `http://` or `https://`, a host, an optional
+/// port, and nothing else (a path of `/` at most).
+pub fn parse_upstream(url: String) -> Result(UpstreamUrl, String) {
+  let invalid = fn(why) {
+    Error("server.upstream must be an http:// or https:// origin: " <> why)
+  }
+  case uri.parse(url) {
+    Error(Nil) -> invalid("not a URL")
+    Ok(parsed) -> {
+      let scheme = option.map(parsed.scheme, string.lowercase)
+      let host = option.unwrap(parsed.host, "")
+      case scheme {
+        option.Some("http") | option.Some("https") ->
+          case host, parsed.userinfo, parsed.path, parsed.query {
+            "", _, _, _ -> invalid("no host")
+            _, option.Some(_), _, _ -> invalid("no user information")
+            _, _, path, _ if path != "" && path != "/" -> invalid("no path")
+            _, _, _, option.Some(_) -> invalid("no query")
+            _, _, _, _ ->
+              case parsed.fragment, parsed.port {
+                option.Some(_), _ -> invalid("no fragment")
+                _, option.Some(port) if port < 1 || port > 65_535 ->
+                  invalid("port out of range")
+                _, port -> {
+                  let tls = scheme == option.Some("https")
+                  let default_port = case tls {
+                    True -> 443
+                    False -> 80
+                  }
+                  // an IPv6 address is written in brackets
+                  let host = case
+                    string.starts_with(host, "[") && string.ends_with(host, "]")
+                  {
+                    True -> string.drop_start(host, 1) |> string.drop_end(1)
+                    False -> host
+                  }
+                  Ok(UpstreamUrl(
+                    tls:,
+                    host:,
+                    port: option.unwrap(port, default_port),
+                  ))
+                }
+              }
+          }
+        _ -> invalid("the scheme must be http or https")
+      }
+    }
+  }
 }
 
 pub type AdminConfig {
@@ -257,6 +324,9 @@ pub fn default() -> Config {
       metrics_path: "",
       max_path_bytes: 8192,
       https_redirect: False,
+      upstream: "",
+      upstream_timeout: 60,
+      upstream_tls_verify: True,
     ),
     admin: AdminConfig(
       enabled: True,

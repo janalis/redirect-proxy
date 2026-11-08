@@ -162,6 +162,36 @@ pub fn fallback_url_test() {
 
 /// The redirect listener never reads request bodies: a body arriving after
 /// the headers must not be parsed as a second request on the same connection.
+/// A query with the characters browsers leave unescaped is kept as is in
+/// the `location` of a `preserve_query` rule; CR and LF never get there.
+pub fn preserved_queries_keep_browser_characters_test() {
+  let env = boot(config.default())
+  let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let assert Ok(received) =
+    raw_exchange(port, [
+      <<
+        "GET /v1/guide?a[]=1&b={x}|y^z`w HTTP/1.1\r\nhost: docs.test\r\nconnection: close\r\n\r\n":utf8,
+      >>,
+    ])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 302 ")
+  assert string.contains(
+    received,
+    "\r\nlocation: https://docs.example.com/v2/guide?a[]=1&b={x}|y^z`w\r\n",
+  )
+  let assert Ok(received) =
+    raw_exchange(port, [
+      <<
+        "GET /v1/guide?a=1\r\nset-cookie: x=1 HTTP/1.1\r\nhost: docs.test\r\n\r\n":utf8,
+      >>,
+    ])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 400 ")
+  assert !string.contains(string.lowercase(received), "set-cookie")
+  assert !string.contains(received, "location")
+}
+
 pub fn unread_bodies_close_the_connection_test() {
   let env = boot(config.default())
   let assert Ok(#(_, port)) = string.split_once(env.redirect, "127.0.0.1:")
@@ -186,6 +216,33 @@ pub fn unread_bodies_close_the_connection_test() {
     ])
     |> bit_array.to_string
   assert string.contains(received, "/articles/7")
+}
+
+/// With `access_log.trusted_proxies`, only their `X-Forwarded-Proto`
+/// skips the upgrade (the access log off: the peer is still looked up).
+pub fn https_redirect_behind_trusted_proxies_test() {
+  let d = config.default()
+  let boot_trusting = fn(trusted) {
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(..d.server, https_redirect: True),
+        access_log: config.AccessLogConfig(
+          ..d.access_log,
+          enabled: False,
+          trusted_proxies: trusted,
+        ),
+      ),
+    )
+  }
+  let forwarded = [#("host", "shop.test"), #("x-forwarded-proto", "https")]
+  let env = boot_trusting(["10.0.0.0/8"])
+  let resp = get(env.redirect <> "/old", forwarded)
+  assert resp.status == 301
+  assert location(resp) == "https://shop.test/old"
+  let env = boot_trusting(["127.0.0.1/32"])
+  let resp = get(env.redirect <> "/old", forwarded)
+  assert location(resp) == "https://example.com/new"
 }
 
 pub fn https_redirect_test() {
@@ -219,6 +276,13 @@ pub fn https_redirect_test() {
   assert location(resp) == "https://example.com/new"
   assert get(env.redirect <> "/x", [#("x-forwarded-proto", "https")]).status
     == 404
+  // a WebSocket upgrade forwarded over TLS (Traefik sends `wss`)
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "wss")]).status
+    == 404
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "WSS, http")]).status
+    == 404
+  // `ws` is plain HTTP
+  assert get(env.redirect <> "/x", [#("x-forwarded-proto", "ws")]).status == 301
   // a host that is not a host name is not redirected anywhere
   assert get(env.redirect <> "/old", [#("host", "evil.test/@x")]).status == 400
   // `_` is allowed, as in rule hosts

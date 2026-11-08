@@ -112,6 +112,9 @@ pub const known_keys = [
   "server.port",
   "server.shutdown_grace",
   "server.trailing_slash",
+  "server.upstream",
+  "server.upstream_timeout",
+  "server.upstream_tls_verify",
   "storage.backups",
   "storage.data_dir",
   "storage.watch_interval",
@@ -186,6 +189,17 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "https_redirect"],
     d.server.https_redirect,
+  ))
+  use upstream <- result.try(str(t, ["server", "upstream"], d.server.upstream))
+  use upstream_timeout <- result.try(integer(
+    t,
+    ["server", "upstream_timeout"],
+    d.server.upstream_timeout,
+  ))
+  use upstream_tls_verify <- result.try(boolean(
+    t,
+    ["server", "upstream_tls_verify"],
+    d.server.upstream_tls_verify,
   ))
   use watch_interval <- result.try(integer(
     t,
@@ -471,6 +485,9 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       metrics_path:,
       max_path_bytes:,
       https_redirect:,
+      upstream:,
+      upstream_timeout:,
+      upstream_tls_verify:,
     ),
     admin: AdminConfig(
       enabled: admin_enabled,

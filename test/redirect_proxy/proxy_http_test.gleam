@@ -20,7 +20,7 @@ fn echo_handler(req: Request(proxy_http.Peer)) {
     "/crash" -> panic as "handler crash (expected by the test)"
     _ -> Nil
   }
-  Response(
+  proxy_http.Answer(Response(
     200,
     [
       #("x-method", http.method_to_string(req.method)),
@@ -38,7 +38,7 @@ fn echo_handler(req: Request(proxy_http.Peer)) {
       }),
     ],
     bytes_tree.from_string("hello"),
-  )
+  ))
 }
 
 fn start() -> Int {
@@ -47,7 +47,12 @@ fn start() -> Int {
       "127.0.0.1",
       0,
       echo_handler,
-      proxy_http.Options(idle_timeout_ms: 300, max_head_bytes: 1024, peer: True),
+      proxy_http.Options(
+        idle_timeout_ms: 300,
+        max_head_bytes: 1024,
+        peer: True,
+        upstream: option.None,
+      ),
     )
   started.data
 }
@@ -175,6 +180,14 @@ pub fn invalid_requests_are_rejected_test() {
   // only the characters of a URI, in an absolute path
   rejected("GET /a\\b HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("GET /é HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\"x\" HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=<x> HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\\x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\u{7f} HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=\tb HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  // no CR or LF in a target, so none can reach a `location` header
+  rejected("GET /?a=1\rlocation:x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
+  rejected("GET /?a=1\nlocation:x HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("GET http://a/ HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   rejected("OPTIONS * HTTP/1.1\r\nhost: a\r\n\r\n", "400")
   // no control characters (or folded lines) in header values
@@ -188,6 +201,17 @@ pub fn invalid_requests_are_rejected_test() {
     "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100),
     "431",
   )
+}
+
+/// Characters browsers send unescaped in queries, outside RFC 3986.
+pub fn browser_query_characters_are_accepted_test() {
+  let #(text, _) =
+    exchange([
+      "GET /p[1]?a[]=1&b={x}|y^z`w HTTP/1.1\r\nhost: a\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-path: /p[1]\r\n")
+  assert string.contains(text, "\r\nx-query: a[]=1&b={x}|y^z`w\r\n")
 }
 
 pub fn handler_crashes_get_500_test() {
@@ -266,4 +290,24 @@ pub fn malformed_header_names_are_rejected_test() {
   assert parse_outcome(<<"GET / HTTP/1.1 \r\nhost: a\r\n\r\n":utf8>>)
     == "error:400"
   assert parse_outcome(<<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>) == "ok"
+}
+
+@external(erlang, "test_net_ffi", "half_closed")
+fn half_closed(port: Int, data: BitArray, wait_ms: Int) -> #(BitArray, Bool)
+
+/// A client that shuts down its side after its requests still gets every
+/// response, then the connection is closed.
+pub fn half_closed_clients_get_their_responses_test() {
+  let #(received, closed) =
+    half_closed(
+      start(),
+      <<
+        "GET /1 HTTP/1.1\r\nhost: a\r\n\r\nGET /2 HTTP/1.1\r\nhost: a\r\n\r\n":utf8,
+      >>,
+      1000,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert responses(text) == 2
+  assert string.contains(text, "x-path: /2\r\n")
+  assert closed
 }

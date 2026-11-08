@@ -28,7 +28,8 @@
 ---
 
 redirect-proxy answers HTTP requests with `301`/`302`/`303`/`307`/`308`
-redirections based on rules, and never proxies traffic to an upstream. It is
+redirections based on rules; in front of a website (`server.upstream`), it
+passes every other request on to the website, as a reverse proxy. It is
 written in [Gleam](https://gleam.run) for the Erlang VM: the compiled rule
 set is read by every request without locks, exact rules are O(1) lookups,
 and one OS process with no database serves hundreds of thousands of
