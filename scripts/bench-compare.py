@@ -30,15 +30,39 @@ Variants of redirect-proxy, for an A/B on the same machine (runners differ
 from run to run: only numbers from one run compare):
 
     RP_VARIANTS='sbwt-short=+sbwt short; 0.7.0@ghcr.io/janalis/redirect-proxy:0.7.0'
+    RP_VARIANTS='log-on|RP_ACCESS_LOG_ENABLED=true,RP_ACCESS_LOG_FORMAT=json'
 
-Each `label[@image][=ERL_FLAGS]` entry (`;` or newline separated) is
-measured after redirect-proxy itself, as `redirect-proxy (label)`, with
-RP_IMAGE when it names no image. The results then go to
-build/benchmark-variants.json, never to the documentation.
+Each `label[@image][=ERL_FLAGS][|K=V,K=V]` entry (`;` or newline separated)
+is measured after redirect-proxy itself, as `redirect-proxy (label)`, with
+RP_IMAGE when it names no image, and the environment variables after `|`.
+The results then go to build/benchmark-variants.json, never to the
+documentation.
 
---profile: during the first run of the exact scenario, microstate accounting
-of each redirect-proxy (where its schedulers spend their time) and, when
-`sudo perf` works, a CPU profile, written to build/profile-<label>.txt.
+EXTRA_SCENARIOS=mixed,exact-churn,upstream,upstream-churn (comma separated)
+adds scenarios that are never published either (same file as variants):
+
+- `mixed`: MIXED_URLS (10000) random URLs, 70 % exact hits, 15 % prefix
+  hits, 5 % regex hits and 10 % misses, with browser-like headers (about
+  600 bytes). It is followed by `mixed-rate`: the same requests at a fixed
+  rate, FIXED_RATE req/s (default: FIXED_RATE_SHARE=0.5 of the first
+  server's `mixed` median, then the same rate for every server), latencies
+  corrected for coordinated omission.
+- `exact-churn`: the exact hit, one connection per request.
+- `upstream`, `upstream-churn` (redirect-proxy only): a miss forwarded to
+  an nginx upstream (RP_SERVER_UPSTREAM) answering 200 with a small body,
+  with keep-alive and with one connection per request. redirect-proxy is
+  restarted with the upstream after its other scenarios.
+
+SOAK=10m (redirect-proxy only): instead of the scenarios, the `mixed`
+requests for that long (at SOAK_RATE req/s, default as fast as possible)
+with the access log on (rotated file), sampling `docker stats` and the
+server's metrics (memory, processes, requests) every SOAK_INTERVAL=15 s;
+reports the memory slope in MiB/min after the first SOAK_WARMUP=60 s.
+
+--profile: during the first run of the PROFILE_SCENARIO scenario (default
+exact), microstate accounting of each redirect-proxy (where its schedulers
+spend their time) and, when `sudo perf` works, a CPU profile, written to
+build/profile-<label>.txt.
 """
 import argparse
 import datetime
@@ -47,6 +71,7 @@ import json
 import os
 import pathlib
 import platform
+import random
 import re
 import shutil
 import statistics
@@ -84,6 +109,72 @@ SCENARIOS = {
     "regex": (f"/regex/{REGEX - 1}/42", 308, f"{TARGET}/r/{REGEX - 1}/42"),
     "miss": ("/nothing/here", 404, None),
 }
+
+# Extra scenarios (EXTRA_SCENARIOS), never published: name -> settings.
+# `statuses`: the expected ones (a 3xx stands for any 3xx, see check);
+# `urls`: the mixed URL file instead of one path; `headers`: browser-like;
+# `rate`: at FIXED_RATE; `upstream`: redirect-proxy forwarding to UPSTREAM.
+MIXED_STATUSES = (301, 302, 308, 404)
+EXTRA = {
+    "mixed": {"urls": True, "headers": True, "statuses": MIXED_STATUSES},
+    "mixed-rate": {"urls": True, "headers": True, "rate": True,
+                   "statuses": MIXED_STATUSES},
+    "exact-churn": {"path": SCENARIOS["exact"][0], "churn": True,
+                    "statuses": (301,)},
+    "upstream": {"path": "/site/page", "headers": True, "upstream": True,
+                 "statuses": (200,)},
+    "upstream-churn": {"path": "/site/page", "headers": True, "churn": True,
+                       "upstream": True, "statuses": (200,)},
+}
+MIX = (("exact", 70), ("prefix", 15), ("regex", 5), ("miss", 10))
+MIXED_URLS = int(os.environ.get("MIXED_URLS", "10000"))
+FIXED_RATE = int(os.environ.get("FIXED_RATE", "0"))
+FIXED_RATE_SHARE = float(os.environ.get("FIXED_RATE_SHARE", "0.5"))
+PROFILE_SCENARIO = os.environ.get("PROFILE_SCENARIO", "exact")
+# What a browser sends when it follows a link over plain HTTP (about 600
+# bytes; no client hints, which are for HTTPS)
+BROWSER_HEADERS = [
+    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+    "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language: en-US,en;q=0.9,fr;q=0.8",
+    "Referer: https://www.example.org/blog/2026/10/an-article?utm_source=news",
+    "Cookie: _ga=GA1.1.1234567890.1760000000; "
+    "_ga_ABCDEF1234=GS1.1.1760000000.1.1.1760000100.0.0.0; "
+    "session=4f9d2c6a8b7e1f3a5c9d0e2b4a6c8e0f",
+    "Sec-Fetch-Dest: document",
+    "Sec-Fetch-Mode: navigate",
+    "Sec-Fetch-Site: cross-site",
+    "Sec-Fetch-User: ?1",
+    "Upgrade-Insecure-Requests: 1",
+]
+# One connection per request: enough ports on both sides of the churn
+CHURN_SYSCTLS = ["net.ipv4.tcp_tw_reuse=1",
+                 "net.ipv4.ip_local_port_range=1024 65535"]
+UPSTREAM = "redirect-proxy-bench-upstream"
+UPSTREAM_BODY = "hello from the upstream\n"
+
+SOAK = os.environ.get("SOAK", "")
+SOAK_RATE = int(os.environ.get("SOAK_RATE", "0"))
+SOAK_INTERVAL = int(os.environ.get("SOAK_INTERVAL", "15"))
+SOAK_WARMUP = int(os.environ.get("SOAK_WARMUP", "60"))
+METRICS_PATH = "/bench-metrics"
+METRICS_TOKEN = "bench-only-metrics-token-not-a-secret"
+SOAK_ENV = {
+    "RP_ACCESS_LOG_ENABLED": "true",
+    "RP_ACCESS_LOG_OUTPUT": "/etc/bench/access.log",
+    "RP_ACCESS_LOG_MAX_BYTES": str(64 * 1024 * 1024),
+    "RP_ACCESS_LOG_MAX_FILES": "2",
+    "RP_SERVER_METRICS_PATH": METRICS_PATH,
+    "RP_ADMIN_METRICS_TOKEN": METRICS_TOKEN,
+}
+
+# Files the load generator reads (mixed URLs) and the upstream's
+# configuration, mounted at /bench; set by main
+SHARED = None
+# FIXED_RATE once known (the first `mixed` median otherwise)
+RATE = {"rps": FIXED_RATE or None}
 
 
 # --- configurations ----------------------------------------------------------
@@ -338,20 +429,42 @@ PRODUCTS = {
 }
 
 
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def parse_variant(entry):
+    """`label[@image][=ERL_FLAGS][|K=V,K=V]` -> (label, image, flags, env).
+    A value may hold commas (lists) when what follows is not `NAME=`."""
+    head, _, env_spec = entry.partition("|")
+    head, _, flags = head.partition("=")
+    label, _, image = head.partition("@")
+    env = {}
+    for pair in re.split(r",\s*(?=[A-Za-z_][A-Za-z0-9_]*=)", env_spec.strip()):
+        if not pair.strip():
+            continue
+        key, sep, value = pair.partition("=")
+        if not sep or not ENV_NAME.fullmatch(key.strip()):
+            raise ValueError(f"not K=V: {pair.strip()!r}")
+        env[key.strip()] = value.strip()
+    return label.strip(), image.strip(), flags.strip(), env
+
+
 def variants(spec):
-    """`label[@image][=ERL_FLAGS]` entries -> [(key, name, configure)]."""
+    """`label[@image][=ERL_FLAGS][|K=V,K=V]` entries -> [(key, name,
+    configure)]."""
     out = []
     for entry in re.split(r"[;\n]", spec):
         entry = entry.strip()
         if not entry:
             continue
-        head, _, flags = entry.partition("=")
-        label, _, image = head.strip().partition("@")
-        label, image, flags = label.strip(), image.strip(), flags.strip()
+        try:
+            label, image, flags, env = parse_variant(entry)
+        except ValueError as e:
+            sys.exit(f"RP_VARIANTS: {e} in {entry!r}")
         if not label:
             sys.exit(f"RP_VARIANTS: no label in {entry!r}")
 
-        def configure(d, image=image, flags=flags, label=label):
+        def configure(d, image=image, flags=flags, label=label, env=env):
             spec = redirect_proxy(d)
             if image:
                 spec["image"] = image
@@ -360,13 +473,75 @@ def variants(spec):
                                       check=False).returncode != 0
             if flags:
                 spec["env"]["ERL_FLAGS"] = flags
+            spec["env"].update(env)
             spec["label"] = label
-            spec["notes"] = [f"ERL_FLAGS={flags}"] if flags else []
+            spec["notes"] = ([f"ERL_FLAGS={flags}"] if flags else []) \
+                + [f"{k}={v}" for k, v in env.items()]
             return spec
 
         out.append((f"redirect-proxy:{label}", f"redirect-proxy ({label})",
                     configure))
     return out
+
+
+def extra_scenarios(spec):
+    """EXTRA_SCENARIOS -> the names to measure, in order; `mixed` brings
+    its fixed-rate pass, `mixed-rate`."""
+    names = []
+    for name in (n.strip() for n in spec.split(",")):
+        if not name or name in names:
+            continue
+        if name not in EXTRA:
+            sys.exit(f"EXTRA_SCENARIOS: unknown {name!r} "
+                     f"(known: {', '.join(EXTRA)})")
+        names.append(name)
+        if name == "mixed" and "mixed-rate" not in names:
+            names.append("mixed-rate")
+    if "mixed-rate" in names and "mixed" not in names and not FIXED_RATE:
+        sys.exit("EXTRA_SCENARIOS: mixed-rate without mixed needs FIXED_RATE")
+    return names
+
+
+def mixed_paths(n, seed=1):
+    """`n` request paths for the mixed scenario, in random order: 70 %
+    exact hits on random rules, 15 % prefix hits, 5 % regex hits, 10 %
+    misses (see MIX), for the rules the configurations above generate."""
+    rng = random.Random(seed)
+    counts = {kind: n * share // 100 for kind, share in MIX}
+    counts["exact"] += n - sum(counts.values())
+    paths = (
+        [f"/exact/{rng.randrange(EXACT)}" for _ in range(counts["exact"])]
+        + [f"/prefix/{rng.randrange(PREFIX)}/page/{rng.randrange(1000)}"
+           for _ in range(counts["prefix"])]
+        + [f"/regex/{rng.randrange(REGEX)}/{rng.randrange(100000)}"
+           for _ in range(counts["regex"])]
+        + [f"/missing/{rng.randrange(1000000)}" for _ in range(counts["miss"])])
+    rng.shuffle(paths)
+    return paths
+
+
+def parse_metrics(text):
+    """Unlabelled samples of a Prometheus text exposition: name -> value."""
+    out = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([a-zA-Z_:][a-zA-Z0-9_:]*) (\S+)", line.strip())
+        if match:
+            try:
+                out[match.group(1)] = float(match.group(2))
+            except ValueError:
+                pass
+    return out
+
+
+def slope(points):
+    """Least-squares slope of [(x, y)], None with fewer than 2 distinct x."""
+    points = [(x, y) for x, y in points if y is not None]
+    if len({x for x, _ in points}) < 2:
+        return None
+    mx = statistics.fmean(x for x, _ in points)
+    my = statistics.fmean(y for _, y in points)
+    return (sum((x - mx) * (y - my) for x, y in points)
+            / sum((x - mx) ** 2 for x, _ in points))
 
 
 # --- running -----------------------------------------------------------------
@@ -400,15 +575,26 @@ def image_info(image, version_cmd, pull):
             digest.partition("@")[2] if pull else "")
 
 
-def get(port, path):
+def fetch(port, path, headers=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
-        conn.request("GET", path)
+        conn.request("GET", path, headers=headers or {})
         res = conn.getresponse()
-        res.read()
-        return res.status, res.getheader("Location")
+        body = res.read()
+        return res.status, res.getheader("Location"), body
     finally:
         conn.close()
+
+
+def get(port, path):
+    return fetch(port, path)[:2]
+
+
+def published_port(name):
+    out = docker("port", name, "8080/tcp", check=False).stdout
+    if not out.strip():
+        raise ConnectionError("port not published yet")
+    return int(out.split()[0].rsplit(":", 1)[1])
 
 
 def start(spec, d, cpus):
@@ -416,6 +602,8 @@ def start(spec, d, cpus):
     args = ["run", "-d", "--name", SERVER, "--network", NETWORK,
             "--cpuset-cpus", cpus, "-p", "127.0.0.1::8080",
             "-v", f"{d}:/etc/bench{'' if spec.get('writable') else ':ro'}"]
+    for sysctl in spec.get("sysctls", []):
+        args += ["--sysctl", sysctl]
     for key, value in spec.get("env", {}).items():
         args += ["-e", f"{key}={value}"]
     args.append(spec["image"])
@@ -431,10 +619,7 @@ def start(spec, d, cpus):
             raise RuntimeError("exited: " + logs())
         try:
             if port is None:
-                out = docker("port", SERVER, "8080/tcp", check=False).stdout
-                if not out.strip():
-                    raise ConnectionError("port not published yet")
-                port = int(out.split()[0].rsplit(":", 1)[1])
+                port = published_port(SERVER)
             if get(port, path) == (status, location):
                 return port, round((time.monotonic() - began) * 1000)
         except OSError:
@@ -466,12 +651,85 @@ def check(port):
     return notes
 
 
-def load(path, duration, cpus):
-    out = docker("run", "--rm", "--network", NETWORK, "--cpuset-cpus", cpus,
-                 OHA, "--no-tui", "--output-format", "json", "-z", duration,
-                 "-w", "-c", str(CONCURRENCY), "--redirect", "0",
-                 f"http://{SERVER}:8080{path}").stdout
-    return json.loads(out)
+def check_upstream(port):
+    """A miss is forwarded to the upstream and its answer relayed."""
+    path = EXTRA["upstream"]["path"]
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            status, _, body = fetch(port, path)
+            if status == 200 and body.decode() == UPSTREAM_BODY:
+                return
+        except OSError as e:
+            status, body = type(e).__name__, b""
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"upstream: {path} answered {status} "
+                               f"{body[:80]!r}, expected 200 "
+                               f"{UPSTREAM_BODY!r}")
+        time.sleep(0.5)
+
+
+def oha_args(name):
+    """The load generator's arguments (target included) for a scenario."""
+    if name in SCENARIOS:
+        return [f"http://{SERVER}:8080{SCENARIOS[name][0]}"]
+    sc = EXTRA[name]
+    args = []
+    if sc.get("churn"):
+        args.append("--disable-keepalive")
+    if sc.get("rate"):
+        args += ["-q", str(RATE["rps"]), "--latency-correction"]
+    if sc.get("headers"):
+        for header in BROWSER_HEADERS:
+            args += ["-H", header]
+    if sc.get("urls"):
+        args += ["--urls-from-file", "/bench/mixed.txt"]
+    else:
+        args.append(f"http://{SERVER}:8080{sc['path']}")
+    return args
+
+
+def statuses_of(name):
+    return (SCENARIOS[name][1],) if name in SCENARIOS \
+        else EXTRA[name]["statuses"]
+
+
+def oha_command(args, duration, cpus):
+    cmd = ["run", "--rm", "--network", NETWORK, "--cpuset-cpus", cpus]
+    if SHARED is not None:
+        cmd += ["-v", f"{SHARED}:/bench:ro"]
+    if "--disable-keepalive" in args:
+        for sysctl in CHURN_SYSCTLS:
+            cmd += ["--sysctl", sysctl]
+    return cmd + [OHA, "--no-tui", "--output-format", "json", "-z", duration,
+                  "-w", "-c", str(CONCURRENCY), "--redirect", "0", *args]
+
+
+def load(args, duration, cpus):
+    return json.loads(docker(*oha_command(args, duration, cpus)).stdout)
+
+
+def expected_count(codes, statuses):
+    """Responses with an expected status; any 3xx when a 3xx is expected
+    (an accepted other 3xx, see check)."""
+    redirect = any(300 <= s < 400 for s in statuses)
+    return sum(v for k, v in codes.items()
+               if int(k) in statuses or (redirect and 300 <= int(k) < 400))
+
+
+def summarize(r, statuses):
+    """One oha JSON result -> rps, latencies (ms) and errors."""
+    codes = r.get("statusCodeDistribution", {})
+    total = sum(codes.values()) + sum(r.get("errorDistribution", {}).values())
+    pct = r["latencyPercentiles"]
+    return {
+        "rps": r["summary"]["requestsPerSec"],
+        "p50_ms": pct["p50"] * 1000,
+        "p99_ms": pct["p99"] * 1000,
+        "p999_ms": (pct.get("p99.9") or 0) * 1000,
+        "max_ms": (r["summary"].get("slowest") or 0) * 1000,
+        "errors": total - expected_count(codes, statuses),
+    }
 
 
 def seconds(duration):
@@ -482,38 +740,118 @@ def seconds(duration):
     return max(1, {"ms": n // 1000, "s": n, "m": n * 60}[unit])
 
 
-def measure(name, path, status, client_cpus, profile=None):
-    load(path, WARMUP, client_cpus)
+def measure(name, client_cpus, profile=None):
+    args, statuses = oha_args(name), statuses_of(name)
+    load(args, WARMUP, client_cpus)
     runs = []
     for i in range(RUNS):
         if profile is not None and i == 0:
             with profile():
-                r = load(path, DURATION, client_cpus)
+                r = load(args, DURATION, client_cpus)
         else:
-            r = load(path, DURATION, client_cpus)
-        codes = r.get("statusCodeDistribution", {})
-        total = sum(codes.values()) + sum(r.get("errorDistribution", {}).values())
-        expected = codes.get(str(status), 0)
-        if expected == 0:
-            # an accepted other 3xx (see check)
-            expected = sum(v for k, v in codes.items() if k.startswith("3")) \
-                if 300 <= status < 400 else 0
-        runs.append({
-            "rps": r["summary"]["requestsPerSec"],
-            "p50_ms": r["latencyPercentiles"]["p50"] * 1000,
-            "p99_ms": r["latencyPercentiles"]["p99"] * 1000,
-            "errors": total - expected,
-        })
+            r = load(args, DURATION, client_cpus)
+        runs.append(summarize(r, statuses))
     best = sorted(runs, key=lambda x: x["rps"])[len(runs) // 2]
-    print(f"  {name:<7} {best['rps']:>10,.0f} req/s  p50 {best['p50_ms']:.2f} ms"
-          f"  p99 {best['p99_ms']:.2f} ms  errors {best['errors']}",
+    print(f"  {name:<14} {best['rps']:>10,.0f} req/s  p50 {best['p50_ms']:.2f} ms"
+          f"  p99 {best['p99_ms']:.2f} ms  p99.9 {best['p999_ms']:.2f} ms"
+          f"  max {best['max_ms']:.1f} ms  errors {best['errors']}",
           flush=True)
-    return {
+    result = {
         "rps": round(statistics.median(r["rps"] for r in runs)),
         "p50_ms": round(best["p50_ms"], 3),
         "p99_ms": round(best["p99_ms"], 3),
+        "p999_ms": round(best["p999_ms"], 3),
+        "max_ms": round(best["max_ms"], 3),
         "errors": max(r["errors"] for r in runs),
     }
+    if EXTRA.get(name, {}).get("rate"):
+        result["target_rps"] = RATE["rps"]
+    if name == "mixed" and RATE["rps"] is None:
+        # the fixed rate of every server's mixed-rate
+        RATE["rps"] = max(1, round(result["rps"] * FIXED_RATE_SHARE))
+        print(f"  fixed rate: {RATE['rps']:,} req/s", flush=True)
+    return result
+
+
+def metrics_sample(port):
+    """The server's own memory, process count and request count
+    (server.metrics_path), {} when it does not answer."""
+    try:
+        status, _, body = fetch(port, METRICS_PATH, {
+            "Authorization": f"Bearer {METRICS_TOKEN}"})
+    except OSError:
+        return {}
+    return parse_metrics(body.decode()) if status == 200 else {}
+
+
+def soak(port, client_cpus):
+    """SOAK of mixed requests, sampled every SOAK_INTERVAL seconds."""
+    args = oha_args("mixed")
+    if SOAK_RATE:
+        args = ["-q", str(SOAK_RATE), "--latency-correction", *args]
+    out = SHARED / "soak.json"
+    with out.open("w") as f:
+        proc = subprocess.Popen(
+            ["docker", *oha_command(args, SOAK, client_cpus)],
+            stdout=f, stderr=subprocess.PIPE, text=True)
+    began, samples, previous = time.monotonic(), [], None
+    print(f"  {'t':>6} {'docker':>10} {'VM':>10} {'processes':>10} "
+          f"{'req/s':>10}", flush=True)
+    while True:
+        try:
+            proc.wait(timeout=SOAK_INTERVAL if samples else 1)
+            done = True
+        except subprocess.TimeoutExpired:
+            done = False
+        t = time.monotonic() - began
+        m = metrics_sample(port)
+        sample = {"t_s": round(t), "docker_mib": memory_mib()}
+        if "redirect_proxy_memory_bytes" in m:
+            sample["vm_mib"] = round(m["redirect_proxy_memory_bytes"] / 2**20, 1)
+        if "redirect_proxy_processes" in m:
+            sample["processes"] = int(m["redirect_proxy_processes"])
+        requests = m.get("redirect_proxy_requests_total")
+        if previous is not None and requests is not None and t > previous[0]:
+            sample["rps"] = round((requests - previous[1]) / (t - previous[0]))
+        if requests is not None:
+            previous = (t, requests)
+        samples.append(sample)
+        print(f"  {sample['t_s']:>5}s {sample['docker_mib'] or 0:>6.1f} MiB "
+              f"{sample.get('vm_mib', 0):>6.1f} MiB "
+              f"{sample.get('processes', 0):>10} {sample.get('rps', 0):>10,}",
+              flush=True)
+        if done:
+            break
+    stderr = proc.stderr.read()
+    if proc.returncode != 0:
+        raise RuntimeError(f"oha exited {proc.returncode}: {stderr[-300:]}")
+    summary = summarize(json.loads(out.read_text()), MIXED_STATUSES)
+    steady = [s for s in samples if s["t_s"] >= SOAK_WARMUP]
+    if len(steady) < 3:
+        steady = samples
+
+    def per_min(field):
+        rate = slope([(s["t_s"] / 60, s.get(field)) for s in steady])
+        return None if rate is None else round(rate, 3)
+
+    result = {
+        "duration": SOAK, "interval_s": SOAK_INTERVAL,
+        "rate": SOAK_RATE or None,
+        "rps": round(summary["rps"]),
+        **{k: round(v, 3) for k, v in summary.items() if k.endswith("_ms")},
+        "errors": summary["errors"],
+        "docker_mib_per_min": per_min("docker_mib"),
+        "vm_mib_per_min": per_min("vm_mib"),
+        "max_processes": max((s.get("processes", 0) for s in samples),
+                             default=0),
+        "samples": samples,
+    }
+    print(f"  soak: {result['rps']:,} req/s  p99 {result['p99_ms']:.2f} ms  "
+          f"p99.9 {result['p999_ms']:.2f} ms  max {result['max_ms']:.1f} ms  "
+          f"errors {result['errors']}  memory {result['docker_mib_per_min']} "
+          f"MiB/min (docker), {result['vm_mib_per_min']} MiB/min (VM)",
+          flush=True)
+    return result
 
 
 def idle_cpu_pct():
@@ -607,7 +945,50 @@ def memory_mib():
     return round(float(match.group(1)) * scale.get(match.group(2), 1), 1)
 
 
-def bench(key, label, configure, server_cpus, client_cpus, profile=False):
+def start_upstream(cpus):
+    """nginx answering 200 with UPSTREAM_BODY to every request, keeping
+    connections alive, on the load generator's CPUs (it is not measured)."""
+    (SHARED / "upstream.conf").write_text(f"""\
+worker_processes auto;
+error_log stderr warn;
+pid /tmp/nginx.pid;
+events {{ worker_connections 16384; }}
+http {{
+  access_log off;
+  keepalive_requests 1000000;
+  keepalive_timeout 75s;
+  server {{
+    listen 8080;
+    location / {{
+      default_type text/plain;
+      return 200 {json.dumps(UPSTREAM_BODY)};
+    }}
+  }}
+}}
+""")
+    docker("rm", "-f", UPSTREAM, check=False)
+    docker("run", "-d", "--name", UPSTREAM, "--network", NETWORK,
+           "--cpuset-cpus", cpus, "-p", "127.0.0.1::8080",
+           *[a for s in CHURN_SYSCTLS for a in ("--sysctl", s)],
+           "-v", f"{SHARED}:/bench:ro", "nginx:stable",
+           "nginx", "-c", "/bench/upstream.conf", "-g", "daemon off;")
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            status, _, body = fetch(published_port(UPSTREAM), "/")
+            if status == 200 and body.decode() == UPSTREAM_BODY:
+                return
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            out = docker("logs", "--tail", "20", UPSTREAM, check=False)
+            raise RuntimeError("upstream did not answer: "
+                               + (out.stdout + out.stderr)[-1000:])
+        time.sleep(0.2)
+
+
+def bench(key, label, configure, server_cpus, client_cpus, profile=False,
+          extras=()):
     print(f"\n== {label}", flush=True)
     work = pathlib.Path(tempfile.mkdtemp(prefix="bench-compare-"))
     # read by the servers' own users (haproxy, daemon...), not ours
@@ -620,22 +1001,44 @@ def bench(key, label, configure, server_cpus, client_cpus, profile=False):
         result = {"key": key, "name": label, "image": spec["image"],
                   "version": version, "digest": digest,
                   "notes": list(spec["notes"])}
-        profiled = profile and key.startswith("redirect-proxy")
+        rp = key.startswith("redirect-proxy")
+        profiled = profile and rp
         if profiled:
             env = spec["env"]
             env["RP_BENCH_MSACC"] = str(max(1, seconds(DURATION) - 1))
             env["ERL_FLAGS"] = (env.get("ERL_FLAGS", "") + " +JPperf true").strip()
+        if SOAK:
+            spec["env"].update(SOAK_ENV)
+        upstream = [n for n in extras if EXTRA[n].get("upstream")]
+        if upstream and not rp:
+            result["notes"].append("upstream scenarios: redirect-proxy only")
+            upstream = []
+
+        def run(name):
+            return measure(name, client_cpus,
+                           (lambda: Profile(label))
+                           if profiled and name == PROFILE_SCENARIO else None)
+
         try:
             port, startup = start(spec, work, server_cpus)
             result["notes"] += check(port)
             result["startup_ms"] = startup
-            result["scenarios"] = {
-                name: measure(name, path, status, client_cpus,
-                              (lambda: Profile(label))
-                              if profiled and name == "exact" else None)
-                for name, (path, status, _) in SCENARIOS.items()}
+            if SOAK:
+                result["soak"] = soak(port, client_cpus)
+            else:
+                result["scenarios"] = {
+                    name: run(name)
+                    for name in [*SCENARIOS, *extras]
+                    if not EXTRA.get(name, {}).get("upstream")}
             result["memory_mib"] = memory_mib()
             result["idle_cpu_pct"] = idle_cpu_pct()
+            if upstream and not SOAK:
+                # misses forwarded instead of answered 404: a new server
+                spec["env"]["RP_SERVER_UPSTREAM"] = f"http://{UPSTREAM}:8080"
+                spec["sysctls"] = CHURN_SYSCTLS
+                port, _ = start(spec, work, server_cpus)
+                check_upstream(port)
+                result["scenarios"].update({name: run(name) for name in upstream})
             result["status"] = "ok"
         except (RuntimeError, subprocess.CalledProcessError, OSError,
                 json.JSONDecodeError, KeyError) as e:
@@ -689,15 +1092,73 @@ def table(results):
         if r["status"] != "ok":
             rows.append([r["name"], r["version"], "failed", "", "", "", ""])
             continue
-        s = r["scenarios"]
+        s = r.get("scenarios", {})
         rows.append([r["name"], r["version"]]
-                    + [kilo(s[k]["rps"]) for k in SCENARIOS]
+                    + [kilo(s[k]["rps"]) if k in s else "" for k in SCENARIOS]
                     + [f"{r['memory_mib']:.0f} MiB"
                        if r.get("memory_mib") is not None else "?"])
+    return markdown_table(head, rows, 2)
+
+
+def markdown_table(head, rows, left):
     lines = ["| " + " | ".join(head) + " |",
-             "| " + " | ".join(["---"] * 2 + ["---:"] * 5) + " |"]
+             "| " + " | ".join(["---"] * left + ["---:"] * (len(head) - left))
+             + " |"]
     lines += ["| " + " | ".join(row) + " |" for row in rows]
     return "\n".join(lines)
+
+
+def ms(value):
+    return "" if value is None else f"{value:.2f} ms"
+
+
+def extra_table(results):
+    """Latencies of every scenario other than the published four, and of
+    those when there are others."""
+    names = [n for n in EXTRA if any(
+        n in r.get("scenarios", {}) for r in results["products"])]
+    if not names:
+        return ""
+    rows = []
+    for r in results["products"]:
+        s = r.get("scenarios", {})
+        for name in [*SCENARIOS, *names]:
+            if name in s:
+                x = s[name]
+                rows.append([r["name"], name, kilo(x["rps"]),
+                             ms(x["p50_ms"]), ms(x["p99_ms"]),
+                             ms(x.get("p999_ms")), ms(x.get("max_ms")),
+                             str(x["errors"])])
+    return markdown_table(["Server", "Scenario", "Requests/s", "p50", "p99",
+                           "p99.9", "Max", "Errors"], rows, 2)
+
+
+def soak_table(results):
+    rows = []
+    for r in results["products"]:
+        s = r.get("soak")
+        if not s:
+            continue
+        first, last = s["samples"][0], s["samples"][-1]
+        rows.append([r["name"], kilo(s["rps"]), ms(s["p99_ms"]),
+                     ms(s["p999_ms"]), ms(s["max_ms"]), str(s["errors"]),
+                     f"{first.get('docker_mib')} → {last.get('docker_mib')} MiB",
+                     str(s["docker_mib_per_min"]), str(s["vm_mib_per_min"]),
+                     str(s["max_processes"])])
+    if not rows:
+        return ""
+    return markdown_table(["Server", "Requests/s", "p99", "p99.9", "Max",
+                           "Errors", "Memory (docker)", "MiB/min (docker)",
+                           "MiB/min (VM)", "Processes (max)"], rows, 1)
+
+
+def report(results):
+    soaked = all("soak" in r for r in results["products"]
+                 if r["status"] == "ok")
+    main = table(results) if not soaked or any(
+        r["status"] != "ok" for r in results["products"]) else ""
+    return "\n\n".join(t for t in (main, extra_table(results),
+                                   soak_table(results)) if t)
 
 
 def readme_block(results):
@@ -735,55 +1196,91 @@ def main():
     parser.add_argument("--from", dest="source", type=pathlib.Path,
                         help="do not run: read results from this file")
     parser.add_argument("--profile", action="store_true",
-                        help="profile redirect-proxy during the exact scenario")
+                        help="profile redirect-proxy during the "
+                        "PROFILE_SCENARIO scenario (default exact)")
     args = parser.parse_args()
     extra = variants(os.environ.get("RP_VARIANTS", ""))
-    if extra and args.readme:
-        parser.error("RP_VARIANTS: the results are not for the README")
+    extras = extra_scenarios(os.environ.get("EXTRA_SCENARIOS", ""))
+    if args.readme and (extra or extras or SOAK):
+        parser.error("RP_VARIANTS, EXTRA_SCENARIOS, SOAK: the results are "
+                     "not for the README")
     if args.source:
         results = json.loads(args.source.read_text())
-        print(table(results))
+        print(report(results))
         if args.readme:
             write_readme(results)
         return
+    if SOAK:
+        seconds(SOAK)  # exits when it does not parse
+    if args.profile and PROFILE_SCENARIO not in [*SCENARIOS, *extras]:
+        parser.error(f"PROFILE_SCENARIO={PROFILE_SCENARIO} is not measured "
+                     f"(scenarios: {', '.join([*SCENARIOS, *extras])})")
     keys = list(PRODUCTS)
     if args.only:
         keys = [k.strip() for k in args.only.split(",")]
         unknown = [k for k in keys if k not in PRODUCTS]
         if unknown:
             parser.error(f"unknown: {', '.join(unknown)}")
+    if SOAK and any(k != "redirect-proxy" for k in keys):
+        parser.error("SOAK measures redirect-proxy only: --only redirect-proxy")
     output = args.output or (
-        ROOT / "build" / "benchmark-variants.json" if extra
+        ROOT / "build" / "benchmark-variants.json" if extra or extras or SOAK
         else ROOT / "build" / "benchmark.json" if args.only else OUTPUT)
     runs = [(k, *PRODUCTS[k]) for k in keys] + extra
 
+    global SHARED
+    SHARED = pathlib.Path(tempfile.mkdtemp(prefix="bench-shared-"))
+    SHARED.chmod(0o755)
+    (SHARED / "mixed.txt").write_text("".join(
+        f"http://{SERVER}:8080{p}\n" for p in mixed_paths(MIXED_URLS)))
     server_cpus, client_cpus, n_server, _ = cpu_split()
     docker("pull", "-q", OHA)
     docker("network", "rm", NETWORK, check=False)
     docker("network", "create", NETWORK)
     try:
+        if any(EXTRA[n].get("upstream") for n in extras) and not SOAK:
+            start_upstream(client_cpus)
         products = [bench(k, label, configure, server_cpus, client_cpus,
-                          args.profile)
+                          args.profile, extras)
                     for k, label, configure in runs]
     finally:
-        docker("rm", "-f", SERVER, check=False)
+        docker("rm", "-f", SERVER, UPSTREAM, check=False)
         docker("network", "rm", NETWORK, check=False)
+        shutil.rmtree(SHARED, ignore_errors=True)
 
+    load_info = {"tool": "oha 1.16.0", "duration": DURATION, "runs": RUNS,
+                 "concurrency": CONCURRENCY, "keep_alive": True}
+    if extras or SOAK:
+        load_info.update({
+            "extra_scenarios": extras,
+            "mixed": {"urls": MIXED_URLS, "mix": dict(MIX),
+                      "header_bytes": sum(len(h) + 2 for h in BROWSER_HEADERS)},
+            "fixed_rate_rps": RATE["rps"] if "mixed-rate" in extras else None,
+            "soak": SOAK or None,
+        })
     results = {
         "date": datetime.date.today().isoformat(),
         "commit": commit(),
         "runner": runner(),
         "server_cpus": n_server,
-        "load": {"tool": "oha 1.16.0", "duration": DURATION, "runs": RUNS,
-                 "concurrency": CONCURRENCY, "keep_alive": True},
+        "load": load_info,
         "rules": {"exact": EXACT, "prefix": PREFIX, "regex": REGEX},
         "scenarios": {k: {"path": p, "status": s}
                       for k, (p, s, _) in SCENARIOS.items()},
         "products": products,
     }
+    for name in extras:
+        sc = EXTRA[name]
+        results["scenarios"][name] = {
+            "path": "mixed URLs" if sc.get("urls") else sc["path"],
+            "status": list(sc["statuses"]),
+            "keep_alive": not sc.get("churn"),
+            **({"upstream": True} if sc.get("upstream") else {}),
+            **({"rate_rps": RATE["rps"]} if sc.get("rate") else {}),
+        }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2) + "\n")
-    print(f"\n{table(results)}\n\nwritten to {output}")
+    print(f"\n{report(results)}\n\nwritten to {output}")
     if args.readme:
         write_readme(results)
     failed = [p["name"] for p in products

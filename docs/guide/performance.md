@@ -38,11 +38,40 @@ The runners are not all the same machine: numbers from two runs do not
 compare. To compare versions or VM flags of redirect-proxy, measure them in
 the same run:
 `RP_VARIANTS='short=+sbwt short; 0.7.0@ghcr.io/janalis/redirect-proxy:0.7.0'`
-adds a `redirect-proxy (label)` per `label[@image][=ERL_FLAGS]` entry (the
-*Benchmark* workflow takes `variants`, and `baseline`, a git ref it builds
-and measures as a variant). `--profile` (the workflow's `profile`) also
-reports where the server's schedulers spend their time during the exact
-scenario, and a `perf` profile when `sudo perf` works.
+adds a `redirect-proxy (label)` per `label[@image][=ERL_FLAGS][|K=V,K=V]`
+entry, where `K=V` are environment variables of that server, e.g.
+`log|RP_ACCESS_LOG_ENABLED=true` (the *Benchmark* workflow takes
+`variants`, and `baseline`, a git ref it builds and measures as a
+variant). `--profile` (the workflow's `profile`) also reports where the
+server's schedulers spend their time during one scenario
+(`PROFILE_SCENARIO`, the workflow's `profile_scenario`, `exact` by
+default), and a `perf` profile when `sudo perf` works.
+
+More scenarios, never published, measure what the four above leave out
+(`EXTRA_SCENARIOS`, comma separated; the workflow's `scenarios` and
+`upstream`). They also report the p99.9 and the slowest request:
+
+- `mixed`: 10 000 random URLs (`MIXED_URLS`), 70 % exact hits spread over
+  the rules, 15 % prefix hits, 5 % regex hits and 10 % misses, each request
+  with about 650 bytes of browser headers (user agent, `Accept`, referer,
+  cookies). It is followed by `mixed-rate`: the same requests at a fixed
+  rate, half the first server's `mixed` throughput (`FIXED_RATE` sets it),
+  the same for every variant, with latencies corrected for coordinated
+  omission. Compare latencies there: at full load they mostly measure the
+  queue.
+- `exact-churn`: the exact hit with a new connection for each request.
+- `upstream` and `upstream-churn` (workflow input `upstream`): a miss
+  forwarded to an nginx upstream (`server.upstream`) that answers 200 with
+  a small body, with keep-alive and with a new connection for each request.
+  redirect-proxy is restarted with the upstream after its other scenarios.
+
+`SOAK=10m` (the workflow's `soak`) replaces the scenarios with `mixed`
+traffic for that long, with the access log written to a rotated file, and
+samples the container's memory (`docker stats`) and the server's own
+metrics (`redirect_proxy_memory_bytes`, `redirect_proxy_processes`,
+requests per second) every 15 s. It reports how fast memory grows, in
+MiB per minute after the first minute: a leak shows as a slope that does
+not flatten.
 
 ## redirect-proxy alone
 
