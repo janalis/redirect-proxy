@@ -72,8 +72,12 @@ fn start_with_idle_timeout(idle_timeout_ms: Int) -> Int {
 }
 
 fn exchange(chunks: List(String)) -> #(String, Bool) {
+  exchange_on(start(), chunks)
+}
+
+fn exchange_on(port: Int, chunks: List(String)) -> #(String, Bool) {
   let #(received, closed) =
-    session(start(), list.map(chunks, bit_array.from_string), 1000)
+    session(port, list.map(chunks, bit_array.from_string), 1000)
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -415,8 +419,11 @@ pub fn trickled_heads_time_out_test() {
 }
 
 pub fn heads_split_across_packets_are_parsed_test() {
+  // sent 50 ms apart: well within the deadline of a head, however loaded
+  // the machine running the tests
+  let port = start_with_idle_timeout(5000)
   let #(text, _) =
-    exchange([
+    exchange_on(port, [
       "GET /a?b", "=1 HTTP/1.1\r", "\nHost: x\r\nX-Long: ", "value\r\n",
       "connection: close\r\n\r", "\n",
     ])
@@ -429,10 +436,10 @@ pub fn heads_split_across_packets_are_parsed_test() {
   )
   // and the 414 and 431 of a head sent in small parts
   let #(text, _) =
-    exchange(["GET /", ..list.repeat(string.repeat("a", 300), 4)])
+    exchange_on(port, ["GET /", ..list.repeat(string.repeat("a", 300), 4)])
   assert string.starts_with(text, "HTTP/1.1 414 ")
   let #(text, _) =
-    exchange([
+    exchange_on(port, [
       "GET / HTTP/1.1\r\nhost: a\r\nx: ",
       ..list.repeat(string.repeat("a", 300), 4)
     ])

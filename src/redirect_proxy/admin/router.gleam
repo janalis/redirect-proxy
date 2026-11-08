@@ -5,6 +5,7 @@ import gleam/http.{Get, Post}
 import gleam/list
 import gleam/result
 import gleam/uri
+import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/routes/audit.{audit_page} as _
 import redirect_proxy/admin/routes/auth.{
   login, login_page, logout, oidc_callback, oidc_start, require_session,
@@ -34,6 +35,7 @@ import redirect_proxy/health
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
 import redirect_proxy/role.{type Role}
+import redirect_proxy/store
 import wisp.{type Request, type Response}
 
 pub fn handle(req: Request, ctx: Context) -> Response {
@@ -135,6 +137,7 @@ fn authenticated(req: Request, ctx: Context) -> Response {
       |> set_cookie
     },
   )
+  use <- store_available(ctx, s, req.method, set_cookie)
   let resp = case req.method, segments {
     Get, [] -> wisp.redirect("/rules")
     Post, ["logout"] -> logout(req, ctx, s)
@@ -173,6 +176,28 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     _, _ -> not_found(ctx, s)
   }
   set_cookie(resp)
+}
+
+/// A 503 page when the rules store does not answer in time (changes queued,
+/// or waiting for the file lock another process holds), rather than a crash
+/// (500). A change that timed out is skipped by the store: it was not made.
+fn store_available(
+  ctx: Context,
+  s: Session,
+  method: http.Method,
+  set_cookie: fn(Response) -> Response,
+  handler: fn() -> Response,
+) -> Response {
+  use <- store.or_unavailable(handler)
+  let message = case method {
+    Get | http.Head ->
+      "The rules are busy with other changes (another process may hold the lock). Retry in a moment."
+    _ ->
+      "The rules are busy with other changes (another process may hold the lock): your change was not made. Retry in a moment."
+  }
+  error_page(ctx, s, 503, "Rules busy", message)
+  |> wisp.set_header("retry-after", "1")
+  |> set_cookie
 }
 
 fn decode_segment(segment: String) -> String {
