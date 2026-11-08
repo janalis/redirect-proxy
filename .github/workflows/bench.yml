@@ -73,10 +73,24 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref }}
-      # The servers and oha run in containers (scripts/bench-compare.py)
+      # The servers and oha run in containers (scripts/bench-compare.py).
+      # After a release, its published image is measured, under its version;
+      # otherwise an image built from the checkout, as "<branch> (<commit>)".
       - name: Run comparison
+        env:
+          REF: ${{ inputs.ref }}
+          REPO: ${{ github.repository }}
         run: |
-          make bench-compare | tee compare.txt
+          case "$REF" in
+            v[0-9]*)
+              RP_IMAGE="ghcr.io/${REPO}:${REF#v}" RP_PULL=1 \
+                python3 scripts/bench-compare.py | tee compare.txt
+              ;;
+            *)
+              RP_VERSION="${GITHUB_REF_NAME} ($(git rev-parse --short HEAD))" \
+                make bench-compare | tee compare.txt
+              ;;
+          esac
           {
             echo '### Compared with other servers (requests/s)'
             sed -n '/^| Server/,$p' compare.txt
