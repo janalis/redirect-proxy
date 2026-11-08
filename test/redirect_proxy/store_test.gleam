@@ -693,6 +693,17 @@ pub fn query_rules_conflicts_and_loops_test() {
   let assert Error([loop]) =
     store.create(s, Rule(..new_rule("/l", "/l?x=1"), query: "x=1"), by: "t")
   assert string.contains(loop, "redirect loop")
+  // the target keeps the query that matched: the same request again
+  let assert Error([loop]) =
+    store.create(
+      s,
+      Rule(..new_rule("/p", "/p"), query: "x=1", preserve_query: True),
+      by: "t",
+    )
+  assert string.contains(loop, "redirect loop")
+  // without it, the query is not asked again
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/p", "/p"), query: "x=1"), by: "t")
 }
 
 @external(erlang, "test_log_ffi", "capture_start")

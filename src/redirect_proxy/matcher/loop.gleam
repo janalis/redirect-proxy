@@ -49,7 +49,7 @@ pub fn redirect_loop(
   }
   case lookup(matcher, host, path, r.query) {
     Ok(first) if first.rule.id == r.id ->
-      follow(lookup, matcher, host, first, [r], 10)
+      follow(lookup, matcher, host, r.query, first, [r], 10)
     _ -> Error(Nil)
   }
 }
@@ -58,20 +58,23 @@ fn follow(
   lookup: fn(Matcher, String, String, String) -> Result(Match, Nil),
   matcher: Matcher,
   host: String,
+  query: String,
   current: Match,
   chain: List(Rule),
   hops: Int,
 ) -> Result(List(Rule), Nil) {
   use <- bool.guard(hops == 0, Error(Nil))
+  // `query`, the one of the request `current` answers: kept by rules that
+  // preserve it
   use #(host, path, query) <- result.try(next_request(
     host,
-    location(current, Error(Nil)),
+    location(current, Ok(query)),
   ))
   use next <- result.try(lookup(matcher, host, path, query))
   let chain = [next.rule, ..chain]
   case list.last(chain) {
     Ok(start) if start.id == next.rule.id -> Ok(list.reverse(chain))
-    _ -> follow(lookup, matcher, host, next, chain, hops - 1)
+    _ -> follow(lookup, matcher, host, query, next, chain, hops - 1)
   }
 }
 
