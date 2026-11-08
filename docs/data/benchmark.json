@@ -1,6 +1,6 @@
 {
-  "date": "2026-11-07",
-  "commit": "41804b0",
+  "date": "2026-11-08",
+  "commit": "5fa86ff",
   "runner": {
     "host": "GitHub Actions Linux runner",
     "cpu": "AMD EPYC 9V45 96-Core Processor",
@@ -44,37 +44,37 @@
       "key": "redirect-proxy",
       "name": "redirect-proxy",
       "image": "ghcr.io/janalis/redirect-proxy:dev",
-      "version": "0.6.1",
+      "version": "main (5fa86ff)",
       "digest": "",
       "notes": [],
-      "startup_ms": 962,
+      "startup_ms": 854,
       "scenarios": {
         "exact": {
-          "rps": 107784,
+          "rps": 110319,
           "p50_ms": 0.892,
-          "p99_ms": 1.751,
+          "p99_ms": 1.325,
           "errors": 0
         },
         "prefix": {
-          "rps": 98164,
-          "p50_ms": 0.981,
-          "p99_ms": 1.93,
+          "rps": 99800,
+          "p50_ms": 0.98,
+          "p99_ms": 1.483,
           "errors": 0
         },
         "regex": {
-          "rps": 93329,
-          "p50_ms": 1.034,
-          "p99_ms": 2.033,
+          "rps": 95049,
+          "p50_ms": 1.033,
+          "p99_ms": 1.544,
           "errors": 0
         },
         "miss": {
-          "rps": 109068,
-          "p50_ms": 0.877,
-          "p99_ms": 1.739,
+          "rps": 110328,
+          "p50_ms": 0.88,
+          "p99_ms": 1.377,
           "errors": 0
         }
       },
-      "memory_mib": 81.4,
+      "memory_mib": 58.7,
       "status": "ok"
     },
     {
@@ -86,34 +86,34 @@
       "notes": [
         "exact rules in a `map` (hash), prefix rules are `^~` locations with one `rewrite` each, regex rules are `~` locations"
       ],
-      "startup_ms": 257,
+      "startup_ms": 260,
       "scenarios": {
         "exact": {
-          "rps": 163808,
-          "p50_ms": 0.552,
-          "p99_ms": 1.506,
+          "rps": 163580,
+          "p50_ms": 0.553,
+          "p99_ms": 0.922,
           "errors": 0
         },
         "prefix": {
-          "rps": 163366,
-          "p50_ms": 0.541,
-          "p99_ms": 1.237,
+          "rps": 157503,
+          "p50_ms": 0.564,
+          "p99_ms": 1.07,
           "errors": 0
         },
         "regex": {
-          "rps": 42576,
-          "p50_ms": 1.564,
-          "p99_ms": 4.628,
+          "rps": 41805,
+          "p50_ms": 1.508,
+          "p99_ms": 4.57,
           "errors": 0
         },
         "miss": {
-          "rps": 49210,
-          "p50_ms": 1.156,
-          "p99_ms": 4.336,
+          "rps": 48823,
+          "p50_ms": 1.082,
+          "p99_ms": 4.342,
           "errors": 0
         }
       },
-      "memory_mib": 23.6,
+      "memory_mib": 23.7,
       "status": "ok"
     },
     {
@@ -125,34 +125,34 @@
       "notes": [
         "`map_str` for exact rules, `map_beg` for prefix rules, `map_regm` for regex rules"
       ],
-      "startup_ms": 268,
+      "startup_ms": 259,
       "scenarios": {
         "exact": {
-          "rps": 161230,
-          "p50_ms": 0.545,
-          "p99_ms": 1.172,
+          "rps": 164829,
+          "p50_ms": 0.532,
+          "p99_ms": 1.151,
           "errors": 0
         },
         "prefix": {
-          "rps": 155496,
-          "p50_ms": 0.571,
-          "p99_ms": 1.2,
+          "rps": 155857,
+          "p50_ms": 0.564,
+          "p99_ms": 1.224,
           "errors": 0
         },
         "regex": {
-          "rps": 58738,
-          "p50_ms": 1.665,
-          "p99_ms": 3.323,
+          "rps": 59155,
+          "p50_ms": 1.654,
+          "p99_ms": 3.307,
           "errors": 0
         },
         "miss": {
-          "rps": 60888,
-          "p50_ms": 1.606,
-          "p99_ms": 3.215,
+          "rps": 62220,
+          "p50_ms": 1.57,
+          "p99_ms": 3.14,
           "errors": 0
         }
       },
-      "memory_mib": 23.9,
+      "memory_mib": 24.0,
       "status": "ok"
     },
     {
@@ -164,30 +164,30 @@
       "notes": [
         "exact rules in a `map`, prefix rules are `handle_path` blocks, regex rules are `path_regexp` matchers"
       ],
-      "startup_ms": 493,
+      "startup_ms": 494,
       "scenarios": {
         "exact": {
-          "rps": 11039,
-          "p50_ms": 7.922,
-          "p99_ms": 25.785,
+          "rps": 10230,
+          "p50_ms": 8.316,
+          "p99_ms": 28.221,
           "errors": 0
         },
         "prefix": {
-          "rps": 3745,
-          "p50_ms": 25.644,
-          "p99_ms": 57.128,
+          "rps": 3482,
+          "p50_ms": 27.765,
+          "p99_ms": 63.512,
           "errors": 0
         },
         "regex": {
-          "rps": 10141,
-          "p50_ms": 8.321,
-          "p99_ms": 33.896,
+          "rps": 8227,
+          "p50_ms": 11.583,
+          "p99_ms": 33.817,
           "errors": 0
         },
         "miss": {
-          "rps": 3778,
-          "p50_ms": 25.4,
-          "p99_ms": 57.776,
+          "rps": 3453,
+          "p50_ms": 28.245,
+          "p99_ms": 61.727,
           "errors": 0
         }
       },
@@ -204,34 +204,34 @@
         "one router (`Path`, `PathPrefix` or `PathRegexp`) and one `redirectRegex` middleware per rule; `redirectRegex` only answers 301 or 302",
         "answers 301 instead of 308 for the regex rule"
       ],
-      "startup_ms": 1404,
+      "startup_ms": 1421,
       "scenarios": {
         "exact": {
-          "rps": 5501,
-          "p50_ms": 15.804,
-          "p99_ms": 54.097,
+          "rps": 6115,
+          "p50_ms": 14.356,
+          "p99_ms": 49.618,
           "errors": 0
         },
         "prefix": {
-          "rps": 16936,
-          "p50_ms": 4.854,
-          "p99_ms": 21.327,
+          "rps": 20694,
+          "p50_ms": 3.916,
+          "p99_ms": 19.794,
           "errors": 0
         },
         "regex": {
-          "rps": 33988,
-          "p50_ms": 2.419,
-          "p99_ms": 12.08,
+          "rps": 43024,
+          "p50_ms": 1.891,
+          "p99_ms": 9.559,
           "errors": 0
         },
         "miss": {
-          "rps": 3181,
-          "p50_ms": 28.247,
-          "p99_ms": 77.607,
+          "rps": 2971,
+          "p50_ms": 30.318,
+          "p99_ms": 85.121,
           "errors": 0
         }
       },
-      "memory_mib": 187.5,
+      "memory_mib": 189.4,
       "status": "ok"
     },
     {
@@ -243,30 +243,30 @@
       "notes": [
         "exact rules in a `RewriteMap txt:` (cached), prefix and regex rules are `RewriteRule` regexes, tried in order; worker MPM (the event MPM drops keep-alive connections under this load)"
       ],
-      "startup_ms": 144,
+      "startup_ms": 151,
       "scenarios": {
         "exact": {
-          "rps": 73938,
-          "p50_ms": 1.339,
-          "p99_ms": 2.075,
+          "rps": 73009,
+          "p50_ms": 1.354,
+          "p99_ms": 2.198,
           "errors": 0
         },
         "prefix": {
-          "rps": 17514,
-          "p50_ms": 5.643,
-          "p99_ms": 12.201,
+          "rps": 16728,
+          "p50_ms": 5.744,
+          "p99_ms": 18.502,
           "errors": 0
         },
         "regex": {
-          "rps": 13699,
-          "p50_ms": 7.236,
-          "p99_ms": 15.869,
+          "rps": 13225,
+          "p50_ms": 7.463,
+          "p99_ms": 16.516,
           "errors": 0
         },
         "miss": {
-          "rps": 11546,
-          "p50_ms": 8.559,
-          "p99_ms": 19.226,
+          "rps": 12455,
+          "p50_ms": 7.94,
+          "p99_ms": 17.674,
           "errors": 0
         }
       },
