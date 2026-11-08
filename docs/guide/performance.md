@@ -34,6 +34,15 @@ How it is measured (`scripts/bench-compare.py`):
 nginx,caddy` measures some of the servers, and `EXACT`, `PREFIX`, `REGEX`,
 `DURATION`, `RUNS`, `CONCURRENCY` and `SERVER_CPUS` change the parameters.
 
+The runners are not all the same machine: numbers from two runs do not
+compare. To compare versions or VM flags of redirect-proxy, measure them in
+the same run: `RP_VARIANTS='short=+sbwt short; main@redirect-proxy:main'`
+adds a `redirect-proxy (label)` per `label[@image][=ERL_FLAGS]` entry (the
+*Benchmark* workflow takes `variants`, and `baseline`, a git ref it builds
+and measures as a variant). `--profile` (the workflow's `profile`) also
+reports where the server's schedulers spend their time during the exact
+scenario, and a `perf` profile when `sudo perf` works.
+
 ## redirect-proxy alone
 
 `make bench` (or the *Benchmark* workflow) generates the same rules
