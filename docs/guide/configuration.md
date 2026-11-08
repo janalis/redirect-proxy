@@ -29,6 +29,9 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_METRICS_PATH` | (none: off; needs `RP_ADMIN_METRICS_TOKEN`) |
 | `RP_SERVER_MAX_PATH_BYTES` | `8192` (longer paths get a 414) |
 | `RP_SERVER_HTTPS_REDIRECT` | `false` (redirect plain HTTP requests to HTTPS before any rule) |
+| `RP_SERVER_UPSTREAM` | (none: off; an `http://` or `https://` origin that requests no rule answers are forwarded to, see [In front of a website](deployment#in-front-of-a-website)) |
+| `RP_SERVER_UPSTREAM_TIMEOUT` | `60` (seconds to wait for the upstream's response head; idle timeout of upstream reads and writes) |
+| `RP_SERVER_UPSTREAM_TLS_VERIFY` | `true` (check an https upstream's certificate against the system CAs) |
 | `RP_ADMIN_ENABLED` | `true` |
 | `RP_ADMIN_LISTEN` / `RP_ADMIN_PORT` | `127.0.0.1` / `8081` |
 | `RP_ADMIN_PUBLIC_URL` | `http://localhost:8081` |

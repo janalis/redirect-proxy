@@ -20,8 +20,11 @@ Prometheus text format:
 | `redirect_proxy_redirects_total` | counter | Requests answered with a matching rule |
 | `redirect_proxy_not_found_total` | counter | Requests without a matching rule |
 | `redirect_proxy_fallback_redirects_total` | counter | Unmatched requests redirected to `server.fallback_url` |
-| `redirect_proxy_responses_total{class}` | counter | Redirect listener responses by status class (`2xx`...) |
-| `redirect_proxy_request_duration_seconds{listener}` | histogram | Time to serve a request (5 µs to 1 s buckets), for the redirect, admin and API listeners |
+| `redirect_proxy_responses_total{class}` | counter | Redirect listener responses by status class (`2xx`...), forwarded ones included |
+| `redirect_proxy_request_duration_seconds{listener}` | histogram | Time to serve a request (5 µs to 1 s buckets), for the redirect, admin and API listeners; forwarded requests are not in it |
+| `redirect_proxy_upstream_requests_total` | counter | Requests forwarded to `server.upstream` |
+| `redirect_proxy_upstream_errors_total{reason}` | counter | Forwarded requests that failed upstream: `unreachable` (502), `timeout` (504), `invalid_response` (502, or a truncated response) |
+| `redirect_proxy_upstream_duration_seconds` | histogram | Time to forward a request and relay the whole response |
 | `redirect_proxy_regex_limit_exceeded_total` | counter | Regex runs stopped by the backtracking budget (counted as no match) |
 | `redirect_proxy_admin_requests_total` | counter | Requests received on the admin listener |
 | `redirect_proxy_login_failures_total` | counter | Failed admin logins and wrong current passwords |

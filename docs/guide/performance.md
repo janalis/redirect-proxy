@@ -95,8 +95,10 @@ connection, one read and one write per request, and nothing else.
 - A request head (request line and headers) is limited to
   `server.max_path_bytes` + 64 KiB: a longer request line gets 414, longer
   headers 431.
-- Request bodies are never read: the request is answered, then its
-  connection is closed.
+- The bodies of answered requests are never read: the request is
+  answered, then its connection is closed. The bodies of requests
+  forwarded to `server.upstream` are streamed to it, and the connection
+  stays open when their length was unambiguous.
 - Malformed requests get 400 and the connection is closed: a request target
   that is not an absolute path, or has characters a URI cannot hold (a raw
   backslash, space, quote or non-ASCII byte); anything but one space
