@@ -100,6 +100,10 @@ The redirect listener (`8080`) is meant to be public; keep the admin
 listener (`8081`) on a trusted network. The
 [getting started guide](https://janalis.github.io/redirect-proxy/guide/getting-started)
 walks through it, including what to do with the bootstrap password.
+Behind nginx, HAProxy, Apache httpd, Caddy or Traefik, see
+[Web servers](https://janalis.github.io/redirect-proxy/guide/web-servers)
+for tested configurations: whole domains, or only the pages a site no
+longer has.
 
 ## Configuration
 
