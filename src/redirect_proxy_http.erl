@@ -30,7 +30,7 @@
 
 -export([start/4]).
 %% internal
--export([init/5, parse/1]).
+-export([init/5, parse/1, idle/3]).
 
 %% unreserved, sub-delims, ":", "@", "/", "?", "%" and "#" (RFC 3986), and
 %% the printable characters browsers send unescaped in queries although
@@ -58,6 +58,13 @@
 
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
+
+%% The minimum heap of a connection process, in words (20 KiB): a request
+%% leaves 1 to 2 KiB of garbage, so the default heap (233 words) is
+%% collected after almost every request. A connection without a request
+%% for `hibernate_after/1` hibernates, which shrinks its heap to what it
+%% still holds (a few hundred bytes), until the next one.
+-define(CONN_HEAP, 2584).
 
 %% The caller tag of `send/2`: two bytes of length, then the external term
 %% format of the atom `sent` (`term_to_binary(sent)`), which inet_drv puts in
@@ -172,13 +179,13 @@ spawn_acceptor(Listen, Handler, Opts) ->
 accept(Listen, Handler, Opts) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            Pid = spawn(fun() ->
+            Pid = spawn_opt(fun() ->
                 receive
                     {go, S} -> connection(S, Handler, Opts)
                 after 5000 ->
                     exit(normal)
                 end
-            end),
+            end, [{min_heap_size, ?CONN_HEAP}]),
             case gen_tcp:controlling_process(Socket, Pid) of
                 ok -> Pid ! {go, Socket};
                 {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
@@ -226,7 +233,29 @@ peer(Socket) ->
 %% Waits for more bytes of a request head, then parses it again. The socket
 %% delivers up to ?ACTIVE packets as messages before it must be re-armed:
 %% no call to the port per request, and a bounded mailbox.
-more(Buffer, #conn{socket = Socket, idle_timeout = Timeout} = C) ->
+more(Buffer, #conn{idle_timeout = Timeout} = C) ->
+    case hibernate_after(Timeout) of
+        After when After < Timeout -> wait(Buffer, C, After, hibernate);
+        _ -> wait(Buffer, C, Timeout, close)
+    end.
+
+%% Woken from hibernation: by the end of the idle timeout (Timer), or by
+%% another message, then waited for as before.
+idle(Buffer, C, Timer) ->
+    receive
+        {timeout, Timer, idle} -> close(C)
+    after 0 ->
+        case erlang:cancel_timer(Timer) of
+            false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
+            _ -> ok
+        end,
+        more(Buffer, C)
+    end.
+
+%% 1 s, or half the idle timeout when it is shorter (tests)
+hibernate_after(Timeout) -> min(1000, Timeout div 2).
+
+wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
     receive
         %% usually a whole request: parsed as it came, not copied first
         {tcp, Socket, Data} when Buffer =:= <<>> ->
@@ -250,7 +279,15 @@ more(Buffer, #conn{socket = Socket, idle_timeout = Timeout} = C) ->
         {tcp_error, Socket, _} ->
             close(C)
     after Timeout ->
-        close(C)
+        case Then of
+            close -> close(C);
+            hibernate ->
+                %% the rest of the idle timeout, as a message: a hibernated
+                %% process only wakes up for one
+                Rest = C#conn.idle_timeout - Timeout,
+                Timer = erlang:start_timer(Rest, self(), idle),
+                erlang:hibernate(?MODULE, idle, [Buffer, C, Timer])
+        end
     end.
 
 request(<<>>, C) ->

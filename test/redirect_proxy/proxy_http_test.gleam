@@ -14,6 +14,14 @@ import redirect_proxy/proxy/http as proxy_http
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
 
+@external(erlang, "test_net_ffi", "paced_session")
+fn paced_session(
+  port: Int,
+  chunks: List(BitArray),
+  gap_ms: Int,
+  wait_ms: Int,
+) -> #(BitArray, Bool)
+
 /// Answers 200 with what it received in headers; `/crash` crashes.
 fn echo_handler(req: Request(proxy_http.Peer)) {
   case req.path {
@@ -135,6 +143,28 @@ pub fn idle_connections_are_closed_test() {
   // an incomplete head too
   let #(text, closed) = exchange(["GET / HTTP/1.1\r\nhost: a\r\n"])
   assert text == ""
+  assert closed
+}
+
+pub fn idle_connections_hibernate_then_serve_test() {
+  // 200 ms between the requests: the connection hibernates after half of
+  // its 300 ms idle timeout, then answers the next one, then is closed
+  let #(received, closed) =
+    paced_session(
+      start(),
+      list.map(
+        [
+          "GET /1 HTTP/1.1\r\nhost: a\r\n\r\n",
+          "GET /2 HTTP/1.1\r\nhost: a\r\n\r\n",
+        ],
+        bit_array.from_string,
+      ),
+      200,
+      1000,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert responses(text) == 2
+  assert string.contains(text, "x-path: /2\r\n")
   assert closed
 }
 
