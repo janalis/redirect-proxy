@@ -29,7 +29,7 @@ flags of redirect-proxy, through ERL_FLAGS).
 Variants of redirect-proxy, for an A/B on the same machine (runners differ
 from run to run: only numbers from one run compare):
 
-    RP_VARIANTS='sbwt-short=+sbwt short; main@ghcr.io/janalis/redirect-proxy:main'
+    RP_VARIANTS='sbwt-short=+sbwt short; 0.7.0@ghcr.io/janalis/redirect-proxy:0.7.0'
 
 Each `label[@image][=ERL_FLAGS]` entry (`;` or newline separated) is
 measured after redirect-proxy itself, as `redirect-proxy (label)`, with
@@ -574,6 +574,7 @@ class Profile:
                            perf_report("--sort", "dso"),
                            "== perf, by symbol (self time, >= 0.3 %)",
                            perf_report("--sort", "dso,symbol")]
+                pathlib.Path(f"/tmp/perf-{self.pid}.map").unlink(missing_ok=True)
             else:
                 report += ["== perf unavailable: " + (err or "").strip()[-300:]]
         # the measurement ends a second after the run
