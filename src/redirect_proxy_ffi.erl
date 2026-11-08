@@ -21,7 +21,7 @@
     no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
-    binary_take/2, binary_drop/2, rescue/1, store_timeout/0, rescue_store_timeout/2,
+    binary_take/2, binary_drop/2, binary_contains/2, binary_replace_all/3, rescue/1, store_timeout/0, rescue_store_timeout/2,
     normalise_path/1, is_ascii/1, needs_trim/1,
     encode_cached/2, strip_port/1, data_dir_owner_mismatch/1
 ]).
@@ -1080,6 +1080,13 @@ split_lines(Bin) -> binary:split(Bin, <<"\n">>, [global]).
 %% end inside a UTF-8 sequence: they are only used as a dictionary key.
 binary_take(Bin, N) when byte_size(Bin) >= N -> binary:part(Bin, 0, N);
 binary_take(Bin, _N) -> Bin.
+
+%% Byte-wise search and replace: `string` functions compare graphemes, and a
+%% quote or comma followed by a combining mark is one grapheme with it.
+binary_contains(Bin, Pattern) -> binary:match(Bin, Pattern) =/= nomatch.
+
+binary_replace_all(Bin, Pattern, Replacement) ->
+    binary:replace(Bin, Pattern, Replacement, [global]).
 
 binary_drop(Bin, N) when byte_size(Bin) >= N ->
     binary:part(Bin, N, byte_size(Bin) - N);

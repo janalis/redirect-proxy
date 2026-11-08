@@ -352,6 +352,15 @@ pub fn rescue(f: fn() -> a) -> Result(a, String)
 @external(erlang, "redirect_proxy_ffi", "binary_take")
 pub fn byte_take(string: String, bytes: Int) -> String
 
+/// Whether `string` holds the bytes of `pattern`. Unlike `string.contains`,
+/// which compares graphemes, it finds `"` in `"` followed by a combining mark.
+@external(erlang, "redirect_proxy_ffi", "binary_contains")
+pub fn byte_contains(string: String, pattern: String) -> Bool
+
+/// Replaces every occurrence of the bytes of `pattern` (see `byte_contains`).
+@external(erlang, "redirect_proxy_ffi", "binary_replace_all")
+pub fn byte_replace(string: String, pattern: String, with: String) -> String
+
 /// A string without its first `bytes` bytes, which must end on a character
 /// boundary.
 @external(erlang, "redirect_proxy_ffi", "binary_drop")
