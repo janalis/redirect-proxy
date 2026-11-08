@@ -202,7 +202,7 @@ file_stamp(Path) ->
 %% Whether a stamp's modification time is within the last two seconds:
 %% another write in that same second would leave the stamp as it is (the
 %% time has a one second resolution) when it keeps the size and the inode.
-stamp_is_recent({_, MTime, _}) -> MTime >= erlang:system_time(second) - 2;
+stamp_is_recent({_, MTime, _}) -> MTime >= os:system_time(second) - 2;
 stamp_is_recent(missing) -> false.
 
 memo_file(Path, Fun) ->
@@ -799,7 +799,7 @@ refresh_lock(Lock, Token, Interval) ->
     %% only this acquisition's lock: never one taken over meanwhile
     _ = case file:read_file(Lock) of
         {ok, Token} ->
-            Now = erlang:system_time(second),
+            Now = os:system_time(second),
             file:write_file_info(Lock, #file_info{atime = Now, mtime = Now},
                                  [{time, posix}]);
         _ -> ok
@@ -813,10 +813,13 @@ release_lock(Lock, Token) ->
         _ -> ok
     end.
 
+%% File times come from the OS clock: compared with it, not with the VM's
+%% system time, which lags or leads it after the OS clock is stepped (no
+%% time warp), and would then take a fresh lock for a stale one.
 is_stale_file(Path) ->
     case file:read_file_info(Path, [{time, posix}]) of
         {ok, {file_info, _, _, _, _, MTime, _, _, _, _, _, _, _, _}} ->
-            MTime < erlang:system_time(second) - stale_lock_seconds();
+            MTime < os:system_time(second) - stale_lock_seconds();
         _ -> false
     end.
 
