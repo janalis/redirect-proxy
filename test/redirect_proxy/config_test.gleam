@@ -659,3 +659,90 @@ pub fn metrics_path_needs_a_token_test() {
     config_validate.validate(with("/_metrics", "a-long-metrics-token"))
   let assert Ok(_) = config_validate.validate(with("", ""))
 }
+
+pub fn upstream_settings_test() {
+  let assert Ok(t) =
+    tom.parse(
+      "
+[server]
+upstream = \"https://site.internal:8443\"
+upstream_timeout = 30
+upstream_tls_verify = false
+",
+    )
+  let assert Ok(cfg) = config_file.from_toml(t)
+  assert cfg.server.upstream == "https://site.internal:8443"
+  assert cfg.server.upstream_timeout == 30
+  assert !cfg.server.upstream_tls_verify
+  let d = config.default()
+  assert d.server.upstream == ""
+  assert d.server.upstream_timeout == 60
+  assert d.server.upstream_tls_verify
+  let env = [
+    #("RP_SERVER_UPSTREAM", "http://127.0.0.1:3000"),
+    #("RP_SERVER_UPSTREAM_TIMEOUT", "5"),
+    #("RP_SERVER_UPSTREAM_TLS_VERIFY", "no"),
+  ]
+  let cfg = config_env.apply_env(d, fn(name) { list.key_find(env, name) })
+  assert cfg.server.upstream == "http://127.0.0.1:3000"
+  assert cfg.server.upstream_timeout == 5
+  assert !cfg.server.upstream_tls_verify
+}
+
+pub fn upstream_urls_test() {
+  assert config.parse_upstream("http://127.0.0.1:3000")
+    == Ok(config.UpstreamUrl(tls: False, host: "127.0.0.1", port: 3000))
+  assert config.parse_upstream("HTTPS://Site.Test/")
+    == Ok(config.UpstreamUrl(tls: True, host: "Site.Test", port: 443))
+  assert config.parse_upstream("http://site.test")
+    == Ok(config.UpstreamUrl(tls: False, host: "site.test", port: 80))
+  assert config.parse_upstream("http://[::1]:8080")
+    == Ok(config.UpstreamUrl(tls: False, host: "::1", port: 8080))
+  let invalid = fn(url) {
+    let d = config.default()
+    let assert Error(message) =
+      config_validate.validate(
+        config.Config(
+          ..d,
+          server: config.ServerConfig(..d.server, upstream: url),
+        ),
+      )
+    assert string.starts_with(message, "server.upstream must be")
+  }
+  invalid("127.0.0.1:3000")
+  invalid("ftp://site.test")
+  invalid("http://")
+  invalid("http://site.test/app")
+  invalid("http://site.test/?a=1")
+  invalid("http://site.test/#top")
+  invalid("http://user:secret@site.test")
+  invalid("http://site.test:0")
+  invalid("http://site.test:70000")
+}
+
+pub fn upstream_checks_test() {
+  let d = config.default()
+  let with = fn(server) {
+    config_validate.validate(config.Config(..d, server:))
+  }
+  let assert Ok(_) =
+    with(config.ServerConfig(..d.server, upstream: "http://127.0.0.1:3000/"))
+  // unmatched requests go either to the upstream or to the fallback URL
+  let assert Error(message) =
+    with(
+      config.ServerConfig(
+        ..d.server,
+        upstream: "http://127.0.0.1:3000",
+        fallback_url: "https://home.test/",
+      ),
+    )
+  assert string.contains(message, "fallback_url")
+  let assert Error(_) =
+    with(
+      config.ServerConfig(
+        ..d.server,
+        upstream: "http://127.0.0.1:3000",
+        upstream_timeout: 0,
+      ),
+    )
+}
