@@ -53,10 +53,6 @@ pub fn regex_limit_init() -> Nil
 @external(erlang, "redirect_proxy_ffi", "regex_limit_count")
 pub fn regex_limit_count() -> Int
 
-/// The whole lines within the last `max_bytes` bytes of a file.
-@external(erlang, "redirect_proxy_ffi", "read_tail")
-pub fn read_tail(path: String, max_bytes: Int) -> Result(BitArray, Nil)
-
 /// `compute()` for a file, cached until the file is written again. On an
 /// error, the last successful value is returned when there is one.
 @external(erlang, "redirect_proxy_ffi", "memo_file")
@@ -338,9 +334,6 @@ pub fn strip_port(host: String) -> String
 @external(erlang, "redirect_proxy_ffi", "encode_cached")
 pub fn encode_cached(items: List(a), encode: fn(a) -> String) -> List(String)
 
-@external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
-pub fn encode_non_ascii(url: String) -> String
-
 /// Raises the error of a store call that timed out.
 @external(erlang, "redirect_proxy_ffi", "store_timeout")
 pub fn store_timeout() -> a
@@ -369,8 +362,8 @@ pub fn byte_drop(string: String, bytes: Int) -> String
 @external(erlang, "redirect_proxy_ffi", "strip_url_whitespace")
 pub fn strip_url_whitespace(url: String) -> String
 
-/// `strip_control` then `encode_non_ascii`, in one scan for the usual value
-/// that needs neither.
+/// `strip_control`, then non-ASCII bytes percent-encoded, in one scan for
+/// the usual value that needs neither.
 @external(erlang, "redirect_proxy_ffi", "header_value")
 pub fn header_value(value: String) -> String
 

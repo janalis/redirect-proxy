@@ -513,18 +513,8 @@ pub fn preview_import(
 }
 
 /// Enables, disables or deletes several rules in one write, recorded as one
-/// audit entry. Every id must exist. Returns the number of rules changed.
-pub fn bulk(
-  store: Store,
-  ids: List(String),
-  action: BulkAction,
-  by actor_name: String,
-) -> Result(Int, List(String)) {
-  bulk_versioned(store, ids, action, None, actor_name)
-  |> result.map_error(describe_set_change_error)
-}
-
-/// `bulk`, only if the rule set is still at version `expected` (when given).
+/// audit entry, only if the rule set is still at version `expected` (when
+/// given). Every id must exist. Returns the number of rules changed.
 pub fn bulk_versioned(
   store: Store,
   ids: List(String),

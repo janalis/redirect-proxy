@@ -4,7 +4,7 @@
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
-    atomic_write/2, atomic_write_private/2, append_line/2, read_tail/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
+    atomic_write/2, atomic_write_private/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
@@ -22,7 +22,7 @@
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
     binary_take/2, binary_drop/2, rescue/1, store_timeout/0, rescue_store_timeout/2,
-    normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
+    normalise_path/1, is_ascii/1, needs_trim/1,
     encode_cached/2, strip_port/1, data_dir_owner_mismatch/1
 ]).
 
@@ -242,31 +242,6 @@ memo_table() ->
         _ -> ok
     end,
     redirect_proxy_memo.
-
-%% The whole lines within the last MaxBytes bytes of a file (all of it when
-%% smaller): a partial first line, which may start inside a UTF-8 sequence,
-%% is dropped.
-read_tail(Path, MaxBytes) ->
-    case file:open(Path, [read, raw, binary]) of
-        {ok, Fd} ->
-            try
-                {ok, Size} = file:position(Fd, eof),
-                Start = max(0, Size - MaxBytes),
-                case file:pread(Fd, Start, Size - Start) of
-                    {ok, Data} when Start =:= 0 -> {ok, Data};
-                    {ok, Data} ->
-                        case binary:split(Data, <<"\n">>) of
-                            [_Partial, Rest] -> {ok, Rest};
-                            [_] -> {ok, <<>>}
-                        end;
-                    eof -> {ok, <<>>};
-                    {error, _} -> {error, nil}
-                end
-            after
-                file:close(Fd)
-            end;
-        {error, _} -> {error, nil}
-    end.
 
 atom_to_binary_safe(A) when is_atom(A) -> atom_to_binary(A);
 atom_to_binary_safe(T) -> unicode:characters_to_binary(io_lib:format("~p", [T])).
