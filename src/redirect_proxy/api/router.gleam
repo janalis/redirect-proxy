@@ -25,6 +25,7 @@ import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/ffi
+import redirect_proxy/health
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
@@ -35,20 +36,9 @@ import wisp.{type Request, type Response}
 pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
-  let plain = fn(status, body) {
-    wisp.response(status)
-    |> wisp.set_header("content-type", "text/plain; charset=utf-8")
-    |> wisp.set_header("cache-control", "no-store")
-    |> wisp.string_body(body)
-  }
   case wisp.path_segments(req) {
-    ["healthz"] -> plain(200, "ok")
-    // 503 while draining before a stop, like the admin's
-    ["readyz"] ->
-      case ffi.draining() {
-        True -> plain(503, "draining")
-        False -> plain(200, "ready")
-      }
+    ["healthz"] -> health.live()
+    ["readyz"] -> health.ready()
     // the admin serves the metrics; without it, they would be nowhere
     ["metrics"] if !ctx.config.admin.enabled ->
       metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
