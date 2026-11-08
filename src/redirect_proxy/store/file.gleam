@@ -108,11 +108,6 @@ pub fn load(
 
 /// Backs up then atomically rewrites the file. Returns its fingerprint.
 pub fn persist(files: Files, rules: List(Rule)) -> Result(String, String) {
-  let describe = fn(e) { simplifile.describe_error(e) }
-  use Nil <- result.try(
-    simplifile.create_directory_all(files.backups_dir)
-    |> result.map_error(describe),
-  )
   use Nil <- result.try(backup(files))
   let content = rule.file_to_string_cached(rules) <> "\n"
   use Nil <- result.try(ffi.atomic_write(files.rules_path, content))
@@ -123,6 +118,12 @@ fn backup(files: Files) -> Result(Nil, String) {
   case files.backups, simplifile.is_file(files.rules_path) {
     0, _ -> Ok(Nil)
     _, Ok(True) -> {
+      // created when needed only: with backups off, the directory need
+      // not be writable, nor exist
+      use Nil <- result.try(
+        simplifile.create_directory_all(files.backups_dir)
+        |> result.map_error(simplifile.describe_error),
+      )
       let name = backup_name(files.backups_dir, ffi.now_millis())
       use Nil <- result.try(
         simplifile.copy_file(files.rules_path, name)
@@ -155,13 +156,25 @@ fn backup_name(dir: String, millis: Int) -> String {
   }
 }
 
+/// `redirects-<ms>.json`, as `backup_name` makes them.
+fn is_backup_name(name: String) -> Bool {
+  case string.starts_with(name, "redirects-"), string.ends_with(name, ".json") {
+    True, True ->
+      case name |> string.drop_start(10) |> string.drop_end(5) |> int.parse {
+        Ok(millis) -> millis >= 0
+        Error(Nil) -> False
+      }
+    _, _ -> False
+  }
+}
+
 fn prune_backups(files: Files) -> Nil {
   case simplifile.read_directory(files.backups_dir) {
     Ok(names) -> {
       names
-      |> list.filter(fn(f) {
-        string.starts_with(f, "redirects-") && string.ends_with(f, ".json")
-      })
+      // the backups only: another file there (`redirects-old.json`) is
+      // neither counted nor deleted
+      |> list.filter(is_backup_name)
       // names embed a millisecond timestamp of constant width: sort newest first
       |> list.sort(fn(a, b) { string.compare(b, a) })
       |> list.drop(files.backups)
