@@ -372,6 +372,12 @@ fn connection_process(socket: Socket) -> process.Pid
 @external(erlang, "test_net_ffi", "poke")
 fn poke(pid: process.Pid) -> Nil
 
+@external(erlang, "test_net_ffi", "start_capped")
+fn start_capped(
+  handler: fn(Request(proxy_http.Peer)) -> proxy_http.Outcome,
+  cap: Int,
+) -> Int
+
 fn get(socket: Socket, wait_ms: Int) -> #(String, Bool) {
   send(socket, <<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
   let #(received, closed) = read(socket, wait_ms)
@@ -452,4 +458,23 @@ pub fn idle_connections_are_closed_when_draining_test() {
   let #(_, closed) = support.with_draining(fn() { read(socket, 1500) })
   close(socket)
   assert closed
+}
+
+/// Over its connection cap, the listener closes new connections at once,
+/// and serves again once others are closed.
+pub fn connections_over_the_cap_are_closed_test() {
+  let port = start_capped(echo_handler, 2)
+  let first = open(port)
+  let second = open(port)
+  assert string.starts_with(get(first, 100).0, "HTTP/1.1 200 OK\r\n")
+  assert string.starts_with(get(second, 100).0, "HTTP/1.1 200 OK\r\n")
+  let third = open(port)
+  assert get(third, 500) == #("", True)
+  close(third)
+  close(first)
+  process.sleep(100)
+  let fourth = open(port)
+  assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
+  close(second)
+  close(fourth)
 }

@@ -2,7 +2,8 @@
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
-         trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1]).
+         trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
+         start_capped/2]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -166,3 +167,10 @@ connection_process(S) ->
 poke(Pid) ->
     Pid ! stray,
     nil.
+
+%% A redirect listener (idle timeout 300 ms) that serves at most Cap
+%% connections at a time. Returns its port.
+start_capped(Handler, Cap) ->
+    {ok, {started, _, Port}} = redirect_proxy_http:start(
+        <<"127.0.0.1">>, 0, Handler, {options, 300, 1024, false, none, Cap}),
+    Port.

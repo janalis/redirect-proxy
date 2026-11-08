@@ -5,7 +5,9 @@
 %% after the response), no upgrades. This server does just that, with as
 %% little work per request as possible:
 %%
-%% - a pool of acceptors; one process per connection, its socket in
+%% - a pool of acceptors, up to a number of open connections (90 % of the
+%%   VM's port limit: a connection over it is closed at once, rather than
+%%   the VM running out of ports); one process per connection, its socket in
 %%   `{active, N}` mode, so a request costs one message (the receive timeout
 %%   is the idle timeout: no timer) and one `send`
 %% - the head parsed in one pass (`parse/1`), headers kept as a list
@@ -104,10 +106,14 @@
     tls_options
 }).
 
-%% atomics: the second of the last upstream warning
+%% atomics: the second of the last warning about the upstream
+%% (?UPSTREAM_LOG), and about the listener (?LISTENER_LOG)
 -define(WARNED, {?MODULE, warned}).
+-define(UPSTREAM_LOG, 1).
+-define(LISTENER_LOG, 2).
 
-%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer)`.
+%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer, upstream)`;
+%% tests can add the connection cap (`{options, ..., MaxConnections}`).
 %% Returns the `actor.Started(Int)` (the bound port) of a gleam_otp child, or
 %% an `actor.StartError`.
 start(Address, Port, Handler, Opts) ->
@@ -126,12 +132,17 @@ describe(Reason) ->
 %% ---------------------------------------------------------------------------
 
 init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) ->
+    Cap = max(1, erlang:system_info(port_limit) * 9 div 10),
+    init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap});
+init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap}) ->
     process_flag(trap_exit, true),
     case persistent_term:get(?WARNED, undefined) of
-        undefined -> persistent_term:put(?WARNED, atomics:new(1, []));
+        undefined -> persistent_term:put(?WARNED, atomics:new(2, []));
         _ -> ok
     end,
     Opts = {options, Idle, MaxHead, Peer, upstream_settings(Upstream)},
+    %% the open connections, and their cap
+    Limit = {self(), atomics:new(1, []), Cap},
     Listened = case ip(Address) of
         {ok, Ip} ->
             gen_tcp:listen(Port, [
@@ -146,9 +157,9 @@ init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) -
         {ok, Listen} ->
             {ok, Bound} = inet:port(Listen),
             Count = max(4, erlang:system_info(schedulers_online)),
-            [spawn_acceptor(Listen, Handler, Opts) || _ <- lists:seq(1, Count)],
+            [spawn_acceptor(Listen, Handler, Opts, Limit) || _ <- lists:seq(1, Count)],
             proc_lib:init_ack(Parent, {ok, self(), Bound}),
-            listener_loop(Parent, Listen, Handler, Opts);
+            listener_loop(Parent, Listen, Handler, Opts, Limit);
         {error, Reason} ->
             proc_lib:init_ack(Parent, {error, Reason}),
             exit(normal)
@@ -162,49 +173,80 @@ ip(Address) ->
         {error, _} -> {error, {invalid_address, Address}}
     end.
 
-listener_loop(Parent, Listen, Handler, Opts) ->
+%% The listener also counts the open connections: it monitors each one (the
+%% acceptors are busy accepting), and its count goes down when one ends,
+%% whatever the way (a monitor is not lost in hibernation, as a `try` is).
+listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit) ->
     receive
+        {connection, Pid} ->
+            _ = erlang:monitor(process, Pid),
+            listener_loop(Parent, Listen, Handler, Opts, Limit);
+        {'DOWN', _, process, _, _} ->
+            atomics:sub(Count, 1, 1),
+            listener_loop(Parent, Listen, Handler, Opts, Limit);
         {'EXIT', Parent, Reason} ->
             gen_tcp:close(Listen),
             exit(Reason);
         {'EXIT', _Acceptor, normal} ->
-            listener_loop(Parent, Listen, Handler, Opts);
+            listener_loop(Parent, Listen, Handler, Opts, Limit);
         {'EXIT', _Acceptor, Reason} ->
-            logger:error(iolist_to_binary(io_lib:format(
-                "redirect listener acceptor stopped: ~0p", [Reason]))),
-            spawn_acceptor(Listen, Handler, Opts),
-            listener_loop(Parent, Listen, Handler, Opts);
+            limited(?LISTENER_LOG, fun() ->
+                logger:error(iolist_to_binary(io_lib:format(
+                    "redirect listener acceptor stopped: ~0p"
+                    " (at most one such error a second is logged)", [Reason])))
+            end),
+            spawn_acceptor(Listen, Handler, Opts, Limit),
+            listener_loop(Parent, Listen, Handler, Opts, Limit);
         _ ->
-            listener_loop(Parent, Listen, Handler, Opts)
+            listener_loop(Parent, Listen, Handler, Opts, Limit)
     end.
 
-spawn_acceptor(Listen, Handler, Opts) ->
-    spawn_link(fun() -> accept(Listen, Handler, Opts) end).
+spawn_acceptor(Listen, Handler, Opts, Limit) ->
+    spawn_link(fun() -> accept(Listen, Handler, Opts, Limit) end).
 
-accept(Listen, Handler, Opts) ->
+accept(Listen, Handler, Opts, {Listener, Count, Cap} = Limit) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            Pid = spawn_opt(fun() ->
-                receive
-                    {go, S} -> connection(S, Handler, Opts)
-                after 5000 ->
-                    exit(normal)
-                end
-            end, [{min_heap_size, ?CONN_HEAP}]),
-            case gen_tcp:controlling_process(Socket, Pid) of
-                ok -> Pid ! {go, Socket};
-                {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
+            case atomics:add_get(Count, 1, 1) > Cap of
+                true ->
+                    %% closed before it costs a process
+                    atomics:sub(Count, 1, 1),
+                    gen_tcp:close(Socket),
+                    limited(?LISTENER_LOG, fun() ->
+                        logger:warning(iolist_to_binary(io_lib:format(
+                            "redirect listener has ~B open connections: closing new ones"
+                            " (at most one such warning a second is logged)", [Cap])))
+                    end);
+                false ->
+                    Pid = spawn_opt(fun() ->
+                        receive
+                            {go, S} -> connection(S, Handler, Opts)
+                        after 5000 ->
+                            exit(normal)
+                        end
+                    end, [{min_heap_size, ?CONN_HEAP}]),
+                    Listener ! {connection, Pid},
+                    case gen_tcp:controlling_process(Socket, Pid) of
+                        ok -> Pid ! {go, Socket};
+                        {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
+                    end
             end,
-            accept(Listen, Handler, Opts);
+            accept(Listen, Handler, Opts, Limit);
         {error, closed} ->
             ok;
-        {error, Reason} when Reason =:= emfile; Reason =:= enfile ->
-            logger:warning(iolist_to_binary(io_lib:format(
-                "redirect listener cannot accept connections: ~p", [Reason]))),
+        {error, econnaborted} ->
+            %% the client gave up before the connection was accepted
+            accept(Listen, Handler, Opts, Limit);
+        {error, Reason} ->
+            %% out of file descriptors (emfile, enfile), or of memory: a
+            %% pause rather than a loop that fails at once
+            limited(?LISTENER_LOG, fun() ->
+                logger:warning(iolist_to_binary(io_lib:format(
+                    "redirect listener cannot accept connections: ~p"
+                    " (at most one such warning a second is logged)", [Reason])))
+            end),
             timer:sleep(100),
-            accept(Listen, Handler, Opts);
-        {error, _} ->
-            accept(Listen, Handler, Opts)
+            accept(Listen, Handler, Opts, Limit)
     end.
 
 %% ---------------------------------------------------------------------------
@@ -1280,14 +1322,18 @@ done(Done, Status, Bytes, Error) ->
 %% A warning about the upstream, at most one a second for the whole node:
 %% an upstream that is down must not flood the log.
 warn(#conn{upstream = Up}, Format, Args) ->
+    limited(?UPSTREAM_LOG, fun() ->
+        logger:warning(iolist_to_binary(io_lib:format(
+            "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
+            [Up#up.url | Args])))
+    end).
+
+%% Calls Log at most once a second for the whole node, per Kind of message.
+limited(Kind, Log) ->
     Now = erlang:system_time(second),
-    case atomics:exchange(persistent_term:get(?WARNED), 1, Now) of
-        Now ->
-            ok;
-        _ ->
-            logger:warning(iolist_to_binary(io_lib:format(
-                "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
-                [Up#up.url | Args])))
+    case atomics:exchange(persistent_term:get(?WARNED), Kind, Now) of
+        Now -> ok;
+        _ -> Log()
     end.
 
 %% Body copies. Recv() -> {ok, Data} | {error, Reason};
