@@ -14,7 +14,8 @@
 %%   connection and only when the access log needs it), and returning a
 %%   response whose body is a bytes tree (iodata)
 %% - `content-length` and `date` (rendered once a second per connection)
-%%   added, and the response sent as one iolist
+%%   added, and the response sent as one iolist, without waiting for the
+%%   driver's reply (`send/2`)
 %%
 %% Pipelined requests are answered in order. The connection is closed after
 %% a response that says `connection: close` (draining), after a request with
@@ -57,6 +58,11 @@
 
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
+
+%% The caller tag of `send/2`: two bytes of length, then the external term
+%% format of the atom `sent` (`term_to_binary(sent)`), which inet_drv puts in
+%% its reply, `{inet_reply, Socket, Status, sent}`.
+-define(SEND_TAG, <<0, 7, 131, 119, 4, "sent">>).
 
 -record(conn, {
     socket,
@@ -229,6 +235,13 @@ more(Buffer, #conn{socket = Socket, idle_timeout = Timeout} = C) ->
                 ok -> more(Buffer, C);
                 {error, _} -> close(C)
             end;
+        %% the replies to `send/2`: queued (it waits for the socket) or sent
+        {inet_reply, Socket, sent} ->
+            more(Buffer, C);
+        {inet_reply, Socket, ok, sent} ->
+            more(Buffer, C);
+        {inet_reply, Socket, _, sent} ->
+            close(C);
         {tcp_closed, Socket} ->
             close(C);
         {tcp_error, Socket, _} ->
@@ -1543,15 +1556,34 @@ respond(Request0, Version, Close0, Rest,
                               true -> [];
                               false -> Body
                           end],
-            case gen_tcp:send(C1#conn.socket, Response) of
-                ok when Close -> close(C1);
-                ok -> request(Rest, C1);
-                {error, _} -> close(C1)
+            case Close of
+                true ->
+                    _ = gen_tcp:send(C1#conn.socket, Response),
+                    close(C1);
+                false ->
+                    case send(C1#conn.socket, Response) of
+                        ok -> request(Rest, C1);
+                        error -> close(C1)
+                    end
             end;
         {ok, {forward, CloseAfter, XForwarded, Drop, Done}} ->
             forward(Request, Version, Rest, CloseAfter, {XForwarded, Drop}, Done, C);
         error ->
             reject(500, C)
+    end.
+
+%% A response on a kept-alive connection. `gen_tcp:send/2` monitors the
+%% port, encodes the monitor as the caller tag, then waits for the driver's
+%% reply: the process is scheduled out and in again for every response.
+%% This gives the driver a constant tag and does not wait: `more/2` takes
+%% the reply with the next request, and closes the connection if it is an
+%% error. A busy port (`send_timeout`, high watermark) still suspends the
+%% process, as `gen_tcp:send/2` does.
+send(Socket, Data) ->
+    try erlang:port_command(Socket, [?SEND_TAG | Data]) of
+        true -> ok
+    catch
+        error:_ -> error
     end.
 
 call(Handler, Request) ->
