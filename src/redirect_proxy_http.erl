@@ -466,14 +466,35 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
 expired(<<>>, C) -> close(C);
 expired(_, C) -> reject(408, C).
 
-%% More bytes of an incomplete head. A head ends with a LF: without one in
-%% the new bytes, parsing it again would only say `more` (or find an error
-%% that the next parse finds too), so it is parsed again once one comes or
-%% the head reaches max_head.
+%% More bytes of an incomplete head. Each parse starts over from the first
+%% byte, so the head is parsed again only when it may have changed the
+%% outcome: once its request line is complete (an invalid one is refused
+%% early), once the new bytes may end the head (an empty line), or once it
+%% reaches max_head. Parsing it at every new line would let a client
+%% sending one header line per packet make the server parse a head of up to
+%% max_head bytes thousands of times.
 more_head(Buffer, Data, #conn{max_head = Max} = C) ->
-    case byte_size(Buffer) < Max andalso binary:match(Data, <<"\n">>) =:= nomatch of
-        true -> more(Buffer, C);
-        false -> request(Buffer, C)
+    Size = byte_size(Buffer),
+    Previous = Size - byte_size(Data),
+    case Size >= Max orelse head_may_end(Buffer, Previous) of
+        true -> request(Buffer, C);
+        false -> more(Buffer, C)
+    end.
+
+%% Whether a parse of Buffer, whose first Previous bytes were already
+%% parsed, may not say `more`.
+head_may_end(Buffer, Previous) ->
+    case binary:match(Buffer, <<"\n">>) of
+        nomatch ->
+            false;
+        {First, _} when First >= Previous ->
+            %% the request line just completed
+            true;
+        _ ->
+            %% an empty line among the new bytes (or across the boundary)
+            Start = max(0, Previous - 2),
+            binary:match(Buffer, [<<"\n\n">>, <<"\n\r\n">>],
+                         [{scope, {Start, byte_size(Buffer) - Start}}]) =/= nomatch
     end.
 
 request(<<>>, C) ->

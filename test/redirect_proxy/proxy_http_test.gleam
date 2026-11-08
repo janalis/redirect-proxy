@@ -434,6 +434,28 @@ pub fn heads_split_across_packets_are_parsed_test() {
     text,
     "\r\nx-headers: host=x;x-long=value;connection=close\r\n",
   )
+  // a header line per packet, the empty line split after its CR, a bare LF
+  let #(text, _) =
+    exchange_on(port, [
+      "GET /lines HTTP/1.1\r\n", "host: x\r\n", "a: 1\r\n", "b: 2\n", "\r", "\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-headers: host=x;a=1;b=2\r\n")
+  let #(text, _) = exchange_on(port, ["GET /lf HTTP/1.1\n", "host: x\n", "\n"])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  // an invalid request line is refused before the rest of the head comes
+  let #(text, _) = exchange_on(port, ["GET / HTTP/9.9\r\n", "host: x\r\n"])
+  assert string.starts_with(text, "HTTP/1.1 ")
+  assert !string.starts_with(text, "HTTP/1.1 408 ")
+  // an invalid header line, once the head ends
+  let #(text, _) =
+    exchange_on(port, [
+      "GET / HTTP/1.1\r\n",
+      "host: x\r\n",
+      "bad line\r\n",
+      "\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 400 ")
   // and the 414 and 431 of a head sent in small parts
   let #(text, _) =
     exchange_on(port, ["GET /", ..list.repeat(string.repeat("a", 300), 4)])
