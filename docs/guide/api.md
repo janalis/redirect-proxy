@@ -85,8 +85,11 @@ use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 `application/problem+json`. Every problem has a stable `code`
 (`not_found`, `validation_failed`, `already_exists`, `precondition_failed`,
 `precondition_required`, `reload_rejected`, `invalid_token`,
-`insufficient_scope`, `too_many_requests`...): tell problems apart by it, not
-by `title` or `detail`. Validation errors carry an `errors` array of
+`insufficient_scope`, `too_many_requests`, `store_busy`...): tell problems
+apart by it, not by `title` or `detail`. `store_busy` (503, with
+`Retry-After`) means the rule store could not take the request in time,
+because changes are queued or another process holds the file lock: a change
+the store had not started is not made, so retry it. Validation errors carry an `errors` array of
 `{field, message}`. Authentication failures follow
 [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (`WWW-Authenticate:
 Bearer error="invalid_token"` or `"insufficient_scope"`). The API never uses

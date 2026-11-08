@@ -36,8 +36,9 @@ rules, users and API clients at the same time:
 - Every write holds a lock file next to the file it changes
   (`redirects.json.lock`, `users.json.lock`, `api_clients.json.lock`),
   shared by every process: the server and CLI commands such as
-  `rules import`, `user add` or `client add`. A lock older than 10 seconds
-  is treated as left over by a crashed process.
+  `rules import`, `user add` or `client add`. Its holder refreshes it every
+  2 seconds; a lock not refreshed for 10 seconds is treated as left over
+  by a crashed process.
 
 - If `redirects.json` was changed by another process or by hand since the
   server last read it, the server reloads it before applying a change, so
