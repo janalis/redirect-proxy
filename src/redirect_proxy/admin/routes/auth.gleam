@@ -558,9 +558,13 @@ fn after_logout(ctx: Context, s: Session) -> String {
   }
 }
 
+fn sso_start_key(ctx: Context) -> String {
+  "sso-start-ip:" <> ffi.throttle_address(ctx.client_ip)
+}
+
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
-  let start_key = "sso-start-ip:" <> ffi.throttle_address(ctx.client_ip)
+  let start_key = sso_start_key(ctx)
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
   ratelimit.record_failure(start_key, login_window)
   let next = safe_next(list.key_find(wisp.get_query(req), "next"))
@@ -604,6 +608,9 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   )
   case outcome {
     Ok(#(identity, next)) -> {
+      // a completed login does not count against its address's starts:
+      // many people signing in behind one address are not throttled
+      ratelimit.forgive(sso_start_key(ctx))
       log.info(
         "SSO login: "
         <> log_value(identity.username)

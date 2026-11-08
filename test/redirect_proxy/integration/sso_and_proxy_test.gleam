@@ -61,6 +61,19 @@ pub fn sso_starts_are_throttled_per_address_test() {
     })
   assert list.take(callbacks, 20) == list.repeat(403, 20)
   assert list.last(callbacks) == Ok(429)
+  // completed logins do not count: many people behind one address
+  let login = fn() {
+    let started = start("198.51.100.20")
+    assert started.status == 303
+    let authorize = get(location(started), [])
+    let assert Ok(#(_, query)) = string.split_once(location(authorize), "?")
+    get(env.admin <> "/auth/oidc/callback?" <> query, [
+      #("cookie", cookie_of(started, "rp_oidc_state")),
+      #("x-forwarded-for", "198.51.100.20"),
+    ]).status
+  }
+  assert list.map(list.repeat(Nil, 35), fn(_) { login() })
+    == list.repeat(303, 35)
 }
 
 pub fn sso_state_cookie_is_host_prefixed_over_https_test() {
