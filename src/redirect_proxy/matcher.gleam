@@ -808,21 +808,27 @@ fn match_prefix(
     })
   case found {
     [] -> Error(Nil)
-    [first, ..others] -> {
-      let #(best, remainder) =
-        list.fold(others, first, fn(best, p) {
-          case { p.0 }.rank < { best.0 }.rank {
-            True -> p
-            False -> best
-          }
-        })
-      let r = best.rule
-      // a substitution leaving the target's host: the rule does not apply
-      template.expand_template(best.template, [path, remainder], vars)
-      |> template.guard_location(best.guard, _, vars)
-      |> result.map(Match(r, _))
-    }
+    [only] -> prefix_location(only, path, vars)
+    _ ->
+      // in rank order: a rule refused by its guard leaves the request to
+      // the next one, as for regex rules
+      found
+      |> list.sort(fn(a, b) { int.compare({ a.0 }.rank, { b.0 }.rank) })
+      |> list.find_map(prefix_location(_, path, vars))
   }
+}
+
+/// The location of a matched prefix rule, unless its substitution would
+/// leave the target's host: the rule does not apply then.
+fn prefix_location(
+  candidate: #(PrefixRule, String),
+  path: String,
+  vars: template.RequestVars,
+) -> Result(Match, Nil) {
+  let #(p, remainder) = candidate
+  template.expand_template(p.template, [path, remainder], vars)
+  |> template.guard_location(p.guard, _, vars)
+  |> result.map(Match(p.rule, _))
 }
 
 /// The rest of `path` after the source of prefix rule `r`.
