@@ -2,6 +2,7 @@
 
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/erlang/process
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{Response}
@@ -10,6 +11,7 @@ import gleam/list
 import gleam/option
 import gleam/string
 import redirect_proxy/proxy/http as proxy_http
+import support
 
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
@@ -50,13 +52,17 @@ fn echo_handler(req: Request(proxy_http.Peer)) {
 }
 
 fn start() -> Int {
+  start_with_idle_timeout(300)
+}
+
+fn start_with_idle_timeout(idle_timeout_ms: Int) -> Int {
   let assert Ok(started) =
     proxy_http.start(
       "127.0.0.1",
       0,
       echo_handler,
       proxy_http.Options(
-        idle_timeout_ms: 300,
+        idle_timeout_ms:,
         max_head_bytes: 1024,
         peer: True,
         upstream: option.None,
@@ -346,6 +352,33 @@ pub fn half_closed_clients_get_their_responses_test() {
 @external(erlang, "test_net_ffi", "trickle")
 fn trickle(port: Int, data: BitArray, gap_ms: Int) -> #(BitArray, Bool)
 
+type Socket
+
+@external(erlang, "test_net_ffi", "open")
+fn open(port: Int) -> Socket
+
+@external(erlang, "test_net_ffi", "send")
+fn send(socket: Socket, data: BitArray) -> Nil
+
+@external(erlang, "test_net_ffi", "read")
+fn read(socket: Socket, wait_ms: Int) -> #(BitArray, Bool)
+
+@external(erlang, "test_net_ffi", "close")
+fn close(socket: Socket) -> Nil
+
+@external(erlang, "test_net_ffi", "connection_process")
+fn connection_process(socket: Socket) -> process.Pid
+
+@external(erlang, "test_net_ffi", "poke")
+fn poke(pid: process.Pid) -> Nil
+
+fn get(socket: Socket, wait_ms: Int) -> #(String, Bool) {
+  send(socket, <<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(received, closed) = read(socket, wait_ms)
+  let assert Ok(text) = bit_array.to_string(received)
+  #(text, closed)
+}
+
 /// A head sent a byte at a time, each one within the idle timeout, still
 /// has to arrive within it (slowloris).
 pub fn trickled_heads_time_out_test() {
@@ -383,4 +416,40 @@ pub fn heads_split_across_packets_are_parsed_test() {
       ..list.repeat(string.repeat("a", 300), 4)
     ])
   assert string.starts_with(text, "HTTP/1.1 431 ")
+}
+
+/// A message the connection does not expect wakes it from hibernation,
+/// without restarting its idle timeout.
+pub fn stray_messages_do_not_extend_the_idle_timeout_test() {
+  let socket = open(start())
+  let #(text, _) = get(socket, 100)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  // hibernated after 150 ms
+  process.sleep(100)
+  poke(connection_process(socket))
+  let #(text, closed) = read(socket, 1000)
+  close(socket)
+  assert text == <<>>
+  assert closed
+}
+
+/// While the node drains, idle kept-alive connections are closed within a
+/// second, not at the end of their idle timeout.
+pub fn idle_connections_are_closed_when_draining_test() {
+  let port = start_with_idle_timeout(10_000)
+  let socket = open(port)
+  let #(text, _) = get(socket, 100)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  // hibernated after 1 s
+  process.sleep(1100)
+  let #(text, closed) = support.with_draining(fn() { read(socket, 1500) })
+  close(socket)
+  assert text == <<>>
+  assert closed
+  // and one that has not hibernated yet
+  let socket = open(port)
+  let #(_, _) = get(socket, 100)
+  let #(_, closed) = support.with_draining(fn() { read(socket, 1500) })
+  close(socket)
+  assert closed
 }

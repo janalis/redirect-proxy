@@ -2,7 +2,7 @@
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
-         trickle/3]).
+         trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -134,3 +134,35 @@ trickle_bytes(S, <<Byte, Rest/binary>>, GapMs) ->
     end;
 trickle_bytes(S, <<>>, _) ->
     read_until_closed(S, <<>>, 1000).
+
+%% A client connection to 127.0.0.1:Port, driven step by step.
+open(Port) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    S.
+
+send(S, Data) ->
+    _ = gen_tcp:send(S, Data),
+    nil.
+
+%% Reads until the server closes the connection or WaitMs of silence.
+%% Returns {Received, Closed}.
+read(S, WaitMs) ->
+    read_until_closed(S, <<>>, WaitMs).
+
+close(S) ->
+    gen_tcp:close(S),
+    nil.
+
+%% The process that serves the client connection S: the owner of the
+%% server side socket (the one whose peer is S).
+connection_process(S) ->
+    {ok, Local} = inet:sockname(S),
+    [Pid] = [Pid || P <- erlang:ports(),
+                    inet:peername(P) =:= {ok, Local},
+                    {connected, Pid} <- [erlang:port_info(P, connected)]],
+    Pid.
+
+%% A message the process does not expect.
+poke(Pid) ->
+    Pid ! stray,
+    nil.

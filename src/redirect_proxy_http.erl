@@ -32,7 +32,7 @@
 
 -export([start/4]).
 %% internal
--export([init/5, parse/1, idle/3]).
+-export([init/5, parse/1, idle/4]).
 
 %% unreserved, sub-delims, ":", "@", "/", "?", "%" and "#" (RFC 3986), and
 %% the printable characters browsers send unescaped in queries although
@@ -256,17 +256,34 @@ more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
             end
     end.
 
-%% Woken from hibernation: by the end of the idle timeout (Timer), or by
-%% another message, then waited for as before.
-idle(Buffer, C, Timer) ->
+%% Woken from hibernation: by its timer (Timer), or by another message,
+%% then waited for until End, the end of the idle timeout (or the deadline
+%% of the head): a message that is not a request does not restart it.
+idle(Buffer, C, Timer, End) ->
     receive
-        {timeout, Timer, idle} -> expired(Buffer, C)
+        {timeout, Timer, idle} -> hibernate_until(Buffer, C, End)
     after 0 ->
         case erlang:cancel_timer(Timer) of
             false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
             _ -> ok
         end,
-        more(Buffer, C)
+        wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+    end.
+
+%% Hibernates until End (monotonic ms), waking up every `hibernate_after/1`:
+%% an idle connection is closed as soon as the node drains (SIGTERM), so
+%% that its client reconnects to another instance before this one stops.
+hibernate_until(Buffer, #conn{idle_timeout = Timeout} = C, End) ->
+    Left = End - erlang:monotonic_time(millisecond),
+    case Buffer =:= <<>> andalso redirect_proxy_sigterm:draining() of
+        true ->
+            close(C);
+        false when Left =< 0 ->
+            expired(Buffer, C);
+        false ->
+            %% a message: a hibernated process only wakes up for one
+            Timer = erlang:start_timer(min(Left, hibernate_after(Timeout)), self(), idle),
+            erlang:hibernate(?MODULE, idle, [Buffer, C, Timer, End])
     end.
 
 %% 1 s, or half the idle timeout when it is shorter (tests)
@@ -299,15 +316,13 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         case Then of
             close -> expired(Buffer, C);
             hibernate ->
-                %% the rest of the idle timeout (or of the time left to
-                %% complete the head), as a message: a hibernated process
-                %% only wakes up for one
-                Rest = case Buffer of
-                    <<>> -> C#conn.idle_timeout - Timeout;
-                    _ -> C#conn.deadline - erlang:monotonic_time(millisecond)
+                %% for the rest of the idle timeout, or of the time left to
+                %% complete the head
+                End = case Buffer of
+                    <<>> -> erlang:monotonic_time(millisecond) + C#conn.idle_timeout - Timeout;
+                    _ -> C#conn.deadline
                 end,
-                Timer = erlang:start_timer(max(0, Rest), self(), idle),
-                erlang:hibernate(?MODULE, idle, [Buffer, C, Timer])
+                hibernate_until(Buffer, C, End)
         end
     end.
 
