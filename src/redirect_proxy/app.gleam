@@ -122,7 +122,11 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       ),
       cfg.server.listen,
       cfg.server.port,
-      server.http_options(cfg.server, access.redirect),
+      server.http_options(
+        cfg.server,
+        access.redirect,
+        cfg.access_log.trusted_proxies,
+      ),
       fn(port) {
         log.info(
           "redirect listener on "

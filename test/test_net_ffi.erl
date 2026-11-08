@@ -1,7 +1,7 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2, session/3, parse_outcome/1]).
+         raw_exchange/2, session/3, half_closed/3, reset_after/3, parse_outcome/1]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -69,6 +69,28 @@ session(Port, Chunks, WaitMs) ->
     Result = read_until_closed(S, <<>>, WaitMs),
     gen_tcp:close(S),
     Result.
+
+%% Sends Data, shuts down the sending side (half-close), then reads until
+%% the server closes the connection or WaitMs of silence. Returns
+%% {Received, Closed}.
+half_closed(Port, Data, WaitMs) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port,
+                              [binary, {active, false}, {exit_on_close, false}]),
+    ok = gen_tcp:send(S, Data),
+    ok = gen_tcp:shutdown(S, write),
+    Result = read_until_closed(S, <<>>, WaitMs),
+    gen_tcp:close(S),
+    Result.
+
+%% Sends Data, reads nothing for WaitMs, then resets the connection.
+reset_after(Port, Data, WaitMs) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port,
+                              [binary, {active, false}, {linger, {true, 0}},
+                               {recbuf, 4096}]),
+    ok = gen_tcp:send(S, Data),
+    timer:sleep(WaitMs),
+    gen_tcp:close(S),
+    nil.
 
 read_until_closed(S, Acc, WaitMs) ->
     case gen_tcp:recv(S, 0, WaitMs) of

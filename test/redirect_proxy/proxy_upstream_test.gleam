@@ -16,6 +16,12 @@ import redirect_proxy/proxy/http as proxy_http
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
 
+@external(erlang, "test_net_ffi", "reset_after")
+fn reset_after(port: Int, data: BitArray, wait_ms: Int) -> Nil
+
+@external(erlang, "test_net_ffi", "half_closed")
+fn half_closed(port: Int, data: BitArray, wait_ms: Int) -> #(BitArray, Bool)
+
 type Counter
 
 @external(erlang, "test_upstream_ffi", "start")
@@ -62,6 +68,7 @@ fn handler(
             #("x-forwarded-for", "192.0.2.1"),
             #("x-forwarded-proto", "http"),
           ],
+          drop: ["forwarded", "x-real-ip"],
           done: process.send(done, _),
         )
     }
@@ -431,4 +438,171 @@ pub fn https_upstreams_test() {
   let #(text, closed) = exchange(proxy, ["GET / HTTP/1.1\r\nhost: a\r\n\r\n"])
   assert_failed(text, closed, "502")
   assert forwarded(proxy).error == option.Some(proxy_http.Unreachable)
+}
+
+// Review follow-ups
+
+pub fn http_1_0_chunked_requests_are_rejected_test() {
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /up HTTP/1.0\r\nconnection: keep-alive\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\nGET /next HTTP/1.0\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 400 ")
+  assert !string.contains(text, "/next")
+  assert closed
+  assert connections(proxy.upstream) == 0
+}
+
+pub fn chunks_are_parsed_strictly_test() {
+  let rejected = fn(body) {
+    let proxy = start()
+    let #(text, closed) =
+      exchange(proxy, [
+        "POST /up HTTP/1.1\r\nhost: a\r\ntransfer-encoding: chunked\r\n\r\n"
+        <> body,
+      ])
+    assert string.starts_with(text, "HTTP/1.1 400 ")
+    assert closed
+  }
+  // bare LF ending the size line, or the chunk data
+  rejected("2\nhi\r\n0\r\n\r\n")
+  rejected("2\r\nhi\n0\r\n\r\n")
+  // a lone CR, or a control character, in an extension
+  rejected("2;a=\rb\r\nhi\r\n0\r\n\r\n")
+  rejected("2;a\u{1}\r\nhi\r\n0\r\n\r\n")
+  rejected("2;a=\"x\u{1}\"\r\nhi\r\n0\r\n\r\n")
+  // junk around the size, absurd sizes
+  rejected(" 2\r\nhi\r\n0\r\n\r\n")
+  rejected("+2\r\nhi\r\n0\r\n\r\n")
+  rejected("0x2\r\nhi\r\n0\r\n\r\n")
+  rejected("2 x\r\nhi\r\n0\r\n\r\n")
+  rejected("1000000000000000\r\nhi\r\n0\r\n\r\n")
+  // trailers: CRLF lines without control characters
+  rejected("2\r\nhi\r\n0\r\nx: 1\n\r\n")
+  rejected("2\r\nhi\r\n0\r\nx: \u{1}\r\n\r\n")
+  rejected("2\r\nhi\r\n0\r\n\n")
+  // well-formed extensions and trailers are fine
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /up HTTP/1.1\r\nhost: a\r\ntransfer-encoding: chunked\r\n\r\n2 ; name = \"q \\\" v\" ; flag\r\nhi\r\n0\r\nx-t: 1\r\n\r\n",
+    ])
+  assert string.contains(text, "framing=chunked\nbody=hi")
+}
+
+pub fn invalid_chunked_responses_are_cut_test() {
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, ["GET /bad-chunk HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(text, "zz")
+  assert closed
+  assert forwarded(proxy).error == option.Some(proxy_http.InvalidResponse)
+}
+
+pub fn half_closed_clients_get_their_response_test() {
+  let proxy = start()
+  let #(received, closed) =
+    half_closed(
+      proxy.port,
+      <<"GET /half HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>,
+      1000,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "GET /half\n")
+  assert closed
+  assert forwarded(proxy).status == 200
+}
+
+pub fn unsent_responses_are_logged_as_499_test() {
+  // the client resets the connection while a large response is sent
+  let proxy = start()
+  reset_after(proxy.port, <<"GET /big HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>, 200)
+  let f = forwarded(proxy)
+  assert f.status == 499
+  assert f.error == option.None
+  assert f.bytes < 8_000_000
+}
+
+pub fn dropped_headers_are_not_forwarded_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /echo HTTP/1.1\r\nhost: a\r\nForwarded: for=6.6.6.6\r\nX-Real-IP: 6.6.6.6\r\nX-Forwarded-Port: 443\r\nconnection: close\r\n\r\n",
+    ])
+  assert !string.contains(text, "6.6.6.6")
+  // not dropped by this handler
+  assert string.contains(text, "\nx-forwarded-port: 443\n")
+}
+
+pub fn connection_cannot_strip_response_framing_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /conn-length HTTP/1.1\r\nhost: a\r\n\r\n",
+      "GET /next HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert string.contains(text, "\r\ncontent-length: 2\r\n")
+  assert !string.contains(text, "Connection")
+  assert string.contains(text, "\r\n\r\nokHTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "GET /next\n")
+}
+
+pub fn control_characters_in_response_heads_are_a_502_test() {
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, ["GET /bad-reason HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert_failed(text, closed, "502")
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, ["GET /ctl-header HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert_failed(text, closed, "502")
+  assert forwarded(proxy).error == option.Some(proxy_http.InvalidResponse)
+}
+
+pub fn other_transfer_codings_are_kept_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, ["GET /gzip-chunked HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert string.contains(text, "\r\ntransfer-encoding: gzip, chunked\r\n")
+  assert string.ends_with(text, "\r\n\r\n2\r\nzz\r\n0\r\n\r\n")
+  // a final coding other than chunked: until the end of the connection
+  let #(text, closed) =
+    exchange(proxy, ["GET /gzip-close HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert string.contains(text, "\r\ntransfer-encoding: gzip\r\n")
+  assert string.contains(text, "\r\nconnection: close\r\n")
+  assert string.ends_with(text, "\r\n\r\nzz")
+  assert closed
+  // an HTTP/1.0 client cannot get them
+  let #(text, closed) = exchange(proxy, ["GET /gzip-chunked HTTP/1.0\r\n\r\n"])
+  assert_failed(text, closed, "502")
+}
+
+pub fn http_1_0_requests_do_not_upgrade_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.0\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(text, "upgrade")
+}
+
+pub fn content_length_is_sent_once_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\nContent-Length: 2, 2\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi",
+    ])
+  assert count(text, "\ncontent-length: 2\n") == 1
+  assert !string.contains(text, "2, 2")
+  assert string.contains(text, "\ncontent-length: 2\nframing=length\nbody=hi")
+  // and an empty body keeps its length
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.contains(text, "\ncontent-length: 0\nframing=length\nbody=")
 }

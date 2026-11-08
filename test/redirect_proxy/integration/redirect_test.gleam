@@ -218,6 +218,33 @@ pub fn unread_bodies_close_the_connection_test() {
   assert string.contains(received, "/articles/7")
 }
 
+/// With `access_log.trusted_proxies`, only their `X-Forwarded-Proto`
+/// skips the upgrade (the access log off: the peer is still looked up).
+pub fn https_redirect_behind_trusted_proxies_test() {
+  let d = config.default()
+  let boot_trusting = fn(trusted) {
+    boot(
+      config.Config(
+        ..d,
+        server: config.ServerConfig(..d.server, https_redirect: True),
+        access_log: config.AccessLogConfig(
+          ..d.access_log,
+          enabled: False,
+          trusted_proxies: trusted,
+        ),
+      ),
+    )
+  }
+  let forwarded = [#("host", "shop.test"), #("x-forwarded-proto", "https")]
+  let env = boot_trusting(["10.0.0.0/8"])
+  let resp = get(env.redirect <> "/old", forwarded)
+  assert resp.status == 301
+  assert location(resp) == "https://shop.test/old"
+  let env = boot_trusting(["127.0.0.1/32"])
+  let resp = get(env.redirect <> "/old", forwarded)
+  assert location(resp) == "https://example.com/new"
+}
+
 pub fn https_redirect_test() {
   let d = config.default()
   let env =

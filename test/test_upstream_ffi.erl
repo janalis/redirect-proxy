@@ -10,6 +10,10 @@
 %% - /not-modified: a 304
 %% - /hop: hop-by-hop headers in the response
 %% - /date: a response with its own `date`
+%% - /conn-length: `Connection` naming the framing headers
+%% - /bad-reason, /ctl-header: control characters in the head
+%% - /gzip-chunked, /gzip-close: transfer codings other than chunked
+%% - /bad-chunk: a chunk-size line ended by a bare LF
 %% - /early-hints: a 103 before the echo
 %% - /ws: 101 when asked for an upgrade, then every byte echoed back
 %% - /slow: the echo after 1.5 s
@@ -117,6 +121,28 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
             serve(Socket, N, Rest);
         <<"/hop">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\nConnection: X-Secret\r\nX-Secret: 1\r\nKeep-Alive: timeout=5\r\nX-Kept: yes\r\ncontent-length: 2\r\n\r\nok">>),
+            serve(Socket, N, Rest);
+        <<"/conn-length">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nConnection: content-length, transfer-encoding\r\ncontent-length: 2\r\n\r\nok">>),
+            serve(Socket, N, Rest);
+        <<"/bad-reason">> ->
+            send(Socket, <<"HTTP/1.1 200 O\rK\r\ncontent-length: 0\r\n\r\n">>),
+            serve(Socket, N, Rest);
+        <<"/ctl-header">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nx-a: b", 1, "c\r\ncontent-length: 0\r\n\r\n">>),
+            serve(Socket, N, Rest);
+        <<"/gzip-chunked">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n2\r\nzz\r\n0\r\n\r\n">>),
+            serve(Socket, N, Rest);
+        <<"/gzip-close">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nzz">>),
+            close(Socket);
+        <<"/bad-chunk">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\nzz\r\n0\r\n\r\n">>),
+            close(Socket);
+        <<"/big">> ->
+            send(Socket, [<<"HTTP/1.1 200 OK\r\ncontent-length: 8000000\r\n\r\n">>,
+                          binary:copy(<<"x">>, 8000000)]),
             serve(Socket, N, Rest);
         <<"/date">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\nDate: Mon, 01 Jan 2024 00:00:00 GMT\r\ncontent-length: 2\r\n\r\nok">>),

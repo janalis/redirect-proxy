@@ -22,13 +22,15 @@ pub type Outcome {
   /// The server sends this response.
   Answer(Response(BytesTree))
   /// The server forwards the request to the upstream (`Options.upstream`)
-  /// and relays its response. `headers` replace the client's
-  /// `x-forwarded-*` headers; with `close` the client connection is closed
-  /// after the response (draining). `done` is called once the exchange is
-  /// over, from the connection process.
+  /// and relays its response. `headers` replace the client's headers of
+  /// the same names, and the client's headers named in `drop` (lower case)
+  /// are not forwarded; with `close` the client connection is closed after
+  /// the response (draining). `done` is called once the exchange is over,
+  /// from the connection process.
   Forward(
     close: Bool,
     headers: List(#(String, String)),
+    drop: List(String),
     done: fn(Forwarded) -> Nil,
   )
 }

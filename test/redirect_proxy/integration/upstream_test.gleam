@@ -60,9 +60,18 @@ pub fn rules_answer_and_the_rest_is_forwarded_test() {
       #("host", "www.site.test"),
       #("x-forwarded-for", "6.6.6.6"),
       #("x-forwarded-proto", "https"),
+      #("forwarded", "for=6.6.6.6"),
+      #("x-real-ip", "6.6.6.6"),
+      #("x-forwarded-port", "443"),
+      #("x-forwarded-prefix", "/evil"),
+      #("x-forwarded-server", "evil"),
+      #("x-forwarded-ssl", "on"),
     ])
   assert resp.status == 200
   assert string.starts_with(resp.body, "GET /page?x=1\n")
+  assert !string.contains(resp.body, "evil")
+  assert !string.contains(resp.body, "443")
+  assert !string.contains(resp.body, "x-forwarded-ssl")
   assert string.contains(resp.body, "\nhost: www.site.test\n")
   // the peer is not a trusted proxy: its x-forwarded-* are replaced
   assert string.contains(resp.body, "\nx-forwarded-for: 127.0.0.1\n")
@@ -102,11 +111,20 @@ pub fn trusted_proxies_keep_their_forwarded_headers_test() {
       #("x-forwarded-for", "203.0.113.7"),
       #("x-forwarded-proto", "https"),
       #("x-forwarded-host", "www.site.test"),
+      #("forwarded", "for=203.0.113.7;proto=https"),
+      #("x-real-ip", "203.0.113.7"),
+      #("x-forwarded-port", "443"),
     ])
   assert string.contains(
     resp.body,
     "\nx-forwarded-for: 203.0.113.7, 127.0.0.1\n",
   )
+  assert string.contains(
+    resp.body,
+    "\nforwarded: for=203.0.113.7;proto=https\n",
+  )
+  assert string.contains(resp.body, "\nx-real-ip: 203.0.113.7\n")
+  assert string.contains(resp.body, "\nx-forwarded-port: 443\n")
   assert string.contains(resp.body, "\nx-forwarded-proto: https\n")
   assert string.contains(resp.body, "\nx-forwarded-host: www.site.test\n")
   assert string.contains(resp.body, "\nhost: internal:8080\n")
@@ -127,4 +145,41 @@ pub fn upstream_failures_test() {
   let timeouts = metrics.get(metrics.UpstreamTimeouts)
   assert get(env.redirect <> "/slow", []).status == 504
   assert metrics.get(metrics.UpstreamTimeouts) - timeouts == 1
+}
+
+fn upstream_duration_count() -> String {
+  let assert Ok(#(_, rest)) =
+    string.split_once(
+      metrics.render_prometheus(),
+      "\nredirect_proxy_upstream_duration_seconds_count ",
+    )
+  let assert Ok(#(count, _)) = string.split_once(rest, "\n")
+  count
+}
+
+/// An upgraded connection is counted, but its lifetime is not in the
+/// upstream duration histogram.
+pub fn tunnels_are_not_response_times_test() {
+  let #(port, _) = start_upstream()
+  let env = boot_with(port, [])
+  let assert Ok(#(_, redirect_port)) =
+    string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(redirect_port) = int.parse(redirect_port)
+  let requests = metrics.get(metrics.UpstreamRequests)
+  let before = upstream_duration_count()
+  let assert Ok(received) =
+    raw_exchange(redirect_port, [
+      <<
+        "GET /ws HTTP/1.1\r\nhost: a\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n":utf8,
+      >>,
+      <<"ping":utf8>>,
+    ])
+    |> bit_array.to_string
+  assert string.starts_with(received, "HTTP/1.1 101 ")
+  assert string.ends_with(received, "ping")
+  // the tunnel ends with the client connection
+  let lines = access_lines(env.dir, 1)
+  assert list.any(lines, string.contains(_, "\"GET /ws HTTP/1.1\" 101 "))
+  assert metrics.get(metrics.UpstreamRequests) - requests == 1
+  assert upstream_duration_count() == before
 }

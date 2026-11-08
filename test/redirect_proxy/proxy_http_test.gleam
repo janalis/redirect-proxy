@@ -291,3 +291,23 @@ pub fn malformed_header_names_are_rejected_test() {
     == "error:400"
   assert parse_outcome(<<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>) == "ok"
 }
+
+@external(erlang, "test_net_ffi", "half_closed")
+fn half_closed(port: Int, data: BitArray, wait_ms: Int) -> #(BitArray, Bool)
+
+/// A client that shuts down its side after its requests still gets every
+/// response, then the connection is closed.
+pub fn half_closed_clients_get_their_responses_test() {
+  let #(received, closed) =
+    half_closed(
+      start(),
+      <<
+        "GET /1 HTTP/1.1\r\nhost: a\r\n\r\nGET /2 HTTP/1.1\r\nhost: a\r\n\r\n":utf8,
+      >>,
+      1000,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert responses(text) == 2
+  assert string.contains(text, "x-path: /2\r\n")
+  assert closed
+}

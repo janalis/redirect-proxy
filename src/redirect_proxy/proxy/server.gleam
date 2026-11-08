@@ -28,6 +28,7 @@ import redirect_proxy/snapshot
 pub fn http_options(
   config: ServerConfig,
   access: Option(access_log.Settings),
+  trusted_proxies: List(String),
 ) -> proxy_http.Options {
   let upstream = case config.parse_upstream(config.upstream) {
     Ok(url) if config.upstream != "" ->
@@ -44,8 +45,11 @@ pub fn http_options(
     idle_timeout_ms: 10_000,
     // the query string and the headers do not count in `max_path_bytes`
     max_head_bytes: config.max_path_bytes + 65_536,
-    // `X-Forwarded-For` needs the client address
-    peer: option.is_some(access) || option.is_some(upstream),
+    // `X-Forwarded-For`, and `https_redirect` behind trusted proxies, need
+    // the client address
+    peer: option.is_some(access)
+      || option.is_some(upstream)
+      || { config.https_redirect && trusted_proxies != [] },
     upstream:,
   )
 }
@@ -82,7 +86,15 @@ pub fn handler(
       config.metrics_path != "" && req.path == config.metrics_path
     {
       True -> Answered(metrics_response(req, metrics_token), "")
-      False -> route(config, upstream, req, not_found_body, permanent_cache)
+      False ->
+        route(
+          config,
+          upstream,
+          trusted_proxies,
+          req,
+          not_found_body,
+          permanent_cache,
+        )
     }
     case routed {
       Answered(resp, rule_id) -> {
@@ -130,12 +142,23 @@ fn forward(
   trusted_proxies: List(String),
 ) -> proxy_http.Outcome {
   metrics.incr(metrics.UpstreamRequests)
+  let trusted = trusted_peer(req, trusted_proxies)
   proxy_http.Forward(
     close: ffi.draining(),
-    headers: forwarded_headers(req, trusted_proxies),
+    headers: forwarded_headers(req, trusted),
+    drop: case trusted {
+      True -> []
+      False -> untrusted_headers
+    },
     done: fn(forwarded: proxy_http.Forwarded) {
       let duration_us = ffi.monotonic_micros() - started
-      metrics.observe_upstream(duration_us)
+      // an upgraded connection (101) lasts as long as the client keeps it:
+      // counted, but its lifetime is not a response time (the access log
+      // has it)
+      case forwarded.status {
+        101 -> Nil
+        _ -> metrics.observe_upstream(duration_us)
+      }
       metrics.response(forwarded.status)
       case forwarded.error {
         option.None -> Nil
@@ -164,6 +187,27 @@ fn forward(
   )
 }
 
+/// The other forwarding headers: passed on from a trusted proxy, dropped
+/// from any other peer (they could be forged).
+const untrusted_headers = [
+  "forwarded", "x-real-ip", "x-forwarded-port", "x-forwarded-prefix",
+  "x-forwarded-server", "x-forwarded-ssl",
+]
+
+/// Whether the peer is one of `access_log.trusted_proxies`.
+fn trusted_peer(
+  req: Request(proxy_http.Peer),
+  trusted_proxies: List(String),
+) -> Bool {
+  case trusted_proxies, req.body {
+    [], _ | _, Error(Nil) -> False
+    _, Ok(ip) -> {
+      let peer = mist.ip_address_to_string(ip)
+      list.any(trusted_proxies, ffi.ip_in_cidr(peer, _))
+    }
+  }
+}
+
 /// `X-Forwarded-For` (the client address, appended to the incoming list
 /// when the peer is a trusted proxy), `X-Forwarded-Proto` and
 /// `X-Forwarded-Host` (the incoming values from a trusted proxy, else `http`
@@ -171,16 +215,12 @@ fn forward(
 /// forged.
 pub fn forwarded_headers(
   req: Request(proxy_http.Peer),
-  trusted_proxies: List(String),
+  trusted: Bool,
 ) -> List(#(String, String)) {
   let peer = case req.body {
     Ok(ip) -> mist.ip_address_to_string(ip)
     Error(Nil) -> ""
   }
-  let trusted =
-    peer != ""
-    && trusted_proxies != []
-    && list.any(trusted_proxies, ffi.ip_in_cidr(peer, _))
   let incoming = fn(name) {
     case trusted {
       True -> list.key_find(req.headers, name)
@@ -227,6 +267,7 @@ pub fn forwarded_headers(
 fn route(
   config: ServerConfig,
   upstream: Bool,
+  trusted_proxies: List(String),
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
@@ -238,7 +279,7 @@ fn route(
       case string.byte_size(req.path) > config.max_path_bytes {
         True -> Answered(empty(414), "")
         False ->
-          case config.https_redirect && !forwarded_https(req) {
+          case config.https_redirect && !forwarded_https(req, trusted_proxies) {
             True -> Answered(to_https(req, permanent_cache), "")
             False ->
               route_rules(
@@ -291,8 +332,22 @@ fn health() -> Response(BytesTree) {
   |> response.set_body(bytes_tree.from_string(body))
 }
 
-/// A TLS proxy in front forwarded an HTTPS request.
-fn forwarded_https(req: Request(proxy_http.Peer)) -> Bool {
+/// A TLS proxy in front forwarded an HTTPS request. With
+/// `access_log.trusted_proxies`, only theirs count; without, any peer's
+/// (a client sending the header itself only skips the upgrade).
+fn forwarded_https(
+  req: Request(proxy_http.Peer),
+  trusted_proxies: List(String),
+) -> Bool {
+  case list.key_find(req.headers, "x-forwarded-proto") {
+    Ok(_) if trusted_proxies != [] ->
+      trusted_peer(req, trusted_proxies) && https_proto(req)
+    Ok(_) -> https_proto(req)
+    Error(Nil) -> False
+  }
+}
+
+fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
   case list.key_find(req.headers, "x-forwarded-proto") {
     Ok(proto) ->
       // the first value: the client side of the first proxy

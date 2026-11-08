@@ -198,7 +198,9 @@ connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream})
         true -> peer(Socket);
         false -> {error, nil}
     end,
-    ok = inet:setopts(Socket, [{active, ?ACTIVE}]),
+    %% exit_on_close: a client that shuts down its side after its request
+    %% (half-close) still gets the response
+    ok = inet:setopts(Socket, [{active, ?ACTIVE}, {exit_on_close, false}]),
     request(<<>>, #conn{
         socket = Socket,
         handler = Handler,
@@ -620,15 +622,19 @@ lower(C) -> C.
 forward(_, _, _, _, _, Done, #conn{upstream = none} = C) ->
     done(Done, 502, 0, {some, unreachable}),
     reject(502, C);
-forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C) ->
+forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
     {request, Method, Headers, _, _, _, _, Path, Query} = Request,
-    case framing(Headers) of
+    case framing(Headers, Version) of
         {error, Status} ->
             done(Done, Status, 0, none),
             reject(Status, C);
         {ok, Body, Tokens, Upgrade, Expect, HasHost} ->
             Up = C#conn.upstream,
-            Drop = [T || T <- Tokens, not essential(T)],
+            %% the client's values of the headers the handler sets, and of
+            %% the ones it drops (forwarding headers from untrusted peers)
+            Drop = [T || T <- Tokens, not essential(T)]
+                ++ [N || {N, _} <- XForwarded] ++ Dropped,
+            HasBody = Body =/= none andalso Body =/= {length, 0},
             Head = [method_name(Method), $\s, Path,
                     case Query of none -> []; {some, Q} -> [$?, Q] end,
                     <<" HTTP/1.1\r\n">>,
@@ -642,22 +648,24 @@ forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C) ->
                         none -> [];
                         _ -> [<<"connection: upgrade\r\nupgrade: ">>, Upgrade, <<"\r\n">>]
                     end,
+                    %% one framing header, normalised
                     case Body of
                         chunked -> <<"transfer-encoding: chunked\r\n">>;
-                        _ -> []
+                        {length, N} -> [<<"content-length: ">>, integer_to_binary(N), <<"\r\n">>];
+                        none -> []
                     end,
                     <<"\r\n">>],
             F = #fwd{
                 method = Method,
                 head = Head,
                 body = Body,
-                continue = Expect andalso Body =/= none andalso Version =:= {1, 1},
+                continue = Expect andalso HasBody andalso Version =:= {1, 1},
                 upgrade = Upgrade =/= none,
                 client_close = close_requested(Version, join(Tokens)),
                 close_after = CloseAfter,
                 version = Version,
                 done = Done,
-                retry = Body =:= none andalso Upgrade =:= none andalso idempotent(Method)
+                retry = not HasBody andalso Upgrade =:= none andalso idempotent(Method)
             },
             case open(C) of
                 {ok, Socket, Reused, C1} -> send_request(Socket, Reused, Rest, F, C1);
@@ -668,37 +676,41 @@ forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C) ->
 %% {ok, Body, ConnectionTokens, Upgrade, Expect, HasHost} | {error, Status}
 %%
 %% The framing of the request body (RFC 9112 6): `Transfer-Encoding` and
-%% `Content-Length` together, a transfer coding other than chunked, and an
-%% invalid or ambiguous length are rejected rather than guessed.
-framing(Headers) ->
-    framing(Headers, [], [], [], none, false, false).
+%% `Content-Length` together, a transfer coding other than chunked, a
+%% `Transfer-Encoding` in an HTTP/1.0 request, and an invalid or ambiguous
+%% length are rejected rather than guessed. HTTP/1.0 requests cannot
+%% upgrade (RFC 9110 7.8).
+framing(Headers, Version) ->
+    framing(Headers, Version, [], [], [], none, false, false).
 
-framing([{Name, Value} | Rest], Lengths, Codings, Tokens, Upgrade, Expect, Host) ->
+framing([{Name, Value} | Rest], V, Lengths, Codings, Tokens, Upgrade, Expect, Host) ->
     case Name of
         <<"content-length">> ->
-            framing(Rest, [Value | Lengths], Codings, Tokens, Upgrade, Expect, Host);
+            framing(Rest, V, [Value | Lengths], Codings, Tokens, Upgrade, Expect, Host);
         <<"transfer-encoding">> ->
-            framing(Rest, Lengths, [Value | Codings], Tokens, Upgrade, Expect, Host);
+            framing(Rest, V, Lengths, [Value | Codings], Tokens, Upgrade, Expect, Host);
         <<"connection">> ->
-            framing(Rest, Lengths, Codings, tokens(Value) ++ Tokens, Upgrade, Expect, Host);
+            framing(Rest, V, Lengths, Codings, tokens(Value) ++ Tokens, Upgrade, Expect, Host);
         <<"upgrade">> ->
-            framing(Rest, Lengths, Codings, Tokens, Value, Expect, Host);
+            framing(Rest, V, Lengths, Codings, Tokens, Value, Expect, Host);
         <<"expect">> ->
-            framing(Rest, Lengths, Codings, Tokens, Upgrade,
+            framing(Rest, V, Lengths, Codings, Tokens, Upgrade,
                     Expect orelse has_token(Value, <<"100-continue">>), Host);
         <<"host">> ->
-            framing(Rest, Lengths, Codings, Tokens, Upgrade, Expect, true);
+            framing(Rest, V, Lengths, Codings, Tokens, Upgrade, Expect, true);
         _ ->
-            framing(Rest, Lengths, Codings, Tokens, Upgrade, Expect, Host)
+            framing(Rest, V, Lengths, Codings, Tokens, Upgrade, Expect, Host)
     end;
-framing([], Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
-    Upgrade = case lists:member(<<"upgrade">>, Tokens) of
+framing([], Version, Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
+    Upgrade = case Version =:= {1, 1} andalso lists:member(<<"upgrade">>, Tokens) of
         true -> Upgrade0;
         false -> none
     end,
     case {Lengths, Codings} of
         {[], []} ->
             {ok, none, Tokens, Upgrade, Expect, Host};
+        {[], _} when Version =:= {1, 0} ->
+            {error, 400};
         {[], _} ->
             case tokens(join(lists:reverse(Codings))) of
                 [<<"chunked">>] -> {ok, chunked, Tokens, Upgrade, Expect, Host};
@@ -706,7 +718,6 @@ framing([], Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
             end;
         {_, []} ->
             case content_length(Lengths) of
-                {ok, 0} -> {ok, none, Tokens, Upgrade, Expect, Host};
                 {ok, N} -> {ok, {length, N}, Tokens, Upgrade, Expect, Host};
                 error -> {error, 400}
             end;
@@ -736,26 +747,22 @@ join([]) -> <<>>;
 join(Items) -> iolist_to_binary(lists:join(<<",">>, Items)).
 
 %% Headers a `Connection` header cannot remove: dropping the framing or the
-%% host would make the upstream read another request than the one checked.
+%% host would make the other side read another message than the one checked.
 essential(<<"host">>) -> true;
 essential(<<"content-length">>) -> true;
-essential(<<"x-forwarded-for">>) -> true;
-essential(<<"x-forwarded-proto">>) -> true;
-essential(<<"x-forwarded-host">>) -> true;
+essential(<<"transfer-encoding">>) -> true;
 essential(_) -> false.
 
-%% The client's headers, without the hop-by-hop ones, the ones its
-%% `Connection` header names, `Expect` (answered here) and the
-%% `x-forwarded-*` ones (replaced).
+%% The client's headers, without the hop-by-hop ones, `Expect` (answered
+%% here), `Content-Length` (sent once, normalised) and the ones in Drop:
+%% named by its `Connection` header, set or dropped by the handler.
 request_headers([{Name, Value} | Rest], Drop) ->
     case Name of
         _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
         <<"expect">> -> request_headers(Rest, Drop);
-        <<"x-forwarded-for">> -> request_headers(Rest, Drop);
-        <<"x-forwarded-proto">> -> request_headers(Rest, Drop);
-        <<"x-forwarded-host">> -> request_headers(Rest, Drop);
+        <<"content-length">> -> request_headers(Rest, Drop);
         _ ->
-            case Drop =/= [] andalso lists:member(Name, Drop) of
+            case lists:member(Name, Drop) of
                 true -> request_headers(Rest, Drop);
                 false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
             end
@@ -872,23 +879,31 @@ response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
 
 relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
     {Lengths, Codings, Tokens, HasDate} = response_fields(Headers, [], [], [], false),
-    Framing = if
-        F#fwd.method =:= head; Status =:= 204; Status =:= 304 -> none;
+    %% Framing, and the transfer codings other than chunked, which are
+    %% relayed (the body is re-chunked)
+    {Framing, Kept} = if
+        F#fwd.method =:= head; Status =:= 204; Status =:= 304 -> {none, []};
         Codings =/= [] ->
-            case lists:reverse(tokens(join(lists:reverse(Codings)))) of
-                [<<"chunked">> | _] -> chunked;
-                _ -> close
+            Applied = tokens(join(lists:reverse(Codings))),
+            case lists:reverse(Applied) of
+                [<<"chunked">> | Others] -> {chunked, lists:reverse(Others)};
+                %% a final coding other than chunked: delimited by the end
+                %% of the connection
+                _ -> {close, Applied}
             end;
         Lengths =/= [] ->
             case content_length(Lengths) of
-                {ok, N} -> {length, N};
-                error -> invalid
+                {ok, N} -> {{length, N}, []};
+                error -> {invalid, []}
             end;
-        true -> close
+        true -> {close, []}
     end,
     case Framing of
         invalid ->
             fail(502, invalid_response, invalid_content_length, F, C);
+        _ when Kept =/= [], F#fwd.version =:= {1, 0} ->
+            %% an HTTP/1.0 client has no transfer codings
+            fail(502, invalid_response, transfer_coding_for_http_1_0, F, C);
         _ ->
             Chunked = Framing =:= chunked andalso F#fwd.version =:= {1, 1},
             ClientKeep = BodyDone andalso not F#fwd.client_close
@@ -907,9 +922,14 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
             Head = [status_line(Status, Reason),
                     response_headers(Headers, Tokens, Codings =/= []),
                     Date,
-                    case Chunked of
-                        true -> <<"transfer-encoding: chunked\r\n">>;
-                        false -> []
+                    case {Chunked, Kept} of
+                        {true, _} ->
+                            [<<"transfer-encoding: ">>,
+                             lists:join(<<", ">>, Kept ++ [<<"chunked">>]), <<"\r\n">>];
+                        {false, []} ->
+                            [];
+                        {false, _} ->
+                            [<<"transfer-encoding: ">>, lists:join(<<", ">>, Kept), <<"\r\n">>]
                     end,
                     case {ClientKeep, F#fwd.version} of
                         {false, _} -> <<"connection: close\r\n">>;
@@ -947,7 +967,12 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                         {client, _} ->
                             none
                     end,
-                    done(F#fwd.done, Status, Bytes, Error),
+                    %% the client did not get the whole response
+                    Logged = case Why of
+                        {client, _} -> 499;
+                        _ -> Status
+                    end,
+                    done(F#fwd.done, Logged, Bytes, Error),
                     close(C1)
             end
     end.
@@ -1003,7 +1028,8 @@ response_headers([{Name, Value} | Rest], Tokens, DropLength) ->
             Lower =/= <<"connection">> andalso Lower =/= <<"upgrade">>
                 andalso ?HOP_BY_HOP(Lower);
         _ ->
-            ?HOP_BY_HOP(Lower) orelse lists:member(Lower, Tokens)
+            ?HOP_BY_HOP(Lower)
+                orelse (lists:member(Lower, Tokens) andalso not essential(Lower))
                 orelse (DropLength andalso Lower =:= <<"content-length">>)
     end,
     case Drop of
@@ -1041,12 +1067,13 @@ parse_response(Head) ->
                A >= $1, A =< $5, B >= $0, B =< $9, D >= $0, D =< $9 ->
             Reason = case Tail of
                 <<$\s, R/binary>> -> R;
-                _ -> <<>>
+                <<>> -> <<>>;
+                _ -> <<0>>
             end,
-            case response_lines(Lines, []) of
+            case printable(Reason) andalso response_lines(Lines, []) of
                 {ok, Headers} ->
                     {ok, (A - $0) * 100 + (B - $0) * 10 + (D - $0), Reason, Minor - $0, Headers};
-                error ->
+                _ ->
                     error
             end;
         _ ->
@@ -1060,13 +1087,19 @@ response_lines([Line | Rest], Acc) ->
         {Length, _} when Length > 0 ->
             <<Name:Length/binary, $:, Value/binary>> = Line,
             %% a lone CR would end the line for some clients
-            case binary:match(Value, [<<"\r">>, <<0>>]) of
-                nomatch -> response_lines(Rest, [{Name, trim(Value)} | Acc]);
-                _ -> error
+            case printable(Value) of
+                true -> response_lines(Rest, [{Name, trim(Value)} | Acc]);
+                false -> error
             end;
         _ ->
             error
     end.
+
+%% Whether a reason phrase or header value has no control character other
+%% than HTAB (RFC 9110 5.5, RFC 9112 4).
+printable(<<C, _/binary>>) when C < 32, C =/= $\t; C =:= 127 -> false;
+printable(<<_, Rest/binary>>) -> printable(Rest);
+printable(<<>>) -> true.
 
 %% A 101 from the upstream: the response is relayed, then bytes are copied
 %% both ways until either side closes, or none flows for upstream_timeout.
@@ -1195,40 +1228,80 @@ copy_chunked(Buffer, Recv, Emit, Bytes) ->
         error -> {error, bad_chunk, Bytes}
     end.
 
+%% The chunk-size line, strictly (RFC 9112 7.1.1): hex digits, chunk
+%% extensions made of tokens and quoted strings, then CRLF. Anything else
+%% (a bare LF, a lone CR, control characters, junk around the size, a size
+%% of more than 15 digits) is an error: a body another parser could frame
+%% differently is not forwarded.
 chunk_size(Buffer) ->
     case binary:match(Buffer, <<"\n">>) of
-        nomatch when byte_size(Buffer) > 1024 ->
+        nomatch when byte_size(Buffer) > 4096 ->
             error;
         nomatch ->
             more;
-        {At, 1} ->
-            <<Line:At/binary, $\n, Rest/binary>> = Buffer,
-            case hex(strip_cr(Line), 0, 0) of
-                {ok, Size} -> {ok, Size, Rest};
-                error -> error
-            end
+        {At, 1} when At > 0 ->
+            Length = At - 1,
+            case Buffer of
+                <<Line:Length/binary, "\r\n", Rest/binary>> ->
+                    case hex(Line, 0, 0) of
+                        {ok, Size} -> {ok, Size, Rest};
+                        error -> error
+                    end;
+                _ ->
+                    error
+            end;
+        _ ->
+            error
     end.
 
-hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $0, C =< $9 ->
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 15, C >= $0, C =< $9 ->
     hex(Rest, N * 16 + C - $0, Digits + 1);
-hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $a, C =< $f ->
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 15, C >= $a, C =< $f ->
     hex(Rest, N * 16 + C - $a + 10, Digits + 1);
-hex(<<C, Rest/binary>>, N, Digits) when Digits < 16, C >= $A, C =< $F ->
+hex(<<C, Rest/binary>>, N, Digits) when Digits < 15, C >= $A, C =< $F ->
     hex(Rest, N * 16 + C - $A + 10, Digits + 1);
-%% a chunk extension
-hex(<<C, _/binary>>, N, Digits) when Digits > 0, (C =:= $; orelse C =:= $\s orelse C =:= $\t) ->
-    {ok, N};
-hex(<<>>, N, Digits) when Digits > 0 ->
-    {ok, N};
+hex(Rest, N, Digits) when Digits > 0 ->
+    case extensions(Rest) of
+        true -> {ok, N};
+        false -> error
+    end;
 hex(_, _, _) ->
     error.
 
-strip_cr(<<>>) -> <<>>;
-strip_cr(Line) ->
-    case binary:last(Line) of
-        $\r -> binary:part(Line, 0, byte_size(Line) - 1);
-        _ -> Line
+%% *( BWS ";" BWS ext-name [ BWS "=" BWS ( token / quoted-string ) ] )
+extensions(Bin) ->
+    case skip_ows(Bin) of
+        <<>> -> true;
+        <<$;, Rest/binary>> ->
+            case token(skip_ows(Rest), 0) of
+                {0, _} ->
+                    false;
+                {Length, _} ->
+                    <<_:Length/binary, After/binary>> = skip_ows(Rest),
+                    case skip_ows(After) of
+                        <<$=, Value/binary>> -> extension_value(skip_ows(Value));
+                        Next -> extensions(Next)
+                    end
+            end;
+        _ ->
+            false
     end.
+
+extension_value(<<$", Rest/binary>>) ->
+    quoted(Rest);
+extension_value(Bin) ->
+    case token(Bin, 0) of
+        {0, _} -> false;
+        {Length, _} ->
+            <<_:Length/binary, Rest/binary>> = Bin,
+            extensions(Rest)
+    end.
+
+%% The rest of a quoted string: qdtext or quoted-pair, then `"`.
+quoted(<<$", Rest/binary>>) -> extensions(Rest);
+quoted(<<$\\, C, Rest/binary>>) when C =:= $\t; C >= 32, C =/= 127 -> quoted(Rest);
+quoted(<<C, Rest/binary>>) when C =:= $\t; C >= 32, C =/= 127, C =/= $\\ -> quoted(Rest);
+quoted(_) -> false.
 
 chunk_data(Buffer, Size, Recv, Emit, Bytes) when byte_size(Buffer) >= Size ->
     <<Data:Size/binary, Rest/binary>> = Buffer,
@@ -1248,26 +1321,38 @@ chunk_data(Buffer, Size, Recv, Emit, Bytes) ->
 
 chunk_end(<<"\r\n", Rest/binary>>, Recv, Emit, Bytes) ->
     copy_chunked(Rest, Recv, Emit, Bytes);
-chunk_end(<<"\n", Rest/binary>>, Recv, Emit, Bytes) ->
-    copy_chunked(Rest, Recv, Emit, Bytes);
 chunk_end(Buffer, Recv, Emit, Bytes) when Buffer =:= <<>>; Buffer =:= <<"\r">> ->
     refill(Buffer, Recv, Bytes, fun(B) -> chunk_end(B, Recv, Emit, Bytes) end);
 chunk_end(_, _, _, Bytes) ->
     {error, bad_chunk, Bytes}.
 
+%% The trailer section: lines ended by CRLF, without control characters or
+%% folding, then an empty line.
 trailers(<<"\r\n", Rest/binary>>, _, Bytes, _) ->
     {ok, Rest, Bytes};
-trailers(<<"\n", Rest/binary>>, _, Bytes, _) ->
-    {ok, Rest, Bytes};
-trailers(Buffer, _, Bytes, Seen) when Seen + byte_size(Buffer) > 65536 ->
+trailers(_, _, Bytes, Seen) when Seen > 65536 ->
     {error, bad_chunk, Bytes};
 trailers(Buffer, Recv, Bytes, Seen) ->
     case binary:match(Buffer, <<"\n">>) of
+        nomatch when byte_size(Buffer) > 65536 ->
+            {error, bad_chunk, Bytes};
         nomatch ->
             refill(Buffer, Recv, Bytes, fun(B) -> trailers(B, Recv, Bytes, Seen) end);
-        {At, 1} ->
-            <<_:At/binary, $\n, Rest/binary>> = Buffer,
-            trailers(Rest, Recv, Bytes, Seen + At + 1)
+        {At, 1} when At > 1 ->
+            Length = At - 1,
+            case Buffer of
+                <<C, _/binary>> when C =:= $\s; C =:= $\t ->
+                    {error, bad_chunk, Bytes};
+                <<Line:Length/binary, "\r\n", Rest/binary>> ->
+                    case printable(Line) of
+                        true -> trailers(Rest, Recv, Bytes, Seen + At + 1);
+                        false -> {error, bad_chunk, Bytes}
+                    end;
+                _ ->
+                    {error, bad_chunk, Bytes}
+            end;
+        _ ->
+            {error, bad_chunk, Bytes}
     end.
 
 refill(Buffer, Recv, Bytes, Next) ->
@@ -1463,8 +1548,8 @@ respond(Request0, Version, Close0, Rest,
                 ok -> request(Rest, C1);
                 {error, _} -> close(C1)
             end;
-        {ok, {forward, CloseAfter, XForwarded, Done}} ->
-            forward(Request, Version, Rest, CloseAfter, XForwarded, Done, C);
+        {ok, {forward, CloseAfter, XForwarded, Drop, Done}} ->
+            forward(Request, Version, Rest, CloseAfter, {XForwarded, Drop}, Done, C);
         error ->
             reject(500, C)
     end.
