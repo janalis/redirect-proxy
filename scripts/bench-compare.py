@@ -20,7 +20,10 @@ with the expected redirection is reported as failed, and not timed.
 
 Environment: EXACT=10000 PREFIX=1000 REGEX=500 (rules), DURATION=10s
 WARMUP=2s RUNS=3 CONCURRENCY=100 (load), SERVER_CPUS=<n> (default half),
-RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev (built by `make docker`).
+RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev (built by `make docker`),
+RP_PULL=1 (RP_IMAGE is a published image: pull it, record its digest),
+RP_VERSION=<label> (shown instead of the version the image reports, e.g.
+`main (7c2583c)` for an image built from main).
 """
 import argparse
 import datetime
@@ -54,6 +57,8 @@ WARMUP = os.environ.get("WARMUP", "2s")
 RUNS = int(os.environ.get("RUNS", "3"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "100"))
 RP_IMAGE = os.environ.get("RP_IMAGE", "ghcr.io/janalis/redirect-proxy:dev")
+RP_PULL = os.environ.get("RP_PULL") == "1"
+RP_VERSION = os.environ.get("RP_VERSION", "")
 
 # name -> (path, expected status, expected Location)
 SCENARIOS = {
@@ -87,7 +92,8 @@ def redirect_proxy(d):
     d.chmod(0o777)
     return {
         "image": RP_IMAGE,
-        "pull": False,  # built from this checkout
+        "pull": RP_PULL,  # by default, built from this checkout
+        "label": RP_VERSION,
         "writable": True,
         "env": {
             "RP_STORAGE_DATA_DIR": "/etc/bench",
@@ -471,6 +477,7 @@ def bench(key, server_cpus, client_cpus):
         spec = configure(work)
         version, digest = image_info(spec["image"], spec["version"],
                                      spec.get("pull", True))
+        version = spec.get("label") or version
         result = {"key": key, "name": label, "image": spec["image"],
                   "version": version, "digest": digest,
                   "notes": list(spec["notes"])}

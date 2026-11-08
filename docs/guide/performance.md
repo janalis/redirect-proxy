@@ -14,8 +14,10 @@ both redirect-proxy and the latest stable release of each server.
 How it is measured (`scripts/bench-compare.py`):
 
 - Every server runs from its official Docker image (`nginx:stable`,
-  `haproxy:lts`, `caddy:2`, `traefik:v3`, `httpd:2.4`; redirect-proxy from
-  the commit being measured) and is limited to half of the CPUs. The load
+  `haproxy:lts`, `caddy:2`, `traefik:v3`, `httpd:2.4`) and is limited to
+  half of the CPUs. redirect-proxy runs from its published image after a
+  release, shown with its version, and otherwise from an image built from
+  `main`, shown as `main (<commit>)`. The load
   generator, [oha](https://github.com/hatoo/oha) in a container too, gets
   the other half. Both are on a private Docker network.
 - Each server gets the rules in the form it serves fastest: a hash map for
