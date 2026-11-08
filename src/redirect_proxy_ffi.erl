@@ -21,7 +21,7 @@
     no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
-    binary_take/2, binary_drop/2, rescue/1,
+    binary_take/2, binary_drop/2, rescue/1, store_timeout/0, rescue_store_timeout/2,
     normalise_path/1, encode_non_ascii/1, is_ascii/1, needs_trim/1,
     encode_cached/2, strip_port/1, data_dir_owner_mismatch/1
 ]).
@@ -902,6 +902,18 @@ rescue(Fun) ->
     catch Class:Reason ->
         {error, unicode:characters_to_binary(
                   io_lib:format("~p: ~0p", [Class, Reason]))}
+    end.
+
+%% A store call that timed out: an error that `rescue_store_timeout` turns
+%% into an answer (503), and that crashes the caller anywhere else.
+store_timeout() ->
+    erlang:error(redirect_proxy_store_timeout).
+
+%% Runs Fun, or Unavailable when a store call in it timed out. Any other
+%% exception goes through as it was.
+rescue_store_timeout(Fun, Unavailable) ->
+    try Fun()
+    catch error:redirect_proxy_store_timeout -> Unavailable()
     end.
 
 %% ---------------------------------------------------------------------------

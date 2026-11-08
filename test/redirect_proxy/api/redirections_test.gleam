@@ -16,6 +16,7 @@ import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/rule
+import simplifile
 import support
 
 pub fn crud_round_trip_test() {
@@ -803,4 +804,29 @@ pub fn imported_ids_are_reachable_by_url_test() {
       "{\"id\":\"bulk\",\"source\":\"/b\",\"target\":\"/c\"}",
     )
   assert created.status == 422
+}
+
+/// A store too busy to answer in time (here waiting for the lock another
+/// process holds): 503 with Retry-After, not a crash.
+pub fn a_busy_store_answers_503_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  ffi.set_tunable("store_call_timeout", 200)
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/busy\",\"target\":\"/t\"}",
+    )
+  ffi.clear_tunable("store_call_timeout")
+  let assert Ok(Nil) = simplifile.delete(lock)
+
+  assert resp.status == 503
+  assert header(resp, "retry-after") == "1"
+  assert header(resp, "content-type") == "application/problem+json"
+  assert field(resp.body, ["code"], decode.string) == "store_busy"
 }

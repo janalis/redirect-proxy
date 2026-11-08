@@ -341,6 +341,15 @@ pub fn encode_cached(items: List(a), encode: fn(a) -> String) -> List(String)
 @external(erlang, "redirect_proxy_ffi", "encode_non_ascii")
 pub fn encode_non_ascii(url: String) -> String
 
+/// Raises the error of a store call that timed out.
+@external(erlang, "redirect_proxy_ffi", "store_timeout")
+pub fn store_timeout() -> a
+
+/// Runs `f`, or `unavailable` when a store call in it timed out
+/// (`store_timeout`).
+@external(erlang, "redirect_proxy_ffi", "rescue_store_timeout")
+pub fn rescue_store_timeout(f: fn() -> a, unavailable: fn() -> a) -> a
+
 /// Runs `f`, returning an exception as `Error` with its description.
 @external(erlang, "redirect_proxy_ffi", "rescue")
 pub fn rescue(f: fn() -> a) -> Result(a, String)
