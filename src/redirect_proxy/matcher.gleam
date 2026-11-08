@@ -864,9 +864,12 @@ const regex_reductions_budget = 200_000
 /// is not counted (at most `budget_check_every` runs, each capped).
 const budget_check_every = 32
 
-/// Regex runs of one request that may exhaust their budget before the
-/// request stops trying the next regex rules: each run is capped, but a
-/// crafted path could otherwise cost the cap once per regex rule.
+/// Regex runs that may exhaust their budget before a request stops trying
+/// the next regex rules of a host: each run is capped, but a crafted path
+/// could otherwise cost the cap once per regex rule. Like
+/// `regex_reductions_budget`, per host a request is looked up under (the
+/// request host, its `*.parent` levels, `*`; twice when trailing slashes
+/// are ignored): a bounded number of times.
 const max_exhausted_runs = 3
 
 /// Runs the regex rules of two lists sorted by rank, merged in rank order,
