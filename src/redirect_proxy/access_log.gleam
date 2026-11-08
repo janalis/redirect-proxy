@@ -15,6 +15,7 @@ import gleam/result
 import gleam/string
 import mist
 import redirect_proxy/access_log_format.{type Format} as fmt
+import redirect_proxy/cidr.{type Cidrs}
 import redirect_proxy/config.{type AccessLogConfig}
 import redirect_proxy/ffi
 import redirect_proxy/listener.{
@@ -28,7 +29,8 @@ pub type Settings {
     format: Format,
     log_query: Bool,
     anonymize_ip: Bool,
-    trusted_proxies: List(String),
+    /// `access_log.trusted_proxies`, parsed.
+    trusted_proxies: Cidrs,
     /// Address headers logged by `format` whose addresses are truncated
     /// (empty when addresses are not truncated, or none is logged).
     anonymized_headers: List(String),
@@ -58,7 +60,7 @@ pub fn settings(
       format:,
       log_query: cfg.log_query,
       anonymize_ip: cfg.anonymize_ip == "truncate",
-      trusted_proxies: cfg.trusted_proxies,
+      trusted_proxies: cidr.compile(cfg.trusted_proxies),
       anonymized_headers: case cfg.anonymize_ip {
         "truncate" -> fmt.logged_address_headers(format)
         _ -> []
@@ -160,12 +162,21 @@ pub fn record(
   time_us: Int,
   duration_us: Int,
 ) -> Nil {
-  let client = case peer, settings {
-    // the peer is the client: anonymise its address without formatting it
-    Ok(ip), Settings(anonymize_ip: True, trusted_proxies: [], ..) ->
-      ffi.anonymize_peer(ip)
-    Ok(ip), _ -> client_ip(settings, mist.ip_address_to_string(ip), req.headers)
-    Error(Nil), _ -> client_ip(settings, "", req.headers)
+  let client = case peer {
+    Ok(ip) ->
+      case cidr.contains_peer(settings.trusted_proxies, ip) {
+        // the peer is the client: anonymise its address without formatting it
+        False if settings.anonymize_ip -> ffi.anonymize_peer(ip)
+        False -> mist.ip_address_to_string(ip)
+        True ->
+          fmt.forwarded_client_ip(
+            mist.ip_address_to_string(ip),
+            req.headers,
+            settings.trusted_proxies,
+          )
+          |> anonymize(settings, _)
+      }
+    Error(Nil) -> client_ip(settings, "", req.headers)
   }
   let entry =
     fmt.Entry(
@@ -216,7 +227,11 @@ pub fn client_ip(
   peer: String,
   headers: List(#(String, String)),
 ) -> String {
-  let ip = fmt.client_ip(peer, headers, settings.trusted_proxies)
+  fmt.client_ip(peer, headers, settings.trusted_proxies)
+  |> anonymize(settings, _)
+}
+
+fn anonymize(settings: Settings, ip: String) -> String {
   case settings.anonymize_ip {
     True -> fmt.anonymize(ip)
     False -> ip

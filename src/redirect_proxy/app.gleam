@@ -25,6 +25,7 @@ import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
 import redirect_proxy/api/web as api_web
 import redirect_proxy/audit
+import redirect_proxy/cidr
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/validate as config_validate
@@ -149,11 +150,9 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       },
     )
 
+  let trusted_proxies = cidr.compile(cfg.access_log.trusted_proxies)
   let admin_handler = fn(req: request.Request(mist.Connection)) {
-    let peer_ip = case mist.get_connection_info(req.body) {
-      Ok(info) -> mist.ip_address_to_string(info.ip_address)
-      Error(Nil) -> ""
-    }
+    let #(peer_ip, client_ip) = addresses(trusted_proxies, req)
     let ctx =
       admin_web.Context(
         config: cfg,
@@ -162,7 +161,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         clients: clients_settings(cfg),
         static_dir:,
         peer_ip:,
-        client_ip: client_ip(cfg, peer_ip, req.headers),
+        client_ip:,
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
@@ -176,17 +175,14 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     })
 
   let api_handler = fn(req: request.Request(mist.Connection)) {
-    let peer_ip = case mist.get_connection_info(req.body) {
-      Ok(info) -> mist.ip_address_to_string(info.ip_address)
-      Error(Nil) -> ""
-    }
+    let #(peer_ip, client_ip) = addresses(trusted_proxies, req)
     let ctx =
       api_web.Context(
         config: cfg,
         store: store_subject,
         clients: clients_settings(cfg),
         peer_ip:,
-        client_ip: client_ip(cfg, peer_ip, req.headers),
+        client_ip:,
         deprecations: deprecation.registry(),
       )
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
@@ -405,13 +401,25 @@ fn start_janitor() -> Result(
   |> actor.start
 }
 
-/// The client address used for login and token throttling: the TCP peer, or
-/// the address forwarded by one of `access_log.trusted_proxies` (the same
-/// resolution as the access log).
-fn client_ip(
-  cfg: config.Config,
-  peer_ip: String,
-  headers: List(#(String, String)),
-) -> String {
-  access_log_format.client_ip(peer_ip, headers, cfg.access_log.trusted_proxies)
+/// The peer address, and the client address used for login and token
+/// throttling: the TCP peer, or the address forwarded by one of
+/// `access_log.trusted_proxies` (`trusted`, the same resolution as the
+/// access log).
+fn addresses(
+  trusted: cidr.Cidrs,
+  req: request.Request(mist.Connection),
+) -> #(String, String) {
+  case mist.get_connection_info(req.body) {
+    Ok(info) -> {
+      let peer_ip = mist.ip_address_to_string(info.ip_address)
+      case cidr.contains_peer(trusted, info.ip_address) {
+        True -> #(
+          peer_ip,
+          access_log_format.forwarded_client_ip(peer_ip, req.headers, trusted),
+        )
+        False -> #(peer_ip, peer_ip)
+      }
+    }
+    Error(Nil) -> #("", access_log_format.client_ip("", req.headers, trusted))
+  }
 }

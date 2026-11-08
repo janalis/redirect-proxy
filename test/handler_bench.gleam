@@ -8,7 +8,10 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option
+import mist
+import redirect_proxy/access_log
 import redirect_proxy/config
+import redirect_proxy/listener
 import redirect_proxy/matcher
 import redirect_proxy/proxy/http as proxy_http
 import redirect_proxy/proxy/server
@@ -82,10 +85,55 @@ fn rules() {
 }
 
 fn head(path: String) -> BitArray {
+  head_with(path, "")
+}
+
+fn head_with(path: String, extra: String) -> BitArray {
   bit_array.from_string(
     "GET "
     <> path
-    <> " HTTP/1.1\r\nhost: server:8080\r\nuser-agent: oha/1.16.0\r\naccept: */*\r\n\r\n",
+    <> " HTTP/1.1\r\nhost: server:8080\r\nuser-agent: oha/1.16.0\r\naccept: */*\r\n"
+    <> extra
+    <> "\r\n",
+  )
+}
+
+/// The handler with the redirect listener's access log on (the default
+/// format; the logger discards the lines, no handler is installed), with
+/// `trusted` as both the access log's and the handler's trusted proxies.
+fn logged_handler(trusted: List(String)) -> proxy_http.Handler {
+  let d = config.default()
+  let assert Ok(settings) =
+    access_log.settings(
+      config.AccessLogConfig(..d.access_log, trusted_proxies: trusted),
+      listener.RedirectListener,
+    )
+  server.handler(d.server, "", option.Some(settings), trusted)
+}
+
+/// An exact hit with the access log on, from `peer`, with the `trusted`
+/// proxies and `extra` header lines.
+fn logged(
+  name: String,
+  peer: mist.IpAddress,
+  trusted: List(String),
+  extra: String,
+) -> Nil {
+  let handler = logged_handler(trusted)
+  let raw = head_with("/exact/9999", extra)
+  let with_peer = fn(req: Request(proxy_http.Peer)) {
+    request.Request(..req, body: Ok(peer))
+  }
+  let req = with_peer(parse(raw))
+  let h = best_ns(fn() { handler(req) }, 50_000, 15)
+  let r = reductions(fn() { handler(with_peer(parse(raw))) }, 50_000)
+  io.println(
+    name
+    <> ": handler "
+    <> int.to_string(h)
+    <> " ns, "
+    <> int.to_string(r)
+    <> " reductions",
   )
 }
 
@@ -121,4 +169,23 @@ pub fn main() -> Nil {
       <> " reductions",
     )
   })
+  let proxies = ["10.0.0.0/8", "192.168.0.0/16", "fd00::/8", "::1/128"]
+  // the access log on, default settings: no trusted proxy
+  logged("logged", mist.IpV4(192, 0, 2, 1), [], "")
+  // a peer that is not one of the trusted proxies
+  logged("logged-untrusted", mist.IpV4(192, 0, 2, 1), proxies, "")
+  // a trusted proxy forwarding the client address (two hops)
+  logged(
+    "logged-forwarded",
+    mist.IpV4(10, 0, 0, 1),
+    proxies,
+    "x-forwarded-for: 203.0.113.9, 10.0.0.2\r\n",
+  )
+  // an IPv6 trusted proxy forwarding an IPv4-mapped client address
+  logged(
+    "logged-forwarded-v6",
+    mist.IpV6(0, 0, 0, 0, 0, 0, 0, 1),
+    proxies,
+    "x-forwarded-for: ::ffff:203.0.113.9\r\n",
+  )
 }
