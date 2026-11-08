@@ -234,12 +234,15 @@ type Identity {
   Identity(drop: List(String), proxies: cidr.Cidrs)
 }
 
-/// The other forwarding headers, and the ones naming the client: passed on
-/// from a trusted proxy, dropped from any other peer (they could be
-/// forged). The server drops their spellings with `_` too.
+/// The forwarding headers, and the ones naming the client: passed on from a
+/// trusted proxy, dropped from any other peer (they could be forged). The
+/// server drops their spellings with `_` too. The `X-Forwarded-*` the handler
+/// sets replace the client's anyway, but are not always set (no
+/// `X-Forwarded-Host` for an HTTP/1.0 request without `Host`).
 const untrusted_headers = [
-  "forwarded", "x-real-ip", "x-forwarded-port", "x-forwarded-prefix",
-  "x-forwarded-server", "x-forwarded-ssl", "x-client-ip", "true-client-ip",
+  "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded",
+  "x-real-ip", "x-forwarded-port", "x-forwarded-prefix", "x-forwarded-server",
+  "x-forwarded-ssl", "x-client-ip", "true-client-ip",
 ]
 
 /// `X-Forwarded-For` (the client address, appended to the incoming list

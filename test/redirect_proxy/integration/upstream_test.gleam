@@ -102,6 +102,26 @@ pub fn rules_answer_and_the_rest_is_forwarded_test() {
   assert !string.contains(line, "\" 200 0 ")
 }
 
+pub fn forged_forwarded_host_without_host_is_dropped_test() {
+  // HTTP/1.0 allows a request without `Host`: no X-Forwarded-Host of the
+  // listener's own, and the client's must not pass for one
+  let #(port, _) = start_upstream()
+  let env = boot_with(port, [])
+  let assert Ok(#(_, redirect_port)) =
+    string.split_once(env.redirect, "127.0.0.1:")
+  let assert Ok(redirect_port) = int.parse(redirect_port)
+  let assert Ok(received) =
+    raw_exchange(redirect_port, [
+      <<
+        "GET /page HTTP/1.0\r\nx-forwarded-host: evil.example\r\nx_forwarded_host: evil.example\r\nx-forwarded-proto: https\r\n\r\n":utf8,
+      >>,
+    ])
+    |> bit_array.to_string
+  assert string.contains(received, "\r\n\r\nGET /page\n")
+  assert !string.contains(received, "evil")
+  assert !string.contains(received, "x-forwarded-proto: https")
+}
+
 pub fn trusted_proxies_keep_their_forwarded_headers_test() {
   let #(port, _) = start_upstream()
   let env = boot_with(port, ["127.0.0.1/32"])
