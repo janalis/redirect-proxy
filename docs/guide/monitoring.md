@@ -78,6 +78,8 @@ so this needs `admin.metrics_token`, sent as
 ## Container health check
 
 The image probes the admin listener's
-`/healthz` on `RP_ADMIN_PORT`. With `RP_ADMIN_ENABLED=false` it checks
-that the redirect listener on `RP_SERVER_PORT` accepts connections
-instead. Ports set only in a config file need a `HEALTHCHECK` override.
+`/healthz` on `RP_ADMIN_PORT`. With `RP_ADMIN_ENABLED=false` it probes
+`RP_SERVER_HEALTH_PATH` on `RP_SERVER_PORT` when that is set (so a
+draining container reports unhealthy), and otherwise checks that the
+redirect listener accepts connections. Settings made only in a config
+file need a `HEALTHCHECK` override.

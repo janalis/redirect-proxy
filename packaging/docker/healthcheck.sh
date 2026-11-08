@@ -1,9 +1,10 @@
 #!/bin/sh
-# Container health check. Probes the admin listener's /healthz, or, when the
-# admin is disabled, checks that the redirect listener accepts connections.
-# Addresses and ports follow RP_ADMIN_LISTEN / RP_ADMIN_PORT and
-# RP_SERVER_LISTEN / RP_SERVER_PORT; settings made only in a config file need
-# a HEALTHCHECK override.
+# Container health check. Probes the admin listener's /healthz. When the
+# admin is disabled, probes the redirect listener's RP_SERVER_HEALTH_PATH
+# when it is set (503 while draining), else checks that the redirect listener
+# accepts connections. Addresses and ports follow RP_ADMIN_LISTEN /
+# RP_ADMIN_PORT and RP_SERVER_LISTEN / RP_SERVER_PORT; settings made only in
+# a config file need a HEALTHCHECK override.
 set -eu
 
 # The address to probe for a listen address: loopback for the wildcard
@@ -28,7 +29,13 @@ url_host() {
 
 case "$(printf '%s' "${RP_ADMIN_ENABLED:-true}" | tr '[:upper:]' '[:lower:]')" in
   0 | false | no | off)
-    exec nc -z "$(probe_address "${RP_SERVER_LISTEN:-}")" "${RP_SERVER_PORT:-8080}"
+    address="$(probe_address "${RP_SERVER_LISTEN:-}")"
+    port="${RP_SERVER_PORT:-8080}"
+    case "${RP_SERVER_HEALTH_PATH:-}" in
+      "") exec nc -z "$address" "$port" ;;
+      # a path, starting with / (check-config refuses others)
+      *) exec wget -q -O /dev/null "http://$(url_host "$address"):${port}${RP_SERVER_HEALTH_PATH}" ;;
+    esac
     ;;
   *)
     host="$(url_host "$(probe_address "${RP_ADMIN_LISTEN:-}")")"

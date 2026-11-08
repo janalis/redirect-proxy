@@ -54,7 +54,8 @@ Usage:
 
 The configuration file defaults to $RP_CONFIG, else to
 /etc/redirect-proxy/config.toml when it exists. Every setting can be
-overridden with RP_* environment variables (see docs/configuration.md).
+overridden with RP_* environment variables, see
+https://janalis.github.io/redirect-proxy/guide/configuration
 Passwords for `user add`/`user passwd` are read from $RP_PASSWORD or
 prompted for.
 Roles: viewer, editor, admin (default for `user add`).

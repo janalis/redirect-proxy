@@ -55,13 +55,17 @@ did not apply, and why:
 
 Recreate the container with `RP_SERVER_UPSTREAM`, the address of your
 website as the container sees it (not `127.0.0.1`, which is the container
-itself): requests no rule matches now go on to the site.
+itself): requests no rule matches now go on to the site. Docker Desktop
+resolves `host.docker.internal` to the host; on Linux, `--add-host` maps it
+to the host's gateway address (the site must then listen on that
+address, or on all addresses, not only on `127.0.0.1`).
 
 ```sh
 docker rm -f redirect-proxy
 docker run -d --name redirect-proxy \
   -p 8080:8080 -p 127.0.0.1:8081:8081 \
   -v redirect-proxy:/var/lib/redirect-proxy \
+  --add-host=host.docker.internal:host-gateway \
   -e RP_SERVER_UPSTREAM=http://host.docker.internal:3000 \
   ghcr.io/janalis/redirect-proxy:latest
 curl -sI http://localhost:8080/
