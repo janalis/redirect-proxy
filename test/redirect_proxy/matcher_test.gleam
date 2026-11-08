@@ -2,6 +2,7 @@ import gleam/list
 import gleam/string
 import redirect_proxy/ffi
 import redirect_proxy/matcher
+import redirect_proxy/matcher/explain
 import redirect_proxy/rule.{Rule}
 
 fn r(
@@ -532,6 +533,25 @@ pub fn whole_segments_prefix_test() {
   let m = matcher.build([rule.Rule(..blog, case_insensitive: True)])
   assert location(m, "x.test", "/BLOG/a") == Ok("https://new.test/news/a")
   assert location(m, "x.test", "/BLOGS") == Error(Nil)
+}
+
+/// A source that ends with `/` already ends on a segment boundary: whole
+/// segments then match everything below it, as a plain prefix does.
+pub fn whole_segments_prefix_with_trailing_slash_test() {
+  let trail =
+    rule.Rule(
+      ..r("1", "*", rule.Prefix, "/trail/", "/new/$1"),
+      whole_segments: True,
+    )
+  let m = matcher.build([trail])
+  assert location(m, "x.test", "/trail/") == Ok("/new/")
+  assert location(m, "x.test", "/trail/x") == Ok("/new/x")
+  assert location(m, "x.test", "/trail/x/y") == Ok("/new/x/y")
+  assert location(m, "x.test", "/trailx") == Error(Nil)
+  // the URL tester agrees with the listener
+  let assert Ok(explained) =
+    explain.explain(m, [trail], "http://x.test/trail/x", False)
+  assert list.map(explained.candidates, fn(c) { c.rule.id }) == ["1"]
 }
 
 pub fn hit_records_test() {

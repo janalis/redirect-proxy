@@ -342,6 +342,16 @@ pub fn describe_json_error(error: json.DecodeError) -> String {
   }
 }
 
+/// Whether a prefix `source` that a path starts with, leaving `remainder`,
+/// ends on a segment boundary of that path (for `whole_segments`): `/blog`
+/// matches `/blog` and `/blog/…` but not `/blogger`, and a source ending
+/// with `/`, such as `/blog/`, matches everything below it.
+pub fn on_segment_boundary(source: String, remainder: String) -> Bool {
+  remainder == ""
+  || string.starts_with(remainder, "/")
+  || string.ends_with(source, "/")
+}
+
 // --- validation -------------------------------------------------------------
 
 /// Normalises and validates a rule. Returns the normalised rule or a list of
