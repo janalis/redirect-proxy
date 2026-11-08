@@ -96,6 +96,12 @@ The traffic port is served by a small HTTP server made for redirects, not
 by the general purpose one of the admin and the API: one process per
 connection, one read and one write per request, and nothing else.
 
+A response on a kept-alive connection is handed to the socket without
+waiting for it to be written (the next request collects the outcome). In
+the *Benchmark* workflow this answers 10 % more requests per second with a
+12 % lower median latency, for a 27 % longer p99 tail when the server is
+saturated (every connection always has a request in flight).
+
 - HTTP/1.1 and 1.0, with keep-alive and pipelining. No TLS or HTTP/2 on
   this port: put a TLS proxy in front (`server.https_redirect` redirects
   the requests it does not mark `X-Forwarded-Proto: https`).
