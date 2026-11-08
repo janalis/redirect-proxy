@@ -2,16 +2,19 @@
 
 import gleam/dict
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/order
 import gleam/result
 import gleam/string
 import qcheck
 import redirect_proxy/access_log_format as fmt
+import redirect_proxy/api/rule_json
 import redirect_proxy/ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/rule/template
+import redirect_proxy/rule_csv
 
 fn segment() -> qcheck.Generator(String) {
   qcheck.non_empty_string_from(
@@ -559,6 +562,65 @@ pub fn any_rule_file_round_trip_test() {
     length_from: qcheck.bounded_int(0, 6),
   ))
   assert rule.file_from_string(rule.file_to_string(rules)) == Ok(rules)
+}
+
+/// `any_rule` with the fields it leaves at their defaults set too: whole
+/// segments, query conditions, schedule and tags (as validated rules hold
+/// them: see `rule.normalise_tags`).
+fn any_full_rule() -> qcheck.Generator(rule.Rule) {
+  qcheck.map4(
+    any_rule(),
+    qcheck.tuple2(qcheck.bool(), wild_text()),
+    qcheck.tuple2(wild_text(), wild_text()),
+    qcheck.generic_list(segment(), qcheck.bounded_int(0, 4)),
+    fn(r, conditions, schedule, tags) {
+      let #(whole_segments, query) = conditions
+      let #(starts_at, expires_at) = schedule
+      Rule(
+        ..r,
+        whole_segments:,
+        query:,
+        starts_at:,
+        expires_at:,
+        tags: rule.normalise_tags(tags),
+      )
+    },
+  )
+}
+
+/// Every column of every kind of rule survives a CSV export and import,
+/// formula escapes, quotes and line breaks included, with or without the
+/// byte order mark of spreadsheet exports. What CSV does not carry: the
+/// import trims the id (a spreadsheet pads cells), and the audit fields
+/// (`created_at`, `updated_at`, `updated_by`) are not columns.
+pub fn any_rule_csv_round_trip_test() {
+  use #(rules, spreadsheet) <- check(qcheck.tuple2(
+    qcheck.generic_list(
+      elements_from: any_full_rule(),
+      length_from: qcheck.bounded_int(0, 6),
+    ),
+    qcheck.bool(),
+  ))
+  let csv = case spreadsheet {
+    True -> rule_csv.to_spreadsheet_string(rules)
+    False -> rule_csv.to_string(rules)
+  }
+  let expected = list.map(rules, fn(r) { Rule(..r, id: string.trim(r.id)) })
+  assert rule_csv.parse_import(csv) == Ok(expected)
+}
+
+/// Every field of every kind of rule survives the API's JSON
+/// representation, read back as a client sends it (`rule.decoder`, which
+/// ignores the read-only `version`, `hits` and `last_hit_at`).
+pub fn any_rule_api_json_round_trip_test() {
+  use #(r, audit) <- check(qcheck.tuple2(
+    any_full_rule(),
+    qcheck.tuple3(wild_text(), wild_text(), wild_text()),
+  ))
+  let #(created_at, updated_at, updated_by) = audit
+  let r = Rule(..r, created_at:, updated_at:, updated_by:)
+  assert json.parse(json.to_string(rule_json.rule_json(r)), rule.decoder())
+    == Ok(r)
 }
 
 /// Whatever a client sends (headers, path, query) or a rule redirects to, an
