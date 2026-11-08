@@ -62,6 +62,11 @@
 
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
+%% lingering close (linger_close/1): for at most 2 s, 500 ms without a
+%% byte, 1 MiB
+-define(LINGER_MS, 2000).
+-define(LINGER_IDLE_MS, 500).
+-define(LINGER_BYTES, 1048576).
 
 %% The minimum heap of a connection process, in words (20 KiB): a request
 %% leaves 1 to 2 KiB of garbage, so the default heap (233 words) is
@@ -1950,7 +1955,13 @@ respond(Request0, Version, Close0, Rest,
             case Close of
                 true ->
                     _ = gen_tcp:send(C1#conn.socket, Response),
-                    close(C1);
+                    %% the body of the request is not read: closing at once
+                    %% could reset the connection before the client reads
+                    %% the response
+                    case has_body(element(3, Request0)) of
+                        true -> linger_close(C1);
+                        false -> close(C1)
+                    end;
                 false ->
                     case send(C1#conn.socket, Response) of
                         ok -> request(Rest, C1);
@@ -1988,7 +1999,8 @@ call(Handler, Request) ->
             error
     end.
 
-%% An empty response, then the connection is closed.
+%% An empty response, then the connection is closed (lingering: the rest
+%% of the request is not read).
 reject(Status, C) ->
     {Date, C1} = date(C),
     _ = gen_tcp:send(C1#conn.socket, [
@@ -1996,12 +2008,50 @@ reject(Status, C) ->
         <<"content-length: 0\r\ndate: ">>, Date,
         <<"\r\ncache-control: no-store\r\nconnection: close\r\n\r\n">>
     ]),
-    close(C1).
+    linger_close(C1).
 
 close(#conn{socket = Socket} = C) ->
     _ = close_upstream(C),
     gen_tcp:close(Socket),
     exit(normal).
+
+%% Whether a request announces a body (one the answered path does not read).
+has_body([{<<"transfer-encoding">>, _} | _]) -> true;
+has_body([{<<"content-length">>, V} | _]) when V =/= <<"0">> -> true;
+has_body([_ | Rest]) -> has_body(Rest);
+has_body([]) -> false.
+
+%% Closes a connection whose client may still be sending: a socket closed
+%% with unread bytes, or bytes arriving after it is closed, is reset, and a
+%% reset can discard the response before the client reads it. The response
+%% goes out first (`shutdown` waits for it), then what the client sends is
+%% read and discarded until it closes, for at most ?LINGER_MS (?LINGER_IDLE_MS
+%% without a byte) or ?LINGER_BYTES, as nginx's `lingering_close`.
+linger_close(#conn{socket = Socket} = C) ->
+    _ = close_upstream(C),
+    case gen_tcp:shutdown(Socket, write) of
+        ok ->
+            _ = inet:setopts(Socket, [{active, false}]),
+            linger(Socket, erlang:monotonic_time(millisecond) + ?LINGER_MS,
+                   ?LINGER_BYTES);
+        {error, _} ->
+            ok
+    end,
+    gen_tcp:close(Socket),
+    exit(normal).
+
+linger(Socket, End, Left) when Left > 0 ->
+    case min(?LINGER_IDLE_MS, End - erlang:monotonic_time(millisecond)) of
+        Wait when Wait > 0 ->
+            case gen_tcp:recv(Socket, 0, Wait) of
+                {ok, Data} -> linger(Socket, End, Left - byte_size(Data));
+                {error, _} -> ok
+            end;
+        _ ->
+            ok
+    end;
+linger(_, _, _) ->
+    ok.
 
 %% The connection header is the server's to set.
 encode_headers([{<<"connection">>, _} | Rest]) ->

@@ -153,6 +153,31 @@ pub fn keep_alive_by_version_test() {
   assert string.contains(text, "\r\nconnection: close\r\n")
 }
 
+/// A request whose body is not read is answered, then the connection is
+/// closed without resetting it while the client still sends its body: the
+/// client reads the whole response.
+pub fn unread_bodies_do_not_reset_the_response_test() {
+  let port = start()
+  let part = string.repeat("x", 65_536) |> bit_array.from_string
+  let #(received, reset) =
+    upload(
+      port,
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 1048576\r\n\r\n",
+      part,
+      15,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nconnection: close\r\n")
+  assert !reset
+  // and a rejected request
+  let #(received, reset) =
+    upload(port, "POST /form HTTP/1.1\r\nhost: a\r\nbad line\r\n\r\n", part, 15)
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 400 ")
+  assert !reset
+}
+
 pub fn idle_connections_are_closed_test() {
   let #(text, closed) = exchange([])
   assert text == ""
@@ -364,6 +389,14 @@ pub fn half_closed_clients_get_their_responses_test() {
 fn trickle(port: Int, data: BitArray, gap_ms: Int) -> #(BitArray, Bool)
 
 type Socket
+
+@external(erlang, "test_net_ffi", "upload")
+fn upload(
+  port: Int,
+  head: String,
+  part: BitArray,
+  parts: Int,
+) -> #(BitArray, Bool)
 
 @external(erlang, "test_net_ffi", "open")
 fn open(port: Int) -> Socket
