@@ -85,6 +85,11 @@ Memory:
   (30 MiB as `docker stats` counts it).
 - Loading 11 500 rules adds about 5 MB to the shared snapshot; with them,
   after the load scenarios, `docker stats` shows about 60 MiB.
+- A connection that answered a request in the last second has a 20 KiB
+  heap, so that it is not garbage collected after every request; after a
+  second without one it hibernates and keeps a few hundred bytes. With 5 000
+  keep-alive connections, memory goes up by about 130 MiB while they all
+  send requests, and by about 40 MiB once they are idle.
 - The node is started for at most 131 072 processes (`+P`), twice its 65 536
   ports (`+Q`): each connection is one of each. To accept more connections,
   raise both, e.g. `ERL_FLAGS="+Q 262144 +P 524288"`.
