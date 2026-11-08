@@ -875,22 +875,47 @@ def soak(port, client_cpus):
             break
         samples.append(sample)
     stderr = proc.stderr.read()
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        summary = summarize(json.loads(out.read_text()), MIXED_STATUSES)
+        load = {
+            "rps": round(summary["rps"]),
+            **{k: round(v, 3) for k, v in summary.items()
+               if k.endswith("_ms")},
+            "errors": summary["errors"],
+        }
+    elif samples:
+        # oha keeps every result in memory and can be killed (137) at the
+        # end of a long soak at full speed: the memory samples still
+        # stand, the server's request rate stands in for oha's, latencies
+        # and errors are unknown
+        print(f"  oha exited {proc.returncode}: {stderr[-300:]}; reporting "
+              "the samples (latencies unknown; set SOAK_RATE for long soaks)",
+              flush=True)
+        load = {
+            "rps": round(statistics.fmean(s.get("rps", 0) for s in samples)),
+            "p50_ms": None, "p99_ms": None, "p999_ms": None, "max_ms": None,
+            "errors": None,
+            "client_error": f"oha exited {proc.returncode}",
+        }
+    else:
         raise RuntimeError(f"oha exited {proc.returncode}: {stderr[-300:]}")
-    summary = summarize(json.loads(out.read_text()), MIXED_STATUSES)
     result = {
         "duration": SOAK, "interval_s": SOAK_INTERVAL,
         "rate": SOAK_RATE or None,
-        "rps": round(summary["rps"]),
-        **{k: round(v, 3) for k, v in summary.items() if k.endswith("_ms")},
-        "errors": summary["errors"],
+        **load,
         **soak_summary(samples),
         "samples": samples,
         "after": after,
     }
-    print(f"  soak: {result['rps']:,} req/s  p99 {result['p99_ms']:.2f} ms  "
-          f"p99.9 {result['p999_ms']:.2f} ms  max {result['max_ms']:.1f} ms  "
-          f"errors {result['errors']}  memory {result['anon_mib_per_min']} "
+
+    def latency(name, value, digits):
+        return "" if value is None else f"{name} {value:.{digits}f} ms  "
+
+    print(f"  soak: {result['rps']:,} req/s  "
+          + latency("p99", result["p99_ms"], 2)
+          + latency("p99.9", result["p999_ms"], 2)
+          + latency("max", result["max_ms"], 1)
+          + f"errors {'unknown' if result['errors'] is None else result['errors']}  memory {result['anon_mib_per_min']} "
           f"MiB/min (anon; second half {result['anon_mib_per_min_late']}), "
           f"{result['vm_mib_per_min']} MiB/min (VM; second half "
           f"{result['vm_mib_per_min_late']}), "
@@ -1244,7 +1269,9 @@ def soak_table(results):
         field = "anon_mib" if s.get("anon_mib_per_min") is not None \
             else "vm_mib"
         rows.append([r["name"], kilo(s["rps"]), ms(s["p99_ms"]),
-                     ms(s["p999_ms"]), ms(s["max_ms"]), str(s["errors"]),
+                     ms(s["p999_ms"]), ms(s["max_ms"]),
+                     str(s["errors"]) if s["errors"] is not None
+                     else s.get("client_error", ""),
                      f"{first.get(field)} → {last.get(field)} MiB "
                      f"({field.removesuffix('_mib')})",
                      str(s.get("anon_mib_per_min")),

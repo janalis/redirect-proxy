@@ -79,7 +79,9 @@ minute, over the whole run and over its second half alone. The allocator
 keeps freed memory, so `anon` often rises in steps, then levels off: that
 gives a positive slope overall but a flat second half. A leak keeps
 growing in both. The sample taken once the load has stopped is kept apart
-(`after`).
+(`after`). oha keeps every result in memory, so give a soak of more than
+about 20 minutes a rate (`soak_rate`, `SOAK_RATE`); if oha is killed
+anyway, the memory samples are still reported, without latencies.
 
 ## redirect-proxy alone
 

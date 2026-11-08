@@ -52,6 +52,10 @@ on:
         description: Soak duration (e.g. 10m; per variant, at most 90m in all) instead of the scenarios (not with `scenarios`, `upstream` or `profile`), mixed traffic with the access log on, memory sampled every 15 s
         type: string
         required: false
+      soak_rate:
+        description: Requests/s for the soak (default as fast as possible; the load generator keeps every result, so set one for soaks over about 20m)
+        type: string
+        required: false
   schedule:
     - cron: "17 3 * * 1"
   workflow_call:
@@ -177,6 +181,7 @@ jobs:
           SCENARIOS: ${{ inputs.scenarios }}
           UPSTREAM: ${{ inputs.upstream }}
           SOAK: ${{ inputs.soak }}
+          SOAK_RATE: ${{ inputs.soak_rate || '0' }}
         run: |
           if [ -n "$BASELINE" ]; then
             VARIANTS="${BASELINE}@redirect-proxy:baseline${VARIANTS:+;$VARIANTS}"
@@ -190,7 +195,7 @@ jobs:
           RP_VERSION="${GITHUB_REF_NAME} ($(git rev-parse --short HEAD))" \
             RP_VARIANTS="$VARIANTS" RP_IMAGE=ghcr.io/janalis/redirect-proxy:dev \
             EXTRA_SCENARIOS="$SCENARIOS" PROFILE_SCENARIO="$PROFILE_SCENARIO" \
-            SOAK="$SOAK" \
+            SOAK="$SOAK" SOAK_RATE="$SOAK_RATE" \
             python3 scripts/bench-compare.py "${args[@]}" | tee compare.txt
           {
             echo '### redirect-proxy variants (requests/s)'
