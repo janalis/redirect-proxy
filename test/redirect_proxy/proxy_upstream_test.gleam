@@ -11,7 +11,9 @@ import gleam/http/response.{Response}
 import gleam/list
 import gleam/option
 import gleam/string
+import redirect_proxy/config
 import redirect_proxy/proxy/http as proxy_http
+import redirect_proxy/proxy/server
 
 @external(erlang, "test_net_ffi", "session")
 fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
@@ -417,6 +419,49 @@ pub fn upgrades_are_tunnelled_test() {
   assert !string.contains(text, "upgrade")
 }
 
+/// HTTP/2 over cleartext (`Upgrade: h2c`) is not offered to the upstream:
+/// the request is forwarded as an ordinary one.
+pub fn h2c_upgrades_are_not_forwarded_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: H2C\r\nHTTP2-Settings: AAMAAABkAAQAoAAAAAIAAAAA\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  let text = string.lowercase(text)
+  assert !string.contains(text, "upgrade")
+  assert !string.contains(text, "h2c")
+  assert !string.contains(text, "http2-settings")
+  // among other protocols too
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: upgrade\r\nUpgrade: websocket, h2c\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(string.lowercase(text), "upgrade")
+}
+
+/// A 101 switching to another protocol than the one asked for is not
+/// tunnelled.
+pub fn mismatched_101_is_a_502_test() {
+  let proxy = start()
+  let #(text, closed) =
+    exchange(proxy, [
+      "GET /ws-h2c HTTP/1.1\r\nhost: a\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+      "ping",
+    ])
+  assert_failed(text, closed, "502")
+  assert forwarded(proxy).error == option.Some(proxy_http.InvalidResponse)
+  // the protocol is compared without case
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /ws HTTP/1.1\r\nhost: a\r\nConnection: Upgrade\r\nUpgrade: WebSocket\r\n\r\n",
+      "ping",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 101 Switching Protocols\r\n")
+  assert string.ends_with(text, "\r\n\r\nping")
+}
+
 pub fn https_upstreams_test() {
   let #(port, counter) = start_tls_upstream()
   let proxy =
@@ -605,4 +650,89 @@ pub fn content_length_is_sent_once_test() {
       "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
     ])
   assert string.contains(text, "\ncontent-length: 0\nframing=length\nbody=")
+}
+
+/// The redirect listener's own handler (`proxy/server`) in front of the
+/// test upstream, with these trusted proxies (`access_log`), and the
+/// identity headers of `auth.header` with its trusted proxies (`identity`).
+fn start_server(trusted: List(String), identity: List(String)) -> Int {
+  let #(port, _) = start_upstream()
+  let d = config.default().server
+  let cfg =
+    config.ServerConfig(
+      ..d,
+      upstream: "http://127.0.0.1:" <> string.inspect(port),
+    )
+  let assert Ok(started) =
+    proxy_http.start(
+      "127.0.0.1",
+      0,
+      server.handler_with_identity(
+        cfg,
+        "",
+        option.None,
+        trusted,
+        ["X-Forwarded-User", "x-auth-role", ""],
+        identity,
+      ),
+      server.http_options(cfg, option.None, trusted),
+    )
+  started.data
+}
+
+const identity_request =
+  "GET /echo HTTP/1.1\r\nhost: a\r\nX-Client-IP: 6.6.6.1\r\nTrue-Client-IP: 6.6.6.2\r\nX_Real_IP: 6.6.6.3\r\nX_Forwarded-For: 6.6.6.4\r\nx-forwarded_proto: https\r\nX-Forwarded-User: alice\r\nX_Auth_Role: admin\r\nX-Other: kept\r\nconnection: close\r\n\r\n"
+
+/// Headers that name the client from untrusted peers: an upstream could
+/// take them for the proxy's, so they are dropped, along with their
+/// variants spelled with `_` (which some servers read as `-`).
+pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
+  let #(received, _) =
+    session(
+      start_server([], ["10.0.0.0/8"]),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(text, "6.6.6.")
+  assert !string.contains(text, "https")
+  assert !string.contains(text, "alice")
+  assert !string.contains(text, "admin")
+  assert string.contains(text, "\nx-other: kept\n")
+  assert string.contains(text, "\nx-forwarded-for: 127.0.0.1\n")
+  // trusted proxies pass them on, but for the `_` variants of the
+  // headers this server sets
+  let #(received, _) =
+    session(
+      start_server(["127.0.0.1/32"], []),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.contains(text, "\nx-client-ip: 6.6.6.1\n")
+  assert string.contains(text, "\ntrue-client-ip: 6.6.6.2\n")
+  assert string.contains(text, "\nx_real_ip: 6.6.6.3\n")
+  assert string.contains(text, "\nx-forwarded-user: alice\n")
+  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "6.6.6.4")
+  assert !string.contains(text, "https")
+}
+
+/// The identity headers of `auth.header` are taken from its own trusted
+/// proxies too (an authenticating proxy in front of both), but not the
+/// other headers naming the client.
+pub fn identity_headers_from_auth_proxies_are_kept_test() {
+  let #(received, _) =
+    session(
+      start_server([], ["10.0.0.0/8", "127.0.0.1/32"]),
+      [bit_array.from_string(identity_request)],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\nx-forwarded-user: alice\n")
+  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "6.6.6.")
+  assert !string.contains(text, "https")
 }

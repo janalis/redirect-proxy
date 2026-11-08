@@ -76,6 +76,33 @@ pub fn handler(
   access: Option(access_log.Settings),
   trusted_proxies: List(String),
 ) -> proxy_http.Handler {
+  handler_with_identity(config, metrics_token, access, trusted_proxies, [], [])
+}
+
+/// `handler`, also dropping the `identity_headers` of forwarded requests
+/// from peers in neither `trusted_proxies` nor `identity_proxies`: the
+/// headers an authenticating proxy names its user with (`auth.header`, when
+/// enabled, and its `trusted_proxies`), which the upstream could trust too.
+pub fn handler_with_identity(
+  config: ServerConfig,
+  metrics_token: String,
+  access: Option(access_log.Settings),
+  trusted_proxies: List(String),
+  identity_headers: List(String),
+  identity_proxies: List(String),
+) -> proxy_http.Handler {
+  let identity = case
+    identity_headers
+    |> list.map(string.lowercase)
+    |> list.filter(fn(name) { name != "" })
+  {
+    [] -> NoIdentity
+    headers ->
+      Identity(
+        drop: list.unique(list.append(untrusted_headers, headers)),
+        proxies: identity_proxies,
+      )
+  }
   let not_found_body = bytes_tree.from_string(config.not_found_body)
   let permanent_cache =
     "public, max-age=" <> int.to_string(config.cache_max_age)
@@ -126,7 +153,7 @@ pub fn handler(
         }
         proxy_http.Answer(resp)
       }
-      Unanswered -> forward(req, started, access, trusted_proxies)
+      Unanswered -> forward(req, started, access, trusted_proxies, identity)
     }
   }
 }
@@ -140,15 +167,21 @@ fn forward(
   started: Int,
   access: Option(access_log.Settings),
   trusted_proxies: List(String),
+  identity: Identity,
 ) -> proxy_http.Outcome {
   metrics.incr(metrics.UpstreamRequests)
   let trusted = trusted_peer(req, trusted_proxies)
   proxy_http.Forward(
     close: ffi.draining(),
     headers: forwarded_headers(req, trusted),
-    drop: case trusted {
-      True -> []
-      False -> untrusted_headers
+    drop: case trusted, identity {
+      True, _ -> []
+      False, NoIdentity -> untrusted_headers
+      False, Identity(drop:, proxies:) ->
+        case trusted_peer(req, proxies) {
+          True -> untrusted_headers
+          False -> drop
+        }
     },
     done: fn(forwarded: proxy_http.Forwarded) {
       let duration_us = ffi.monotonic_micros() - started
@@ -187,11 +220,20 @@ fn forward(
   )
 }
 
-/// The other forwarding headers: passed on from a trusted proxy, dropped
-/// from any other peer (they could be forged).
+/// The headers naming the user of an authenticating proxy: dropped (with
+/// the `untrusted_headers`) unless the peer is one of `proxies` (or of
+/// `access_log.trusted_proxies`).
+type Identity {
+  NoIdentity
+  Identity(drop: List(String), proxies: List(String))
+}
+
+/// The other forwarding headers, and the ones naming the client: passed on
+/// from a trusted proxy, dropped from any other peer (they could be
+/// forged). The server drops their spellings with `_` too.
 const untrusted_headers = [
   "forwarded", "x-real-ip", "x-forwarded-port", "x-forwarded-prefix",
-  "x-forwarded-server", "x-forwarded-ssl",
+  "x-forwarded-server", "x-forwarded-ssl", "x-client-ip", "true-client-ip",
 ]
 
 /// Whether the peer is one of `access_log.trusted_proxies`.

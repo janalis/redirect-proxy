@@ -5,7 +5,9 @@
 %% after the response), no upgrades. This server does just that, with as
 %% little work per request as possible:
 %%
-%% - a pool of acceptors; one process per connection, its socket in
+%% - a pool of acceptors, up to a number of open connections, and of ports
+%%   in the VM (90 % of its port limit: a connection over it is closed at
+%%   once, rather than the VM running out of ports); one process per connection, its socket in
 %%   `{active, N}` mode, so a request costs one message (the receive timeout
 %%   is the idle timeout: no timer) and one `send`
 %% - the head parsed in one pass (`parse/1`), headers kept as a list
@@ -20,7 +22,9 @@
 %% Pipelined requests are answered in order. The connection is closed after
 %% a response that says `connection: close` (draining), after a request with
 %% a body, after an HTTP/1.0 request without `connection: keep-alive`, after
-%% a 1.1 request with `connection: close`, and on any malformed request.
+%% a 1.1 request with `connection: close`, and on any malformed request. A
+%% request head must be complete within the idle timeout of its first
+%% bytes, however they trickle in: a 408 after that.
 %%
 %% With an upstream (`server.upstream`), the handler can leave a request to
 %% it instead of answering (`Forward`): see "Forwarding to the upstream".
@@ -28,9 +32,9 @@
 %% kept alive after it when its framing was unambiguous.
 -module(redirect_proxy_http).
 
--export([start/4]).
+-export([start/4, drain/0]).
 %% internal
--export([init/5, parse/1, idle/3]).
+-export([init/5, parse/1, idle/4]).
 
 %% unreserved, sub-delims, ":", "@", "/", "?", "%" and "#" (RFC 3986), and
 %% the printable characters browsers send unescaped in queries although
@@ -77,6 +81,9 @@
     peer,
     idle_timeout,
     max_head,
+    %% none | the monotonic time (ms) by which the request head being read
+    %% must be complete: bytes trickled in do not extend it
+    deadline = none,
     %% {Second, Rendered} of the last `date` header
     date = {0, <<>>},
     %% none | #up{}: where unanswered requests are forwarded
@@ -99,10 +106,17 @@
     tls_options
 }).
 
-%% atomics: the second of the last upstream warning
+%% atomics: the second of the last warning about the upstream
+%% (?UPSTREAM_LOG), and about the listener (?LISTENER_LOG)
 -define(WARNED, {?MODULE, warned}).
+-define(UPSTREAM_LOG, 1).
+-define(LISTENER_LOG, 2).
 
-%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer)`.
+%% The pg scope, and group, of the redirect listeners (`drain/0`).
+-define(SCOPE, redirect_proxy_listeners).
+
+%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer, upstream)`;
+%% tests can add the connection cap (`{options, ..., MaxConnections}`).
 %% Returns the `actor.Started(Int)` (the bound port) of a gleam_otp child, or
 %% an `actor.StartError`.
 start(Address, Port, Handler, Opts) ->
@@ -121,12 +135,17 @@ describe(Reason) ->
 %% ---------------------------------------------------------------------------
 
 init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) ->
+    Cap = max(1, port_cap()),
+    init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap});
+init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap}) ->
     process_flag(trap_exit, true),
     case persistent_term:get(?WARNED, undefined) of
-        undefined -> persistent_term:put(?WARNED, atomics:new(1, []));
+        undefined -> persistent_term:put(?WARNED, atomics:new(2, []));
         _ -> ok
     end,
     Opts = {options, Idle, MaxHead, Peer, upstream_settings(Upstream)},
+    %% the open connections, and their cap
+    Limit = {self(), atomics:new(1, []), Cap},
     Listened = case ip(Address) of
         {ok, Ip} ->
             gen_tcp:listen(Port, [
@@ -141,9 +160,10 @@ init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) -
         {ok, Listen} ->
             {ok, Bound} = inet:port(Listen),
             Count = max(4, erlang:system_info(schedulers_online)),
-            [spawn_acceptor(Listen, Handler, Opts) || _ <- lists:seq(1, Count)],
+            [spawn_acceptor(Listen, Handler, Opts, Limit) || _ <- lists:seq(1, Count)],
+            join_listeners(),
             proc_lib:init_ack(Parent, {ok, self(), Bound}),
-            listener_loop(Parent, Listen, Handler, Opts);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, #{});
         {error, Reason} ->
             proc_lib:init_ack(Parent, {error, Reason}),
             exit(normal)
@@ -157,50 +177,138 @@ ip(Address) ->
         {error, _} -> {error, {invalid_address, Address}}
     end.
 
-listener_loop(Parent, Listen, Handler, Opts) ->
+%% The listener also counts the open connections: it monitors each one (the
+%% acceptors are busy accepting), and its count goes down when one ends,
+%% whatever the way (a monitor is not lost in hibernation, as a `try` is).
+%% It keeps their pids (Conns) to tell them when the node drains (`drain/0`).
+listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit, Conns) ->
     receive
+        {connection, Pid} ->
+            _ = erlang:monitor(process, Pid),
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns#{Pid => []});
+        {'DOWN', _, process, Pid, _} ->
+            atomics:sub(Count, 1, 1),
+            listener_loop(Parent, Listen, Handler, Opts, Limit, maps:remove(Pid, Conns));
+        drain ->
+            maps:foreach(fun(Pid, _) -> Pid ! drain end, Conns),
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         {'EXIT', Parent, Reason} ->
             gen_tcp:close(Listen),
             exit(Reason);
         {'EXIT', _Acceptor, normal} ->
-            listener_loop(Parent, Listen, Handler, Opts);
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         {'EXIT', _Acceptor, Reason} ->
-            logger:error(iolist_to_binary(io_lib:format(
-                "redirect listener acceptor stopped: ~0p", [Reason]))),
-            spawn_acceptor(Listen, Handler, Opts),
-            listener_loop(Parent, Listen, Handler, Opts);
+            limited(?LISTENER_LOG, fun() ->
+                logger:error(iolist_to_binary(io_lib:format(
+                    "redirect listener acceptor stopped: ~0p"
+                    " (at most one such error a second is logged)", [Reason])))
+            end),
+            spawn_acceptor(Listen, Handler, Opts, Limit),
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns);
         _ ->
-            listener_loop(Parent, Listen, Handler, Opts)
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns)
     end.
 
-spawn_acceptor(Listen, Handler, Opts) ->
-    spawn_link(fun() -> accept(Listen, Handler, Opts) end).
+%% Tells the connections of every redirect listener of the node that it
+%% drains (SIGTERM): the idle ones close at once, rather than at the end of
+%% their idle timeout, so that their clients reconnect to another instance;
+%% the others close after their response, as the handler says.
+drain() ->
+    Listeners = try pg:get_members(?SCOPE, ?SCOPE)
+                catch error:badarg -> [] % no listener started yet
+                end,
+    lists:foreach(fun(Pid) -> Pid ! drain end, Listeners),
+    nil.
 
-accept(Listen, Handler, Opts) ->
+%% Joins the pg group of the listeners, starting its scope with the first
+%% one (pg scopes are not started by default). pg forgets a listener that
+%% stops.
+join_listeners() ->
+    case whereis(?SCOPE) of
+        undefined ->
+            case pg:start(?SCOPE) of
+                {ok, _} -> ok;
+                {error, {already_started, _}} -> ok
+            end;
+        _ ->
+            ok
+    end,
+    ok = pg:join(?SCOPE, ?SCOPE, self()).
+
+spawn_acceptor(Listen, Handler, Opts, Limit) ->
+    spawn_link(fun() -> accept(Listen, Handler, Opts, Limit) end).
+
+accept(Listen, Handler, Opts, {_, Count, Cap} = Limit) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            Pid = spawn_opt(fun() ->
-                receive
-                    {go, S} -> connection(S, Handler, Opts)
-                after 5000 ->
-                    exit(normal)
-                end
-            end, [{min_heap_size, ?CONN_HEAP}]),
-            case gen_tcp:controlling_process(Socket, Pid) of
-                ok -> Pid ! {go, Socket};
-                {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
-            end,
-            accept(Listen, Handler, Opts);
+            %% the connections of this listener, and the ports of the whole
+            %% VM: upstream connections, tunnels and files use ports too
+            case atomics:add_get(Count, 1, 1) > Cap
+                 orelse erlang:system_info(port_count) > port_cap() of
+                true ->
+                    %% closed before it costs a process
+                    atomics:sub(Count, 1, 1),
+                    gen_tcp:close(Socket),
+                    limited(?LISTENER_LOG, fun() ->
+                        logger:warning(iolist_to_binary(io_lib:format(
+                            "redirect listener has ~B open connections, the VM ~B ports"
+                            " of ~B: closing new connections"
+                            " (at most one such warning a second is logged)",
+                            [atomics:get(Count, 1), erlang:system_info(port_count),
+                             erlang:system_info(port_limit)])))
+                    end),
+                    accept(Listen, Handler, Opts, Limit);
+                false ->
+                    try
+                        serve(Socket, Handler, Opts, Limit)
+                    catch
+                        error:Reason ->
+                            %% no process for it (system_limit): not counted
+                            atomics:sub(Count, 1, 1),
+                            gen_tcp:close(Socket),
+                            backoff(Reason)
+                    end,
+                    accept(Listen, Handler, Opts, Limit)
+            end;
         {error, closed} ->
             ok;
-        {error, Reason} when Reason =:= emfile; Reason =:= enfile ->
-            logger:warning(iolist_to_binary(io_lib:format(
-                "redirect listener cannot accept connections: ~p", [Reason]))),
-            timer:sleep(100),
-            accept(Listen, Handler, Opts);
-        {error, _} ->
-            accept(Listen, Handler, Opts)
+        {error, econnaborted} ->
+            %% the client gave up before the connection was accepted
+            accept(Listen, Handler, Opts, Limit);
+        {error, Reason} ->
+            %% out of file descriptors (emfile, enfile), or of memory
+            backoff(Reason),
+            accept(Listen, Handler, Opts, Limit)
     end.
+
+%% A process for the accepted Socket, which the listener monitors.
+serve(Socket, Handler, Opts, {Listener, _, _}) ->
+    Pid = spawn_opt(fun() ->
+        receive
+            {go, S} -> connection(S, Handler, Opts)
+        after 5000 ->
+            exit(normal)
+        end
+    end, [{min_heap_size, ?CONN_HEAP}]),
+    Listener ! {connection, Pid},
+    case gen_tcp:controlling_process(Socket, Pid) of
+        ok -> Pid ! {go, Socket};
+        {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)
+    end.
+
+%% 90% of the VM's port limit: room left for the other listeners, the
+%% upstream connections and files.
+port_cap() ->
+    erlang:system_info(port_limit) * 9 div 10.
+
+%% A pause rather than a loop that fails at once.
+backoff(Reason) ->
+    limited(?LISTENER_LOG, fun() ->
+        logger:warning(iolist_to_binary(io_lib:format(
+            "redirect listener cannot accept connections: ~0p"
+            " (at most one such warning a second is logged)", [Reason])))
+    end),
+    timer:sleep(100).
 
 %% ---------------------------------------------------------------------------
 %% Connection
@@ -230,26 +338,61 @@ peer(Socket) ->
         _ -> {error, nil}
     end.
 
-%% Waits for more bytes of a request head, then parses it again. The socket
-%% delivers up to ?ACTIVE packets as messages before it must be re-armed:
-%% no call to the port per request, and a bounded mailbox.
-more(Buffer, #conn{idle_timeout = Timeout} = C) ->
+%% Waits for the next request, or for more bytes of a request head, then
+%% parses it again. The socket delivers up to ?ACTIVE packets as messages
+%% before it must be re-armed: no call to the port per request, and a
+%% bounded mailbox. A head must be complete within the idle timeout of its
+%% first bytes (the deadline): a 408 after that.
+more(<<>>, #conn{idle_timeout = Timeout} = C) ->
     case hibernate_after(Timeout) of
-        After when After < Timeout -> wait(Buffer, C, After, hibernate);
-        _ -> wait(Buffer, C, Timeout, close)
+        After when After < Timeout -> wait(<<>>, C, After, hibernate);
+        _ -> wait(<<>>, C, Timeout, close)
+    end;
+more(Buffer, #conn{idle_timeout = Timeout, deadline = Deadline} = C) ->
+    case Deadline - erlang:monotonic_time(millisecond) of
+        Left when Left =< 0 ->
+            expired(Buffer, C);
+        Left ->
+            case hibernate_after(Timeout) of
+                After when After < Left -> wait(Buffer, C, After, hibernate);
+                _ -> wait(Buffer, C, Left, close)
+            end
     end.
 
-%% Woken from hibernation: by the end of the idle timeout (Timer), or by
-%% another message, then waited for as before.
-idle(Buffer, C, Timer) ->
+%% Woken from hibernation: at the end of the idle timeout (or the deadline
+%% of the head) by its timer, or by another message, then waited for until
+%% End, that same end: a message that is not a request does not restart it.
+%% (A `drain` from the listener is such a message: see `drained/3`.)
+idle(Buffer, C, Timer, End) ->
     receive
-        {timeout, Timer, idle} -> close(C)
+        {timeout, Timer, idle} -> pending(Buffer, C, fun() -> expired(Buffer, C) end)
     after 0 ->
         case erlang:cancel_timer(Timer) of
             false -> receive {timeout, Timer, idle} -> ok after 0 -> ok end;
             _ -> ok
         end,
-        more(Buffer, C)
+        wait(Buffer, C, max(0, End - erlang:monotonic_time(millisecond)), close)
+    end.
+
+%% Bytes that came with the message that woke the connection up are read
+%% before it gives up on them: else Then().
+pending(Buffer, #conn{socket = Socket} = C, Then) ->
+    receive
+        {tcp, Socket, Data} when Buffer =:= <<>> -> request(Data, C);
+        {tcp, Socket, Data} -> more_head(<<Buffer/binary, Data/binary>>, Data, C)
+    after 0 ->
+        Then()
+    end.
+
+%% The listener says the node drains (SIGTERM, `drain/0`): a connection
+%% between requests closes, so that its client reconnects to another
+%% instance before this one stops. One reading a request head ignores it
+%% (`wait/4` only takes it between requests), and closes after the
+%% response; so does one whose `drain` is stale (tests clear the flag).
+drained(C, Timeout, Then) ->
+    case redirect_proxy_sigterm:draining() of
+        true -> pending(<<>>, C, fun() -> close(C) end);
+        false -> wait(<<>>, C, Timeout, Then)
     end.
 
 %% 1 s, or half the idle timeout when it is shorter (tests)
@@ -261,7 +404,7 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp, Socket, Data} when Buffer =:= <<>> ->
             request(Data, C);
         {tcp, Socket, Data} ->
-            request(<<Buffer/binary, Data/binary>>, C);
+            more_head(<<Buffer/binary, Data/binary>>, Data, C);
         {tcp_passive, Socket} ->
             case inet:setopts(Socket, [{active, ?ACTIVE}]) of
                 ok -> more(Buffer, C);
@@ -277,25 +420,48 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
         {tcp_closed, Socket} ->
             close(C);
         {tcp_error, Socket, _} ->
-            close(C)
+            close(C);
+        drain when Buffer =:= <<>> ->
+            drained(C, Timeout, Then)
     after Timeout ->
         case Then of
-            close -> close(C);
+            close -> expired(Buffer, C);
             hibernate ->
-                %% the rest of the idle timeout, as a message: a hibernated
-                %% process only wakes up for one
-                Rest = C#conn.idle_timeout - Timeout,
-                Timer = erlang:start_timer(Rest, self(), idle),
-                erlang:hibernate(?MODULE, idle, [Buffer, C, Timer])
+                %% for the rest of the idle timeout, or of the time left to
+                %% complete the head
+                End = case Buffer of
+                    <<>> -> erlang:monotonic_time(millisecond) + C#conn.idle_timeout - Timeout;
+                    _ -> C#conn.deadline
+                end,
+                %% a message: a hibernated process only wakes up for one
+                Timer = erlang:start_timer(
+                    max(0, End - erlang:monotonic_time(millisecond)), self(), idle),
+                erlang:hibernate(?MODULE, idle, [Buffer, C, Timer, End])
         end
+    end.
+
+%% The end of the idle timeout: an incomplete request head gets a 408.
+expired(<<>>, C) -> close(C);
+expired(_, C) -> reject(408, C).
+
+%% More bytes of an incomplete head. A head ends with a LF: without one in
+%% the new bytes, parsing it again would only say `more` (or find an error
+%% that the next parse finds too), so it is parsed again once one comes or
+%% the head reaches max_head.
+more_head(Buffer, Data, #conn{max_head = Max} = C) ->
+    case byte_size(Buffer) < Max andalso binary:match(Data, <<"\n">>) =:= nomatch of
+        true -> more(Buffer, C);
+        false -> request(Buffer, C)
     end.
 
 request(<<>>, C) ->
     more(<<>>, C);
 request(Buffer, #conn{max_head = Max} = C) ->
     case parse(Buffer) of
-        {ok, Request, Version, Close, Rest} ->
+        {ok, Request, Version, Close, Rest} when C#conn.deadline =:= none ->
             respond(Request, Version, Close, Rest, C);
+        {ok, Request, Version, Close, Rest} ->
+            respond(Request, Version, Close, Rest, C#conn{deadline = none});
         more when byte_size(Buffer) >= Max ->
             %% 414 while the request line itself is incomplete
             Status = case binary:match(Buffer, <<"\n">>) of
@@ -303,6 +469,9 @@ request(Buffer, #conn{max_head = Max} = C) ->
                 _ -> 431
             end,
             reject(Status, C);
+        more when C#conn.deadline =:= none ->
+            Deadline = erlang:monotonic_time(millisecond) + C#conn.idle_timeout,
+            more(Buffer, C#conn{deadline = Deadline});
         more ->
             more(Buffer, C);
         {error, Status} ->
@@ -658,7 +827,8 @@ lower(C) -> C.
     body,
     %% `Expect: 100-continue` from an HTTP/1.1 client with a body
     continue,
-    %% whether the client asked for an upgrade (`Connection: upgrade`)
+    %% none | the `Upgrade` header the client asked for (with
+    %% `Connection: upgrade`)
     upgrade,
     %% the client asked to close its connection after the response
     client_close,
@@ -713,7 +883,7 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
                 head = Head,
                 body = Body,
                 continue = Expect andalso HasBody andalso Version =:= {1, 1},
-                upgrade = Upgrade =/= none,
+                upgrade = Upgrade,
                 client_close = close_requested(Version, join(Tokens)),
                 close_after = CloseAfter,
                 version = Version,
@@ -732,7 +902,10 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
 %% `Content-Length` together, a transfer coding other than chunked, a
 %% `Transfer-Encoding` in an HTTP/1.0 request, and an invalid or ambiguous
 %% length are rejected rather than guessed. HTTP/1.0 requests cannot
-%% upgrade (RFC 9110 7.8).
+%% upgrade (RFC 9110 7.8), and an upgrade to HTTP/2 over cleartext (`h2c`)
+%% is not offered to the upstream: the request is forwarded as an ordinary
+%% one, since an HTTP/2 connection behind the proxy would bypass its
+%% checks.
 framing(Headers, Version) ->
     framing(Headers, Version, [], [], [], none, false, false).
 
@@ -755,7 +928,8 @@ framing([{Name, Value} | Rest], V, Lengths, Codings, Tokens, Upgrade, Expect, Ho
             framing(Rest, V, Lengths, Codings, Tokens, Upgrade, Expect, Host)
     end;
 framing([], Version, Lengths, Codings, Tokens, Upgrade0, Expect, Host) ->
-    Upgrade = case Version =:= {1, 1} andalso lists:member(<<"upgrade">>, Tokens) of
+    Upgrade = case Version =:= {1, 1} andalso lists:member(<<"upgrade">>, Tokens)
+                   andalso Upgrade0 =/= none andalso not has_token(Upgrade0, <<"h2c">>) of
         true -> Upgrade0;
         false -> none
     end,
@@ -808,14 +982,20 @@ essential(_) -> false.
 
 %% The client's headers, without the hop-by-hop ones, `Expect` (answered
 %% here), `Content-Length` (sent once, normalised) and the ones in Drop:
-%% named by its `Connection` header, set or dropped by the handler.
+%% named by its `Connection` header, set or dropped by the handler. Some
+%% servers read `_` in a header name as `-` (CGI variables): `x_real_ip`
+%% is dropped with `x-real-ip`.
 request_headers([{Name, Value} | Rest], Drop) ->
     case Name of
         _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
         <<"expect">> -> request_headers(Rest, Drop);
         <<"content-length">> -> request_headers(Rest, Drop);
         _ ->
-            case lists:member(Name, Drop) of
+            Dropped = lists:member(Name, Drop) orelse case binary:match(Name, <<"_">>) of
+                nomatch -> false;
+                _ -> lists:member(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
+            end,
+            case Dropped of
                 true -> request_headers(Rest, Drop);
                 false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
             end
@@ -904,8 +1084,11 @@ send_body(chunked, Rest, Socket, C) ->
 %% BodyDone: the whole request body was sent.
 response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
     case read_head(Socket, Buffer, Up#up.timeout) of
-        {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade, BodyDone ->
-            tunnel(Socket, Reason, Headers, Buffer1, Rest, F, C);
+        {ok, 101, Reason, _, Headers, Buffer1} when F#fwd.upgrade =/= none, BodyDone ->
+            case switched(Headers, F#fwd.upgrade) of
+                true -> tunnel(Socket, Reason, Headers, Buffer1, Rest, F, C);
+                false -> fail(502, invalid_response, unexpected_upgrade, F, C)
+            end;
         {ok, 101, _, _, _, _} ->
             fail(502, invalid_response, unexpected_upgrade, F, C);
         {ok, Status, Reason, _, Headers, Buffer1} when Status < 200 ->
@@ -1154,6 +1337,15 @@ printable(<<C, _/binary>>) when C < 32, C =/= $\t; C =:= 127 -> false;
 printable(<<_, Rest/binary>>) -> printable(Rest);
 printable(<<>>) -> true.
 
+%% Whether the `Upgrade` header of a 101 names only protocols the client
+%% asked for (RFC 9110 7.8), compared without case.
+switched(Headers, Requested) ->
+    Asked = tokens(Requested),
+    case [P || {Name, Value} <- Headers, lowercase(Name) =:= <<"upgrade">>, P <- tokens(Value)] of
+        [] -> false;
+        Protocols -> lists:all(fun(P) -> lists:member(P, Asked) end, Protocols)
+    end.
+
 %% A 101 from the upstream: the response is relayed, then bytes are copied
 %% both ways until either side closes, or none flows for upstream_timeout.
 tunnel(Socket, Reason, Headers, Buffer, Rest, F, #conn{socket = Client, upstream = Up} = C) ->
@@ -1225,14 +1417,18 @@ done(Done, Status, Bytes, Error) ->
 %% A warning about the upstream, at most one a second for the whole node:
 %% an upstream that is down must not flood the log.
 warn(#conn{upstream = Up}, Format, Args) ->
+    limited(?UPSTREAM_LOG, fun() ->
+        logger:warning(iolist_to_binary(io_lib:format(
+            "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
+            [Up#up.url | Args])))
+    end).
+
+%% Calls Log at most once a second for the whole node, per Kind of message.
+limited(Kind, Log) ->
     Now = erlang:system_time(second),
-    case atomics:exchange(persistent_term:get(?WARNED), 1, Now) of
-        Now ->
-            ok;
-        _ ->
-            logger:warning(iolist_to_binary(io_lib:format(
-                "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
-                [Up#up.url | Args])))
+    case atomics:exchange(persistent_term:get(?WARNED), Kind, Now) of
+        Now -> ok;
+        _ -> Log()
     end.
 
 %% Body copies. Recv() -> {ok, Data} | {error, Reason};

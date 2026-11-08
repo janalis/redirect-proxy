@@ -1,7 +1,9 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1]).
+         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
+         trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
+         start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1]).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
@@ -114,3 +116,83 @@ parse_outcome(Head) ->
         more -> <<"more">>;
         {error, Status} -> <<"error:", (integer_to_binary(Status))/binary>>
     end.
+
+%% Sends Data one byte at a time, GapMs apart, until the server answers or
+%% closes the connection, then reads until it closes it or 1 s of silence.
+%% Returns {Received, Closed}.
+trickle(Port, Data, GapMs) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    Result = trickle_bytes(S, Data, GapMs),
+    gen_tcp:close(S),
+    Result.
+
+trickle_bytes(S, <<Byte, Rest/binary>>, GapMs) ->
+    _ = gen_tcp:send(S, <<Byte>>),
+    case gen_tcp:recv(S, 0, GapMs) of
+        {ok, Data} -> read_until_closed(S, Data, 1000);
+        {error, timeout} -> trickle_bytes(S, Rest, GapMs);
+        {error, _} -> {<<>>, true}
+    end;
+trickle_bytes(S, <<>>, _) ->
+    read_until_closed(S, <<>>, 1000).
+
+%% A client connection to 127.0.0.1:Port, driven step by step.
+open(Port) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    S.
+
+send(S, Data) ->
+    _ = gen_tcp:send(S, Data),
+    nil.
+
+%% Reads until the server closes the connection or WaitMs of silence.
+%% Returns {Received, Closed}.
+read(S, WaitMs) ->
+    read_until_closed(S, <<>>, WaitMs).
+
+close(S) ->
+    gen_tcp:close(S),
+    nil.
+
+%% The process that serves the client connection S: the owner of the
+%% server side socket (the one whose peer is S).
+connection_process(S) ->
+    {ok, Local} = inet:sockname(S),
+    [Pid] = [Pid || P <- erlang:ports(),
+                    inet:peername(P) =:= {ok, Local},
+                    {connected, Pid} <- [erlang:port_info(P, connected)]],
+    Pid.
+
+%% A message the process does not expect.
+poke(Pid) ->
+    Pid ! stray,
+    nil.
+
+%% A redirect listener (idle timeout 300 ms) that serves at most Cap
+%% connections at a time. Returns its port.
+start_capped(Handler, Cap) ->
+    {ok, {started, _, Port}} = redirect_proxy_http:start(
+        <<"127.0.0.1">>, 0, Handler, {options, 300, 1024, false, none, Cap}),
+    Port.
+
+%% Whether the process is hibernated, without waking it up.
+hibernated(Pid) ->
+    erlang:process_info(Pid, current_function) =:= {current_function, {erlang, hibernate, 3}}.
+
+%% The reductions of the process so far: they grow whenever it runs.
+reductions(Pid) ->
+    {reductions, N} = erlang:process_info(Pid, reductions),
+    N.
+
+suspend(Pid) ->
+    true = erlang:suspend_process(Pid),
+    nil.
+
+resume(Pid) ->
+    true = erlang:resume_process(Pid),
+    nil.
+
+%% The number of messages in the mailbox of the process.
+queued(Pid) ->
+    {message_queue_len, N} = erlang:process_info(Pid, message_queue_len),
+    N.

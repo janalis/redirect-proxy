@@ -16,6 +16,7 @@
 %% - /bad-chunk: a chunk-size line ended by a bare LF
 %% - /early-hints: a 103 before the echo
 %% - /ws: 101 when asked for an upgrade, then every byte echoed back
+%% - /ws-h2c: the same, its 101 switching to h2c whatever was asked
 %% - /slow: the echo after 1.5 s
 %% - /once: the echo, then the connection closed (without saying so)
 %% - /abrupt: the connection closed without a response
@@ -154,6 +155,14 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
             case lists:keymember(<<"upgrade">>, 1, Headers) of
                 true ->
                     send(Socket, [<<"HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n">>, Rest]),
+                    tunnel(Socket);
+                false ->
+                    echo(Socket, N, Method, Echo, Rest)
+            end;
+        <<"/ws-h2c">> ->
+            case lists:keymember(<<"upgrade">>, 1, Headers) of
+                true ->
+                    send(Socket, [<<"HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: h2c\r\n\r\n">>, Rest]),
                     tunnel(Socket);
                 false ->
                     echo(Socket, N, Method, Echo, Rest)

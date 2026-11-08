@@ -26,7 +26,10 @@ draining() ->
 %% For tests: a real SIGTERM would stop the test node.
 set_draining(Value) ->
     persistent_term:put(?FLAG, Value),
-    nil.
+    case Value of
+        true -> redirect_proxy_http:drain();
+        false -> nil
+    end.
 
 init({GraceMs, BeforeStop}) ->
     {ok, Default} = erl_signal_handler:init([]),
@@ -42,6 +45,8 @@ handle_event(sigterm, #{grace := GraceMs, before_stop := BeforeStop} = S) ->
                 "SIGTERM received: draining for ~B ms, then stopping",
                 [GraceMs]))),
             persistent_term:put(?FLAG, true),
+            %% idle connections close now, the others after their response
+            redirect_proxy_http:drain(),
             _ = spawn(fun() -> timer:sleep(GraceMs), stop(BeforeStop) end)
     end,
     {ok, S};
