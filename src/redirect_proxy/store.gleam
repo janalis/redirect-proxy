@@ -50,8 +50,107 @@ const start_lock_timeout = 15_000
 
 /// How long callers wait for the store. Mutations queue behind each other and
 /// each one may wait `lock_timeout` for the file lock, then rebuild the
-/// matcher: a caller timing out would crash while its change still commits.
+/// matcher. A caller that stops waiting raises `ffi.store_timeout` (see
+/// `or_unavailable`), and its change is skipped unless the store had begun it.
 const timeout = 30_000
+
+/// Calls the store, waiting up to `waiting` milliseconds (unless a test
+/// shortened it) for the reply.
+///
+/// The reply goes to a process linked to the caller, which forwards it: when
+/// the caller times out (or exits), that process is gone, and `mutate` skips a
+/// change nobody waits for any more, rather than make one reported as failed.
+fn call(
+  store: Store,
+  waiting default: Int,
+  sending make: fn(Subject(reply)) -> Message,
+) -> reply {
+  let store_pid = store_pid(store)
+  let caller = process.self()
+  let forwarded = process.new_subject()
+  let forwarder =
+    process.spawn(fn() {
+      let reply = process.new_subject()
+      process.send(store, make(reply))
+      let value = process.receive_forever(reply)
+      // no exit message for a caller trapping exits
+      process.unlink(caller)
+      process.send(forwarded, value)
+    })
+  let forwarder_down = process.monitor(forwarder)
+  let store_down = process.monitor(store_pid)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(forwarded, Ok)
+    |> process.select_specific_monitor(store_down, fn(_) { Error(True) })
+    |> process.selector_receive(ffi.tunable("store_call_timeout", default))
+    |> result.unwrap(Error(False))
+  process.demonitor_process(store_down)
+  case outcome {
+    Ok(value) -> {
+      process.demonitor_process(forwarder_down)
+      value
+    }
+    Error(store_exited) -> {
+      process.unlink(forwarder)
+      process.kill(forwarder)
+      // a reply sent before the kill arrives before the forwarder's exit
+      let late =
+        process.new_selector()
+        |> process.select_map(forwarded, Ok)
+        |> process.select_specific_monitor(forwarder_down, fn(_) { Error(Nil) })
+        |> process.selector_receive_forever
+      process.demonitor_process(forwarder_down)
+      case late, store_exited {
+        Ok(value), _ -> value
+        Error(Nil), True -> panic as "the store exited before replying"
+        Error(Nil), False -> ffi.store_timeout()
+      }
+    }
+  }
+}
+
+/// Calls the store for a read, waiting up to `waiting` milliseconds: the
+/// reply comes straight back (a read has nothing to skip, and the rule list
+/// is not copied twice). A reply arriving after the timeout stays in the
+/// caller's mailbox, as with `process.call`; callers are request processes.
+fn read(
+  store: Store,
+  waiting default: Int,
+  sending make: fn(Subject(reply)) -> Message,
+) -> reply {
+  let store_down = process.monitor(store_pid(store))
+  let reply = process.new_subject()
+  process.send(store, make(reply))
+  let outcome =
+    process.new_selector()
+    |> process.select_map(reply, Ok)
+    |> process.select_specific_monitor(store_down, fn(_) { Error(True) })
+    |> process.selector_receive(ffi.tunable("store_call_timeout", default))
+    |> result.unwrap(Error(False))
+  process.demonitor_process(store_down)
+  case outcome {
+    Ok(value) -> value
+    Error(True) -> panic as "the store exited before replying"
+    Error(False) -> ffi.store_timeout()
+  }
+}
+
+/// The store's process; while the supervisor restarts it, the store is
+/// unavailable, as when it is too busy.
+fn store_pid(store: Store) -> process.Pid {
+  case process.subject_owner(store) {
+    Ok(pid) -> pid
+    Error(Nil) -> ffi.store_timeout()
+  }
+}
+
+/// Runs `run`, or `unavailable` when a store call in it timed out: the store
+/// was busy, with changes queued or waiting for the file lock another process
+/// holds.
+pub fn or_unavailable(run: fn() -> a, unavailable: fn() -> a) -> a {
+  ffi.rescue_store_timeout(run, unavailable)
+}
 
 pub type Settings {
   Settings(
@@ -313,17 +412,17 @@ pub fn start(
 }
 
 pub fn all(store: Store) -> List(Rule) {
-  actor.call(store, timeout, All)
+  read(store, timeout, All)
 }
 
 /// Every rule and the version of the rule set (the fingerprint of the file
 /// last read or written), for `import_rules_versioned` and `bulk_versioned`.
 pub fn versioned(store: Store) -> #(List(Rule), String) {
-  actor.call(store, timeout, Versioned)
+  read(store, timeout, Versioned)
 }
 
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
-  actor.call(store, timeout, Get(id, _))
+  read(store, timeout, Get(id, _))
 }
 
 pub fn create(
@@ -331,7 +430,7 @@ pub fn create(
   rule: Rule,
   by actor_name: String,
 ) -> Result(Rule, List(String)) {
-  actor.call(store, timeout, Create(rule, actor_name, _))
+  call(store, timeout, Create(rule, actor_name, _))
 }
 
 pub fn update(
@@ -350,7 +449,7 @@ pub fn update_versioned(
   expected: Option(String),
   by actor_name: String,
 ) -> Result(Rule, ChangeError) {
-  actor.call(store, timeout, Update(rule, expected, actor_name, _))
+  call(store, timeout, Update(rule, expected, actor_name, _))
 }
 
 pub fn delete(
@@ -369,7 +468,7 @@ pub fn delete_versioned(
   expected: Option(String),
   by actor_name: String,
 ) -> Result(Rule, ChangeError) {
-  actor.call(store, timeout, Delete(id, expected, actor_name, _))
+  call(store, timeout, Delete(id, expected, actor_name, _))
 }
 
 pub fn describe_change_error(error: ChangeError) -> List(String) {
@@ -431,7 +530,7 @@ pub fn import_rules_versioned(
   use prepared <- result.try(
     prepare_import(rules, actor_name) |> result.map_error(Rejected),
   )
-  actor.call(store, 60_000, Import(prepared, mode, expected, actor_name, _))
+  call(store, 60_000, Import(prepared, mode, expected, actor_name, _))
 }
 
 /// What an import would change, without writing anything: rules added,
@@ -445,22 +544,12 @@ pub fn preview_import(
   by actor_name: String,
 ) -> Result(#(store_rules.Diff, String), List(String)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
-  actor.call(store, 60_000, PreviewImport(prepared, mode, _))
+  read(store, 60_000, PreviewImport(prepared, mode, _))
 }
 
 /// Enables, disables or deletes several rules in one write, recorded as one
-/// audit entry. Every id must exist. Returns the number of rules changed.
-pub fn bulk(
-  store: Store,
-  ids: List(String),
-  action: BulkAction,
-  by actor_name: String,
-) -> Result(Int, List(String)) {
-  bulk_versioned(store, ids, action, None, actor_name)
-  |> result.map_error(describe_set_change_error)
-}
-
-/// `bulk`, only if the rule set is still at version `expected` (when given).
+/// audit entry, only if the rule set is still at version `expected` (when
+/// given). Every id must exist. Returns the number of rules changed.
 pub fn bulk_versioned(
   store: Store,
   ids: List(String),
@@ -468,23 +557,17 @@ pub fn bulk_versioned(
   expected: Option(String),
   by actor_name: String,
 ) -> Result(Int, SetChangeError) {
-  actor.call(store, timeout, Bulk(
-    list.unique(ids),
-    action,
-    expected,
-    actor_name,
-    _,
-  ))
+  call(store, timeout, Bulk(list.unique(ids), action, expected, actor_name, _))
 }
 
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
-  actor.call(store, 60_000, Reload(actor_name, _))
+  call(store, 60_000, Reload(actor_name, _))
 }
 
 /// Saves the hit counts and waits for the write, so that the hits counted
 /// while draining before a stop are kept.
 pub fn flush_hits(store: Store) -> Nil {
-  actor.call(store, 10_000, FlushHits)
+  call(store, 10_000, FlushHits)
 }
 
 /// Reload without waiting for the result (used by the SIGHUP handler).
@@ -925,14 +1008,26 @@ fn audit_rules_change(
 /// Runs a mutation holding the cross-process file lock, on rules refreshed
 /// from disk when another process changed the file. `change` returns the
 /// reply, the new rules and the fingerprint of the written file.
+///
+/// A change whose caller stopped waiting while it was queued (it timed out,
+/// or exited) is skipped: nothing is written, audited or published.
 fn mutate(
   state: State,
   reply: Subject(Result(a, e)),
   to_error: fn(String) -> e,
   change: fn(State) -> Result(#(a, List(Rule), String), e),
 ) -> actor.Next(State, Message) {
+  use <- bool.lazy_guard(abandoned(reply), fn() {
+    log.warning("a change was skipped: its caller stopped waiting for it")
+    actor.continue(state)
+  })
   let outcome =
     ffi.with_file_lock(state.settings.rules_path, lock_timeout, fn() {
+      // the lock may have taken long enough for the caller to give up
+      use <- bool.lazy_guard(abandoned(reply), fn() {
+        log.warning("a change was skipped: its caller stopped waiting for it")
+        #(state, Error(to_error("the caller stopped waiting")))
+      })
       case refresh(state) {
         Error(reason) -> #(state, Error(to_error(reason)))
         Ok(state) ->
@@ -956,6 +1051,14 @@ fn mutate(
       process.send(reply, Error(to_error("storage: " <> reason)))
       actor.continue(state)
     }
+  }
+}
+
+/// Whether nobody waits for the reply any more.
+fn abandoned(reply: Subject(a)) -> Bool {
+  case process.subject_owner(reply) {
+    Ok(owner) -> !process.is_alive(owner)
+    Error(Nil) -> False
   }
 }
 

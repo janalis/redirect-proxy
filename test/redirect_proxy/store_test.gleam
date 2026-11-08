@@ -814,3 +814,91 @@ pub fn same_second_same_size_edits_are_seen_test() {
   write("/again")
   support.wait_until(fn() { redirect("/watched") == Ok("/again") }, 2000)
 }
+
+/// A change whose caller stopped waiting (it timed out or exited) before the
+/// store got to it is not made: the caller was not told it was.
+pub fn changes_of_callers_gone_are_not_made_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  // the CLI holds the lock: the store waits for it in the first change, and
+  // the second one is queued meanwhile
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let first = process.new_subject()
+  process.spawn(fn() {
+    process.send(first, store.create(s, new_rule("/kept", "/t"), by: "first"))
+  })
+  process.sleep(100)
+  let gone =
+    process.spawn_unlinked(fn() {
+      store.create(s, new_rule("/gone", "/t"), by: "gone")
+    })
+  process.sleep(100)
+  process.kill(gone)
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Ok(Ok(_)) = process.receive(first, 5000)
+
+  assert list.map(store.all(s), fn(r) { r.source }) == ["/kept"]
+  let assert Ok(content) = simplifile.read(dir <> "/redirects.json")
+  assert !string.contains(content, "/gone")
+  let assert Ok(audit) = simplifile.read(dir <> "/audit.jsonl")
+  assert !string.contains(audit, "/gone")
+}
+
+/// A change the store started, but whose caller gave up while the store
+/// waited for the file lock, is not made either: the caller was told it
+/// failed (503), so a retry must not find it made.
+pub fn changes_abandoned_while_waiting_for_the_lock_are_not_made_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let gone =
+    process.spawn_unlinked(fn() {
+      store.create(s, new_rule("/gone", "/t"), by: "gone")
+    })
+  // the store has taken the change and waits for the lock
+  process.sleep(200)
+  process.kill(gone)
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Ok(_) = store.create(s, new_rule("/after", "/t"), by: "after")
+
+  assert list.map(store.all(s), fn(r) { r.source }) == ["/after"]
+  let assert Ok(audit) = simplifile.read(dir <> "/audit.jsonl")
+  assert !string.contains(audit, "/gone")
+}
+
+/// A lock held longer than the stale delay (a long change by the CLI) is kept
+/// fresh while it is held: a writer waiting for it does not take it over,
+/// and both changes are kept.
+pub fn a_lock_held_long_is_not_taken_over_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/redirects.json"
+  let s = start(settings(dir, 0))
+  ffi.set_tunable("stale_lock_seconds", 1)
+  let held = process.new_subject()
+  process.spawn(fn() {
+    let assert Ok(Nil) =
+      ffi.with_file_lock(path, 1000, fn() {
+        let assert Ok(content) = simplifile.read(path)
+        let assert Ok(rules) = rule.file_from_string(content)
+        process.send(held, Nil)
+        process.sleep(3000)
+        let cli = Rule(..new_rule("/cli", "/t"), id: "cli")
+        let assert Ok(Nil) =
+          simplifile.write(path, rule.file_to_string(list.append(rules, [cli])))
+        Nil
+      })
+    process.send(held, Nil)
+  })
+  let assert Ok(Nil) = process.receive(held, 1000)
+  let created = store.create(s, new_rule("/server", "/t"), by: "server")
+  let released = process.receive(held, 5000)
+  ffi.clear_tunable("stale_lock_seconds")
+  let assert Ok(_) = created
+  let assert Ok(Nil) = released
+
+  let assert Ok(content) = simplifile.read(path)
+  let assert Ok(on_disk) = rule.file_from_string(content)
+  assert list.map(on_disk, fn(r) { r.source }) == ["/cli", "/server"]
+}

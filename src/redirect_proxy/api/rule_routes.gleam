@@ -34,6 +34,7 @@ import redirect_proxy/api/params
 /// `GET /api/redirects/export`: the matching rules as JSON or CSV, with
 /// the rule set's version as ETag.
 pub fn export(req: Request, ctx: Context) -> Response {
+  use <- store_available
   let query = wisp.get_query(req)
   let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
   use #(rules, version) <- params.result_or_response(filtered_rules(ctx, get))
@@ -58,6 +59,7 @@ pub fn export(req: Request, ctx: Context) -> Response {
 
 /// `GET /api/redirects/{id}`.
 pub fn get_rule(ctx: Context, id: String) -> Response {
+  use <- store_available
   case store.get(ctx.store, id) {
     // always 200: the body has live hit counts that the ETag (the
     // rule's version, for If-Match) does not cover, so a 304 would
@@ -69,6 +71,7 @@ pub fn get_rule(ctx: Context, id: String) -> Response {
 
 /// `POST /api/reload`: reads the redirections file again.
 pub fn reload(ctx: Context, principal: Principal) -> Response {
+  use <- store_available
   case store.reload(ctx.store, principal.actor) {
     Ok(count) ->
       problem.json_response(200, json.object([#("rules", json.int(count))]))
@@ -94,6 +97,7 @@ fn rule_not_found(id: String) -> Response {
 }
 
 pub fn list_rules(req: Request, ctx: Context) -> Response {
+  use <- store_available
   let query = wisp.get_query(req)
   let get = fn(key) { list.key_find(query, key) |> result.unwrap("") }
   use page <- params.result_or_response(params.positive_param(get, "page", 1))
@@ -266,6 +270,7 @@ fn unless_not_modified(
 }
 
 pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
+  use <- store_available
   use <- require_precondition(req, ctx)
   use body, _ <- require_json_object(req)
   let decoder = {
@@ -350,6 +355,7 @@ pub fn create_rule(
   ctx: Context,
   principal: Principal,
 ) -> Response {
+  use <- store_available
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
@@ -434,6 +440,7 @@ pub fn replace_rule(
   principal: Principal,
   id: String,
 ) -> Response {
+  use <- store_available
   use <- require_precondition(req, ctx)
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
@@ -457,6 +464,7 @@ pub fn patch_rule(
   principal: Principal,
   id: String,
 ) -> Response {
+  use <- store_available
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case store.get(ctx.store, id), json.parse(body, patch_decoder()) {
@@ -487,6 +495,7 @@ pub fn delete_rule(
   principal: Principal,
   id: String,
 ) -> Response {
+  use <- store_available
   use <- require_precondition(req, ctx)
   case
     store.delete_versioned(
@@ -509,6 +518,7 @@ pub fn import_rules(
   ctx: Context,
   principal: Principal,
 ) -> Response {
+  use <- store_available
   let mode = case list.key_find(wisp.get_query(req), "mode") {
     Ok(mode) -> store.import_mode_from_string(mode)
     Error(Nil) -> Ok(store.Merge)
@@ -563,6 +573,7 @@ pub fn import_rules(
 }
 
 pub fn test_url(req: Request, ctx: Context) -> Response {
+  use <- store_available
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
   let tolerant = config.ignore_trailing_slash(ctx.config)
   // one read of the published rules for the result and its explanation
@@ -629,4 +640,18 @@ fn verdict_string(verdict: explain.Verdict) -> String {
     explain.Disabled -> "disabled"
     explain.OutOfSchedule -> "out_of_schedule"
   }
+}
+
+/// 503 when the store does not answer in time (changes queued, or waiting
+/// for the file lock another process holds), rather than a crash (500).
+fn store_available(handler: fn() -> Response) -> Response {
+  use <- store.or_unavailable(handler)
+  problem.coded_problem(
+    503,
+    "store_busy",
+    "Store Busy",
+    "The rules are busy with other changes: retry later.",
+    [],
+  )
+  |> wisp.set_header("retry-after", "1")
 }
