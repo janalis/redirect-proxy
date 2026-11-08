@@ -27,6 +27,23 @@ pub fn quoting_test() {
   assert c.tags == []
 }
 
+/// A quote, comma or line break followed by a combining mark (U+1E000) is one
+/// grapheme with it: the cell must still be quoted, its quote doubled.
+pub fn quoting_before_combining_marks_test() {
+  [
+    "a\"\u{1E000}\n",
+    "\"\u{1E000}",
+    "a,\u{1E000}",
+    "a\r\u{1E000}b",
+    "\u{1E000}\"x",
+  ]
+  |> list.each(fn(target) {
+    let r = Rule(..rule.blank(), id: "x", source: "/s", target:)
+    let assert Ok([back]) = rule_csv.parse_import(rule_csv.to_string([r]))
+    assert back.target == target
+  })
+}
+
 pub fn every_column_test() {
   let csv =
     "match,source,target,status,preserve_query,case_insensitive,whole_segments,priority,enabled,host,starts_at,expires_at,query,id\n"
