@@ -30,7 +30,7 @@ import simplifile
 
 // x-release-please-start-version
 /// Updated automatically by release-please.
-pub const version = "0.7.2"
+pub const version = "0.7.3"
 
 // x-release-please-end
 
