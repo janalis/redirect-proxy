@@ -34,6 +34,21 @@ pub fn openapi_document_test() {
   })
   // no version prefix anywhere
   assert !string.contains(resp.body, "/v1/")
+  // a body that is JSON but not an object is a 400 where an object is read
+  let documented = fn(path, method, status) {
+    field(
+      resp.body,
+      ["paths", path, method, "responses"],
+      decode.dict(decode.string, decode.dynamic),
+    )
+    |> dict.has_key(status)
+  }
+  assert documented("/api/redirects", "post", "400")
+  assert documented("/api/redirects/{id}", "put", "400")
+  assert documented("/api/redirects/{id}", "patch", "400")
+  assert documented("/api/redirects/bulk", "post", "400")
+  assert documented("/oauth/token", "post", "413")
+  assert documented("/oauth/token", "post", "415")
 }
 
 pub fn deprecations_are_announced_test() {

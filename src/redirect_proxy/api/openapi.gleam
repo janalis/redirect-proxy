@@ -123,6 +123,14 @@ fn body_errors() -> List(#(String, Json)) {
   ]
 }
 
+/// Responses of operations whose body is a JSON object.
+fn json_object_body_errors() -> List(#(String, Json)) {
+  [
+    #("400", problem_response("The body is not a JSON object.")),
+    ..body_errors()
+  ]
+}
+
 fn header(description: String) -> Json {
   json.object([
     #("description", json.string(description)),
@@ -339,6 +347,20 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   response("Client authentication failed.", ref("OAuthError")),
                 ),
                 #(
+                  "413",
+                  response(
+                    "The body is larger than 64 KiB (error invalid_request).",
+                    ref("OAuthError"),
+                  ),
+                ),
+                #(
+                  "415",
+                  response(
+                    "The body is not application/x-www-form-urlencoded (error invalid_request).",
+                    ref("OAuthError"),
+                  ),
+                ),
+                #(
                   "429",
                   response(
                     "Too many failed attempts (error slow_down). Retry-After gives the seconds to wait.",
@@ -448,7 +470,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ]),
               ),
               ..list.append(
-                body_errors(),
+                json_object_body_errors(),
                 store_errors([
                   #(
                     "409",
@@ -492,7 +514,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             json.object([
               #("200", response("Updated.", ref("Rule"))),
               ..list.append(
-                body_errors(),
+                json_object_body_errors(),
                 store_errors([
                   #("404", "Not found."),
                   #("412", "Version mismatch."),
@@ -521,7 +543,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               json.object([
                 #("200", response("Updated.", ref("Rule"))),
                 ..list.append(
-                  body_errors(),
+                  json_object_body_errors(),
                   store_errors([
                     #("404", "Not found."),
                     #("412", "Version mismatch."),
@@ -759,7 +781,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ),
                 ),
                 ..list.append(
-                  body_errors(),
+                  json_object_body_errors(),
                   store_errors([
                     #("412", "The rules changed since the If-Match version."),
                     #(

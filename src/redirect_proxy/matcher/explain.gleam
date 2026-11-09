@@ -106,7 +106,8 @@ pub fn explain(
     Error(Nil) -> #([], False)
     Ok(m) -> {
       let first = matcher.location(m, query)
-      follow(find, host, first, m, set.from_list([host <> path]), [], max_hops)
+      let seen = set.from_list([request_key(host, path, request_query)])
+      follow(find, host, first, m, seen, [], max_hops)
     }
   }
   Ok(Explanation(host:, path:, candidates:, chain:, loops:))
@@ -139,16 +140,17 @@ fn parents(name: String) -> List(String) {
   }
 }
 
-/// Exact rules, then prefix rules (longest first, then priority), then regex
-/// rules (by priority); file order breaks ties, as in the matcher.
+/// Exact rules, then prefix rules (longest in bytes first, then priority),
+/// then regex rules (by priority); file order breaks ties, as in the
+/// matcher.
 fn resolution_order(rules: List(Rule)) -> List(Rule) {
   let of = fn(kind) { list.filter(rules, fn(r) { r.kind == kind }) }
   list.flatten([
     of(Exact),
     of(Prefix)
       |> list.sort(fn(a, b) {
-        string.length(b.source)
-        |> int_compare(string.length(a.source))
+        string.byte_size(b.source)
+        |> int_compare(string.byte_size(a.source))
         |> order.break_tie(int_compare(a.priority, b.priority))
       }),
     of(Regex) |> list.sort(fn(a, b) { int_compare(a.priority, b.priority) }),
@@ -186,7 +188,8 @@ fn matches_path(r: Rule, path: String) -> Bool {
         True ->
           rule.on_segment_boundary(
             source,
-            string.drop_start(path, string.length(source)),
+            // in bytes, like the matcher
+            ffi.byte_drop(path, string.byte_size(source)),
           )
       }
     }
@@ -196,6 +199,11 @@ fn matches_path(r: Rule, path: String) -> Bool {
         Error(_) -> False
       }
   }
+}
+
+/// A request, for loop detection: the query decides some rules.
+fn request_key(host: String, path: String, query: String) -> String {
+  host <> ffi.normalise_path(path) <> "?" <> query
 }
 
 fn follow(
@@ -216,7 +224,7 @@ fn follow(
     Error(Nil) -> #(list.reverse(chain), False)
     Ok(#(next_host, next_path, next_query)) -> {
       let next_host = matcher.normalise_request_host(next_host)
-      let key = next_host <> ffi.normalise_path(next_path)
+      let key = request_key(next_host, next_path, next_query)
       case set.contains(seen, key), find(next_host, next_path, next_query) {
         True, Ok(_) -> #(list.reverse(chain), True)
         _, Error(Nil) -> #(list.reverse(chain), False)
@@ -224,7 +232,8 @@ fn follow(
           follow(
             find,
             next_host,
-            matcher.location(m, Error(Nil)),
+            // a rule preserving the query keeps the one it was asked
+            matcher.location(m, Ok(next_query)),
             m,
             set.insert(seen, key),
             chain,

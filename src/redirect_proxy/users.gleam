@@ -107,18 +107,25 @@ pub fn set_password(
 }
 
 /// Stores a stronger hash of the same password (more iterations), recorded
-/// as such in the audit trail rather than as a password change.
+/// as such in the audit trail rather than as a password change. Only while
+/// the stored hash is still `previous_hash`, the one the password was
+/// checked against: a password changed meanwhile (during the slow hashing)
+/// is kept, not replaced by a hash of the old one. Returns the user as
+/// stored, read under the lock (`None` when the password changed meanwhile):
+/// reading it again after could see a password changed since.
 pub fn rehash_password(
   settings: Settings,
   username: String,
+  previous_hash: String,
   password_hash: String,
-) -> Result(Nil, String) {
-  store_password(
+) -> Result(option.Option(User), String) {
+  store_password_if(
     settings,
     username,
     password_hash,
     "system",
     "user.password_rehash",
+    fn(u) { u.password_hash == previous_hash },
   )
 }
 
@@ -129,24 +136,43 @@ fn store_password(
   actor: String,
   action: String,
 ) -> Result(Nil, String) {
+  store_password_if(settings, username, password_hash, actor, action, fn(_) {
+    True
+  })
+  |> result.replace(Nil)
+}
+
+fn store_password_if(
+  settings: Settings,
+  username: String,
+  password_hash: String,
+  actor: String,
+  action: String,
+  current: fn(User) -> Bool,
+) -> Result(option.Option(User), String) {
   let username = normalise(username)
   use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
-  case list.any(users, fn(u) { u.username == username }) {
-    False -> Error("user " <> username <> " does not exist")
-    True -> {
-      let now = ffi.now_rfc3339()
-      let users =
-        list.map(users, fn(u) {
-          case u.username == username {
-            True -> User(..u, password_hash:, updated_at: now)
-            False -> u
-          }
-        })
-      use Nil <- result.try(save(settings.path, users))
-      audit.record(settings.audit_path, actor, action, username, None, None)
-      Ok(Nil)
-    }
+  case list.find(users, fn(u) { u.username == username }) {
+    Error(Nil) -> Error("user " <> username <> " does not exist")
+    Ok(user) ->
+      case current(user) {
+        False -> Ok(None)
+        True -> {
+          let stored =
+            User(..user, password_hash:, updated_at: ffi.now_rfc3339())
+          let users =
+            list.map(users, fn(u) {
+              case u.username == username {
+                True -> stored
+                False -> u
+              }
+            })
+          use Nil <- result.try(save(settings.path, users))
+          audit.record(settings.audit_path, actor, action, username, None, None)
+          Ok(Some(stored))
+        }
+      }
   }
 }
 

@@ -62,6 +62,11 @@
 
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
+%% lingering close (linger_close/1): for at most 2 s, 500 ms without a
+%% byte, 1 MiB
+-define(LINGER_MS, 2000).
+-define(LINGER_IDLE_MS, 500).
+-define(LINGER_BYTES, 1048576).
 
 %% The minimum heap of a connection process, in words (20 KiB): a request
 %% leaves 1 to 2 KiB of garbage, so the default heap (233 words) is
@@ -464,16 +469,46 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
 
 %% The end of the idle timeout: an incomplete request head gets a 408.
 expired(<<>>, C) -> close(C);
-expired(_, C) -> reject(408, C).
+%% Closed at once: lingering would keep a client too slow to send its head
+%% (a slow-head attack) for longer.
+expired(_, C) -> close(send_reject(408, C)).
 
-%% More bytes of an incomplete head. A head ends with a LF: without one in
-%% the new bytes, parsing it again would only say `more` (or find an error
-%% that the next parse finds too), so it is parsed again once one comes or
-%% the head reaches max_head.
+%% More bytes of an incomplete head. Each parse starts over from the first
+%% byte, so the head is parsed again only when it may have changed the
+%% outcome: once its request line is complete (an invalid one is refused
+%% early), once the new bytes may end the head (an empty line), or once it
+%% reaches max_head. Parsing it at every new line would let a client
+%% sending one header line per packet make the server parse a head of up to
+%% max_head bytes thousands of times.
 more_head(Buffer, Data, #conn{max_head = Max} = C) ->
-    case byte_size(Buffer) < Max andalso binary:match(Data, <<"\n">>) =:= nomatch of
-        true -> more(Buffer, C);
-        false -> request(Buffer, C)
+    Size = byte_size(Buffer),
+    Previous = Size - byte_size(Data),
+    case Size >= Max orelse head_may_end(Buffer, Data, Previous) of
+        true -> request(Buffer, C);
+        false -> more(Buffer, C)
+    end.
+
+%% Whether a parse of Buffer, whose first Previous bytes were already
+%% parsed, may not say `more`. Both a request line and an empty line end
+%% with a LF among the new bytes (Data): without one, the head is not
+%% scanned again (a request line trickled byte by byte would be scanned
+%% once per byte).
+head_may_end(Buffer, Data, Previous) ->
+    case binary:match(Data, <<"\n">>) of
+        nomatch ->
+            false;
+        _ ->
+            case binary:match(Buffer, <<"\n">>) of
+                {First, _} when First >= Previous ->
+                    %% the request line just completed
+                    true;
+                _ ->
+                    %% an empty line among the new bytes (or across the
+                    %% boundary)
+                    Start = max(0, Previous - 2),
+                    binary:match(Buffer, [<<"\n\n">>, <<"\n\r\n">>],
+                                 [{scope, {Start, byte_size(Buffer) - Start}}]) =/= nomatch
+            end
     end.
 
 request(<<>>, C) ->
@@ -620,8 +655,12 @@ headers(Bin, Acc, Host, Body, Connection) ->
                             Body orelse Value =/= <<"0">>, Connection);
                 <<"transfer-encoding">> ->
                     headers(Rest, [Header | Acc], Host, true, Connection);
-                <<"connection">> ->
+                %% repeated: one list, as when forwarding (framing/8)
+                <<"connection">> when Connection =:= <<>> ->
                     headers(Rest, [Header | Acc], Host, Body, Value);
+                <<"connection">> ->
+                    headers(Rest, [Header | Acc], Host, Body,
+                            <<Connection/binary, ", ", Value/binary>>);
                 _ ->
                     headers(Rest, [Header | Acc], Host, Body, Connection)
             end;
@@ -1226,9 +1265,12 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                         true -> C1;
                         false -> close_upstream(C1)
                     end,
-                    case ClientKeep of
-                        true -> request(Rest, C2);
-                        false -> close(C2)
+                    case {ClientKeep, BodyDone} of
+                        {true, _} -> request(Rest, C2);
+                        {false, true} -> close(C2);
+                        %% the upstream answered without reading the whole
+                        %% body: the client may still be sending it
+                        {false, false} -> linger_close(C2)
                     end;
                 {error, Why, Bytes} ->
                     Error = case Why of
@@ -1925,7 +1967,13 @@ respond(Request0, Version, Close0, Rest,
             case Close of
                 true ->
                     _ = gen_tcp:send(C1#conn.socket, Response),
-                    close(C1);
+                    %% the body of the request is not read: closing at once
+                    %% could reset the connection before the client reads
+                    %% the response
+                    case has_body(element(3, Request0)) of
+                        true -> linger_close(C1);
+                        false -> close(C1)
+                    end;
                 false ->
                     case send(C1#conn.socket, Response) of
                         ok -> request(Rest, C1);
@@ -1963,20 +2011,62 @@ call(Handler, Request) ->
             error
     end.
 
-%% An empty response, then the connection is closed.
+%% An empty response, then the connection is closed (lingering: the rest
+%% of the request is not read).
 reject(Status, C) ->
+    linger_close(send_reject(Status, C)).
+
+send_reject(Status, C) ->
     {Date, C1} = date(C),
     _ = gen_tcp:send(C1#conn.socket, [
         status_line(Status),
         <<"content-length: 0\r\ndate: ">>, Date,
         <<"\r\ncache-control: no-store\r\nconnection: close\r\n\r\n">>
     ]),
-    close(C1).
+    C1.
 
 close(#conn{socket = Socket} = C) ->
     _ = close_upstream(C),
     gen_tcp:close(Socket),
     exit(normal).
+
+%% Whether a request announces a body (one the answered path does not read).
+has_body([{<<"transfer-encoding">>, _} | _]) -> true;
+has_body([{<<"content-length">>, V} | _]) when V =/= <<"0">> -> true;
+has_body([_ | Rest]) -> has_body(Rest);
+has_body([]) -> false.
+
+%% Closes a connection whose client may still be sending: a socket closed
+%% with unread bytes, or bytes arriving after it is closed, is reset, and a
+%% reset can discard the response before the client reads it. The response
+%% goes out first (`shutdown` waits for it), then what the client sends is
+%% read and discarded until it closes, for at most ?LINGER_MS (?LINGER_IDLE_MS
+%% without a byte) or ?LINGER_BYTES, as nginx's `lingering_close`.
+linger_close(#conn{socket = Socket} = C) ->
+    _ = close_upstream(C),
+    case gen_tcp:shutdown(Socket, write) of
+        ok ->
+            _ = inet:setopts(Socket, [{active, false}]),
+            linger(Socket, erlang:monotonic_time(millisecond) + ?LINGER_MS,
+                   ?LINGER_BYTES);
+        {error, _} ->
+            ok
+    end,
+    gen_tcp:close(Socket),
+    exit(normal).
+
+linger(Socket, End, Left) when Left > 0 ->
+    case min(?LINGER_IDLE_MS, End - erlang:monotonic_time(millisecond)) of
+        Wait when Wait > 0 ->
+            case gen_tcp:recv(Socket, 0, Wait) of
+                {ok, Data} -> linger(Socket, End, Left - byte_size(Data));
+                {error, _} -> ok
+            end;
+        _ ->
+            ok
+    end;
+linger(_, _, _) ->
+    ok.
 
 %% The connection header is the server's to set.
 encode_headers([{<<"connection">>, _} | Rest]) ->

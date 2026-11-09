@@ -591,9 +591,16 @@ pub fn mismatched_101_is_a_502_test() {
 
 pub fn https_upstreams_test() {
   let #(port, counter) = start_tls_upstream()
+  // a TLS handshake can take longer than the usual 500 ms on a loaded
+  // machine (a timeout would be a 502, not this test's subject)
   let proxy =
     start_with(
-      proxy_http.Upstream(..upstream(port), tls: True, tls_verify: False),
+      proxy_http.Upstream(
+        ..upstream(port),
+        tls: True,
+        tls_verify: False,
+        timeout_ms: 3000,
+      ),
       counter,
     )
   let #(text, _) =

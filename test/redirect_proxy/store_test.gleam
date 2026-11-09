@@ -191,6 +191,28 @@ pub fn backups_are_rotated_test() {
 }
 
 /// A backup is readable by whoever can read the rules file, no one else.
+/// Rotation counts and deletes the backups only, not other files in their
+/// directory; with backups off, the directory is not created.
+pub fn backups_rotation_ignores_other_files_test() {
+  let dir = support.temp_dir()
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/backups")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/backups/redirects-old.json", "")
+  let s = start(settings(dir, 2))
+  list.each(["/r1", "/r2", "/r3", "/r4"], fn(source) {
+    let assert Ok(_) = store.create(s, new_rule(source, "/x"), by: "t")
+  })
+  let assert Ok(files) = simplifile.read_directory(dir <> "/backups")
+  assert list.contains(files, "redirects-old.json")
+  assert list.length(files) == 3
+
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) = store.create(s, new_rule("/a", "/x"), by: "t")
+  let assert Ok(_) = store.create(s, new_rule("/b", "/x"), by: "t")
+  assert simplifile.is_directory(dir <> "/backups") == Ok(False)
+}
+
 pub fn backups_keep_the_rules_file_mode_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
@@ -693,6 +715,17 @@ pub fn query_rules_conflicts_and_loops_test() {
   let assert Error([loop]) =
     store.create(s, Rule(..new_rule("/l", "/l?x=1"), query: "x=1"), by: "t")
   assert string.contains(loop, "redirect loop")
+  // the target keeps the query that matched: the same request again
+  let assert Error([loop]) =
+    store.create(
+      s,
+      Rule(..new_rule("/p", "/p"), query: "x=1", preserve_query: True),
+      by: "t",
+    )
+  assert string.contains(loop, "redirect loop")
+  // without it, the query is not asked again
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/p", "/p"), query: "x=1"), by: "t")
 }
 
 @external(erlang, "test_log_ffi", "capture_start")

@@ -1,7 +1,7 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
-         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, parse_outcome/1,
+         raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, upload/4, parse_outcome/1,
          trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
          start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1]).
 
@@ -196,3 +196,24 @@ resume(Pid) ->
 queued(Pid) ->
     {message_queue_len, N} = erlang:process_info(Pid, message_queue_len),
     N.
+
+%% Sends Head and the first part of a body, then the rest in parts GapMs
+%% apart (ignoring errors: the server may have closed), as an upload does,
+%% then reads until closed. Returns the bytes read, and whether the read
+%% ended with a reset rather than a close.
+upload(Port, Head, Part, Parts) ->
+    {ok, S} = gen_tcp:connect({127, 0, 0, 1}, Port,
+                              [binary, {active, false}, {sndbuf, 16384}]),
+    ok = gen_tcp:send(S, [Head, Part]),
+    lists:foreach(fun(_) ->
+        timer:sleep(20),
+        _ = gen_tcp:send(S, Part)
+    end, lists:seq(1, Parts)),
+    upload_read(S, <<>>).
+
+upload_read(S, Acc) ->
+    case gen_tcp:recv(S, 0, 3000) of
+        {ok, Data} -> upload_read(S, <<Acc/binary, Data/binary>>);
+        {error, closed} -> gen_tcp:close(S), {Acc, false};
+        {error, _} -> gen_tcp:close(S), {Acc, true}
+    end.

@@ -125,7 +125,9 @@ API clients are not affected: they have scopes (see [REST API](api)).
   all per client address. There is no limit per client id alone: secrets
   are too long to guess, so such a limit would only let anyone lock a
   pipeline out. Token requests are limited to 64 KB. A client may start 30
-  SSO logins and fail 20 SSO callbacks, and the API accepts 100 invalid
+  SSO logins that it does not complete (completed ones are not counted, so
+  many people behind one address can sign in) and fail 20 SSO callbacks,
+  and the API accepts 100 invalid
   access tokens from one client before answering 429 without checking more.
   A throttled request gets a 429 with `Retry-After`. An attempt is counted
   before the password is checked, so parallel guesses get no more than

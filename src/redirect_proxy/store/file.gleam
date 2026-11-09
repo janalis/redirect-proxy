@@ -108,11 +108,6 @@ pub fn load(
 
 /// Backs up then atomically rewrites the file. Returns its fingerprint.
 pub fn persist(files: Files, rules: List(Rule)) -> Result(String, String) {
-  let describe = fn(e) { simplifile.describe_error(e) }
-  use Nil <- result.try(
-    simplifile.create_directory_all(files.backups_dir)
-    |> result.map_error(describe),
-  )
   use Nil <- result.try(backup(files))
   let content = rule.file_to_string_cached(rules) <> "\n"
   use Nil <- result.try(ffi.atomic_write(files.rules_path, content))
@@ -123,6 +118,12 @@ fn backup(files: Files) -> Result(Nil, String) {
   case files.backups, simplifile.is_file(files.rules_path) {
     0, _ -> Ok(Nil)
     _, Ok(True) -> {
+      // created when needed only: with backups off, the directory need
+      // not be writable, nor exist
+      use Nil <- result.try(
+        simplifile.create_directory_all(files.backups_dir)
+        |> result.map_error(simplifile.describe_error),
+      )
       let name = backup_name(files.backups_dir, ffi.now_millis())
       use Nil <- result.try(
         simplifile.copy_file(files.rules_path, name)
@@ -155,15 +156,41 @@ fn backup_name(dir: String, millis: Int) -> String {
   }
 }
 
+/// The timestamp of a `redirects-<ms>.json` name, as `backup_name` makes
+/// them: digits only (`int.parse` also takes a sign).
+fn backup_millis(name: String) -> Result(Int, Nil) {
+  case string.starts_with(name, "redirects-"), string.ends_with(name, ".json") {
+    True, True -> {
+      let digits = name |> string.drop_start(10) |> string.drop_end(5)
+      case digits != "" && string.to_graphemes(digits) |> list.all(is_digit) {
+        True -> int.parse(digits)
+        False -> Error(Nil)
+      }
+    }
+    _, _ -> Error(Nil)
+  }
+}
+
+fn is_digit(c: String) -> Bool {
+  case c {
+    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+    _ -> False
+  }
+}
+
 fn prune_backups(files: Files) -> Nil {
   case simplifile.read_directory(files.backups_dir) {
     Ok(names) -> {
       names
-      |> list.filter(fn(f) {
-        string.starts_with(f, "redirects-") && string.ends_with(f, ".json")
+      // the backups only: another file there (`redirects-old.json`) is
+      // neither counted nor deleted
+      |> list.filter_map(fn(f) {
+        backup_millis(f) |> result.map(fn(millis) { #(millis, f) })
       })
-      // names embed a millisecond timestamp of constant width: sort newest first
-      |> list.sort(fn(a, b) { string.compare(b, a) })
+      // newest first, by timestamp (a name of another width sorts as text
+      // among them otherwise)
+      |> list.sort(fn(a, b) { int.compare(b.0, a.0) })
+      |> list.map(fn(backup) { backup.1 })
       |> list.drop(files.backups)
       |> list.each(fn(f) {
         let _ = simplifile.delete(files.backups_dir <> "/" <> f)

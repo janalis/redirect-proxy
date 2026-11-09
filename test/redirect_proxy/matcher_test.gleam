@@ -256,6 +256,14 @@ pub fn substitutions_cannot_leave_the_host_test() {
   assert location(m, "h", "/u/blog") == Ok("https://blog.example.com/")
   assert location(m, "h", "/u/evil.com%23") == Ok("/users/evil.com%23")
   assert location(m, "h", "/u/evil.com/x") == Ok("/users/evil.com/x")
+  // a prefix rule refused leaves the request to a shorter prefix
+  let m =
+    matcher.build([
+      r("go", "*", rule.Prefix, "/go", "https://example.com$1"),
+      r("all", "*", rule.Prefix, "/", "/home"),
+    ])
+  assert location(m, "h", "/go/page") == Ok("https://example.com/page")
+  assert location(m, "h", "/go.evil.com") == Ok("/home")
 }
 
 pub fn hit_counts_are_carried_to_the_next_matcher_test() {
@@ -552,6 +560,30 @@ pub fn whole_segments_prefix_with_trailing_slash_test() {
   let assert Ok(explained) =
     explain.explain(m, [trail], "http://x.test/trail/x", False)
   assert list.map(explained.candidates, fn(c) { c.rule.id }) == ["1"]
+}
+
+/// The URL tester follows redirects as a browser does: a preserved query
+/// goes on to the next hop, and asking the same path with another query is
+/// not a loop.
+pub fn explain_follows_queries_test() {
+  let rules = [
+    rule.Rule(..r("s", "*", rule.Exact, "/s", "/p"), preserve_query: True),
+    rule.Rule(
+      ..r("p", "*", rule.Exact, "/p", "/q"),
+      query: "x=1",
+      preserve_query: True,
+    ),
+    r("a", "*", rule.Exact, "/a", "/a?x=1"),
+    rule.Rule(..r("ax", "*", rule.Exact, "/a", "/b"), query: "x=1"),
+  ]
+  let m = matcher.build(rules)
+  let assert Ok(explained) =
+    explain.explain(m, rules, "http://h.test/s?x=1", False)
+  assert list.map(explained.chain, fn(h) { h.location }) == ["/p?x=1", "/q?x=1"]
+  assert !explained.loops
+  let assert Ok(explained) = explain.explain(m, rules, "http://h.test/a", False)
+  assert list.map(explained.chain, fn(h) { h.rule_id }) == ["a", "ax"]
+  assert !explained.loops
 }
 
 pub fn hit_records_test() {

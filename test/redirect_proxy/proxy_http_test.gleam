@@ -144,6 +144,38 @@ pub fn keep_alive_by_version_test() {
     ])
   assert responses(text) == 1
   assert string.contains(text, "\r\nconnection: close\r\n")
+  // repeated Connection headers are one list
+  let #(text, _) =
+    exchange([
+      "GET / HTTP/1.1\r\nhost: a\r\nconnection: close\r\nconnection: keep-alive\r\n\r\nGET / HTTP/1.1\r\nhost: a\r\n\r\n",
+    ])
+  assert responses(text) == 1
+  assert string.contains(text, "\r\nconnection: close\r\n")
+}
+
+/// A request whose body is not read is answered, then the connection is
+/// closed without resetting it while the client still sends its body: the
+/// client reads the whole response.
+pub fn unread_bodies_do_not_reset_the_response_test() {
+  let port = start()
+  let part = string.repeat("x", 65_536) |> bit_array.from_string
+  let #(received, reset) =
+    upload(
+      port,
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 1048576\r\n\r\n",
+      part,
+      15,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nconnection: close\r\n")
+  assert !reset
+  // and a rejected request
+  let #(received, reset) =
+    upload(port, "POST /form HTTP/1.1\r\nhost: a\r\nbad line\r\n\r\n", part, 15)
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 400 ")
+  assert !reset
 }
 
 pub fn idle_connections_are_closed_test() {
@@ -358,6 +390,14 @@ fn trickle(port: Int, data: BitArray, gap_ms: Int) -> #(BitArray, Bool)
 
 type Socket
 
+@external(erlang, "test_net_ffi", "upload")
+fn upload(
+  port: Int,
+  head: String,
+  part: BitArray,
+  parts: Int,
+) -> #(BitArray, Bool)
+
 @external(erlang, "test_net_ffi", "open")
 fn open(port: Int) -> Socket
 
@@ -434,6 +474,28 @@ pub fn heads_split_across_packets_are_parsed_test() {
     text,
     "\r\nx-headers: host=x;x-long=value;connection=close\r\n",
   )
+  // a header line per packet, the empty line split after its CR, a bare LF
+  let #(text, _) =
+    exchange_on(port, [
+      "GET /lines HTTP/1.1\r\n", "host: x\r\n", "a: 1\r\n", "b: 2\n", "\r", "\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\r\nx-headers: host=x;a=1;b=2\r\n")
+  let #(text, _) = exchange_on(port, ["GET /lf HTTP/1.1\n", "host: x\n", "\n"])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  // an invalid request line is refused before the rest of the head comes
+  let #(text, _) = exchange_on(port, ["GET / HTTP/9.9\r\n", "host: x\r\n"])
+  assert string.starts_with(text, "HTTP/1.1 ")
+  assert !string.starts_with(text, "HTTP/1.1 408 ")
+  // an invalid header line, once the head ends
+  let #(text, _) =
+    exchange_on(port, [
+      "GET / HTTP/1.1\r\n",
+      "host: x\r\n",
+      "bad line\r\n",
+      "\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 400 ")
   // and the 414 and 431 of a head sent in small parts
   let #(text, _) =
     exchange_on(port, ["GET /", ..list.repeat(string.repeat("a", 300), 4)])
