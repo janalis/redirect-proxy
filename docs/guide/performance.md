@@ -156,7 +156,11 @@ saturated (every connection always has a request in flight).
   `server.max_path_bytes` + 64 KiB: a longer request line gets 414, longer
   headers 431.
 - The bodies of answered requests are never read: the request is
-  answered, then its connection is closed. The bodies of requests
+  answered, then its connection is closed. What the client still sends is
+  read and discarded for up to 2 s (0.5 s without a byte, 1 MiB at most)
+  before the connection is closed, as after a 400: closing at once would
+  reset the connection, and could discard the response before the client
+  reads it. The bodies of requests
   forwarded to `server.upstream` are streamed to it, and the connection
   stays open when their length was unambiguous.
 - Malformed requests get 400 and the connection is closed: a request target
