@@ -433,13 +433,7 @@ fn rehash_if_needed(
           user.password_hash,
           password.hash(pass),
         )
-        |> result.try(fn(rehashed) {
-          case rehashed {
-            False -> Ok(user)
-            True ->
-              users.get(ctx.users, user.username) |> result.replace_error("")
-          }
-        })
+        |> result.map(option.unwrap(_, user))
       case stored {
         Ok(updated) -> updated
         Error(reason) -> {

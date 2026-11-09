@@ -156,15 +156,25 @@ fn backup_name(dir: String, millis: Int) -> String {
   }
 }
 
-/// `redirects-<ms>.json`, as `backup_name` makes them.
-fn is_backup_name(name: String) -> Bool {
+/// The timestamp of a `redirects-<ms>.json` name, as `backup_name` makes
+/// them: digits only (`int.parse` also takes a sign).
+fn backup_millis(name: String) -> Result(Int, Nil) {
   case string.starts_with(name, "redirects-"), string.ends_with(name, ".json") {
-    True, True ->
-      case name |> string.drop_start(10) |> string.drop_end(5) |> int.parse {
-        Ok(millis) -> millis >= 0
-        Error(Nil) -> False
+    True, True -> {
+      let digits = name |> string.drop_start(10) |> string.drop_end(5)
+      case digits != "" && string.to_graphemes(digits) |> list.all(is_digit) {
+        True -> int.parse(digits)
+        False -> Error(Nil)
       }
-    _, _ -> False
+    }
+    _, _ -> Error(Nil)
+  }
+}
+
+fn is_digit(c: String) -> Bool {
+  case c {
+    "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+    _ -> False
   }
 }
 
@@ -174,9 +184,13 @@ fn prune_backups(files: Files) -> Nil {
       names
       // the backups only: another file there (`redirects-old.json`) is
       // neither counted nor deleted
-      |> list.filter(is_backup_name)
-      // names embed a millisecond timestamp of constant width: sort newest first
-      |> list.sort(fn(a, b) { string.compare(b, a) })
+      |> list.filter_map(fn(f) {
+        backup_millis(f) |> result.map(fn(millis) { #(millis, f) })
+      })
+      // newest first, by timestamp (a name of another width sorts as text
+      // among them otherwise)
+      |> list.sort(fn(a, b) { int.compare(b.0, a.0) })
+      |> list.map(fn(backup) { backup.1 })
       |> list.drop(files.backups)
       |> list.each(fn(f) {
         let _ = simplifile.delete(files.backups_dir <> "/" <> f)

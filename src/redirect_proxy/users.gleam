@@ -110,14 +110,15 @@ pub fn set_password(
 /// as such in the audit trail rather than as a password change. Only while
 /// the stored hash is still `previous_hash`, the one the password was
 /// checked against: a password changed meanwhile (during the slow hashing)
-/// is kept, not replaced by a hash of the old one. Returns whether it was
-/// stored.
+/// is kept, not replaced by a hash of the old one. Returns the user as
+/// stored, read under the lock (`None` when the password changed meanwhile):
+/// reading it again after could see a password changed since.
 pub fn rehash_password(
   settings: Settings,
   username: String,
   previous_hash: String,
   password_hash: String,
-) -> Result(Bool, String) {
+) -> Result(option.Option(User), String) {
   store_password_if(
     settings,
     username,
@@ -148,7 +149,7 @@ fn store_password_if(
   actor: String,
   action: String,
   current: fn(User) -> Bool,
-) -> Result(Bool, String) {
+) -> Result(option.Option(User), String) {
   let username = normalise(username)
   use <- ffi.locked_file(settings.path, lock_timeout)
   use users <- result.try(load(settings.path))
@@ -156,19 +157,20 @@ fn store_password_if(
     Error(Nil) -> Error("user " <> username <> " does not exist")
     Ok(user) ->
       case current(user) {
-        False -> Ok(False)
+        False -> Ok(None)
         True -> {
-          let now = ffi.now_rfc3339()
+          let stored =
+            User(..user, password_hash:, updated_at: ffi.now_rfc3339())
           let users =
             list.map(users, fn(u) {
               case u.username == username {
-                True -> User(..u, password_hash:, updated_at: now)
+                True -> stored
                 False -> u
               }
             })
           use Nil <- result.try(save(settings.path, users))
           audit.record(settings.audit_path, actor, action, username, None, None)
-          Ok(True)
+          Ok(Some(stored))
         }
       }
   }

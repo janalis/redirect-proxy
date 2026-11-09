@@ -349,7 +349,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 #(
                   "413",
                   response(
-                    "The body is larger than api.max_body_bytes (error invalid_request).",
+                    "The body is larger than 64 KiB (error invalid_request).",
                     ref("OAuthError"),
                   ),
                 ),

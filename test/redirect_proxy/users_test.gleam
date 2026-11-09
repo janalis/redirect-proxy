@@ -1,5 +1,6 @@
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/users
@@ -50,9 +51,10 @@ pub fn rehash_keeps_a_password_changed_meanwhile_test() {
   let assert Ok(_) = users.create(s, "bob", old, by: "t")
   // the hash checked at login is still stored: replaced
   let stronger = password.hash_with("old", 20)
-  assert users.rehash_password(s, "bob", old, stronger) == Ok(True)
+  let assert Ok(Some(stored)) = users.rehash_password(s, "bob", old, stronger)
   let assert Ok(bob) = users.get(s, "bob")
   assert bob.password_hash == stronger
+  assert stored == bob
   // an administrator reset the password during the login: kept
   let reset = password.hash_with("new", 10)
   let assert Ok(Nil) = users.set_password(s, "bob", reset, by: "admin")
@@ -62,7 +64,7 @@ pub fn rehash_keeps_a_password_changed_meanwhile_test() {
       stronger,
       password.hash_with("old", 30),
     )
-    == Ok(False)
+    == Ok(None)
   let assert Ok(bob) = users.get(s, "bob")
   assert bob.password_hash == reset
 }

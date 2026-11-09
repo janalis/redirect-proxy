@@ -469,7 +469,9 @@ wait(Buffer, #conn{socket = Socket} = C, Timeout, Then) ->
 
 %% The end of the idle timeout: an incomplete request head gets a 408.
 expired(<<>>, C) -> close(C);
-expired(_, C) -> reject(408, C).
+%% Closed at once: lingering would keep a client too slow to send its head
+%% (a slow-head attack) for longer.
+expired(_, C) -> close(send_reject(408, C)).
 
 %% More bytes of an incomplete head. Each parse starts over from the first
 %% byte, so the head is parsed again only when it may have changed the
@@ -481,25 +483,32 @@ expired(_, C) -> reject(408, C).
 more_head(Buffer, Data, #conn{max_head = Max} = C) ->
     Size = byte_size(Buffer),
     Previous = Size - byte_size(Data),
-    case Size >= Max orelse head_may_end(Buffer, Previous) of
+    case Size >= Max orelse head_may_end(Buffer, Data, Previous) of
         true -> request(Buffer, C);
         false -> more(Buffer, C)
     end.
 
 %% Whether a parse of Buffer, whose first Previous bytes were already
-%% parsed, may not say `more`.
-head_may_end(Buffer, Previous) ->
-    case binary:match(Buffer, <<"\n">>) of
+%% parsed, may not say `more`. Both a request line and an empty line end
+%% with a LF among the new bytes (Data): without one, the head is not
+%% scanned again (a request line trickled byte by byte would be scanned
+%% once per byte).
+head_may_end(Buffer, Data, Previous) ->
+    case binary:match(Data, <<"\n">>) of
         nomatch ->
             false;
-        {First, _} when First >= Previous ->
-            %% the request line just completed
-            true;
         _ ->
-            %% an empty line among the new bytes (or across the boundary)
-            Start = max(0, Previous - 2),
-            binary:match(Buffer, [<<"\n\n">>, <<"\n\r\n">>],
-                         [{scope, {Start, byte_size(Buffer) - Start}}]) =/= nomatch
+            case binary:match(Buffer, <<"\n">>) of
+                {First, _} when First >= Previous ->
+                    %% the request line just completed
+                    true;
+                _ ->
+                    %% an empty line among the new bytes (or across the
+                    %% boundary)
+                    Start = max(0, Previous - 2),
+                    binary:match(Buffer, [<<"\n\n">>, <<"\n\r\n">>],
+                                 [{scope, {Start, byte_size(Buffer) - Start}}]) =/= nomatch
+            end
     end.
 
 request(<<>>, C) ->
@@ -1256,9 +1265,12 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                         true -> C1;
                         false -> close_upstream(C1)
                     end,
-                    case ClientKeep of
-                        true -> request(Rest, C2);
-                        false -> close(C2)
+                    case {ClientKeep, BodyDone} of
+                        {true, _} -> request(Rest, C2);
+                        {false, true} -> close(C2);
+                        %% the upstream answered without reading the whole
+                        %% body: the client may still be sending it
+                        {false, false} -> linger_close(C2)
                     end;
                 {error, Why, Bytes} ->
                     Error = case Why of
@@ -2002,13 +2014,16 @@ call(Handler, Request) ->
 %% An empty response, then the connection is closed (lingering: the rest
 %% of the request is not read).
 reject(Status, C) ->
+    linger_close(send_reject(Status, C)).
+
+send_reject(Status, C) ->
     {Date, C1} = date(C),
     _ = gen_tcp:send(C1#conn.socket, [
         status_line(Status),
         <<"content-length: 0\r\ndate: ">>, Date,
         <<"\r\ncache-control: no-store\r\nconnection: close\r\n\r\n">>
     ]),
-    linger_close(C1).
+    C1.
 
 close(#conn{socket = Socket} = C) ->
     _ = close_upstream(C),
