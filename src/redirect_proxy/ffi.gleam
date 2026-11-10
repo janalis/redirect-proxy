@@ -11,6 +11,15 @@ pub fn snapshot_put(key: String, value: a) -> Nil
 @external(erlang, "redirect_proxy_ffi", "snapshot_get")
 pub fn snapshot_get(key: String) -> Result(a, Nil)
 
+/// The value of `key`, or `default`: `snapshot_get` without a `Result`, for
+/// the reads of every request.
+@external(erlang, "redirect_proxy_ffi", "snapshot_or")
+pub fn snapshot_or(key: String, default: a) -> a
+
+/// The value of `key`, published from `init()` the first time.
+@external(erlang, "redirect_proxy_ffi", "snapshot_or_init")
+pub fn snapshot_or_init(key: String, init: fn() -> a) -> a
+
 // --- regex ------------------------------------------------------------------
 
 pub type CompiledRegex

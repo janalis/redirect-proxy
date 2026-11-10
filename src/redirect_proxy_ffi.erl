@@ -1,7 +1,7 @@
 -module(redirect_proxy_ffi).
 
 -export([
-    snapshot_put/2, snapshot_get/1,
+    snapshot_put/2, snapshot_get/1, snapshot_or/2, snapshot_or_init/2,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
     atomic_write/2, atomic_write_private/2, copy_file_as/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
@@ -45,6 +45,23 @@ snapshot_get(Key) ->
     case persistent_term:get(snapshot_key(Key), '$redirect_proxy_none') of
         '$redirect_proxy_none' -> {error, nil};
         Value -> {ok, Value}
+    end.
+
+%% The value of Key, or Default: snapshot_get/1 without the result tuple,
+%% for the reads of every request.
+snapshot_or(Key, Default) ->
+    persistent_term:get(snapshot_key(Key), Default).
+
+%% The value of Key, published from Init() the first time.
+snapshot_or_init(Key, Init) ->
+    K = snapshot_key(Key),
+    case persistent_term:get(K, '$redirect_proxy_none') of
+        '$redirect_proxy_none' ->
+            Value = Init(),
+            persistent_term:put(K, Value),
+            Value;
+        Value ->
+            Value
     end.
 
 %% The keys read on every request are atoms: `persistent_term` hashes its

@@ -42,6 +42,9 @@ pub opaque type Matcher {
     /// Whether some rule has a `*.domain` host: lookups then also try the
     /// parent domains of the request host.
     wildcards: Bool,
+    /// Whether every rule is for any host (`*`): lookups then skip the
+    /// request host's.
+    any_host_only: Bool,
     /// Enabled rules by kind: exact, prefix, regex.
     kinds: #(Int, Int, Int),
     /// Rule id to its slot, for every rule (disabled ones too, so that their
@@ -60,8 +63,10 @@ type HostRules {
     /// Whether some exact rule with query conditions is case-insensitive:
     /// otherwise the path is not lower-cased to look them up.
     exact_query_ci: Bool,
-    exact: Dict(String, Rule),
-    exact_ci: Dict(String, Rule),
+    /// Exact rules, with their target as a header value (`ffi.header_value`,
+    /// computed once: an exact rule's location is its target).
+    exact: Dict(String, #(Rule, String)),
+    exact_ci: Dict(String, #(Rule, String)),
     /// Case-sensitive prefix rules, keyed by their source.
     prefix: Index(PrefixRule),
     /// Case-insensitive prefix rules, keyed by their lower-cased source and
@@ -128,7 +133,8 @@ type RegexRule {
 }
 
 pub type Match {
-  Match(rule: Rule, location: String)
+  /// `ready`: `location` is a header value already (`ffi.header_value`).
+  Match(rule: Rule, location: String, ready: Bool)
 }
 
 pub fn empty() -> Matcher {
@@ -136,6 +142,7 @@ pub fn empty() -> Matcher {
     hosts: dict.new(),
     size: 0,
     wildcards: False,
+    any_host_only: True,
     kinds: #(0, 0, 0),
     slots: dict.new(),
     hits: new_hits(0),
@@ -199,6 +206,7 @@ pub fn build(rules: List(Rule)) -> Matcher {
     hosts:,
     size: list.length(enabled),
     wildcards: dict.keys(hosts) |> list.any(string.starts_with(_, "*.")),
+    any_host_only: list.all(dict.keys(hosts), fn(host) { host == "*" }),
     kinds: list.fold(enabled, #(0, 0, 0), fn(acc, r) {
       case r.kind {
         Exact -> #(acc.0 + 1, acc.1, acc.2)
@@ -325,7 +333,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
       // first rule wins on duplicates
       case dict.has_key(acc, r.source) {
         True -> acc
-        False -> dict.insert(acc, r.source, r)
+        False -> dict.insert(acc, r.source, #(r, ffi.header_value(r.target)))
       }
     })
   let exact_ci =
@@ -335,7 +343,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
       let key = string.lowercase(r.source)
       case dict.has_key(acc, key) {
         True -> acc
-        False -> dict.insert(acc, key, r)
+        False -> dict.insert(acc, key, #(r, ffi.header_value(r.target)))
       }
     })
   let prefix =
@@ -578,16 +586,30 @@ fn lookup_normalised(
   query: String,
   vars: template.RequestVars,
 ) -> Result(Match, Nil) {
-  lookup_host(matcher, host, path, query, vars)
-  |> result.lazy_or(fn() {
-    // one lookup per parent domain: a host longer than any DNS name (the
-    // listener refuses those, the rule tester may not) matches no `*.` rule
-    case matcher.wildcards && string.byte_size(host) <= max_host_bytes {
-      True -> lookup_wildcards(matcher, host, path, query, vars)
-      False -> Error(Nil)
+  // nested cases rather than `result.lazy_or`: no closure per step, on
+  // every request
+  let own = case matcher.any_host_only {
+    True -> Error(Nil)
+    False -> lookup_host(matcher, host, path, query, vars)
+  }
+  case own {
+    Ok(_) -> own
+    Error(Nil) -> {
+      // one lookup per parent domain: a host longer than any DNS name (the
+      // listener refuses those, the rule tester may not) matches no `*.`
+      // rule
+      let parents = case
+        matcher.wildcards && string.byte_size(host) <= max_host_bytes
+      {
+        True -> lookup_wildcards(matcher, host, path, query, vars)
+        False -> Error(Nil)
+      }
+      case parents {
+        Ok(_) -> parents
+        Error(Nil) -> lookup_host(matcher, "*", path, query, vars)
+      }
     }
-  })
-  |> result.lazy_or(fn() { lookup_host(matcher, "*", path, query, vars) })
+  }
 }
 
 /// `lookup`, retrying a miss with the trailing slash added or removed
@@ -683,11 +705,22 @@ fn lookup_host(
   query: String,
   vars: template.RequestVars,
 ) -> Result(Match, Nil) {
-  use rules <- result.try(dict.get(matcher.hosts, host))
-  match_query(rules, path, query)
-  |> result.lazy_or(fn() { match_exact(rules, path) })
-  |> result.lazy_or(fn() { match_prefix(rules, path, vars) })
-  |> result.lazy_or(fn() { match_regex(rules, path, vars) })
+  case dict.get(matcher.hosts, host) {
+    Error(Nil) -> Error(Nil)
+    Ok(rules) ->
+      case match_query(rules, path, query) {
+        Ok(_) as found -> found
+        Error(Nil) ->
+          case match_exact(rules, path) {
+            Ok(_) as found -> found
+            Error(Nil) ->
+              case match_prefix(rules, path, vars) {
+                Ok(_) as found -> found
+                Error(Nil) -> match_regex(rules, path, vars)
+              }
+          }
+      }
+  }
 }
 
 fn query_group(rules: List(QueryRule)) -> QueryGroup {
@@ -772,7 +805,7 @@ fn match_query(
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
-          |> result.map(fn(q) { Match(q.rule, q.rule.target) })
+          |> result.map(fn(q) { Match(q.rule, q.rule.target, False) })
         }
       }
     }
@@ -783,13 +816,15 @@ fn match_query(
 /// rules.
 fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   case dict.get(rules.exact, path) {
-    Ok(r) -> Ok(Match(r, r.target))
+    Ok(#(r, location)) -> Ok(Match(r, location, True))
     Error(Nil) ->
       case dict.size(rules.exact_ci) {
         0 -> Error(Nil)
         _ ->
-          dict.get(rules.exact_ci, string.lowercase(path))
-          |> result.map(fn(r) { Match(r, r.target) })
+          case dict.get(rules.exact_ci, string.lowercase(path)) {
+            Ok(#(r, location)) -> Ok(Match(r, location, True))
+            Error(Nil) -> Error(Nil)
+          }
       }
   }
 }
@@ -839,7 +874,7 @@ fn prefix_location(
   let #(p, remainder) = candidate
   template.expand_template(p.template, [path, remainder], vars)
   |> template.guard_location(p.guard, _, vars)
-  |> result.map(Match(p.rule, _))
+  |> result.map(Match(p.rule, _, False))
 }
 
 /// The rest of `path` after the source of prefix rule `r`.
@@ -929,7 +964,7 @@ fn run_regexes(
               vars,
             )
           {
-            Ok(location) -> Ok(Match(entry.rule, location))
+            Ok(location) -> Ok(Match(entry.rule, location, False))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
@@ -949,18 +984,19 @@ fn run_regexes(
 /// string when the rule asks for it (before a `#fragment` of the target)
 /// and strips any CR/LF characters.
 pub fn location(m: Match, query: Result(String, Nil)) -> String {
-  let base = case m.rule.preserve_query, query {
+  case m.rule.preserve_query, query {
     True, Ok(q) if q != "" -> {
       let #(url, fragment) = case string.split_once(m.location, "#") {
         Ok(#(url, fragment)) -> #(url, "#" <> fragment)
         Error(Nil) -> #(m.location, "")
       }
-      merge_query(url, q) <> fragment
+      // a header value must be ASCII: captures, and the query, may hold
+      // decoded characters
+      ffi.header_value(merge_query(url, q) <> fragment)
     }
-    _, _ -> m.location
+    _, _ if m.ready -> m.location
+    _, _ -> ffi.header_value(m.location)
   }
-  // a header value must be ASCII: captures may hold decoded characters
-  ffi.header_value(base)
 }
 
 /// Appends the request query to the target URL, after the target's own

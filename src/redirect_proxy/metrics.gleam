@@ -93,15 +93,12 @@ pub fn init() -> Nil {
 }
 
 fn latency() -> ffi.Counters {
-  case ffi.snapshot_get(latency_key) {
-    Ok(c) -> c
-    Error(Nil) -> {
-      // one more series for the forwarded requests
-      let c = ffi.counter_new(latency_slots * { list.length(listener.all) + 1 })
-      ffi.snapshot_put(latency_key, c)
-      c
-    }
-  }
+  ffi.snapshot_or_init(latency_key, new_latency)
+}
+
+fn new_latency() -> ffi.Counters {
+  // one more series for the forwarded requests
+  ffi.counter_new(latency_slots * { list.length(listener.all) + 1 })
 }
 
 fn listener_offset(l: Listener) -> Int {
@@ -162,14 +159,11 @@ pub fn reloaded(duration_us: Int) -> Nil {
 }
 
 fn counters() -> ffi.Counters {
-  case ffi.snapshot_get(key) {
-    Ok(c) -> c
-    Error(Nil) -> {
-      let c = ffi.counter_new(23)
-      ffi.snapshot_put(key, c)
-      c
-    }
-  }
+  ffi.snapshot_or_init(key, new_counters)
+}
+
+fn new_counters() -> ffi.Counters {
+  ffi.counter_new(23)
 }
 
 pub fn incr(metric: Metric) -> Nil {
