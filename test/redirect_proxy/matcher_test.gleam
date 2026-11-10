@@ -388,6 +388,13 @@ pub fn wildcard_hosts_test() {
   // subdomains only: the apex falls through to *
   assert location(m, "example.com", "/a") == Ok("/any")
   assert location(m, "X.Example.com:8080", "/a") == Ok("/wild")
+  // longest DNS name: parents are looked up
+  let long = string.repeat("a.", 120) <> "example.com"
+  assert location(m, long, "/a") == Ok("/wild")
+  // longer: no parent lookups, one per label would be quadratic (this
+  // host has 100 000 labels)
+  let huge = string.repeat("a.", 100_000) <> "example.com"
+  assert location(m, huge, "/a") == Ok("/any")
 }
 
 pub fn equivalent_paths_match_test() {

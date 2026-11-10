@@ -580,7 +580,9 @@ fn lookup_normalised(
 ) -> Result(Match, Nil) {
   lookup_host(matcher, host, path, query, vars)
   |> result.lazy_or(fn() {
-    case matcher.wildcards {
+    // one lookup per parent domain: a host longer than any DNS name (the
+    // listener refuses those, the rule tester may not) matches no `*.` rule
+    case matcher.wildcards && string.byte_size(host) <= max_host_bytes {
       True -> lookup_wildcards(matcher, host, path, query, vars)
       False -> Error(Nil)
     }
@@ -635,6 +637,10 @@ pub fn lookup_tolerant_query(
   }
 }
 
+/// The longest request host whose parent domains are looked up for `*.`
+/// rules: the redirect listener refuses longer Host headers.
+const max_host_bytes = 255
+
 /// `*.parent` rules, from the closest parent of `host` (the label being
 /// removed). `${sub}` is what the `*` stands for in the request host.
 fn lookup_wildcards(
@@ -646,9 +652,14 @@ fn lookup_wildcards(
 ) -> Result(Match, Nil) {
   case string.split_once(host, ".") {
     Ok(#(_, parent)) -> {
+      // byte counts, not graphemes: this runs once per label of the host
       let sub = case vars.host {
         "" -> ""
-        full -> string.drop_end(full, string.byte_size(parent) + 1)
+        full ->
+          ffi.byte_take(
+            full,
+            string.byte_size(full) - string.byte_size(parent) - 1,
+          )
       }
       lookup_host(
         matcher,

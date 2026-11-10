@@ -60,6 +60,16 @@
      orelse C =:= $' orelse C =:= $* orelse C =:= $+ orelse C =:= $^
      orelse C =:= $` orelse C =:= $| orelse C =:= $~)).
 
+%% characters of a host name in a Host header: a URI's reg-name (RFC 3986
+%% 3.2.2: unreserved, sub-delims and `%`)
+-define(REG_NAME(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+     orelse (C >= $0 andalso C =< $9)
+     orelse C =:= $- orelse C =:= $. orelse C =:= $_ orelse C =:= $~
+     orelse C =:= $% orelse C =:= $! orelse C =:= $$ orelse C =:= $&
+     orelse C =:= $' orelse C =:= $( orelse C =:= $) orelse C =:= $*
+     orelse C =:= $+ orelse C =:= $, orelse C =:= $; orelse C =:= $=)).
+
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
 %% lingering close (linger_close/1): for at most 2 s, 500 ms without a
@@ -800,13 +810,16 @@ request(Method, Target0, Query0, Fragment, Version, Headers, Host0, Body,
         undefined -> <<>>;
         _ -> Host0
     end,
-    {HostName, Port} = case binary:match(Host, <<":">>) of
-        {At, 1} ->
-            <<Name:At/binary, $:, P/binary>> = Host,
-            {Name, try binary_to_integer(P) catch error:badarg -> 80 end};
-        nomatch ->
-            {Host, 80}
-    end,
+    case authority(Host) of
+        {ok, HostName, Port} ->
+            request(Method, Target0, Query0, Fragment, Version, Headers,
+                    HostName, Port, Body, Connection, Rest);
+        error ->
+            {error, 400}
+    end.
+
+request(Method, Target0, Query0, Fragment, Version, Headers, HostName, Port,
+        Body, Connection, Rest) ->
     %% a fragment is not sent to servers: dropped if it is
     Target = case Fragment of
         none -> Target0;
@@ -823,6 +836,61 @@ request(Method, Target0, Query0, Fragment, Version, Headers, Host0, Body,
                {some, Port}, Path, Query},
     Close = Body orelse close_requested(Version, Connection),
     {ok, Request, Version, Close, Rest}.
+
+%% The Host header (RFC 9110 7.2): `host [":" port]`, the host a name of at
+%% most 255 bytes (letters, digits and the other characters of a URI's
+%% reg-name: no space, `/`, `@`, `?`, `#` or non-ASCII byte), an IPv4
+%% address or a bracketed IPv6 one. {ok, Host, Port} (80 when there is no
+%% port) or error. The length bound keeps every later host walk (wildcard
+%% rules look up each parent domain) short.
+-define(MAX_HOST, 255).
+
+authority(<<"[", _/binary>> = Host) ->
+    case binary:match(Host, <<"]">>) of
+        {Close, 1} when Close =< ?MAX_HOST ->
+            <<Literal:(Close + 1)/binary, Port/binary>> = Host,
+            case ip_literal(binary:part(Literal, 1, Close - 1)) of
+                true -> port(Literal, Port);
+                false -> error
+            end;
+        _ ->
+            error
+    end;
+authority(Host) ->
+    authority(Host, 0).
+
+authority(Host, N) ->
+    case Host of
+        <<_:N/binary, C, _/binary>> when ?REG_NAME(C), N < ?MAX_HOST ->
+            authority(Host, N + 1);
+        <<Name:N/binary, $:, Port/binary>> ->
+            port(Name, <<$:, Port/binary>>);
+        <<_:N/binary>> ->
+            {ok, Host, 80};
+        _ ->
+            error
+    end.
+
+%% `:digits`, at most 65535; an empty port (`host:`) is the default one.
+port(Name, <<>>) -> {ok, Name, 80};
+port(Name, <<":">>) -> {ok, Name, 80};
+port(Name, <<":", Digits/binary>>) when byte_size(Digits) =< 5 ->
+    case all_digits(Digits) andalso binary_to_integer(Digits) of
+        P when is_integer(P), P =< 65535 -> {ok, Name, P};
+        _ -> error
+    end;
+port(_, _) -> error.
+
+all_digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> all_digits(Rest);
+all_digits(<<>>) -> true;
+all_digits(_) -> false.
+
+%% Inside the brackets: an IPv6 address (possibly ending with an IPv4 one).
+ip_literal(Address) ->
+    case inet:parse_ipv6strict_address(binary_to_list(Address)) of
+        {ok, _} -> true;
+        {error, _} -> false
+    end.
 
 close_requested({1, 1}, <<>>) -> false;
 close_requested({1, 1}, Connection) -> has_token(Connection, <<"close">>);
