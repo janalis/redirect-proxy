@@ -297,9 +297,9 @@ accept(Listen, Handler, Opts, {_, Count, Cap, PerAddress} = Limit) ->
                     accept(Listen, Handler, Opts, Limit);
                 false ->
                     case claim(PerAddress, Socket) of
-                        {ok, Key} ->
+                        {ok, Key, Ip} ->
                             try
-                                serve(Socket, Handler, Opts, Limit, Key)
+                                serve(Socket, Handler, Opts, Limit, Key, Ip)
                             catch
                                 error:Reason ->
                                     %% no process for it (system_limit): not counted
@@ -332,58 +332,52 @@ accept(Listen, Handler, Opts, {_, Count, Cap, PerAddress} = Limit) ->
             accept(Listen, Handler, Opts, Limit)
     end.
 
-%% Counts a connection against its client address: {ok, Key} (none when
-%% not counted: no limit, loopback, a trusted proxy, an unknown address), or
-%% {over, Address, Open} past the cap.
+%% Counts a connection against its client address: {ok, Key, Ip} (Key
+%% none when not counted: no limit, a trusted proxy, an unknown address;
+%% Ip unknown when not looked up), or {over, Address, Open} past the cap.
 claim(none, _) ->
-    {ok, none};
+    {ok, none, unknown};
 claim({Tab, Max, Unlimited}, Socket) ->
     case inet:peername(Socket) of
         {ok, {Ip, _}} ->
             case redirect_proxy_ffi:cidrs_contain_ip(Ip, Unlimited) of
                 true ->
-                    {ok, none};
+                    {ok, none, Ip};
                 false ->
-                    Key = address_key(Ip),
+                    Key = redirect_proxy_ffi:client_group(Ip),
                     case ets:update_counter(Tab, Key, {2, 1}, {Key, 0}) of
                         N when N > Max ->
                             release({Tab, Max, Unlimited}, Key),
-                            {over, address_text(Key), N - 1};
+                            {over, redirect_proxy_ffi:client_group_text(Key), N - 1};
                         _ ->
-                            {ok, Key}
+                            {ok, Key, Ip}
                     end
             end;
         _ ->
-            {ok, none}
+            {ok, none, unknown}
     end.
 
+%% Runs in the listener: a counting mistake (a key released twice) must
+%% not take it down with every connection slot.
 release(_, none) ->
     ok;
 release({Tab, _, _}, Key) ->
     %% the last one: the entry goes (delete_object: unless another
     %% connection of the address counted itself in the meantime)
-    case ets:update_counter(Tab, Key, {2, -1}) of
-        0 -> ets:delete_object(Tab, {Key, 0});
+    try ets:update_counter(Tab, Key, {2, -1}) of
+        N when N =< 0 -> ets:delete_object(Tab, {Key, N});
         _ -> true
+    catch
+        error:badarg -> true
     end,
     ok.
 
-%% IPv4 addresses (IPv4-mapped IPv6 ones too) count alone, IPv6 ones by
-%% /64: a host usually holds a whole /64.
-address_key({0, 0, 0, 0, 0, 16#ffff, A, B}) ->
-    {v4, {A bsr 8, A band 255, B bsr 8, B band 255}};
-address_key({A, B, C, D, _, _, _, _}) -> {v6, {A, B, C, D, 0, 0, 0, 0}};
-address_key(Ip) -> {v4, Ip}.
-
-address_text({v4, Ip}) -> inet:ntoa(Ip);
-address_text({v6, Ip}) -> [inet:ntoa(Ip), "/64"].
-
 %% A process for the accepted Socket, which the listener monitors, and the
 %% Key it counts under (release/2 when it ends).
-serve(Socket, Handler, Opts, {Listener, _, _, _}, Key) ->
+serve(Socket, Handler, Opts, {Listener, _, _, _}, Key, Ip) ->
     Pid = spawn_opt(fun() ->
         receive
-            {go, S} -> connection(S, Handler, Opts)
+            {go, S} -> connection(S, Handler, Opts, Ip)
         after 5000 ->
             exit(normal)
         end
@@ -412,10 +406,12 @@ backoff(Reason) ->
 %% Connection
 %% ---------------------------------------------------------------------------
 
-connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream}) ->
-    Peer = case WithPeer of
-        true -> peer(Socket);
-        false -> {error, nil}
+%% Ip: the peer address when the acceptor looked it up (unknown otherwise).
+connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream}, Ip) ->
+    Peer = case {WithPeer, Ip} of
+        {false, _} -> {error, nil};
+        {true, unknown} -> peer(Socket);
+        {true, _} -> peer_address(Ip)
     end,
     %% exit_on_close: a client that shuts down its side after its request
     %% (half-close) still gets the response
@@ -431,10 +427,13 @@ connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream})
 
 peer(Socket) ->
     case inet:peername(Socket) of
-        {ok, {{A, B, C, D}, _}} -> {ok, {ip_v4, A, B, C, D}};
-        {ok, {{A, B, C, D, E, F, G, H}, _}} -> {ok, {ip_v6, A, B, C, D, E, F, G, H}};
+        {ok, {Ip, _}} -> peer_address(Ip);
         _ -> {error, nil}
     end.
+
+peer_address({A, B, C, D}) -> {ok, {ip_v4, A, B, C, D}};
+peer_address({A, B, C, D, E, F, G, H}) -> {ok, {ip_v6, A, B, C, D, E, F, G, H}};
+peer_address(_) -> {error, nil}.
 
 %% Waits for the next request, or for more bytes of a request head, then
 %% parses it again. The socket delivers up to ?ACTIVE packets as messages

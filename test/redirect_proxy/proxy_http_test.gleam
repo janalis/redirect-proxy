@@ -622,6 +622,23 @@ pub fn connections_over_the_cap_are_closed_test() {
   close(fourth)
 }
 
+/// A connection that gets an answer, retried every 25 ms.
+fn served_eventually(port: Int, tries: Int) -> Socket {
+  let socket = open(port)
+  case get(socket, 100) {
+    #(text, _) if text != "" -> {
+      assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+      socket
+    }
+    _ if tries > 1 -> {
+      close(socket)
+      process.sleep(25)
+      served_eventually(port, tries - 1)
+    }
+    _ -> panic as "the connection slot was never given back"
+  }
+}
+
 /// One client address cannot hold more than `max_connections_per_ip`
 /// connections; a closed one makes room, and trusted proxies are not
 /// limited.
@@ -635,9 +652,8 @@ pub fn connections_over_the_address_cap_are_closed_test() {
   assert get(third, 500) == #("", True)
   close(third)
   close(first)
-  process.sleep(100)
-  let fourth = open(port)
-  assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
+  // the listener gives the slot back once it sees the connection end
+  let fourth = served_eventually(port, 40)
   close(second)
   close(fourth)
 

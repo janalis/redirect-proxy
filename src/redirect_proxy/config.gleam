@@ -130,8 +130,9 @@ pub type ServerConfig {
     /// a 413 (0: no limit).
     max_request_body_bytes: Int,
     /// Open connections one client address (an IPv6 /64) may hold on the
-    /// redirect listener; more are closed at once. Loopback peers and
-    /// `access_log.trusted_proxies` are not limited (0: no limit).
+    /// redirect listener; more are closed at once. Loopback peers and the
+    /// trusted proxies (`access_log`, `auth.header`) are not limited (0: no
+    /// limit).
     max_connections_per_ip: Int,
     /// Plain HTTP requests are redirected to the same URL over HTTPS before
     /// any rule (requests a proxy marks `X-Forwarded-Proto: https` are not).

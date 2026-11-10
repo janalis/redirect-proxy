@@ -133,8 +133,10 @@ One client address may hold at most `server.max_connections_per_ip`
 connections to the redirect listener; more are closed at once, with a
 warning in the log (at most one a second). IPv6 clients count by /64, as
 one host usually holds a whole /64. A browser opens about six. Loopback
-peers and `access_log.trusted_proxies` are not limited, since a proxy
-carries many clients' connections.
+peers, `access_log.trusted_proxies` and `auth.header.trusted_proxies` are
+not limited, since a proxy carries many clients' connections. Clients
+behind one NAT address (a company, a carrier-grade NAT) share its quota:
+raise the limit if many of them use the service at once.
 
 ::: warning Behind a load balancer or ingress
 List the address it connects from (or its network: the pod CIDR, the

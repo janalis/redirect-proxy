@@ -35,9 +35,10 @@ max_path_bytes = 8192
 # (0: no limit, as the upstream's own limit applies).
 max_request_body_bytes = 0
 # Open connections one client address (IPv6: one /64) may hold on this
-# listener: more are closed at once. Loopback peers and
-# access_log.trusted_proxies are not limited: list your load balancer
-# there, or every client behind it shares its address (0: no limit).
+# listener: more are closed at once. Loopback peers,
+# access_log.trusted_proxies and auth.header.trusted_proxies are not
+# limited: list your load balancer there, or every client behind it shares
+# its address (0: no limit).
 max_connections_per_ip = 256
 # Redirect plain HTTP requests to the same URL over HTTPS (301, or 308 for
 # methods other than GET and HEAD), before any rule. Requests that a TLS
