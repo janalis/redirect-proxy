@@ -969,6 +969,9 @@ lower(C) -> C.
 %% send to the client (relay_body/6)
 -define(RELAYED, '$redirect_proxy_relayed').
 -define(MAX_RESPONSE_HEAD, 65536).
+%% 1xx responses relayed before a final one: an upstream sending them
+%% without end would keep the request waiting
+-define(MAX_INTERIM, 10).
 %% process dictionary key: payload bytes of the chunked request body so far
 -define(BODY_BYTES, '$redirect_proxy_body_bytes').
 
@@ -1000,7 +1003,9 @@ lower(C) -> C.
     done,
     %% a request without a body that may be sent again on a new connection
     %% when a reused one turns out to be closed
-    retry
+    retry,
+    %% 1xx responses read so far
+    interim = 0
 }).
 
 %% The request a handler leaves to the upstream.
@@ -1264,6 +1269,8 @@ response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
             end;
         {ok, 101, _, _, _, _} ->
             fail(502, invalid_response, unexpected_upgrade, F, C);
+        {ok, Status, _, _, _, _} when Status < 200, F#fwd.interim >= ?MAX_INTERIM ->
+            fail(502, invalid_response, too_many_interim_responses, F, C);
         {ok, Status, Reason, _, Headers, Buffer1} when Status < 200 ->
             %% interim responses (103 Early Hints...); the 100 Continue of
             %% the upstream is not: the client already got one
@@ -1275,7 +1282,8 @@ response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
                 false ->
                     ok
             end,
-            response(Socket, false, Buffer1, Rest, BodyDone, F, C);
+            response(Socket, false, Buffer1, Rest, BodyDone,
+                     F#fwd{interim = F#fwd.interim + 1}, C);
         {ok, Status, Reason, Minor, Headers, Buffer1} ->
             relay(Socket, Status, Reason, Minor, Headers, Buffer1, Rest, BodyDone, F, C);
         {error, closed} when Reused, F#fwd.retry ->

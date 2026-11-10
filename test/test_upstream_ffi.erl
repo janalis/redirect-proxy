@@ -15,6 +15,7 @@
 %% - /gzip-chunked, /gzip-close: transfer codings other than chunked
 %% - /bad-chunk: a chunk-size line ended by a bare LF
 %% - /early-hints: a 103 before the echo
+%% - /many-hints: eleven 103s before the echo
 %% - /ws: 101 when asked for an upgrade, then every byte echoed back
 %% - /ws-h2c: the same, its 101 switching to h2c whatever was asked
 %% - /slow: the echo after 1.5 s
@@ -174,6 +175,9 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
             serve(Socket, N, Rest);
         <<"/early-hints">> ->
             send(Socket, <<"HTTP/1.1 103 Early Hints\r\nlink: </a.css>\r\n\r\n">>),
+            echo(Socket, N, Method, Echo, Rest);
+        <<"/many-hints">> ->
+            send(Socket, binary:copy(<<"HTTP/1.1 103 Early Hints\r\n\r\n">>, 11)),
             echo(Socket, N, Method, Echo, Rest);
         <<"/ws">> ->
             case lists:keymember(<<"upgrade">>, 1, Headers) of

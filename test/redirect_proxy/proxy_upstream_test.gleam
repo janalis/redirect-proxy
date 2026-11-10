@@ -497,6 +497,16 @@ pub fn interim_responses_are_relayed_test() {
   )
 }
 
+/// At most 10 interim responses before the final one.
+pub fn endless_interim_responses_are_a_502_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, ["GET /many-hints HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert string.contains(text, "HTTP/1.1 502 Bad Gateway\r\n")
+  assert count(text, "HTTP/1.1 103 ") == 10
+  assert !string.contains(text, "200 OK")
+}
+
 pub fn expect_continue_is_answered_here_test() {
   let proxy = start()
   let #(text, _) =
