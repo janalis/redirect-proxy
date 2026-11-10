@@ -530,7 +530,12 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
           #(
             "responses",
             json.object([
-              #("200", response("Updated.", ref("Rule"))),
+              #(
+                "200",
+                response_with_headers("Updated.", ref("Rule"), [
+                  #("ETag", header("Version of the updated redirection.")),
+                ]),
+              ),
               ..list.append(
                 json_object_body_errors(),
                 store_errors([
@@ -559,7 +564,12 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             #(
               "responses",
               json.object([
-                #("200", response("Updated.", ref("Rule"))),
+                #(
+                  "200",
+                  response_with_headers("Updated.", ref("Rule"), [
+                    #("ETag", header("Version of the updated redirection.")),
+                  ]),
+                ),
                 ..list.append(
                   json_object_body_errors(),
                   store_errors([

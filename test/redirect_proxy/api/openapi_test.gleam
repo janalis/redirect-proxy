@@ -60,6 +60,8 @@ pub fn openapi_document_test() {
   }
   assert etag("/api/redirects/{id}", "get")
   assert etag("/api/redirects/import", "post")
+  assert etag("/api/redirects/{id}", "put")
+  assert etag("/api/redirects/{id}", "patch")
   // a merge patch resets a field with null
   let patch_status =
     field(
