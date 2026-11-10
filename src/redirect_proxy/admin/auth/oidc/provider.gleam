@@ -35,6 +35,14 @@ pub fn discover(cfg: OidcConfig) -> Result(Provider, String) {
   discover_issuer(cfg.issuer)
 }
 
+/// The provider metadata in the cache, however old, without fetching it.
+pub fn cached(issuer: String) -> Result(Provider, Nil) {
+  case ffi.ets_get(table, "provider:" <> issuer) {
+    Ok(#(_, #(_, provider))) -> Ok(provider)
+    Error(Nil) -> Error(Nil)
+  }
+}
+
 /// Discovers (and caches for an hour) the metadata of an OpenID Connect
 /// provider or OAuth 2.0 authorization server (RFC 8414).
 pub fn discover_issuer(issuer: String) -> Result(Provider, String) {

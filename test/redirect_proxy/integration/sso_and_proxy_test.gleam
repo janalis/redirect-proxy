@@ -12,6 +12,7 @@ import integration_support.{
   session_cookie, sso_login, start_fake_idp,
 }
 import redirect_proxy/admin/auth/header
+import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/ffi
@@ -258,6 +259,51 @@ pub fn oidc_logout_at_provider_test() {
     <> "/logout?realm=x&client_id=redirect-proxy&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A8081%2Flogin"
 }
 
+/// The logout form may go to the provider's `end_session_endpoint`, which
+/// need not share the issuer's origin.
+pub fn logout_endpoint_on_another_origin_is_allowed_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        oidc: config.OidcConfig(
+          ..d.oidc,
+          enabled: True,
+          issuer:,
+          client_id: "redirect-proxy",
+          client_secret: "secret",
+          allowed_domains: ["example.com"],
+          logout_at_provider: True,
+        ),
+      ),
+    )
+  let cookie = session_cookie(sso_login(env))
+  let assert Ok(discovered) = provider.cached(issuer)
+  let now = ffi.now_seconds()
+  ffi.ets_put(provider.table, "provider:" <> issuer, #(
+    now + 3600,
+    #(
+      now,
+      provider.Provider(
+        ..discovered,
+        end_session_endpoint: "https://login.example.test:8443/logout",
+      ),
+    ),
+  ))
+  let page = get(env.admin <> "/rules", [#("cookie", cookie)])
+  let assert Ok(csp) = response.get_header(page, "content-security-policy")
+  assert string.contains(
+      csp,
+      "form-action 'self' https://login.example.test:8443;",
+    )
+    || string.ends_with(
+      csp,
+      "form-action 'self' https://login.example.test:8443",
+    )
+}
+
 pub fn oidc_callback_from_another_browser_is_refused_test() {
   // login CSRF: an attacker sends their own callback link to a victim
   let issuer = start_fake_idp("alice@example.com")
@@ -350,6 +396,9 @@ pub fn proxy_role_header_test() {
   assert session_cookie(get(env.admin <> "/rules", as_role("viewer"))) == cookie
   assert get(env.admin <> "/users", [#("cookie", cookie), ..as_role("admin")]).status
     == 200
+  // that switch did not end the viewer session other browsers share
+  let again = get(env.admin <> "/rules", as_role("viewer"))
+  assert session_cookie(again) == cookie
   // no header: the least
   assert get(env.admin <> "/import", [#("x-forwarded-user", "sam")]).status
     == 403

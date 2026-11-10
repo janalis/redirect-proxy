@@ -13,6 +13,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/ratelimit
+import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/audit_routes
 import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation
@@ -54,14 +55,8 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   |> wisp.set_header("referrer-policy", "no-referrer")
   |> fn(resp) {
     // as the admin: clients must not fall back to HTTP once they used HTTPS
-    case
-      string.starts_with(
-        string.lowercase(config.api_public_url(ctx.config)),
-        "https://",
-      )
-    {
-      True ->
-        wisp.set_header(resp, "strict-transport-security", "max-age=31536000")
+    case admin_web.https_url(config.api_public_url(ctx.config)) {
+      True -> wisp.set_header(resp, "strict-transport-security", admin_web.hsts)
       False -> resp
     }
   }

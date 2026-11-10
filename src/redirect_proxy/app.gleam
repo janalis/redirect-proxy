@@ -316,7 +316,11 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
                 False -> Ok(secret)
               }
           }
-        Error(_) -> new_secret_key_base(path)
+        Error(simplifile.Enoent) -> new_secret_key_base(path)
+        // anything else (permissions, a directory): replacing the file
+        // would end every session and lose the secret
+        Error(e) ->
+          Error("cannot read " <> path <> ": " <> simplifile.describe_error(e))
       }
     }
     secret -> Ok(secret)

@@ -121,7 +121,8 @@ API clients are not affected: they have scopes (see [REST API](api)).
     password changes, including from the CLI. Changing your own password
     keeps you signed in, in a new session.
   - SSO logins are bound to the browser that started them.
-  - Signing in ends the session the browser held before.
+  - Signing in ends the session the browser held before (except a
+    proxy-header session, which the user's other browsers share).
   - The server keeps a hash of each session token, not the token: a
     memory or crash dump gives no session to replay.
 - **Passwords.** Changing a local password, yours or another user's, needs

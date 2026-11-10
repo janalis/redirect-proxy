@@ -254,6 +254,16 @@ pub fn copy_file_as_test() {
   assert simplifile.read(copy) == Ok("[]")
   // never over an existing file
   let assert Error(_) = ffi.copy_file_as(source, copy)
+  // a source its owner cannot write
+  let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o440)
+  let read_only = dir <> "/read-only.json"
+  let assert Ok(Nil) = ffi.copy_file_as(source, read_only)
+  assert mode(read_only) == 0o440
+  assert simplifile.read(read_only) == Ok("[]")
+  // a failed copy leaves nothing behind
+  let missing = dir <> "/failed.json"
+  let assert Error(_) = ffi.copy_file_as(dir, missing)
+  assert simplifile.is_file(missing) == Ok(False)
 }
 
 /// Dates that do not exist are refused, not shifted to the next month.

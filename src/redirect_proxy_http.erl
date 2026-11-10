@@ -973,7 +973,6 @@ lower(C) -> C.
 %% without end would keep the request waiting
 -define(MAX_INTERIM, 10).
 %% process dictionary key: payload bytes of the chunked request body so far
--define(BODY_BYTES, '$redirect_proxy_body_bytes').
 
 %% headers that only concern one connection (RFC 9110 7.6.1), and the ones
 %% the server sets itself
@@ -1721,6 +1720,8 @@ copy_close(Buffer, Recv, Emit, Bytes) ->
 copy_chunked(Buffer, Recv, Emit, Bytes) ->
     case chunk_size(Buffer) of
         {ok, 0, Rest} -> trailers(Rest, Recv, Bytes, 0);
+        {ok, Size, _} when is_tuple(Emit), Bytes + Size > element(2, Emit) ->
+            {error, too_large, Bytes};
         {ok, Size, Rest} -> chunk_data(Rest, Size, Recv, Emit, Bytes);
         more -> refill(Buffer, Recv, Bytes, fun(B) -> copy_chunked(B, Recv, Emit, Bytes) end);
         error -> {error, bad_chunk, Bytes}
@@ -1860,6 +1861,7 @@ refill(Buffer, Recv, Bytes, Next) ->
     end.
 
 emit(_, <<>>) -> ok;
+emit({limit, _, Emit}, Data) -> Emit(Data);
 emit(Emit, Data) -> Emit(Data).
 
 chunk_emit(Emit) ->
@@ -1868,21 +1870,10 @@ chunk_emit(Emit) ->
     end.
 
 %% Emit, for a chunked request body of at most Max bytes of payload (0: no
-%% limit): its length is only known as it comes.
-body_limit(Emit, 0) ->
-    Emit;
-body_limit(Emit, Max) ->
-    erlang:put(?BODY_BYTES, 0),
-    fun(Data) ->
-        Seen = erlang:get(?BODY_BYTES) + iolist_size(Data),
-        case Seen > Max of
-            true ->
-                {error, too_large};
-            false ->
-                erlang:put(?BODY_BYTES, Seen),
-                Emit(Data)
-        end
-    end.
+%% limit): its length is only known as it comes, so copy_chunked checks
+%% each chunk's size against it.
+body_limit(Emit, 0) -> Emit;
+body_limit(Emit, Max) -> {limit, Max, Emit}.
 
 %% The client's bytes, from the socket's messages. A request body must keep
 %% coming: no more than the idle timeout between two packets (a client

@@ -177,11 +177,22 @@ copy_file_as(Source, Dest) ->
             {ok, #file_info{mode = Mode}} ->
                 case file:open(Dest, [write, exclusive, raw, binary]) of
                     {ok, Fd} ->
+                        %% written through the open descriptor: a mode
+                        %% without the owner's write bit (a read-only
+                        %% rules file) does not apply to it
                         _ = file:change_mode(Dest, Mode band 8#7777),
-                        _ = file:close(Fd),
-                        case file:copy(Source, Dest) of
-                            {ok, _} -> ok;
-                            CopyError -> CopyError
+                        Copied = file:copy(Source, Fd),
+                        Closed = file:close(Fd),
+                        case {Copied, Closed} of
+                            {{ok, _}, ok} ->
+                                ok;
+                            {_, _} ->
+                                %% no partial backup left behind
+                                _ = file:delete(Dest),
+                                case Copied of
+                                    {ok, _} -> Closed;
+                                    CopyError -> CopyError
+                                end
                         end;
                     OpenError ->
                         OpenError

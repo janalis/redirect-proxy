@@ -9,6 +9,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
@@ -99,28 +100,51 @@ fn host_prefixed(req: Request, ctx: Context) -> Bool {
 /// The logout form sends the browser on to the identity provider's logout
 /// endpoint with `logout_at_provider`: browsers apply `form-action` to that
 /// redirect too, so the provider's origin (the issuer's) must be allowed.
+/// Logging out at the provider redirects the logout form to its
+/// `end_session_endpoint` (known once the metadata is cached: an SSO
+/// session has fetched it), or to the issuer's origin until then.
 fn provider_logout_origin(ctx: Context) -> String {
   let oidc = ctx.config.oidc
   case oidc.enabled && oidc.logout_at_provider {
     False -> ""
-    True ->
-      case uri.parse(oidc.issuer) {
-        Ok(uri.Uri(scheme: Some(scheme), host: Some(host), port:, ..)) ->
-          " "
-          <> scheme
-          <> "://"
-          <> host
-          <> case port {
-            Some(port) -> ":" <> int.to_string(port)
-            None -> ""
-          }
-        _ -> ""
+    True -> {
+      let target = case provider.cached(oidc.issuer) {
+        Ok(p) if p.end_session_endpoint != "" -> p.end_session_endpoint
+        _ -> oidc.issuer
       }
+      case origin(target) {
+        Ok(origin) -> " " <> origin
+        Error(Nil) -> ""
+      }
+    }
   }
 }
 
+fn origin(url: String) -> Result(String, Nil) {
+  case uri.parse(url) {
+    Ok(uri.Uri(scheme: Some(scheme), host: Some(host), port:, ..)) ->
+      Ok(
+        scheme
+        <> "://"
+        <> host
+        <> case port {
+          Some(port) -> ":" <> int.to_string(port)
+          None -> ""
+        },
+      )
+    _ -> Error(Nil)
+  }
+}
+
+/// Whether `public_url` is HTTPS: its listener then sends HSTS.
+pub fn https_url(public_url: String) -> Bool {
+  string.starts_with(string.lowercase(public_url), "https://")
+}
+
+pub const hsts = "max-age=31536000"
+
 fn https_admin(ctx: Context) -> Bool {
-  string.starts_with(string.lowercase(ctx.config.admin.public_url), "https://")
+  https_url(ctx.config.admin.public_url)
 }
 
 pub type Context {
@@ -164,7 +188,7 @@ pub fn strict_transport_security(
   case https_admin(ctx) {
     True ->
       next()
-      |> wisp.set_header("strict-transport-security", "max-age=31536000")
+      |> wisp.set_header("strict-transport-security", hsts)
     False -> next()
   }
 }
@@ -197,8 +221,14 @@ pub fn set_session_cookie(
   s: Session,
 ) -> Response {
   let name = session_cookie_name(req, ctx)
+  // a header session is shared by every browser of its proxy user: it
+  // ends when the proxy stops vouching for it, not here
   case wisp.get_cookie(req, name, wisp.Signed) {
-    Ok(old) if old != s.token -> session.destroy(old)
+    Ok(old) if old != s.token ->
+      case session.get(old, ctx.config.admin.session_idle_timeout) {
+        Ok(previous) if previous.method == session.Header -> Nil
+        _ -> session.destroy(old)
+      }
     _ -> Nil
   }
   wisp.set_cookie(
