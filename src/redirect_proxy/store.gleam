@@ -194,6 +194,17 @@ pub type ChangeError {
 }
 
 /// Why a change to the whole rule set (an import, a bulk change) was refused.
+/// What an import would make of the rule set, before the checks of the
+/// rules it changes (done by the caller, not to block the store).
+type Preview {
+  Preview(
+    diff: store_rules.Diff,
+    fingerprint: String,
+    rules: List(Rule),
+    ignore_trailing_slash: Bool,
+  )
+}
+
 pub type SetChangeError {
   /// The rule set changed since the version (`versioned`) the caller based
   /// its change on, such as an import preview: nothing was written.
@@ -239,7 +250,7 @@ pub opaque type Message {
   PreviewImport(
     rules: List(Rule),
     mode: ImportMode,
-    reply: Subject(Result(#(store_rules.Diff, String), List(String))),
+    reply: Subject(Result(Preview, List(String))),
   )
   Bulk(
     ids: List(String),
@@ -545,7 +556,17 @@ pub fn preview_import(
   by actor_name: String,
 ) -> Result(#(store_rules.Diff, String), List(String)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
-  read(store, 60_000, PreviewImport(prepared, mode, _))
+  use preview <- result.try(
+    read(store, 60_000, PreviewImport(prepared, mode, _)),
+  )
+  let changed_ids =
+    set.from_list(list.append(preview.diff.added, preview.diff.changed))
+  use Nil <- result.try(store_rules.check_changed(
+    matcher.build(preview.rules),
+    list.filter(preview.rules, fn(r) { set.contains(changed_ids, r.id) }),
+    preview.ignore_trailing_slash,
+  ))
+  Ok(#(preview.diff, preview.fingerprint))
 }
 
 /// Enables, disables or deletes several rules in one write, recorded as one
@@ -712,6 +733,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
         use Nil <- result.try(check_collection_version(state, expected))
+        use Nil <- result.try(
+          store_rules.check_new_ids(state.rules, prepared)
+          |> result.map_error(Rejected),
+        )
         let rules =
           case mode {
             Replace -> prepared
@@ -763,13 +788,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Merge -> merge(state.rules, prepared)
       }
       process.send(reply, {
+        use Nil <- result.try(store_rules.check_new_ids(state.rules, prepared))
         use Nil <- result.try(store_rules.check_conflicts(rules))
-        use Nil <- result.try(store_rules.check_changed(
-          matcher.build(rules),
-          store_rules.changed_rules(state.rules, rules),
-          target(state.settings).ignore_trailing_slash,
+        Ok(Preview(
+          diff: store_rules.diff(state.rules, rules),
+          fingerprint: state.fingerprint,
+          rules:,
+          ignore_trailing_slash: state.settings.ignore_trailing_slash,
         ))
-        Ok(#(store_rules.diff(state.rules, rules), state.fingerprint))
       })
       actor.continue(state)
     }

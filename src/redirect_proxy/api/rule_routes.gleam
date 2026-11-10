@@ -368,7 +368,7 @@ pub fn create_rule(
       // gets 409 instead of creating a second rule
       let id = string.trim(input.id)
       case id == "" || rule.is_valid_id(id) {
-        False -> problem.validation(["id: " <> rule.valid_id_hint])
+        False -> problem.validation(["id: " <> rule.valid_id_hint()])
         True ->
           case
             store.create(ctx.store, rule.Rule(..input, id:), principal.actor)

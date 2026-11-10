@@ -156,14 +156,15 @@ A rule is rejected if any of these hold:
   written: an exact or prefix source with a query string (`?`: use `query`
   instead) or a fragment (`#`), or starting with `//` (the server reads a
   request for `//a/b` as the path `/b`), a host with a port, or
-  placeholders in the target's host that never redirect.
-
-Loop checks follow `server.trailing_slash`. When the rules file is loaded,
-these two problems are logged as warnings instead, so a file that loaded
-before keeps loading; an import checks only the rules it adds or changes,
-so such a file can also be imported again as it is.
+  placeholders in the target's host that never redirect, or `${host}` or
+  `${sub}` in the target of an exact rule.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
+
+Loop checks follow `server.trailing_slash`. When the rules file is loaded,
+loops and rules that can never apply are logged as warnings instead, so a
+file that loaded before keeps loading; an import checks only the rules it
+adds or changes, so such a file can also be imported again as it is.
 
 At request time, each regex match also has a fixed backtracking budget,
 and the regex rules of a host have a budget for the whole request: a path

@@ -658,13 +658,18 @@ pub fn rules_with_any_id_can_be_edited_test() {
     )
   let resp = post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
   assert resp.status == 303
-  let resp =
-    post_form(env, "/import", cookie, [
-      #("csrf_token", csrf),
-      #("mode", "merge"),
-      #("content", "id,source,target\nrule 2/é,/other,/t\n"),
-    ])
-  assert resp.status == 422
+  // such a new id is refused; an existing one can be imported again
+  let import_csv = fn(content) {
+    let preview =
+      post_form(env, "/import", cookie, [
+        #("csrf_token", csrf),
+        #("mode", "merge"),
+        #("content", content),
+      ])
+    preview.status
+  }
+  assert import_csv("id,source,target\nrule 2/é,/other,/t\n") == 422
+  assert import_csv("id,source,target\nrule 1/é,/spaced,/t2\n") == 303
   let edit = "/rules/" <> uri.percent_encode("rule 1/é")
   let page = get(env.admin <> edit <> "/edit", [#("cookie", cookie)])
   assert page.status == 200

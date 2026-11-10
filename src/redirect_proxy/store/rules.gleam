@@ -254,21 +254,38 @@ pub fn prepare_import(
     )
   })
   |> fn(rules) {
-    case list.filter(rules, fn(r) { !rule.is_valid_id(r.id) }) {
+    case list.filter(rules, fn(r) { rule.is_reserved_id(r.id) }) {
       [] -> validate_all(rules)
-      invalid ->
+      reserved ->
         Error(
-          list.map(invalid, fn(r) {
-            case rule.is_reserved_id(r.id) {
-              True ->
-                "id: "
-                <> r.id
-                <> " is reserved (it names a page or an operation)"
-              False -> "id: " <> r.id <> ": " <> rule.valid_id_hint
-            }
+          list.map(reserved, fn(r) {
+            "id: " <> r.id <> " is reserved (it names a page or an operation)"
           }),
         )
     }
+  }
+}
+
+/// Refuses imported rules that would add an id that is not URL-safe
+/// (`rule.is_valid_id`). The ids of current rules are kept: a file that
+/// loaded with them can be imported again.
+pub fn check_new_ids(
+  existing: List(Rule),
+  rules: List(Rule),
+) -> Result(Nil, List(String)) {
+  let known = list.map(existing, fn(r) { r.id }) |> set.from_list
+  case
+    list.filter(rules, fn(r) {
+      !set.contains(known, r.id) && !rule.is_valid_id(r.id)
+    })
+  {
+    [] -> Ok(Nil)
+    invalid ->
+      Error(
+        list.map(invalid, fn(r) {
+          "id: " <> r.id <> ": " <> rule.valid_id_hint()
+        }),
+      )
   }
 }
 

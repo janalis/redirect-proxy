@@ -481,8 +481,10 @@ pub fn is_reserved_id(id: String) -> Bool {
 }
 
 /// What `is_valid_id` accepts.
-pub const valid_id_hint =
-  "up to 128 letters, digits, '.', '_', '~' or '-', and not new, bulk, export, import, . or .."
+pub fn valid_id_hint() -> String {
+  "up to 128 letters, digits, '.', '_', '~' or '-', and not "
+  <> string.join(reserved_ids, ", ")
+}
 
 /// Whether a rule may take `id` when created or imported: it goes in URLs,
 /// so only unreserved URL characters (RFC 3986), and no reserved id.
