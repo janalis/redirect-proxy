@@ -251,6 +251,12 @@ pub fn invalid_env_values_are_errors_test() {
   assert cfg.admin.port == 9000
 }
 
+pub fn invalid_listener_log_switch_is_an_error_test() {
+  let env = [#("RP_ACCESS_LOG_ADMIN_ENABLED", "flase")]
+  assert config_env.env_errors(fn(name) { list.key_find(env, name) })
+    == ["RP_ACCESS_LOG_ADMIN_ENABLED: expected true or false, got \"flase\""]
+}
+
 pub fn every_listed_env_var_is_checked_test() {
   // each variable is reported when its value is garbage
   let garbage = fn(_name) { Ok("garbage") }
@@ -283,7 +289,13 @@ pub fn every_listed_env_var_is_checked_test() {
     |> list.sort(string.compare)
   }
   assert used(" i") == config_env.int_env_vars
-  assert used(" b") == config_env.bool_env_vars
+  // listener_env builds the names of the per-listener switches
+  let listener_switches =
+    ["ADMIN", "API", "REDIRECT"]
+    |> list.map(fn(name) { "RP_ACCESS_LOG_" <> name <> "_ENABLED" })
+  assert list.append(used(" b"), listener_switches)
+    |> list.sort(string.compare)
+    == config_env.bool_env_vars
   // a secret read from a file that cannot be read must be reported, not
   // silently replaced by the default (an empty metrics token is public)
   list.each(used(" secret"), fn(name) {
