@@ -471,16 +471,22 @@ pub fn patch_rule(
     Error(Nil), _ -> rule_not_found(id)
     _, Error(e) -> problem.validation([rule.describe_json_error(e)])
     Ok(existing), Ok(apply) -> {
-      // When no If-Match is given, still guard against a concurrent change
-      // between our read and the update.
-      let expected = case if_match(req, ctx, id) {
-        Some(v) -> Some(v)
-        None -> Some(rule.version(existing))
+      // The patch applies to `existing`: the update must expect that version
+      // (also for `If-Match: *`, or without If-Match), else a concurrent
+      // change between our read and the update would be undone.
+      let current = rule.version(existing)
+      let expected = case request.get_header(req, "if-match") {
+        Error(Nil) -> current
+        Ok(value) ->
+          case problem.parse_if_match(value) {
+            problem.AnyVersion -> current
+            condition -> problem.expected_version(condition, current)
+          }
       }
       store.update_versioned(
         ctx.store,
         apply(existing),
-        expected,
+        Some(expected),
         principal.actor,
       )
       |> change_response(id)
