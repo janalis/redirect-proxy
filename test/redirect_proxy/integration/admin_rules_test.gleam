@@ -646,18 +646,25 @@ pub fn admin_csv_import_and_export_test() {
   assert !string.contains(export.body, "/old,")
 }
 
-/// A rule imported with an id that is not URL-safe can still be edited:
-/// links carry it percent-encoded.
+/// A rule whose id is not URL-safe (written in the rules file: imports
+/// refuse such ids) can still be edited: links carry it percent-encoded.
 pub fn rules_with_any_id_can_be_edited_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[{\"id\": \"rule 1/é\", \"source\": \"/spaced\", \"target\": \"/t\"}]",
+    )
+  let resp = post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
+  assert resp.status == 303
   let resp =
     post_form(env, "/import", cookie, [
       #("csrf_token", csrf),
       #("mode", "merge"),
-      #("content", "id,source,target\nrule 1/é,/spaced,/t\n"),
+      #("content", "id,source,target\nrule 2/é,/other,/t\n"),
     ])
-  assert resp.status == 303
+  assert resp.status == 422
   let edit = "/rules/" <> uri.percent_encode("rule 1/é")
   let page = get(env.admin <> edit <> "/edit", [#("cookie", cookie)])
   assert page.status == 200

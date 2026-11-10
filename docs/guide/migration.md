@@ -170,7 +170,8 @@ redirect-proxy rules import exact-www.csv
 ## Importing more than once
 
 An import merges by `id`: a rule whose `id` exists replaces it, the others
-are added. Without ids, every import adds the rules again: exact rules
+are added. Ids follow the same rules as in the [API](api): up to 128
+letters, digits, `.`, `_`, `~` or `-`. Without ids, every import adds the rules again: exact rules
 then collide with their earlier copies and the import is refused, and
 prefix and regex rules are duplicated. While the web server configuration
 is still the source of truth and you convert it again and again, either

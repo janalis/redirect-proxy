@@ -220,12 +220,18 @@ pub fn prepare_import(
     )
   })
   |> fn(rules) {
-    case list.filter(rules, fn(r) { rule.is_reserved_id(r.id) }) {
+    case list.filter(rules, fn(r) { !rule.is_valid_id(r.id) }) {
       [] -> validate_all(rules)
-      reserved ->
+      invalid ->
         Error(
-          list.map(reserved, fn(r) {
-            "id: " <> r.id <> " is reserved (it names a page or an operation)"
+          list.map(invalid, fn(r) {
+            case rule.is_reserved_id(r.id) {
+              True ->
+                "id: "
+                <> r.id
+                <> " is reserved (it names a page or an operation)"
+              False -> "id: " <> r.id <> ": " <> rule.valid_id_hint
+            }
           }),
         )
     }
