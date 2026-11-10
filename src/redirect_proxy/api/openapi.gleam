@@ -61,6 +61,23 @@ fn ref(name: String) -> Json {
   json.object([#("$ref", json.string("#/components/schemas/" <> name))])
 }
 
+fn response_with_headers(
+  description: String,
+  schema: Json,
+  headers: List(#(String, Json)),
+) -> Json {
+  json.object([
+    #("description", json.string(description)),
+    #("headers", json.object(headers)),
+    #(
+      "content",
+      json.object([
+        #("application/json", json.object([#("schema", schema)])),
+      ]),
+    ),
+  ])
+}
+
 fn response(description: String, schema: Json) -> Json {
   json.object([
     #("description", json.string(description)),
@@ -494,9 +511,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             json.object([
               #(
                 "200",
-                response(
+                response_with_headers(
                   "The redirection, with its current hit counts. The ETag is the version of the rule (for If-Match), not of its hit counts.",
                   ref("Rule"),
+                  [#("ETag", header("Version of the redirection."))],
                 ),
               ),
               ..store_errors([#("404", "Not found.")])
@@ -699,7 +717,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               json.object([
                 #(
                   "200",
-                  response(
+                  response_with_headers(
                     "Imported.",
                     json.object([
                       #("type", json.string("object")),
@@ -718,6 +736,14 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                         ]),
                       ),
                     ]),
+                    [
+                      #(
+                        "ETag",
+                        header(
+                          "With dry_run=true: the version of the rule set the result was computed against, for If-Match.",
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 ..list.append(
@@ -970,7 +996,26 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
         ),
         #(
           "RulePatch",
-          object_schema(registry, "RulePatch", rule_properties(False), []),
+          object_schema(
+            registry,
+            "RulePatch",
+            // a merge patch sets a field to null to reset it to its default
+            list.map(rule_properties(False), fn(p) {
+              #(
+                p.0,
+                json.object([
+                  #(
+                    "anyOf",
+                    json.preprocessed_array([
+                      p.1,
+                      json.object([#("type", json.string("null"))]),
+                    ]),
+                  ),
+                ]),
+              )
+            }),
+            [],
+          ),
         ),
         #(
           "RuleList",
@@ -1264,7 +1309,10 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
     #("source", typed("string", "Request path, prefix or PCRE regex.")),
     #(
       "target",
-      typed("string", "Absolute URL or path; $1..$9 / ${n} captures."),
+      typed(
+        "string",
+        "Absolute URL or path. $1..$9 or ${n}: captures of a prefix or regex source; ${host}: the request host; ${sub}: what * stands for in a wildcard rule host (*.old.example); $$: a literal $.",
+      ),
     ),
     #(
       "status",
