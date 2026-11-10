@@ -45,15 +45,18 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_STORAGE_AUDIT_MAX_BYTES` / `RP_STORAGE_AUDIT_FILES` | `10485760` (10 MB, `0`: never rotate) / `5` rotated files kept |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
-| `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS`, `_ALLOW_ANY_ACCOUNT` | disabled |
+| `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS`, `_ALLOW_ANY_ACCOUNT` | disabled |
+| `RP_AUTH_OIDC_SCOPES` | `openid,email,profile` (must include `openid`) |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
 | `RP_AUTH_OIDC_ADMIN_GROUPS`, `RP_AUTH_OIDC_EDITOR_GROUPS`, `RP_AUTH_OIDC_VIEWER_GROUPS`, `RP_AUTH_OIDC_DEFAULT_ROLE` | (none), `viewer` (see [Roles](authentication#roles)) |
-| `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |
+| `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | `false`, `127.0.0.1/32,::1/128` |
 | `RP_AUTH_HEADER_USER_HEADER`, `_EMAIL_HEADER` | `X-Forwarded-User`, `X-Forwarded-Email` (empty user header: identify by email) |
 | `RP_AUTH_HEADER_ROLE_HEADER`, `RP_AUTH_HEADER_DEFAULT_ROLE` | (none), `viewer` (see [Roles](authentication#roles)) |
 | `RP_API_ENABLED`, `RP_API_TOKEN_TTL`, `RP_API_MAX_BODY_BYTES`, `RP_API_REQUIRE_IF_MATCH` | `true`, `3600`, `10485760`, `false` |
 | `RP_API_LISTEN` / `RP_API_PORT`, `RP_API_PUBLIC_URL` | `admin.listen` / `admin.port`, (none) |
-| `RP_API_OAUTH_ENABLED`, `_ISSUER`, `_AUDIENCE`, `_SCOPE_CLAIM`, `_REQUIRE_AT_JWT`, `_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE`, `_AUDIT_SCOPE` | disabled |
+| `RP_API_OAUTH_ENABLED`, `_ISSUER` | disabled |
+| `RP_API_OAUTH_AUDIENCE`, `_SCOPE_CLAIM`, `_REQUIRE_AT_JWT` | `redirect-proxy`, `scope`, `true` |
+| `RP_API_OAUTH_READ_SCOPE`, `_WRITE_SCOPE`, `_OPS_SCOPE`, `_AUDIT_SCOPE` | `redirects:read`, `redirects:write`, `redirects:ops`, `audit:read` |
 | `RP_ACCESS_LOG_ENABLED`, `_FORMAT`, `_ESCAPE`, `_OUTPUT` | `true`, `combined`, `default`, `stdout` |
 | `RP_ACCESS_LOG_ANONYMIZE_IP`, `_LOG_QUERY`, `_TRUSTED_PROXIES` | `truncate`, `false`, (none) |
 | `RP_ACCESS_LOG_MAX_BYTES`, `_MAX_FILES`, `_COMPRESS` | `0` (no rotation), `7`, `true` |
