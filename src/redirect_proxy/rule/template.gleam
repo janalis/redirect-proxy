@@ -171,6 +171,11 @@ pub type TargetGuard {
   SameHostPath
   /// The result must keep this host (`example.com`, with its port if any).
   FixedHost(String)
+  /// This host, which the literal text before the first placeholder holds
+  /// whole, up to the `/`, `\`, `?` or `#` that ends it
+  /// (`https://example.com/$1`): no substitution can change it, so the
+  /// result is not parsed again.
+  LiteralHost(String)
   /// `https://${host}/...`: the result must keep the request's host.
   RequestHost
   /// The result must stay a host ending with this suffix (`.example.com`),
@@ -196,7 +201,11 @@ pub fn target_guard(template: String) -> TargetGuard {
           }
         Ok(host) ->
           case string.split_once(host, "$") {
-            Error(Nil) -> FixedHost(host)
+            Error(Nil) ->
+              case literal_authority(template) {
+                True -> LiteralHost(host)
+                False -> FixedHost(host)
+              }
             Ok(#(literal, from_placeholder)) ->
               case expand("$" <> from_placeholder, []) {
                 // only placeholders after the literal (`example.com$1`): they
@@ -208,6 +217,23 @@ pub fn target_guard(template: String) -> TargetGuard {
               }
           }
       }
+  }
+}
+
+/// Whether the text before the first `$` of an absolute or protocol-relative
+/// URL template ends its authority: after the scheme and slashes, it holds a
+/// `/`, `\`, `?` or `#` (the host is then complete before any placeholder).
+fn literal_authority(template: String) -> Bool {
+  let literal = case string.split_once(template, "$") {
+    Ok(#(literal, _)) -> literal
+    Error(Nil) -> template
+  }
+  case authority_start(literal) {
+    Ok(after) -> {
+      let rest = drop_slashes(ffi.byte_drop(literal, after))
+      ffi.url_host(rest) != rest
+    }
+    Error(Nil) -> False
   }
 }
 
@@ -271,11 +297,19 @@ pub fn guard_location(
     }
     SameHostPath -> {
       let location = strip_url_whitespace(location)
-      case string.pop_grapheme(location) {
-        Ok(#(c, rest)) if c == "/" || c == "\\" -> Ok("/" <> drop_slashes(rest))
+      // byte patterns: `/` and `\` are ASCII; the usual location, one `/`
+      // then a path, is returned as it is
+      case location {
+        "/" <> rest ->
+          case rest {
+            "/" <> _ | "\\" <> _ -> Ok("/" <> drop_slashes(rest))
+            _ -> Ok(location)
+          }
+        "\\" <> rest -> Ok("/" <> drop_slashes(rest))
         _ -> Ok(location)
       }
     }
+    LiteralHost(_) -> Ok(strip_url_whitespace(location))
     FixedHost(expected) -> {
       let location = strip_url_whitespace(location)
       case authority(location) {
@@ -304,8 +338,8 @@ pub fn guard_location(
 }
 
 fn drop_slashes(text: String) -> String {
-  case string.pop_grapheme(text) {
-    Ok(#(c, rest)) if c == "/" || c == "\\" -> drop_slashes(rest)
+  case text {
+    "/" <> rest | "\\" <> rest -> drop_slashes(rest)
     _ -> text
   }
 }
@@ -321,14 +355,19 @@ fn strip_url_whitespace(url: String) -> String {
 fn authority(url: String) -> Result(String, Nil) {
   // only the scheme is lowered here (ASCII): the host is lowered below,
   // with Unicode case mapping if it is not ASCII (`ffi.lowercase_host`)
-  let scheme = ffi.lowercase_ascii(ffi.byte_take(url, 8))
-  let after = case scheme {
+  use after <- result.map(authority_start(url))
+  let rest = ffi.byte_drop(url, after)
+  rest |> drop_slashes |> ffi.url_host |> ffi.lowercase_host
+}
+
+/// Where the authority of an absolute (http, https) or protocol-relative
+/// URL starts, in bytes (before extra slashes); `Error(Nil)` for a path.
+fn authority_start(url: String) -> Result(Int, Nil) {
+  // only the scheme is lowered here (ASCII)
+  case ffi.lowercase_ascii(ffi.byte_take(url, 8)) {
     "http://" <> _ | "http:\\\\" <> _ -> Ok(7)
     "https://" <> _ | "https:\\\\" <> _ -> Ok(8)
     "//" <> _ | "/\\" <> _ | "\\/" <> _ | "\\\\" <> _ -> Ok(2)
     _ -> Error(Nil)
   }
-  use after <- result.map(after)
-  let rest = ffi.byte_drop(url, after)
-  rest |> drop_slashes |> ffi.url_host |> ffi.lowercase_host
 }

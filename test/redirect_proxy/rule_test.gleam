@@ -165,8 +165,13 @@ pub fn target_guard_shapes_test() {
   assert template.target_guard("/new/$1") == template.SameHostPath
   assert template.target_guard("https://Example.com$1")
     == template.FixedHost("example.com")
+  // the literal holds the whole host: substitutions come after it
   assert template.target_guard("https://example.com:8443/$1")
-    == template.FixedHost("example.com:8443")
+    == template.LiteralHost("example.com:8443")
+  assert template.target_guard("https://u@Example.com?q=$1")
+    == template.LiteralHost("example.com")
+  assert template.target_guard("//example.com#$1")
+    == template.LiteralHost("example.com")
   assert template.target_guard("//example.com${1}")
     == template.FixedHost("example.com")
   assert template.target_guard("https://$1.example.com/")
@@ -176,6 +181,16 @@ pub fn target_guard_shapes_test() {
   assert template.target_guard("https://x$1.example.com/") == template.Unsafe
   assert template.target_guard("https://$1-$2.example.com/")
     == template.SubdomainOf(".example.com")
+  let vars = template.RequestVars(host: "", sub: "")
+  let literal = template.target_guard("https://example.com/$1")
+  assert template.guard_location(
+      literal,
+      "https://example.com//evil.test",
+      vars,
+    )
+    == Ok("https://example.com//evil.test")
+  assert template.guard_location(literal, "https://example.com/\tx", vars)
+    == Ok("https://example.com/x")
   // the host is entirely a capture: nothing can match it
   assert template.target_guard("https://$1/") == template.FixedHost("")
 }

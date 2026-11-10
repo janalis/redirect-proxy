@@ -162,7 +162,7 @@ pub fn main() -> Nil {
     let both = fn() { handler(parse(raw)) }
     let r = reductions(both, 50_000)
     case name {
-      "exact" -> profile(fn() { handler(req) })
+      "prefix" -> profile(fn() { handler(req) })
       _ -> Nil
     }
     io.println(
