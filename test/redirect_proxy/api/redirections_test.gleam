@@ -127,6 +127,18 @@ pub fn crud_round_trip_test() {
   assert resp.status == 415
   assert header(resp, "content-type") == "application/problem+json"
   assert field(resp.body, ["status"], decode.int) == 415
+  // media types are case-insensitive
+  let resp =
+    support.send(
+      Post,
+      env.api <> "/api/redirects",
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "Application/JSON; charset=utf-8"),
+      ],
+      "{\"source\":\"/case\",\"target\":\"/c\"}",
+    )
+  assert resp.status == 201
 
   // delete
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 204
@@ -730,6 +742,41 @@ pub fn create_with_a_client_id_is_safe_to_retry_test() {
     )
   assert generated.status == 201
   assert field(generated.body, ["id"], decode.string) != ""
+}
+
+/// PATCH checks If-Match against the version it patches: `*` and the
+/// current tag apply, a stale tag is refused.
+pub fn patch_honours_if_match_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/pm\",\"target\":\"/n\"}",
+    )
+  let id = field(created.body, ["id"], decode.string)
+  let patch = fn(if_match, target) {
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+        #("if-match", if_match),
+      ],
+      "{\"target\":\"" <> target <> "\"}",
+    )
+  }
+  assert patch("\"stale\"", "/x").status == 412
+  let resp = patch("*", "/o")
+  assert resp.status == 200
+  assert field(resp.body, ["target"], decode.string) == "/o"
+  let resp = patch(header(resp, "etag"), "/p")
+  assert resp.status == 200
+  assert field(resp.body, ["target"], decode.string) == "/p"
 }
 
 /// With `api.require_if_match`, writes must name the version they change.

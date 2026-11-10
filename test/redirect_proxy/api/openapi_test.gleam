@@ -49,6 +49,27 @@ pub fn openapi_document_test() {
   assert documented("/api/redirects/bulk", "post", "400")
   assert documented("/oauth/token", "post", "413")
   assert documented("/oauth/token", "post", "415")
+  // headers the code sends
+  let etag = fn(path, method) {
+    field(
+      resp.body,
+      ["paths", path, method, "responses", "200", "headers"],
+      decode.dict(decode.string, decode.dynamic),
+    )
+    |> dict.has_key("ETag")
+  }
+  assert etag("/api/redirects/{id}", "get")
+  assert etag("/api/redirects/import", "post")
+  assert etag("/api/redirects/{id}", "put")
+  assert etag("/api/redirects/{id}", "patch")
+  // a merge patch resets a field with null
+  let patch_status =
+    field(
+      resp.body,
+      ["components", "schemas", "RulePatch", "properties", "status", "anyOf"],
+      decode.list(decode.dynamic),
+    )
+  assert list.length(patch_status) == 2
 }
 
 pub fn deprecations_are_announced_test() {
