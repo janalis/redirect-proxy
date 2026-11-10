@@ -382,7 +382,12 @@ pub fn validate(config: Config) -> Result(Config, String) {
   )
   // without it the provider returns no id_token: every sign-in would fail
   use <- bool.guard(
-    config.oidc.enabled && !list.contains(config.oidc.scopes, "openid"),
+    config.oidc.enabled
+      && !{
+      config.oidc.scopes
+      |> list.flat_map(string.split(_, " "))
+      |> list.contains("openid")
+    },
     Error("auth.oidc.scopes must include openid"),
   )
   use <- bool.guard(

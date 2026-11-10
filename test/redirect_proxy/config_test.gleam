@@ -507,6 +507,9 @@ pub fn more_value_checks_test() {
   let no_openid = config.OidcConfig(..open, scopes: ["email", "profile"])
   assert refused(config.Config(..d, oidc: no_openid))
     == "auth.oidc.scopes must include openid"
+  // the scopes are sent space separated: one entry can hold several
+  let spaced = config.OidcConfig(..open, scopes: ["openid email profile"])
+  let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: spaced))
   let no_scopes = config.OidcConfig(..open, scopes: [])
   assert refused(config.Config(..d, oidc: no_scopes))
     == "auth.oidc.scopes must include openid"
