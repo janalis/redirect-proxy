@@ -814,18 +814,23 @@ pub fn writes_can_require_if_match_test() {
   assert refused.status == 428
   assert field(refused.body, ["code"], decode.string) == "precondition_required"
   assert put([#("if-match", etag)]).status == 200
-  // PATCH guards itself: no header needed
-  let patch =
+  // PATCH too
+  let patch = fn(headers) {
     support.send(
       Patch,
       env.api <> "/api/redirects/" <> id,
       [
         #("authorization", "Bearer " <> token),
         #("content-type", "application/merge-patch+json"),
+        ..headers
       ],
       "{\"target\":\"/p\"}",
     )
-  assert patch.status == 200
+  }
+  assert patch([]).status == 428
+  let current =
+    header(api(env, Get, "/api/redirects/" <> id, token, ""), "etag")
+  assert patch([#("if-match", current)]).status == 200
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 428
 }
 

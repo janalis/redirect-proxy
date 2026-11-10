@@ -475,6 +475,7 @@ pub fn patch_rule(
   id: String,
 ) -> Response {
   use <- store_available
+  use <- require_precondition(req, ctx)
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case store.get(ctx.store, id), json.parse(body, patch_decoder()) {

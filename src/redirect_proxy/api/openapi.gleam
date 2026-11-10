@@ -575,6 +575,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   store_errors([
                     #("404", "Not found."),
                     #("412", "Version mismatch."),
+                    #(
+                      "428",
+                      "If-Match is missing and api.require_if_match is on.",
+                    ),
                     #("422", "Validation failed."),
                   ]),
                 )
