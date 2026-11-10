@@ -443,9 +443,8 @@ fn route_rules(
   not_found_body: BytesTree,
   permanent_cache: String,
 ) -> Routed {
-  // header names are lower case: `request.get_header` would lower-case
-  // the name on every request
-  let host = list.key_find(req.headers, "host") |> result.unwrap(req.host)
+  // the listener has checked the Host header and split its port off
+  let host = req.host
   case req.method {
     http.Get | http.Head | http.Post | http.Put | http.Delete | http.Patch -> {
       // one read of the published matcher for both the lookup and the hit
