@@ -81,6 +81,7 @@ fn upstream(port: Int) -> proxy_http.Upstream {
     port:,
     timeout_ms: 500,
     tls_verify: True,
+    max_body_bytes: 0,
   )
 }
 
@@ -222,6 +223,52 @@ pub fn chunked_bodies_are_forwarded_test() {
   assert string.contains(text, "\ntransfer-encoding: chunked\n")
   assert string.contains(text, "framing=chunked\nbody=hello world")
   assert string.contains(text, "GET /next\nconn=1\n")
+}
+
+pub fn bodies_over_the_limit_get_413_test() {
+  let #(port, counter) = start_upstream()
+  let proxy =
+    start_with(
+      proxy_http.Upstream(..upstream(port), max_body_bytes: 10),
+      counter,
+    )
+  // a length over the limit: refused before anything is sent upstream
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 11\r\n\r\nhello world",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 413 ")
+  assert closed
+  assert connections(counter) == 0
+  let f = forwarded(proxy)
+  assert f.status == 413
+  // a chunked body, once it has grown over the limit
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /up HTTP/1.1\r\nhost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 413 ")
+  assert closed
+  // up to the limit
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /up HTTP/1.1\r\nhost: a\r\nTransfer-Encoding: chunked\r\nconnection: close\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+    ])
+  assert string.contains(text, "framing=chunked\nbody=helloworld")
+}
+
+/// A body must keep coming: the idle timeout (300 ms here) between two
+/// packets, not the upstream's.
+pub fn stalled_bodies_get_408_test() {
+  let #(port, counter) = start_upstream()
+  let proxy =
+    start_with(proxy_http.Upstream(..upstream(port), timeout_ms: 5000), counter)
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 11\r\n\r\nhello",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 408 ")
+  assert closed
 }
 
 pub fn upstream_connections_are_reused_test() {

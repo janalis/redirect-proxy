@@ -117,6 +117,8 @@
     address,
     port,
     timeout,
+    %% request bodies longer than this get a 413 (0: no limit)
+    max_body,
     %% `host[:port]`, sent when the client sent no Host
     authority,
     %% for the log
@@ -967,6 +969,8 @@ lower(C) -> C.
 %% send to the client (relay_body/6)
 -define(RELAYED, '$redirect_proxy_relayed').
 -define(MAX_RESPONSE_HEAD, 65536).
+%% process dictionary key: payload bytes of the chunked request body so far
+-define(BODY_BYTES, '$redirect_proxy_body_bytes').
 
 %% headers that only concern one connection (RFC 9110 7.6.1), and the ones
 %% the server sets itself
@@ -1009,6 +1013,10 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
         {error, Status} ->
             done(Done, Status, 0, none),
             reject(Status, C);
+        {ok, {length, N}, _, _, _, _} when N > C#conn.upstream#up.max_body,
+                                           C#conn.upstream#up.max_body > 0 ->
+            done(Done, 413, 0, none),
+            reject(413, C);
         {ok, Body, Tokens, Upgrade, Expect, HasHost} ->
             Up = C#conn.upstream,
             %% the client's values of the headers the handler sets, and of
@@ -1195,6 +1203,9 @@ send_request(Socket, Reused, Rest, F, C) ->
                 {error, {client, timeout}} ->
                     done(F#fwd.done, 408, 0, none),
                     reject(408, C);
+                {error, too_large} ->
+                    done(F#fwd.done, 413, 0, none),
+                    reject(413, C);
                 {error, {client, _}} ->
                     %% the client went away before its request was complete
                     done(F#fwd.done, 499, 0, none),
@@ -1229,7 +1240,8 @@ send_body({length, N}, Rest, Socket, C) ->
     end;
 send_body(chunked, Rest, Socket, C) ->
     Emit = upstream_emit(Socket),
-    case copy_chunked(Rest, client_recv(C), chunk_emit(Emit), 0) of
+    Chunk = body_limit(chunk_emit(Emit), C#conn.upstream#up.max_body),
+    case copy_chunked(Rest, client_recv(C), Chunk, 0) of
         {ok, Rest1, _} ->
             case Emit(<<"0\r\n\r\n">>) of
                 ok -> {ok, Rest1};
@@ -1847,8 +1859,28 @@ chunk_emit(Emit) ->
         Emit([integer_to_binary(byte_size(Data), 16), <<"\r\n">>, Data, <<"\r\n">>])
     end.
 
-%% The client's bytes, from the socket's messages.
-client_recv(#conn{socket = Socket, upstream = #up{timeout = Timeout}}) ->
+%% Emit, for a chunked request body of at most Max bytes of payload (0: no
+%% limit): its length is only known as it comes.
+body_limit(Emit, 0) ->
+    Emit;
+body_limit(Emit, Max) ->
+    erlang:put(?BODY_BYTES, 0),
+    fun(Data) ->
+        Seen = erlang:get(?BODY_BYTES) + iolist_size(Data),
+        case Seen > Max of
+            true ->
+                {error, too_large};
+            false ->
+                erlang:put(?BODY_BYTES, Seen),
+                Emit(Data)
+        end
+    end.
+
+%% The client's bytes, from the socket's messages. A request body must keep
+%% coming: no more than the idle timeout between two packets (a client
+%% sending a byte now and then would hold an upstream connection, and the
+%% upstream's worker, for as long as it likes).
+client_recv(#conn{socket = Socket, idle_timeout = Timeout}) ->
     fun Recv() ->
         receive
             {tcp, Socket, Data} ->
@@ -1965,7 +1997,7 @@ up_close({ssl, S}) -> ssl:close(S).
 %% The upstream settings of the Gleam `Upstream`, resolved once.
 upstream_settings(none) ->
     none;
-upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify}}) ->
+upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify, MaxBody}}) ->
     Name = binary_to_list(Host),
     {Address, IsIp} = case inet:parse_address(Name) of
         {ok, Ip} -> {Ip, true};
@@ -1999,7 +2031,7 @@ upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify}}) ->
             end
     end,
     #up{tls = Tls, address = Address, port = Port, timeout = Timeout,
-        authority = Authority, url = <<Scheme/binary, Authority/binary>>,
+        max_body = MaxBody, authority = Authority, url = <<Scheme/binary, Authority/binary>>,
         tls_options = TlsOptions}.
 
 trim(Bin) -> trim_end(skip_ows(Bin)).
@@ -2199,6 +2231,7 @@ status_line(404) -> <<"HTTP/1.1 404 Not Found\r\n">>;
 status_line(405) -> <<"HTTP/1.1 405 Method Not Allowed\r\n">>;
 status_line(408) -> <<"HTTP/1.1 408 Request Timeout\r\n">>;
 status_line(410) -> <<"HTTP/1.1 410 Gone\r\n">>;
+status_line(413) -> <<"HTTP/1.1 413 Content Too Large\r\n">>;
 status_line(414) -> <<"HTTP/1.1 414 URI Too Long\r\n">>;
 status_line(431) -> <<"HTTP/1.1 431 Request Header Fields Too Large\r\n">>;
 status_line(451) -> <<"HTTP/1.1 451 Unavailable For Legal Reasons\r\n">>;

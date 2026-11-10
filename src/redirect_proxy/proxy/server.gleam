@@ -39,6 +39,7 @@ pub fn http_options(
         port: url.port,
         timeout_ms: config.upstream_timeout * 1000,
         tls_verify: config.upstream_tls_verify,
+        max_body_bytes: config.max_request_body_bytes,
       ))
     _ -> option.None
   }

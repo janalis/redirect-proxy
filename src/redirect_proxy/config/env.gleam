@@ -25,6 +25,7 @@ pub const int_env_vars = [
   "RP_API_TOKEN_TTL",
   "RP_SERVER_CACHE_MAX_AGE",
   "RP_SERVER_MAX_PATH_BYTES",
+  "RP_SERVER_MAX_REQUEST_BODY_BYTES",
   "RP_SERVER_PORT",
   "RP_SERVER_SHUTDOWN_GRACE",
   "RP_SERVER_UPSTREAM_TIMEOUT",
@@ -263,6 +264,10 @@ pub fn apply_env(
       health_path: s("RP_SERVER_HEALTH_PATH", server.health_path),
       metrics_path: s("RP_SERVER_METRICS_PATH", server.metrics_path),
       max_path_bytes: i("RP_SERVER_MAX_PATH_BYTES", server.max_path_bytes),
+      max_request_body_bytes: i(
+        "RP_SERVER_MAX_REQUEST_BODY_BYTES",
+        server.max_request_body_bytes,
+      ),
       https_redirect: b("RP_SERVER_HTTPS_REDIRECT", server.https_redirect),
       upstream: s("RP_SERVER_UPSTREAM", server.upstream),
       upstream_timeout: i("RP_SERVER_UPSTREAM_TIMEOUT", server.upstream_timeout),

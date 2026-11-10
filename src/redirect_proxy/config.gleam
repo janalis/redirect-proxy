@@ -126,6 +126,9 @@ pub type ServerConfig {
     metrics_path: String,
     /// Requests whose path is longer than this many bytes get a 414.
     max_path_bytes: Int,
+    /// Requests forwarded to the upstream with a longer body (in bytes) get
+    /// a 413 (0: no limit).
+    max_request_body_bytes: Int,
     /// Plain HTTP requests are redirected to the same URL over HTTPS before
     /// any rule (requests a proxy marks `X-Forwarded-Proto: https` are not).
     https_redirect: Bool,
@@ -323,6 +326,7 @@ pub fn default() -> Config {
       health_path: "",
       metrics_path: "",
       max_path_bytes: 8192,
+      max_request_body_bytes: 0,
       https_redirect: False,
       upstream: "",
       upstream_timeout: 60,

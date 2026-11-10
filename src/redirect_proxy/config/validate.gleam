@@ -236,6 +236,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
     config.server.max_path_bytes < 256,
     Error("server.max_path_bytes must be at least 256"),
   )
+  use <- bool.guard(
+    config.server.max_request_body_bytes < 0,
+    Error("server.max_request_body_bytes must be 0 (no limit) or more"),
+  )
   // in seconds, turned into an Erlang timer: past about 49 days it would
   // crash the store at startup
   use <- bool.guard(

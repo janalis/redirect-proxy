@@ -69,6 +69,8 @@ pub type Upstream {
     timeout_ms: Int,
     /// Check the certificate of an https upstream against the system CAs.
     tls_verify: Bool,
+    /// Request bodies longer than this many bytes get a 413 (0: no limit).
+    max_body_bytes: Int,
   )
 }
 

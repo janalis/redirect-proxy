@@ -162,7 +162,10 @@ saturated (every connection always has a request in flight).
   reset the connection, and could discard the response before the client
   reads it. The bodies of requests
   forwarded to `server.upstream` are streamed to it, and the connection
-  stays open when their length was unambiguous.
+  stays open when their length was unambiguous. Such a body must keep
+  coming: 10 s without a byte of it gets a 408. A body longer than
+  `server.max_request_body_bytes` (no limit by default) gets a 413, before
+  anything is forwarded when its length is announced.
 - Malformed requests get 400 and the connection is closed: a request target
   that is not an absolute path, or has characters a URI cannot hold (a raw
   backslash, space, `"`, `<`, `>`, DEL, control character or non-ASCII
