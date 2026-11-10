@@ -126,7 +126,8 @@ public_url = "http://localhost:8081"
 # random secret is generated and stored in <data_dir>/secret_key_base.
 secret_key_base = ""
 # Bearer token required by /metrics (at least 16 characters). Empty: /metrics
-# is public, like /healthz and /readyz.
+# is public, like /healthz and /readyz, when the listener is on the loopback
+# interface, and not served (404) on any other address.
 metrics_token = ""
 # Session lifetime in seconds.
 session_ttl = 28800

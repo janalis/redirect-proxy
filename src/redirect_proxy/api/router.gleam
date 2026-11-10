@@ -42,7 +42,11 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
     ["readyz"] -> health.ready()
     // the admin serves the metrics; without it, they would be nowhere
     ["metrics"] if !ctx.config.admin.enabled ->
-      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
+      metrics_endpoint.respond_on(
+        req,
+        ctx.config.admin.metrics_token,
+        config.api_listen(ctx.config),
+      )
     _ -> handle(req, ctx)
   }
   |> wisp.set_header("x-content-type-options", "nosniff")

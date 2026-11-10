@@ -3,13 +3,28 @@
 //// unless `admin.metrics_token` is set (always, on the redirect listener),
 //// then it needs
 //// `Authorization: Bearer <token>` (Prometheus `authorization` /
-//// `bearer_token_file`).
+//// `bearer_token_file`). Without a token, a listener on other addresses
+//// than the loopback one does not serve them (404).
 
 import gleam/http/request
 import gleam/string
 import redirect_proxy/ffi
 import redirect_proxy/metrics
 import wisp.{type Request, type Response}
+
+/// `/metrics` on a listener bound to `listen`.
+pub fn respond_on(req: Request, token: String, listen: String) -> Response {
+  case token == "" && !served_without_token(listen) {
+    True -> wisp.not_found()
+    False -> respond(req, token)
+  }
+}
+
+/// Whether a listener bound to `listen` serves the metrics without a token:
+/// only on the loopback interface.
+pub fn served_without_token(listen: String) -> Bool {
+  ffi.is_loopback_address(listen)
+}
 
 pub fn respond(req: Request, token: String) -> Response {
   case authorized(req, token) {

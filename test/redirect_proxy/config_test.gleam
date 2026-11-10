@@ -359,9 +359,10 @@ pub fn warnings_test() {
   let assert Ok(toml) =
     tom.parse("[auth.odic]\nenabled = true\n[admin]\nlisten = \"0.0.0.0\"\n")
   let assert Ok(cfg) = config_file.from_toml(toml)
-  let assert [typo, exposed] = config_validate.warnings(toml, cfg)
+  let assert [typo, exposed, metrics] = config_validate.warnings(toml, cfg)
   assert typo == "unknown setting auth.odic.enabled (ignored)"
   assert string.starts_with(exposed, "the admin listens on 0.0.0.0")
+  assert string.starts_with(metrics, "/metrics is not served")
   let assert Ok(fine) = tom.parse("[admin]\nlisten = \"127.0.0.1\"\n")
   let assert Ok(cfg) = config_file.from_toml(fine)
   assert config_validate.warnings(fine, cfg) == []

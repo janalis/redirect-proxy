@@ -51,10 +51,13 @@ Alerts worth having: `redirect_proxy_reload_failures_total` or
 
 Per-rule hit counts are shown in the admin, not exported (one series per
 rule would be too many).
-Without `admin.metrics_token` the endpoint is not authenticated: like the
-rest of the admin listener, keep it off the public network. The container image binds the admin to
-`0.0.0.0` so that it can be published: publish it on `127.0.0.1` only, as
-in the quick start.
+Without `admin.metrics_token` the endpoint is not authenticated, so it is
+only served when its listener is on the loopback interface
+(`admin.listen = "127.0.0.1"`, the default): on other addresses it answers
+404, and the server says so at startup. The container image binds the
+admin to `0.0.0.0` so that it can be published: to scrape it, set
+`RP_ADMIN_METRICS_TOKEN` (at least 16 characters, or
+`RP_ADMIN_METRICS_TOKEN_FILE`) and give Prometheus the token.
 
 ## Health check on the traffic port
 

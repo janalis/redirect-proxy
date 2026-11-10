@@ -62,6 +62,8 @@ An API on its own port serves `/healthz` and `/readyz` too, and `/metrics`
 when the admin is disabled. With `admin.metrics_token`
 (`RP_ADMIN_METRICS_TOKEN`, at least 16 characters), `/metrics` answers 401
 unless the request has `Authorization: Bearer <token>`: in Prometheus, set
-`authorization: { credentials_file: ... }` on the scrape job.
+`authorization: { credentials_file: ... }` on the scrape job. Without a
+token, `/metrics` is only served by a listener on the loopback interface
+(404 elsewhere, as in the container image).
 
 The series are listed in [Monitoring](monitoring#metrics).

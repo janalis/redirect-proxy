@@ -56,7 +56,11 @@ pub fn handle(req: Request, ctx: Context) -> Response {
     Get, ["healthz"] -> health.live()
     Get, ["readyz"] -> health.ready()
     Get, ["metrics"] ->
-      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
+      metrics_endpoint.respond_on(
+        req,
+        ctx.config.admin.metrics_token,
+        ctx.config.admin.listen,
+      )
     Get, ["login"] -> login_page(req, ctx)
     Post, ["login"] -> login(req, ctx)
     Get, ["auth", "oidc", "start"] -> oidc_start(req, ctx)

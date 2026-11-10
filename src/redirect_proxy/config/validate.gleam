@@ -11,12 +11,13 @@ import gleam/uri
 import redirect_proxy/access_log_format
 import redirect_proxy/config.{
   type AccessLogConfig, type Config, access_log_format, access_log_output,
-  api_dedicated, api_on_admin, api_port, parse_upstream,
+  api_dedicated, api_listen, api_on_admin, api_port, parse_upstream,
 } as _
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
 import redirect_proxy/ffi
 import redirect_proxy/listener
+import redirect_proxy/metrics_endpoint
 import redirect_proxy/role
 import tom.{type Toml}
 
@@ -56,7 +57,7 @@ pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
     True -> [
       "the admin listens on "
       <> config.admin.listen
-      <> ": keep it behind a firewall or a reverse proxy (it also serves /metrics without authentication)",
+      <> ": keep it behind a firewall or a reverse proxy",
     ]
     False -> []
   }
@@ -154,6 +155,12 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       ]
       False -> []
     },
+    case metrics_hidden(config) {
+      True -> [
+        "/metrics is not served: its listener is not on the loopback interface and admin.metrics_token is empty; set a token (at least 16 characters) for Prometheus to send",
+      ]
+      False -> []
+    },
     case config.server.shutdown_grace >= 10 {
       True -> [
         "server.shutdown_grace is "
@@ -163,6 +170,22 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       False -> []
     },
   ])
+}
+
+/// `/metrics` is turned off for want of a token: its listener (the admin's,
+/// or the API's without the admin) is not on the loopback interface.
+fn metrics_hidden(config: Config) -> Bool {
+  let listen = case config.admin.enabled, config.api.enabled {
+    True, _ -> Ok(config.admin.listen)
+    False, True -> Ok(api_listen(config))
+    False, False -> Error(Nil)
+  }
+  case listen {
+    Ok(listen) ->
+      config.admin.metrics_token == ""
+      && !metrics_endpoint.served_without_token(listen)
+    Error(Nil) -> False
+  }
 }
 
 /// OIDC sign-in with no list of who may sign in.

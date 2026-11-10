@@ -39,7 +39,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ADMIN_SECRET_KEY_BASE` | generated into `<data_dir>/secret_key_base` |
 | `RP_ADMIN_SESSION_TTL` | `28800` (8 hours) |
 | `RP_ADMIN_SESSION_IDLE_TIMEOUT` | `3600` (1 hour, `0`: never) |
-| `RP_ADMIN_METRICS_TOKEN` | (none: `/metrics` is public) |
+| `RP_ADMIN_METRICS_TOKEN` | (none: `/metrics` is public on a loopback listener, 404 on any other) |
 | `RP_STORAGE_DATA_DIR` / `RP_STORAGE_BACKUPS` | `./data` / `10` |
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_STORAGE_AUDIT_MAX_BYTES` / `RP_STORAGE_AUDIT_FILES` | `10485760` (10 MB, `0`: never rotate) / `5` rotated files kept |
