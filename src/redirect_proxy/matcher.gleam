@@ -133,8 +133,8 @@ type RegexRule {
 }
 
 pub type Match {
-  /// `ready`: `location` is a header value already (`ffi.header_value`).
-  Match(rule: Rule, location: String, ready: Bool)
+  /// `location`: a header value already (`ffi.header_value`).
+  Match(rule: Rule, location: String)
 }
 
 pub fn empty() -> Matcher {
@@ -805,7 +805,7 @@ fn match_query(
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
-          |> result.map(fn(q) { Match(q.rule, q.rule.target, False) })
+          |> result.map(fn(q) { Match(q.rule, ffi.header_value(q.rule.target)) })
         }
       }
     }
@@ -816,13 +816,13 @@ fn match_query(
 /// rules.
 fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   case dict.get(rules.exact, path) {
-    Ok(#(r, location)) -> Ok(Match(r, location, True))
+    Ok(#(r, location)) -> Ok(Match(r, location))
     Error(Nil) ->
       case dict.size(rules.exact_ci) {
         0 -> Error(Nil)
         _ ->
           case dict.get(rules.exact_ci, string.lowercase(path)) {
-            Ok(#(r, location)) -> Ok(Match(r, location, True))
+            Ok(#(r, location)) -> Ok(Match(r, location))
             Error(Nil) -> Error(Nil)
           }
       }
@@ -874,7 +874,7 @@ fn prefix_location(
   let #(p, remainder) = candidate
   template.expand_template(p.template, [path, remainder], vars)
   |> template.guard_location(p.guard, _, vars)
-  |> result.map(Match(p.rule, _, False))
+  |> result.map(fn(location) { Match(p.rule, ffi.header_value(location)) })
 }
 
 /// The rest of `path` after the source of prefix rule `r`.
@@ -964,7 +964,7 @@ fn run_regexes(
               vars,
             )
           {
-            Ok(location) -> Ok(Match(entry.rule, location, False))
+            Ok(location) -> Ok(Match(entry.rule, ffi.header_value(location)))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
@@ -994,8 +994,7 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
       // decoded characters
       ffi.header_value(merge_query(url, q) <> fragment)
     }
-    _, _ if m.ready -> m.location
-    _, _ -> ffi.header_value(m.location)
+    _, _ -> m.location
   }
 }
 

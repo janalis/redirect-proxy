@@ -77,8 +77,10 @@ writer per output, which batches the writes, so the three listeners log
 concurrently without coordinating. Lines do not go through the Erlang
 logger, whose per-event work cost more than the rest of a logged redirect.
 The writers never block or throttle requests. Under extreme overload (10 000
-lines waiting) they drop lines and report how many were dropped in the
-application log. `RP_LOG_LEVEL` only controls the application
+lines waiting), or while a log file cannot be written (its directory
+removed or unwritable, retried every second), they drop lines and report
+how many were dropped in the application log. On shutdown, the lines
+waiting are written. `RP_LOG_LEVEL` only controls the application
 log, so access logging stays on with `RP_LOG_LEVEL=warning`. Set
 `enabled = false` to turn it off entirely.
 

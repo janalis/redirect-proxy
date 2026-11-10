@@ -298,7 +298,8 @@ pub fn prefix_index_prefers_longest_then_priority_test() {
   }
   assert loc("/a/b/c") == "/ci/c"
   assert loc("/a/x") == "/short/x"
-  assert loc("/é/ü") == "/accent/ü"
+  // a header value: non-ASCII percent-encoded
+  assert loc("/é/ü") == "/accent/%C3%BC"
   assert matcher.lookup(m, "x.test", "/") == Error(Nil)
 }
 

@@ -3,7 +3,7 @@
 -module(redirect_proxy_access_ffi).
 
 -export([
-    start/4, stop/0, emit/2, set_levels/2,
+    start/4, stop/0, sync/0, emit/2, set_levels/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
     now_micros/0, monotonic_micros/0
@@ -22,10 +22,18 @@
 %% Groups: [{Output, [Listener]}] with Output <<"stdout">>, <<"stderr">> or a
 %% file path, and Listener an atom (redirect_listener, admin_listener...).
 %% One writer (redirect_proxy_access_writer) is started per output.
+%% The writers of an earlier start are stopped once the new ones are in
+%% place, so that a reload loses no line (and keeps them on an error).
 start(Groups, MaxBytes, MaxFiles, Compress) ->
-    _ = stop(),
     ensure_time_cache(),
-    start_groups(Groups, MaxBytes, MaxFiles, Compress, #{}, []).
+    Previous = persistent_term:get(?WRITERS, #{}),
+    case start_groups(Groups, MaxBytes, MaxFiles, Compress, #{}, []) of
+        {ok, nil} ->
+            stop_writers(Previous),
+            {ok, nil};
+        Error ->
+            Error
+    end.
 
 start_groups([], _, _, _, Routes, _) ->
     persistent_term:put(?WRITERS, Routes),
@@ -50,10 +58,19 @@ stop() ->
             nil;
         Routes ->
             persistent_term:put(?WRITERS, #{}),
-            lists:foreach(fun redirect_proxy_access_writer:stop/1,
-                          lists:usort(maps:values(Routes))),
+            stop_writers(Routes),
             nil
     end.
+
+%% Returns once every writer has handled the lines sent before (tests).
+sync() ->
+    lists:foreach(fun redirect_proxy_access_writer:sync/1,
+                  lists:usort(maps:values(persistent_term:get(?WRITERS, #{})))),
+    nil.
+
+stop_writers(Routes) ->
+    lists:foreach(fun redirect_proxy_access_writer:stop/1,
+                  lists:usort(maps:values(Routes))).
 
 %% A rendered line of Listener's log: a counter and a message, from the
 %% request process.

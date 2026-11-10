@@ -174,6 +174,15 @@ pub fn target_guard_shapes_test() {
     == template.LiteralHost("example.com")
   assert template.target_guard("//example.com${1}")
     == template.FixedHost("example.com")
+  // user info before the placeholder does not end the authority
+  let user_info = template.target_guard("https://a@b$1@example.com/")
+  assert user_info != template.LiteralHost("example.com")
+  assert template.guard_location(
+      user_info,
+      "https://a@bad.evil.test/@example.com/",
+      template.RequestVars(host: "", sub: ""),
+    )
+    == Error(Nil)
   assert template.target_guard("https://$1.example.com/")
     == template.SubdomainOf(".example.com")
   assert template.target_guard("https://example$1.com/") == template.Unsafe

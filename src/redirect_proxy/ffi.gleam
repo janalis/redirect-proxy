@@ -11,12 +11,8 @@ pub fn snapshot_put(key: String, value: a) -> Nil
 @external(erlang, "redirect_proxy_ffi", "snapshot_get")
 pub fn snapshot_get(key: String) -> Result(a, Nil)
 
-/// The value of `key`, or `default`: `snapshot_get` without a `Result`, for
-/// the reads of every request.
-@external(erlang, "redirect_proxy_ffi", "snapshot_or")
-pub fn snapshot_or(key: String, default: a) -> a
-
-/// The value of `key`, published from `init()` the first time.
+/// The value of `key`, published from `init()` the first time: for values
+/// only this function publishes (counters).
 @external(erlang, "redirect_proxy_ffi", "snapshot_or_init")
 pub fn snapshot_or_init(key: String, init: fn() -> a) -> a
 
@@ -421,6 +417,10 @@ pub fn access_log_start(
 /// Writes the lines still waiting, then stops the writers.
 @external(erlang, "redirect_proxy_access_ffi", "stop")
 pub fn access_log_stop() -> Nil
+
+/// Returns once the writers have handled every line sent before (tests).
+@external(erlang, "redirect_proxy_access_ffi", "sync")
+pub fn access_log_sync() -> Nil
 
 @external(erlang, "redirect_proxy_access_ffi", "emit")
 pub fn access_log_emit(listener: Listener, line: String) -> Nil

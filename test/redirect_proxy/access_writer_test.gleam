@@ -30,14 +30,15 @@ pub fn lines_are_written_in_order_test() {
   let path = support.temp_dir() <> "/logs/access.log"
   let assert Ok(Nil) =
     ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
-  emit(1, 500)
+  // more than a batch: stopping writes them all
+  emit(1, 3000)
   // lines of a listener with no writer are dropped quietly
   ffi.access_log_emit(listener.AdminListener, "elsewhere")
   ffi.access_log_stop()
   let written = lines(path)
-  assert list.length(written) == 500
+  assert list.length(written) == 3000
   assert list.first(written) == Ok("line 001")
-  assert list.last(written) == Ok("line 500")
+  assert list.last(written) == Ok("line 3000")
 }
 
 /// Past `max_bytes`, the file becomes `.0`, and older archives move up to
@@ -49,7 +50,7 @@ pub fn files_rotate_test() {
   // "line 001\n" is 9 bytes: each write of more than 20 bytes rotates
   list.each([#(1, 3), #(4, 6), #(7, 9)], fn(batch) {
     emit(batch.0, batch.1)
-    process.sleep(50)
+    ffi.access_log_sync()
   })
   ffi.access_log_stop()
   assert lines(path <> ".0") == ["line 007", "line 008", "line 009"]
@@ -63,7 +64,7 @@ pub fn rotated_files_are_compressed_test() {
   let assert Ok(Nil) =
     ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 3, True)
   emit(1, 3)
-  process.sleep(50)
+  ffi.access_log_sync()
   emit(4, 6)
   ffi.access_log_stop()
   assert simplifile.is_file(path <> ".0.gz") == Ok(True)
@@ -78,12 +79,27 @@ pub fn renamed_files_are_reopened_test() {
   let assert Ok(Nil) =
     ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
   emit(1, 1)
-  process.sleep(100)
+  ffi.access_log_sync()
   let assert Ok(Nil) = simplifile.rename(path, path <> ".1")
   process.sleep(1300)
   emit(2, 2)
   ffi.access_log_stop()
   assert lines(path <> ".1") == ["line 001"]
+  assert lines(path) == ["line 002"]
+}
+
+/// The directory removed too: it is created again.
+pub fn removed_directories_are_recreated_test() {
+  let dir = support.temp_dir() <> "/logs"
+  let path = dir <> "/access.log"
+  let assert Ok(Nil) =
+    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
+  emit(1, 1)
+  ffi.access_log_sync()
+  let assert Ok(Nil) = simplifile.delete(dir)
+  process.sleep(1300)
+  emit(2, 2)
+  ffi.access_log_stop()
   assert lines(path) == ["line 002"]
 }
 

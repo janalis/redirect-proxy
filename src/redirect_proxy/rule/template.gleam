@@ -229,9 +229,11 @@ fn literal_authority(template: String) -> Bool {
     Error(Nil) -> template
   }
   case authority_start(literal) {
+    // a terminator itself, not a change by url_host, which also drops
+    // user info (`https://a@b$1@example.com/` has no fixed host)
     Ok(after) -> {
       let rest = drop_slashes(ffi.byte_drop(literal, after))
-      ffi.url_host(rest) != rest
+      list.any(["/", "\\", "?", "#"], string.contains(rest, _))
     }
     Error(Nil) -> False
   }

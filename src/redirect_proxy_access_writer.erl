@@ -12,7 +12,7 @@
 %% gzipped as `File.N.gz` with `compress`.
 -module(redirect_proxy_access_writer).
 
--export([start/4, stop/1, send/2, init/5]).
+-export([start/4, stop/1, send/2, sync/1, init/5]).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -51,16 +51,24 @@ start(Output, MaxBytes, MaxFiles, Compress) ->
         {error, Reason} -> {error, Reason}
     end.
 
-%% Writes what is waiting, closes the output and ends the writer.
+%% Writes what is waiting, closes the output and ends the writer. Waits
+%% for it up to 5 seconds; a writer still busy then (compressing a large
+%% archive) finishes on its own.
 stop({Pid, _}) ->
+    call(Pid, stop, 5000).
+
+%% Returns once the writer has handled every line sent before (tests).
+sync({Pid, _}) ->
+    call(Pid, sync, 5000).
+
+call(Pid, Request, Timeout) ->
     Ref = monitor(process, Pid),
-    Pid ! {stop, self(), Ref},
+    Pid ! {Request, self(), Ref},
     receive
-        {Ref, stopped} -> demonitor(Ref, [flush]), ok;
+        {Ref, done} -> demonitor(Ref, [flush]), ok;
         {'DOWN', Ref, process, Pid, _} -> ok
-    after 5000 ->
+    after Timeout ->
         demonitor(Ref, [flush]),
-        exit(Pid, kill),
         ok
     end.
 
@@ -112,19 +120,43 @@ loop(W) ->
         {line, Line} ->
             {Lines, N} = take([[Line, $\n]], 1),
             atomics:sub(W#w.counter, ?QUEUED, N),
-            loop(write(lists:reverse(Lines), W));
+            loop(safely(fun() -> write(lists:reverse(Lines), N, W) end, W));
         check ->
             report_dropped(W),
             erlang:send_after(?CHECK_MS, self(), check),
-            loop(reopen_if_moved(W));
+            loop(safely(fun() -> reopen_if_moved(W) end, W));
+        {sync, From, Ref} ->
+            From ! {Ref, done},
+            loop(W);
         {stop, From, Ref} ->
-            {Lines, _} = take([], 0),
-            W1 = write(lists:reverse(Lines), W),
+            W1 = drain(W),
             report_dropped(W1),
             close(W1),
-            From ! {Ref, stopped};
+            From ! {Ref, done};
         _ ->
             loop(W)
+    end.
+
+%% Every line waiting, in batches.
+drain(W) ->
+    case take([], 0) of
+        {[], 0} ->
+            W;
+        {Lines, N} ->
+            atomics:sub(W#w.counter, ?QUEUED, N),
+            drain(safely(fun() -> write(lists:reverse(Lines), N, W) end, W))
+    end.
+
+%% A writer that dies loses every line after it, without a report: an
+%% unexpected error is logged and the writer goes on.
+safely(Fun, W) ->
+    try
+        Fun()
+    catch
+        Class:Reason:Stack ->
+            logger:error("access log ~ts: ~p",
+                         [W#w.output, {Class, Reason, Stack}]),
+            W
     end.
 
 %% The lines already waiting, up to ?MAX_BATCH in all, newest first.
@@ -137,16 +169,22 @@ take(Lines, N) ->
         {Lines, N}
     end.
 
-write([], W) ->
+%% N lines. Lines that cannot be written (no open file, a write error)
+%% are reported as dropped.
+write([], _, W) ->
     W;
-write(Data, #w{type = {file, _}, fd = Fd} = W) ->
-    Size = iolist_size(Data),
-    _ = case Fd of
-        none -> ok;
-        _ -> file:write(Fd, Data)
-    end,
-    maybe_rotate(W#w{size = W#w.size + Size});
-write(Data, #w{type = Device} = W) ->
+write(_, N, #w{type = {file, _}, fd = none} = W) ->
+    atomics:add(W#w.counter, ?DROPPED, N),
+    W;
+write(Data, N, #w{type = {file, _}, fd = Fd} = W) ->
+    case file:write(Fd, Data) of
+        ok ->
+            maybe_rotate(W#w{size = W#w.size + iolist_size(Data)});
+        {error, _} ->
+            atomics:add(W#w.counter, ?DROPPED, N),
+            W
+    end;
+write(Data, _, #w{type = Device} = W) ->
     try io:put_chars(Device, Data) catch _:_ -> ok end,
     W.
 
@@ -154,13 +192,15 @@ report_dropped(#w{counter = Counter, output = Output}) ->
     case atomics:exchange(Counter, ?DROPPED, 0) of
         0 -> ok;
         N ->
-            logger:warning("access log ~ts: ~B lines dropped, the writes "
-                           "could not keep up", [Output, N])
+            logger:warning("access log ~ts: ~B lines dropped (too many waiting, "
+                           "or the output cannot be written)", [Output, N])
     end.
 
 %% --- files ------------------------------------------------------------------
 
 open(#w{type = {file, Path}} = W) ->
+    %% the directory too may have been removed
+    _ = filelib:ensure_dir(Path),
     case file:open(Path, [append, raw, binary]) of
         {ok, Fd} ->
             {Inode, Size} = case file:read_file_info(Path, [raw]) of

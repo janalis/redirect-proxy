@@ -259,6 +259,8 @@ pub fn start(cfg: Config) -> Result(Running, String) {
   ffi.on_sighup(fn() { store.reload_async(store_subject) })
   ffi.on_sigterm_drain(cfg.server.shutdown_grace * 1000, fn() {
     store.flush_hits(store_subject)
+    // the lines still waiting in the writers
+    access_log.stop()
   })
 
   Ok(Running(

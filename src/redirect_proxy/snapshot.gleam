@@ -10,7 +10,11 @@ pub fn publish(matcher: Matcher) -> Nil {
   ffi.snapshot_put(key, matcher)
 }
 
-/// The published rule set (an empty one, published, until a first one is).
+/// The published rule set, or an empty one until a first one is (never
+/// published from here: it could replace the first real one).
 pub fn current() -> Matcher {
-  ffi.snapshot_or_init(key, matcher.empty)
+  case ffi.snapshot_get(key) {
+    Ok(matcher) -> matcher
+    Error(Nil) -> matcher.empty()
+  }
 }

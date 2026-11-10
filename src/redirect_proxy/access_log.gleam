@@ -69,8 +69,9 @@ pub fn settings(
   )
 }
 
-/// Installs one handler per distinct output of the enabled listeners and
-/// returns their request-time settings. Replaces any previous handlers.
+/// Starts one writer process per distinct output of the enabled listeners
+/// and returns their request-time settings. Replaces the writers of an
+/// earlier start once the new ones run.
 pub fn start(cfg: AccessLogConfig) -> Result(Loggers, String) {
   let enabled = list.filter(listener.all, config.access_log_enabled(cfg, _))
   let groups =
@@ -99,7 +100,7 @@ pub fn start(cfg: AccessLogConfig) -> Result(Loggers, String) {
   Ok(Loggers(redirect:, admin:, api:))
 }
 
-/// Removes every access log handler.
+/// Writes the lines waiting in the writers and stops them.
 pub fn stop() -> Nil {
   ffi.access_log_stop()
 }
