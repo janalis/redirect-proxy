@@ -1133,24 +1133,25 @@ essential(_) -> false.
 %% here), `Content-Length` (sent once, normalised) and the ones in Drop:
 %% named by its `Connection` header, set or dropped by the handler. Some
 %% servers read `_` in a header name as `-` (CGI variables): `x_real_ip`
-%% is dropped with `x-real-ip`.
+%% is dropped with `x-real-ip`, and `transfer_encoding` or
+%% `content_length` with the framing headers (next to the normalised ones,
+%% they would give such an upstream two framings of one body).
 request_headers([{Name, Value} | Rest], Drop) ->
-    case Name of
-        _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
-        <<"expect">> -> request_headers(Rest, Drop);
-        <<"content-length">> -> request_headers(Rest, Drop);
-        _ ->
-            Dropped = lists:member(Name, Drop) orelse case binary:match(Name, <<"_">>) of
-                nomatch -> false;
-                _ -> lists:member(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
-            end,
-            case Dropped of
-                true -> request_headers(Rest, Drop);
-                false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
-            end
+    Dropped = case binary:match(Name, <<"_">>) of
+        nomatch -> dropped(Name, Drop);
+        _ -> dropped(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
+    end,
+    case Dropped of
+        true -> request_headers(Rest, Drop);
+        false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
     end;
 request_headers([], _) ->
     [].
+
+dropped(Name, _) when ?HOP_BY_HOP(Name) -> true;
+dropped(<<"expect">>, _) -> true;
+dropped(<<"content-length">>, _) -> true;
+dropped(Name, Drop) -> lists:member(Name, Drop).
 
 method_name(get) -> <<"GET">>;
 method_name(head) -> <<"HEAD">>;

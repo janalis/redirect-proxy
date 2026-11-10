@@ -416,6 +416,23 @@ pub fn hop_by_hop_headers_are_not_forwarded_test() {
   assert string.contains(echoed, "\nx-forwarded-for: 192.0.2.1\n")
 }
 
+/// Some servers read `_` in a header name as `-`: the `_` spellings of the
+/// framing and hop-by-hop headers would give them a second framing.
+pub fn underscore_framing_headers_are_not_forwarded_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /echo HTTP/1.1\r\nhost: a\r\nContent_Length: 40\r\nTransfer_Encoding: chunked\r\nKeep_Alive: 1\r\nconnection_: x\r\nT_E: x\r\nX_Other: kept\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\nx_other: kept\n")
+  assert !string.contains(text, "content_length")
+  assert !string.contains(text, "transfer_encoding")
+  assert !string.contains(text, "keep_alive")
+  assert string.contains(text, "\nconnection_: x\n")
+  assert string.contains(text, "\nt_e: x\n")
+}
+
 pub fn the_upstream_date_is_kept_test() {
   let proxy = start()
   let #(text, _) = exchange(proxy, ["GET /date HTTP/1.1\r\nhost: a\r\n\r\n"])
