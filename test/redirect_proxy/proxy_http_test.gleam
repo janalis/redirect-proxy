@@ -290,6 +290,16 @@ pub fn invalid_requests_are_rejected_test() {
     "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100),
     "431",
   )
+  // even when the whole head comes at once
+  rejected(
+    "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100) <> "\r\n\r\n",
+    "431",
+  )
+  // more than 100 header lines
+  rejected(
+    "GET / HTTP/1.1\r\nhost: a\r\n" <> string.repeat("x:\r\n", 100) <> "\r\n",
+    "431",
+  )
 }
 
 pub fn host_authorities_are_parsed_test() {

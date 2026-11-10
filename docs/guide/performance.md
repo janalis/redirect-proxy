@@ -154,7 +154,7 @@ saturated (every connection always has a request in flight).
   head, is closed.
 - A request head (request line and headers) is limited to
   `server.max_path_bytes` + 64 KiB: a longer request line gets 414, longer
-  headers 431.
+  headers 431, as do more than 100 header lines.
 - The bodies of answered requests are never read: the request is
   answered, then its connection is closed. What the client still sends is
   read and discarded for up to 2 s (0.5 s without a byte, 1 MiB at most)
@@ -171,5 +171,8 @@ saturated (every connection always has a request in flight).
   between the parts of the request line, or after `HTTP/1.x`; a header name
   that is not a token or is followed by whitespace; control characters or
   invalid UTF-8 in a header value; a folded header line; a second `Host`;
-  an HTTP/1.1 request without `Host`. Any other
+  an HTTP/1.1 request without `Host`; a `Host` that is not a host name of
+  at most 255 bytes (letters, digits and the other characters of a URI's
+  host: no space, `/`, `@` or non-ASCII byte), an IPv4 address or a
+  bracketed IPv6 one, with an optional port up to 65535. Any other
   HTTP version than 1.0 and 1.1 gets 505.

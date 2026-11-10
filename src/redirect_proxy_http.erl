@@ -70,6 +70,9 @@
      orelse C =:= $' orelse C =:= $( orelse C =:= $) orelse C =:= $*
      orelse C =:= $+ orelse C =:= $, orelse C =:= $; orelse C =:= $=)).
 
+%% header lines in a request head (nginx and Apache allow about as many)
+-define(MAX_HEADERS, 100).
+
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
 %% lingering close (linger_close/1): for at most 2 s, 500 ms without a
@@ -525,6 +528,10 @@ request(<<>>, C) ->
     more(<<>>, C);
 request(Buffer, #conn{max_head = Max} = C) ->
     case parse(Buffer) of
+        {ok, _, _, _, Rest} when byte_size(Buffer) - byte_size(Rest) > Max ->
+            %% a head that came whole, in one packet, is no longer allowed
+            %% than one that came in several
+            reject(431, C);
         {ok, Request, Version, Close, Rest} when C#conn.deadline =:= none ->
             respond(Request, Version, Close, Rest, C);
         {ok, Request, Version, Close, Rest} ->
@@ -634,6 +641,8 @@ version(_, _, _, _, _) ->
 
 headers(Bin, Method, Target, Query, Fragment, Version) ->
     case headers(Bin, [], undefined, false, <<>>) of
+        {ok, Headers, _, _, _, _} when length(Headers) > ?MAX_HEADERS ->
+            {error, 431};
         {ok, Headers, Host, Body, Connection, Rest} ->
             request(Method, Target, Query, Fragment, Version, Headers, Host,
                     Body, Connection, Rest);
