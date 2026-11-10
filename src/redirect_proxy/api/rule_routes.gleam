@@ -415,15 +415,22 @@ fn valid_client_id(id: String) -> Bool {
 /// The version `If-Match` requires of rule `id`, if the header is set. With a
 /// list of tags, any of them may be the current version.
 fn if_match(req: Request, ctx: Context, id: String) -> Option(String) {
+  // no lookup of the current version without the header
+  use <- bool.guard(request.get_header(req, "if-match") == Error(Nil), None)
+  let current = case store.get(ctx.store, id) {
+    Ok(r) -> rule.version(r)
+    Error(Nil) -> ""
+  }
+  if_match_of(req, current)
+}
+
+/// The version `If-Match` requires when the rule is at version `current`
+/// ("*": any), if the header is set.
+fn if_match_of(req: Request, current: String) -> Option(String) {
   case request.get_header(req, "if-match") {
     Error(Nil) -> None
-    Ok(value) -> {
-      let current = case store.get(ctx.store, id) {
-        Ok(r) -> rule.version(r)
-        Error(Nil) -> ""
-      }
+    Ok(value) ->
       Some(problem.expected_version(problem.parse_if_match(value), current))
-    }
   }
 }
 
@@ -478,13 +485,9 @@ pub fn patch_rule(
       // (also for `If-Match: *`, or without If-Match), else a concurrent
       // change between our read and the update would be undone.
       let current = rule.version(existing)
-      let expected = case request.get_header(req, "if-match") {
-        Error(Nil) -> current
-        Ok(value) ->
-          case problem.parse_if_match(value) {
-            problem.AnyVersion -> current
-            condition -> problem.expected_version(condition, current)
-          }
+      let expected = case if_match_of(req, current) {
+        None | Some("*") -> current
+        Some(version) -> version
       }
       store.update_versioned(
         ctx.store,
