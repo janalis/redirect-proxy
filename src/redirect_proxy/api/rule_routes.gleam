@@ -367,12 +367,8 @@ pub fn create_rule(
       // an id chosen by the client makes a retry safe: the second request
       // gets 409 instead of creating a second rule
       let id = string.trim(input.id)
-      case valid_client_id(id) {
-        False ->
-          problem.validation([
-            "id: up to 128 letters, digits, '.', '_', '~' or '-', and not "
-            <> string.join(rule.reserved_ids, ", "),
-          ])
+      case id == "" || rule.is_valid_id(id) {
+        False -> problem.validation(["id: " <> rule.valid_id_hint()])
         True ->
           case
             store.create(ctx.store, rule.Rule(..input, id:), principal.actor)
@@ -389,27 +385,6 @@ pub fn create_rule(
     }
   }
   |> params.add_deprecation_headers(deprecated)
-}
-
-/// An id given at creation ("" lets the server choose one): it goes in
-/// URLs, so only unreserved URL characters.
-fn valid_client_id(id: String) -> Bool {
-  id == ""
-  || {
-    !rule.is_reserved_id(id)
-    && string.byte_size(id) <= 128
-    && string.to_utf_codepoints(id)
-    |> list.all(fn(c) {
-      let c = string.utf_codepoint_to_int(c)
-      { c >= 0x30 && c <= 0x39 }
-      || { c >= 0x41 && c <= 0x5A }
-      || { c >= 0x61 && c <= 0x7A }
-      || c == 0x2E
-      || c == 0x5F
-      || c == 0x7E
-      || c == 0x2D
-    })
-  }
 }
 
 /// The version `If-Match` requires of rule `id`, if the header is set. With a
@@ -475,6 +450,7 @@ pub fn patch_rule(
   id: String,
 ) -> Response {
   use <- store_available
+  use <- require_precondition(req, ctx)
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case store.get(ctx.store, id), json.parse(body, patch_decoder()) {

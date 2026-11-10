@@ -480,6 +480,31 @@ pub fn is_reserved_id(id: String) -> Bool {
   list.contains(reserved_ids, id)
 }
 
+/// What `is_valid_id` accepts.
+pub fn valid_id_hint() -> String {
+  "up to 128 letters, digits, '.', '_', '~' or '-', and not "
+  <> string.join(reserved_ids, ", ")
+}
+
+/// Whether a rule may take `id` when created or imported: it goes in URLs,
+/// so only unreserved URL characters (RFC 3986), and no reserved id.
+pub fn is_valid_id(id: String) -> Bool {
+  id != ""
+  && !is_reserved_id(id)
+  && string.byte_size(id) <= 128
+  && string.to_utf_codepoints(id)
+  |> list.all(fn(c) {
+    let c = string.utf_codepoint_to_int(c)
+    { c >= 0x30 && c <= 0x39 }
+    || { c >= 0x41 && c <= 0x5A }
+    || { c >= 0x61 && c <= 0x7A }
+    || c == 0x2E
+    || c == 0x5F
+    || c == 0x7E
+    || c == 0x2D
+  })
+}
+
 // --- query conditions -------------------------------------------------------
 
 /// The parameters of `rule.query`, decoded and sorted (for comparisons).

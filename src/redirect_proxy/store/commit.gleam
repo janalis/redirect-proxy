@@ -10,7 +10,9 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store/checker
 import redirect_proxy/store/file as store_file
-import redirect_proxy/store/rules.{check_conflicts, check_lint, check_loop}
+import redirect_proxy/store/rules.{
+  check_changed, check_conflicts, check_lint, check_loop,
+}
 
 /// Where a store writes and how it follows loops.
 pub type Target {
@@ -76,18 +78,26 @@ pub fn one(
 }
 
 /// Commits a change of a set of rules (bulk, import, delete), checking
-/// conflicts when the change can add some, and logging the loops and rules
-/// that can never apply.
+/// conflicts when the change can add some, and that none of the `changed`
+/// rules can never apply or loops. Problems of the other rules (left by a
+/// file that loaded with them) are logged.
 pub fn many(
   target: Target,
   rules: List(Rule),
+  changed changed: List(Rule),
   check_conflicts check: Bool,
 ) -> Result(String, List(String)) {
   use Nil <- result.try(case check {
     True -> check_conflicts(rules)
     False -> Ok(Nil)
   })
-  use fingerprint <- result.try(write(target, rules, matcher.build(rules)))
+  let built = matcher.build(rules)
+  use Nil <- result.try(check_changed(
+    built,
+    changed,
+    target.ignore_trailing_slash,
+  ))
+  use fingerprint <- result.try(write(target, rules, built))
   checker.request(target.files.rules_path, checker.Problems)
   Ok(fingerprint)
 }

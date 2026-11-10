@@ -814,33 +814,50 @@ pub fn writes_can_require_if_match_test() {
   assert refused.status == 428
   assert field(refused.body, ["code"], decode.string) == "precondition_required"
   assert put([#("if-match", etag)]).status == 200
-  // PATCH guards itself: no header needed
-  let patch =
+  // PATCH too
+  let patch = fn(headers) {
     support.send(
       Patch,
       env.api <> "/api/redirects/" <> id,
       [
         #("authorization", "Bearer " <> token),
         #("content-type", "application/merge-patch+json"),
+        ..headers
       ],
       "{\"target\":\"/p\"}",
     )
-  assert patch.status == 200
+  }
+  assert patch([]).status == 428
+  let current =
+    header(api(env, Get, "/api/redirects/" <> id, token, ""), "etag")
+  assert patch([#("if-match", current)]).status == 200
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 428
 }
 
-/// Imported ids can hold any character: URLs carry them percent-encoded.
-/// Ids that name an operation (`export`, `bulk`...) are refused.
+/// Imported ids follow the rules of created ones: unreserved URL characters
+/// only, and not an id that names an operation (`export`, `bulk`...).
 pub fn imported_ids_are_reachable_by_url_test() {
   let env = support.boot(config.default())
   let token = access_token(env, [scope.Read, scope.Write])
-  let body = "[{\"id\":\"rule 1/é\",\"source\":\"/s\",\"target\":\"/t\"}]"
+  let body = "[{\"id\":\"rule-1.a_b~\",\"source\":\"/s\",\"target\":\"/t\"}]"
   assert api(env, Post, "/api/redirects/import", token, body).status == 200
-  let path = "/api/redirects/" <> uri.percent_encode("rule 1/é")
+  let path = "/api/redirects/rule-1.a_b~"
   let resp = api(env, Get, path, token, "")
   assert resp.status == 200
-  assert field(resp.body, ["id"], decode.string) == "rule 1/é"
   assert api(env, Delete, path, token, "").status == 204
+  let body = "[{\"id\":\"rule 1/é\",\"source\":\"/s\",\"target\":\"/t\"}]"
+  let refused = api(env, Post, "/api/redirects/import", token, body)
+  assert refused.status == 422
+  assert string.contains(refused.body, "up to 128 letters")
+  let csv = "id,source,target\na/b,/s,/t\n"
+  let refused =
+    support.send(
+      Post,
+      env.api <> "/api/redirects/import",
+      [#("authorization", "Bearer " <> token), #("content-type", "text/csv")],
+      csv,
+    )
+  assert refused.status == 422
   let reserved = "[{\"id\":\"export\",\"source\":\"/s\",\"target\":\"/t\"}]"
   let refused = api(env, Post, "/api/redirects/import", token, reserved)
   assert refused.status == 422
