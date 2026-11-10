@@ -172,7 +172,7 @@ poke(Pid) ->
 %% connections at a time. Returns its port.
 start_capped(Handler, Cap) ->
     {ok, {started, _, Port}} = redirect_proxy_http:start(
-        <<"127.0.0.1">>, 0, Handler, {options, 300, 1024, false, none, Cap}),
+        <<"127.0.0.1">>, 0, Handler, {options, 300, 1024, false, none, 0, {[], []}, Cap}),
     Port.
 
 %% Whether the process is hibernated, without waking it up.

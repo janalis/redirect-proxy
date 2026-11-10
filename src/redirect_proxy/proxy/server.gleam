@@ -30,6 +30,7 @@ pub fn http_options(
   config: ServerConfig,
   access: Option(access_log.Settings),
   trusted_proxies: List(String),
+  identity_proxies: List(String),
 ) -> proxy_http.Options {
   let upstream = case config.parse_upstream(config.upstream) {
     Ok(url) if config.upstream != "" ->
@@ -53,6 +54,16 @@ pub fn http_options(
       || option.is_some(upstream)
       || { config.https_redirect && trusted_proxies != [] },
     upstream:,
+    max_connections_per_ip: config.max_connections_per_ip,
+    // local processes (a TLS proxy on the same host) and trusted proxies
+    // (an authenticating proxy too) hold the connections of many clients
+    unlimited_peers: cidr.compile(
+      list.flatten([
+        ["127.0.0.0/8", "::1/128"],
+        trusted_proxies,
+        identity_proxies,
+      ]),
+    ),
   )
 }
 

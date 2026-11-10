@@ -11,6 +11,7 @@ import gleam/http/response.{Response}
 import gleam/list
 import gleam/option
 import gleam/string
+import redirect_proxy/cidr
 import redirect_proxy/config
 import redirect_proxy/proxy/http as proxy_http
 import redirect_proxy/proxy/server
@@ -126,6 +127,8 @@ fn start_idle(
         max_head_bytes: 4096,
         peer: True,
         upstream: option.Some(up),
+        max_connections_per_ip: 0,
+        unlimited_peers: cidr.compile([]),
       ),
     )
   Proxy(port: started.data, upstream: counter, done:)
@@ -894,7 +897,7 @@ fn start_server(trusted: List(String), identity: List(String)) -> Int {
         ["X-Forwarded-User", "x-auth-role", ""],
         identity,
       ),
-      server.http_options(cfg, option.None, trusted),
+      server.http_options(cfg, option.None, trusted, []),
     )
   started.data
 }
@@ -954,4 +957,21 @@ pub fn identity_headers_from_auth_proxies_are_kept_test() {
   assert string.contains(text, "\nx_auth_role: admin\n")
   assert !string.contains(text, "6.6.6.")
   assert !string.contains(text, "https")
+}
+
+/// Loopback peers (a TLS proxy on the host) and trusted proxies carry many
+/// clients' connections: the per-address limit leaves them alone.
+pub fn proxies_are_not_limited_per_address_test() {
+  let d = config.default()
+  let opts =
+    server.http_options(d.server, option.None, ["10.0.0.0/8"], [
+      "192.0.2.7/32",
+    ])
+  assert opts.max_connections_per_ip == 256
+  assert cidr.contains(opts.unlimited_peers, "127.0.0.1")
+  assert cidr.contains(opts.unlimited_peers, "::1")
+  assert cidr.contains(opts.unlimited_peers, "10.1.2.3")
+  // an authenticating proxy (auth.header.trusted_proxies)
+  assert cidr.contains(opts.unlimited_peers, "192.0.2.7")
+  assert !cidr.contains(opts.unlimited_peers, "192.0.2.1")
 }

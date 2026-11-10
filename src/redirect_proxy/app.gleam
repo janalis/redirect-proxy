@@ -138,6 +138,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         cfg.server,
         access.redirect,
         cfg.access_log.trusted_proxies,
+        cfg.header_auth.trusted_proxies,
       ),
       fn(port) {
         log.info(

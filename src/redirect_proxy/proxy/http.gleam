@@ -11,6 +11,7 @@ import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import mist
+import redirect_proxy/cidr.{type Cidrs}
 
 /// The body of a request: the client address, when it was asked for
 /// (`Options.peer`).
@@ -85,6 +86,10 @@ pub type Options {
     /// forwarded requests need it).
     peer: Bool,
     upstream: Option(Upstream),
+    /// Open connections per client address (an IPv6 /64); 0: no limit.
+    max_connections_per_ip: Int,
+    /// Peers never limited (the trusted proxies).
+    unlimited_peers: Cidrs,
   )
 }
 

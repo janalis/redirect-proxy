@@ -217,6 +217,9 @@ def redirect_proxy(d):
             "RP_ACCESS_LOG_ENABLED": "false",
             "RP_STORAGE_BACKUPS": "0",
             "RP_LOG_LEVEL": "warning",
+            # the load generator is one client address: any CONCURRENCY
+            # (ignored by versions without the limit)
+            "RP_SERVER_MAX_CONNECTIONS_PER_IP": "0",
             **({"ERL_FLAGS": RP_ERL_FLAGS} if RP_ERL_FLAGS else {}),
             # before a variant's environment, which wins
             **(SOAK_ENV if SOAK else {}),

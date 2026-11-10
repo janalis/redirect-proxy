@@ -11,7 +11,7 @@
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2,
+    ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2, cidrs_contain_ip/2, client_group/1, client_group_text/1,
     cidrs_contain_peer_result/2, forwarded_hop/2, first_item/1,
     is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
@@ -598,13 +598,20 @@ int_in_cidrs(Int, [{Prefix, Shift} | Rest]) ->
 %% IPv6 addresses count as IPv4. Anything else is returned unchanged.
 throttle_address(IpBin) ->
     case parse_ip(IpBin) of
-        {ok, {0, 0, 0, 0, 0, 16#ffff, A, B}} ->
-            list_to_binary(inet:ntoa({A bsr 8, A band 255, B bsr 8, B band 255}));
-        {ok, {A, B, C, D, _, _, _, _}} ->
-            <<(list_to_binary(inet:ntoa({A, B, C, D, 0, 0, 0, 0})))/binary, "/64">>;
-        {ok, Ip} when tuple_size(Ip) =:= 4 -> list_to_binary(inet:ntoa(Ip));
+        {ok, Ip} -> client_group_text(client_group(Ip));
         _ -> IpBin
     end.
+
+%% The group an address counts in, for throttling and connection limits:
+%% {v4, Ip} for IPv4 (and IPv4-mapped IPv6) addresses, {v6, Prefix} (the
+%% /64, the rest zeroed) for IPv6 ones.
+client_group({0, 0, 0, 0, 0, 16#ffff, A, B}) ->
+    {v4, {A bsr 8, A band 255, B bsr 8, B band 255}};
+client_group({A, B, C, D, _, _, _, _}) -> {v6, {A, B, C, D, 0, 0, 0, 0}};
+client_group(Ip) -> {v4, Ip}.
+
+client_group_text({v4, Ip}) -> list_to_binary(inet:ntoa(Ip));
+client_group_text({v6, Prefix}) -> <<(list_to_binary(inet:ntoa(Prefix)))/binary, "/64">>.
 
 is_ip_address(Bin) ->
     case parse_ip(Bin) of

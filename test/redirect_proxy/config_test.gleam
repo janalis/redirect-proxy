@@ -120,6 +120,10 @@ pub fn validation_errors_test() {
     ),
     config.Config(
       ..d,
+      server: config.ServerConfig(..d.server, max_connections_per_ip: -1),
+    ),
+    config.Config(
+      ..d,
       storage: config.StorageConfig(..d.storage, watch_interval: -1),
     ),
   ]
@@ -411,6 +415,7 @@ pub fn operability_settings_test() {
 [server]
 health_path = \"/_health\"
 max_path_bytes = 4096
+max_connections_per_ip = 64
 
 [storage]
 watch_interval = 5
@@ -419,17 +424,20 @@ watch_interval = 5
   let assert Ok(cfg) = config_file.from_toml(t)
   assert cfg.server.health_path == "/_health"
   assert cfg.server.max_path_bytes == 4096
+  assert cfg.server.max_connections_per_ip == 64
   assert cfg.storage.watch_interval == 5
   let assert Ok(_) = config_validate.validate(cfg)
 
   let env = [
     #("RP_SERVER_HEALTH_PATH", "/lb"),
     #("RP_SERVER_MAX_PATH_BYTES", "2048"),
+    #("RP_SERVER_MAX_CONNECTIONS_PER_IP", "0"),
     #("RP_STORAGE_WATCH_INTERVAL", "2"),
   ]
   let cfg = config_env.apply_env(cfg, fn(name) { list.key_find(env, name) })
   assert cfg.server.health_path == "/lb"
   assert cfg.server.max_path_bytes == 2048
+  assert cfg.server.max_connections_per_ip == 0
   assert cfg.storage.watch_interval == 2
 }
 
