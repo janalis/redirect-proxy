@@ -200,8 +200,17 @@ pub fn target_guard_shapes_test() {
     == Ok("https://example.com//evil.test")
   assert template.guard_location(literal, "https://example.com/\tx", vars)
     == Ok("https://example.com/x")
-  // the host is entirely a capture: nothing can match it
-  assert template.target_guard("https://$1/") == template.FixedHost("")
+  // the host is entirely a capture: it never redirects, and lint says so
+  assert template.target_guard("https://$1/") == template.Unsafe
+  assert template.target_guard("//${1}/x") == template.Unsafe
+  assert rule.lint(
+      Rule(..base(), kind: rule.Prefix, source: "/a/", target: "https://$1/"),
+    )
+    != []
+}
+
+pub fn negative_capture_is_literal_test() {
+  assert template.expand("/x${-1}", ["/a/b", "a"]) == "/x${-1}"
 }
 
 pub fn guard_blocks_open_redirects_test() {

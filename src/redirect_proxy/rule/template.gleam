@@ -53,7 +53,8 @@ fn do_expand(
           case string.split_once(tail, "}") {
             Ok(#(name, tail2)) ->
               case int.parse(name), list.key_find(named, name) {
-                Ok(n), _ -> do_expand(tail2, acc <> capture(captures, n))
+                Ok(n), _ if n >= 0 ->
+                  do_expand(tail2, acc <> capture(captures, n))
                 _, Ok(value) -> do_expand(tail2, acc <> value)
                 _, _ -> do_expand(tail, acc <> "${")
               }
@@ -99,7 +100,7 @@ fn compile_parts(rest: String, parts: List(Part)) -> List(Part) {
           case string.split_once(tail, "}") {
             Ok(#(name, tail2)) ->
               case int.parse(name), name {
-                Ok(n), _ -> compile_parts(tail2, [Capture(n), ..parts])
+                Ok(n), _ if n >= 0 -> compile_parts(tail2, [Capture(n), ..parts])
                 _, "host" -> compile_parts(tail2, [RequestHostPart, ..parts])
                 _, "sub" -> compile_parts(tail2, [SubPart, ..parts])
                 _, _ -> compile_parts(tail, [Literal("${"), ..parts])
@@ -210,7 +211,9 @@ pub fn target_guard(template: String) -> TargetGuard {
               case expand("$" <> from_placeholder, []) {
                 // only placeholders after the literal (`example.com$1`): they
                 // must not extend the host
-                "" -> FixedHost(literal)
+                "" if literal != "" -> FixedHost(literal)
+                // `https://$1/`: the host is only placeholders
+                "" -> Unsafe
                 // `$1.example.com`: the host starts with the placeholders
                 _ if literal == "" -> subdomain_guard(host)
                 _ -> Unsafe
