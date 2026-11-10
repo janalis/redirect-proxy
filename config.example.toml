@@ -45,8 +45,10 @@ https_redirect = false
 # path. Empty: off. Cannot be combined with fallback_url.
 upstream = ""
 # Seconds to wait for the upstream's response head, and the idle timeout
-# of every read and write while a request is forwarded (and of upgraded
-# connections, such as WebSockets). The connect timeout is 5 seconds.
+# of every write to and read from the upstream while a request is
+# forwarded (and of upgraded connections, such as WebSockets). The connect
+# timeout is 5 seconds. A client sending a request body may pause 10
+# seconds between packets, then gets 408.
 upstream_timeout = 60
 # For an https:// upstream: check its certificate (system CAs, host name).
 # false for an internal upstream with a self-signed certificate.
