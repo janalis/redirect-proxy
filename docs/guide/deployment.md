@@ -75,8 +75,9 @@ answering 404 (`server.fallback_url` cannot be set as well).
 - The request body is streamed to the upstream before its response is
   read: an upstream that answers early (a 413, say) is relayed once the
   body is sent, or when it stops reading. Each read of the client's body
-  may wait `server.upstream_timeout` (an idle timeout, like nginx's
+  may wait 10 seconds (an idle timeout, like nginx's
   `client_body_timeout`, not a limit on the whole upload); then 408.
+  `server.max_request_body_bytes` limits the body's size (413).
 - WebSockets and other upgrades (`Connection: upgrade`) are tunnelled once
   the upstream answers 101 with the protocol asked for (a 101 to another
   protocol gets 502), until either side closes or no byte flows for

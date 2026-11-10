@@ -266,6 +266,22 @@ pub fn invalid_requests_are_rejected_test() {
   // no control characters (or folded lines) in header values
   rejected("GET / HTTP/1.1\r\nhost: a\r\nx: a\r\n b\r\n\r\n", "400")
   rejected("GET / HTTP/1.1\r\nhost: a\u{1}\r\n\r\n", "400")
+  // a Host is a host name, an IPv4 or bracketed IPv6 address, and a port
+  rejected("GET / HTTP/1.1\r\nhost: a b\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: a/b\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: u@a\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: café.test\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: a:b\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: a:65536\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: a:80:81\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: [::1\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: [x]\r\n\r\n", "400")
+  rejected("GET / HTTP/1.1\r\nhost: [::1]x\r\n\r\n", "400")
+  // longer than any DNS name
+  rejected(
+    "GET / HTTP/1.1\r\nhost: " <> string.repeat("a.", 128) <> "\r\n\r\n",
+    "400",
+  )
   rejected("HTTP/1.1 200 OK\r\n\r\n", "400")
   rejected("GET / HTTP/2.0\r\nhost: a\r\n\r\n", "505")
   // longer than max_head_bytes (1024)
@@ -274,6 +290,38 @@ pub fn invalid_requests_are_rejected_test() {
     "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100),
     "431",
   )
+  // even when the whole head comes at once
+  rejected(
+    "GET / HTTP/1.1\r\nhost: a\r\nx: " <> string.repeat("a", 1100) <> "\r\n\r\n",
+    "431",
+  )
+  // more than 100 header lines
+  rejected(
+    "GET / HTTP/1.1\r\nhost: a\r\n" <> string.repeat("x:\r\n", 100) <> "\r\n",
+    "431",
+  )
+}
+
+pub fn host_authorities_are_parsed_test() {
+  let host = fn(value) {
+    let #(text, _) =
+      exchange([
+        "GET / HTTP/1.1\r\nhost: " <> value <> "\r\nconnection: close\r\n\r\n",
+      ])
+    assert string.starts_with(text, "HTTP/1.1 200 ")
+    let assert Ok(#(_, rest)) = string.split_once(text, "\r\nx-host: ")
+    let assert Ok(#(name, rest)) = string.split_once(rest, "\r\n")
+    let assert Ok(#(_, rest)) = string.split_once(rest, "x-port: ")
+    let assert Ok(#(port, _)) = string.split_once(rest, "\r\n")
+    #(name, port)
+  }
+  assert host("[::1]:8080") == #("[::1]", "8080")
+  assert host("[2001:db8::7]") == #("[2001:db8::7]", "80")
+  assert host("192.0.2.1:81") == #("192.0.2.1", "81")
+  assert host("a.test:") == #("a.test", "80")
+  assert host("a_b.test") == #("a_b.test", "80")
+  let longest = string.repeat("a", 255)
+  assert host(longest <> ":1") == #(longest, "1")
 }
 
 /// Characters browsers send unescaped in queries, outside RFC 3986.

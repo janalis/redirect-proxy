@@ -11,12 +11,13 @@ import gleam/uri
 import redirect_proxy/access_log_format
 import redirect_proxy/config.{
   type AccessLogConfig, type Config, access_log_format, access_log_output,
-  api_dedicated, api_on_admin, api_port, parse_upstream,
+  api_dedicated, api_listen, api_on_admin, api_port, parse_upstream,
 } as _
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
 import redirect_proxy/ffi
 import redirect_proxy/listener
+import redirect_proxy/metrics_endpoint
 import redirect_proxy/role
 import tom.{type Toml}
 
@@ -27,6 +28,16 @@ fn is_http_url(url: String) -> Bool {
 }
 
 /// An `http://` URL whose host is not the loopback interface.
+/// A URL whose host is not this machine's (`localhost` or a loopback
+/// address): the admin is reached through something else.
+fn remote_url(url: String) -> Bool {
+  case uri.parse(url) {
+    Ok(uri.Uri(host: Some(host), ..)) ->
+      string.lowercase(host) != "localhost" && !ffi.is_loopback_address(host)
+    _ -> False
+  }
+}
+
 fn plain_http_remote(url: String) -> Bool {
   case uri.parse(url) {
     Ok(uri.Uri(scheme: Some(scheme), host: Some(host), ..)) ->
@@ -46,7 +57,7 @@ pub fn warnings(toml: Dict(String, Toml), config: Config) -> List(String) {
     True -> [
       "the admin listens on "
       <> config.admin.listen
-      <> ": keep it behind a firewall or a reverse proxy (it also serves /metrics without authentication)",
+      <> ": keep it behind a firewall or a reverse proxy",
     ]
     False -> []
   }
@@ -58,14 +69,9 @@ pub fn runtime_warnings(config: Config) -> List(String) {
   let oidc = config.oidc
   let admin = config.admin
   list.flatten([
-    case
-      oidc.enabled
-      && oidc.allowed_emails == []
-      && oidc.allowed_domains == []
-      && oidc.allowed_groups == []
-    {
+    case open_oidc(config) {
       True -> [
-        "auth.oidc has no allowed_emails, allowed_domains or allowed_groups: every account of the provider can sign in to the admin",
+        "auth.oidc has no allowed_emails, allowed_domains or allowed_groups and allow_any_account is set: every account of the provider can sign in to the admin",
       ]
       False -> []
     },
@@ -139,6 +145,22 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       ]
       False -> []
     },
+    case
+      admin.enabled
+      && remote_url(admin.public_url)
+      && config.access_log.trusted_proxies == []
+    {
+      True -> [
+        "admin.public_url is not on this machine but access_log.trusted_proxies is empty: behind a reverse proxy every client has the proxy's address, so one client's failed sign-ins throttle sign-ins, API tokens and API calls for all; list the proxy's addresses in trusted_proxies",
+      ]
+      False -> []
+    },
+    case metrics_hidden(config) {
+      True -> [
+        "/metrics is not served: its listener is not on the loopback interface and admin.metrics_token is empty; set a token (at least 16 characters) for Prometheus to send",
+      ]
+      False -> []
+    },
     case config.server.shutdown_grace >= 10 {
       True -> [
         "server.shutdown_grace is "
@@ -148,6 +170,31 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       False -> []
     },
   ])
+}
+
+/// `/metrics` is turned off for want of a token: its listener (the admin's,
+/// or the API's without the admin) is not on the loopback interface.
+fn metrics_hidden(config: Config) -> Bool {
+  let listen = case config.admin.enabled, config.api.enabled {
+    True, _ -> Ok(config.admin.listen)
+    False, True -> Ok(api_listen(config))
+    False, False -> Error(Nil)
+  }
+  case listen {
+    Ok(listen) ->
+      config.admin.metrics_token == ""
+      && !metrics_endpoint.served_without_token(listen)
+    Error(Nil) -> False
+  }
+}
+
+/// OIDC sign-in with no list of who may sign in.
+fn open_oidc(config: Config) -> Bool {
+  let oidc = config.oidc
+  oidc.enabled
+  && oidc.allowed_emails == []
+  && oidc.allowed_domains == []
+  && oidc.allowed_groups == []
 }
 
 fn is_loopback(address: String) -> Bool {
@@ -235,6 +282,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.server.max_path_bytes < 256,
     Error("server.max_path_bytes must be at least 256"),
+  )
+  use <- bool.guard(
+    config.server.max_request_body_bytes < 0,
+    Error("server.max_request_body_bytes must be 0 (no limit) or more"),
   )
   // in seconds, turned into an Erlang timer: past about 49 days it would
   // crash the store at startup
@@ -324,6 +375,12 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.oidc.enabled && !is_http_url(config.oidc.issuer),
     Error("auth.oidc.issuer must be an http:// or https:// URL"),
+  )
+  use <- bool.guard(
+    open_oidc(config) && !config.oidc.allow_any_account,
+    Error(
+      "auth.oidc needs allowed_emails, allowed_domains or allowed_groups (or allow_any_account = true): otherwise every account of the provider can sign in to the admin",
+    ),
   )
   use <- bool.guard(
     config.header_auth.enabled

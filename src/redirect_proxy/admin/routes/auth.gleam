@@ -71,14 +71,12 @@ pub fn require_session(
   let proxy_role = header.role(ctx.config.header_auth, req)
   case from_cookie, proxy_user {
     // Header auth: the proxy is authoritative, the session must follow it
-    // (the user and their role).
+    // (the user and their role). The old session is not ended: other
+    // browsers of its user and role share it, and each request checks it.
     Ok(s), Ok(user)
       if s.method == session.Header
       && { s.username != proxy_actor || s.role != proxy_role }
-    -> {
-      session.destroy(s.token)
-      start_header_session(req, ctx, user, next)
-    }
+    -> start_header_session(req, ctx, user, next)
     // ... and ends when the proxy no longer vouches for the user (signed out
     // there, or the cookie replayed past the proxy)
     Ok(s), Error(Nil) if s.method == session.Header -> {
@@ -527,7 +525,7 @@ fn has_control_character(value: String) -> Bool {
 pub fn logout(req: Request, ctx: Context, s: Session) -> Response {
   use _form <- require_csrf_form(req, s)
   session.destroy(s.token)
-  log.info("logout: " <> s.username)
+  log.info("logout: " <> log_value(s.username))
   audit_auth(ctx, s.username, "auth.logout", session.method_to_string(s.method))
   wisp.redirect(after_logout(ctx, s))
   |> wisp.set_cookie(req, session_cookie_name(req, ctx), "", wisp.Signed, 0)

@@ -13,6 +13,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/ratelimit
+import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/audit_routes
 import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation
@@ -24,6 +25,7 @@ import redirect_proxy/api/rule_routes
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
+import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/health
 import redirect_proxy/log
@@ -41,12 +43,23 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
     ["readyz"] -> health.ready()
     // the admin serves the metrics; without it, they would be nowhere
     ["metrics"] if !ctx.config.admin.enabled ->
-      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
+      metrics_endpoint.respond_on(
+        req,
+        ctx.config.admin.metrics_token,
+        config.api_listen(ctx.config),
+      )
     _ -> handle(req, ctx)
   }
   |> wisp.set_header("x-content-type-options", "nosniff")
   |> wisp.set_header("x-frame-options", "DENY")
   |> wisp.set_header("referrer-policy", "no-referrer")
+  |> fn(resp) {
+    // as the admin: clients must not fall back to HTTP once they used HTTPS
+    case admin_web.https_url(config.api_public_url(ctx.config)) {
+      True -> wisp.set_header(resp, "strict-transport-security", admin_web.hsts)
+      False -> resp
+    }
+  }
 }
 
 const max_token_request_bytes = 65_536

@@ -303,20 +303,38 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
     "" -> {
       let path = config.secret_path(cfg)
       case simplifile.read(path) {
-        Ok(secret) if secret != "" -> Ok(string.trim(secret))
-        _ -> {
-          let secret = id.token(48)
-          use Nil <- result.try(
-            ffi.atomic_write_private(path, secret)
-            |> result.map_error(fn(e) { "cannot write " <> path <> ": " <> e }),
-          )
-          log.info("generated a new cookie signing secret in " <> path)
-          Ok(secret)
-        }
+        Ok(secret) ->
+          case string.trim(secret) {
+            "" -> new_secret_key_base(path)
+            secret ->
+              case string.length(secret) < 64 {
+                True ->
+                  Error(
+                    path
+                    <> " holds a cookie signing secret shorter than 64 characters: delete it to generate a new one",
+                  )
+                False -> Ok(secret)
+              }
+          }
+        Error(simplifile.Enoent) -> new_secret_key_base(path)
+        // anything else (permissions, a directory): replacing the file
+        // would end every session and lose the secret
+        Error(e) ->
+          Error("cannot read " <> path <> ": " <> simplifile.describe_error(e))
       }
     }
     secret -> Ok(secret)
   }
+}
+
+fn new_secret_key_base(path: String) -> Result(String, String) {
+  let secret = id.token(48)
+  use Nil <- result.try(
+    ffi.atomic_write_private(path, secret)
+    |> result.map_error(fn(e) { "cannot write " <> path <> ": " <> e }),
+  )
+  log.info("generated a new cookie signing secret in " <> path)
+  Ok(secret)
 }
 
 /// Creates the first administrator from RP_BOOTSTRAP_ADMIN_USERNAME and

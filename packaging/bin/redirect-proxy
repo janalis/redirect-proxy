@@ -31,6 +31,12 @@ else
   erl=erl
 fi
 
+# Files it creates (redirects.json, backups, logs, the audit log) are not
+# readable by others, whatever the umask it was started with (the Docker
+# image has no other way to set it; systemd's unit sets 0027 already). A
+# stricter umask is kept.
+umask "$(printf '%04o' $(( $(umask) | 7 )))"
+
 # Plain log lines when not attached to a terminal (journald, docker logs...)
 if [ ! -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   NO_COLOR=1

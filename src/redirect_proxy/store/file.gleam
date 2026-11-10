@@ -125,20 +125,9 @@ fn backup(files: Files) -> Result(Nil, String) {
         |> result.map_error(simplifile.describe_error),
       )
       let name = backup_name(files.backups_dir, ffi.now_millis())
-      use Nil <- result.try(
-        simplifile.copy_file(files.rules_path, name)
-        |> result.map_error(simplifile.describe_error),
-      )
-      // a copy gets the umask default: give it the permissions of the file
-      // it copies (e.g. not readable by others)
-      let _ =
-        simplifile.file_info(files.rules_path)
-        |> result.map(fn(info) {
-          simplifile.set_permissions_octal(
-            name,
-            simplifile.file_info_permissions_octal(info),
-          )
-        })
+      // with the permissions of the file it copies (e.g. not readable by
+      // others), from its creation
+      use Nil <- result.try(ffi.copy_file_as(files.rules_path, name))
       prune_backups(files)
       Ok(Nil)
     }

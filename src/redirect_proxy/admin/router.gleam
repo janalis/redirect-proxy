@@ -41,7 +41,7 @@ import wisp.{type Request, type Response}
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.AdminRequests)
   use <- strict_transport_security(ctx)
-  use <- security_headers
+  use <- security_headers(ctx)
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
   use <- wisp.serve_static(req, under: "/static", from: ctx.static_dir)
@@ -56,7 +56,11 @@ pub fn handle(req: Request, ctx: Context) -> Response {
     Get, ["healthz"] -> health.live()
     Get, ["readyz"] -> health.ready()
     Get, ["metrics"] ->
-      metrics_endpoint.respond(req, ctx.config.admin.metrics_token)
+      metrics_endpoint.respond_on(
+        req,
+        ctx.config.admin.metrics_token,
+        ctx.config.admin.listen,
+      )
     Get, ["login"] -> login_page(req, ctx)
     Post, ["login"] -> login(req, ctx)
     Get, ["auth", "oidc", "start"] -> oidc_start(req, ctx)

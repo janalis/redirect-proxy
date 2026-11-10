@@ -107,3 +107,19 @@ pub fn api_port_rules_test() {
       config.ApiConfig(..d.api, listen: "0.0.0.0", port: 8082),
     ))
 }
+
+/// Served over HTTPS (its public URL says so), the API on its own port
+/// asks clients not to fall back to HTTP, as the admin does.
+pub fn api_on_its_own_port_over_https_sends_hsts_test() {
+  let d = config.default()
+  let api_config = fn(public_url) {
+    config.ApiConfig(..d.api, port: support.free_port(), public_url:)
+  }
+  let env =
+    support.boot(config.Config(..d, api: api_config("https://api.test")))
+  let resp = support.send(Get, env.api <> "/healthz", [], "")
+  assert header(resp, "strict-transport-security") == "max-age=31536000"
+  let env = support.boot(config.Config(..d, api: api_config("")))
+  let resp = support.send(Get, env.api <> "/healthz", [], "")
+  assert header(resp, "strict-transport-security") == ""
+}

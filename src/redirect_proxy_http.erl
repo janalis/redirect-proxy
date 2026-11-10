@@ -60,6 +60,19 @@
      orelse C =:= $' orelse C =:= $* orelse C =:= $+ orelse C =:= $^
      orelse C =:= $` orelse C =:= $| orelse C =:= $~)).
 
+%% characters of a host name in a Host header: a URI's reg-name (RFC 3986
+%% 3.2.2: unreserved, sub-delims and `%`)
+-define(REG_NAME(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+     orelse (C >= $0 andalso C =< $9)
+     orelse C =:= $- orelse C =:= $. orelse C =:= $_ orelse C =:= $~
+     orelse C =:= $% orelse C =:= $! orelse C =:= $$ orelse C =:= $&
+     orelse C =:= $' orelse C =:= $( orelse C =:= $) orelse C =:= $*
+     orelse C =:= $+ orelse C =:= $, orelse C =:= $; orelse C =:= $=)).
+
+%% header lines in a request head (nginx and Apache allow about as many)
+-define(MAX_HEADERS, 100).
+
 %% packets delivered as messages before the socket must be re-armed
 -define(ACTIVE, 64).
 %% lingering close (linger_close/1): for at most 2 s, 500 ms without a
@@ -104,6 +117,8 @@
     address,
     port,
     timeout,
+    %% request bodies longer than this get a 413 (0: no limit)
+    max_body,
     %% `host[:port]`, sent when the client sent no Host
     authority,
     %% for the log
@@ -515,6 +530,10 @@ request(<<>>, C) ->
     more(<<>>, C);
 request(Buffer, #conn{max_head = Max} = C) ->
     case parse(Buffer) of
+        {ok, _, _, _, Rest} when byte_size(Buffer) - byte_size(Rest) > Max ->
+            %% a head that came whole, in one packet, is no longer allowed
+            %% than one that came in several
+            reject(431, C);
         {ok, Request, Version, Close, Rest} when C#conn.deadline =:= none ->
             respond(Request, Version, Close, Rest, C);
         {ok, Request, Version, Close, Rest} ->
@@ -624,6 +643,8 @@ version(_, _, _, _, _) ->
 
 headers(Bin, Method, Target, Query, Fragment, Version) ->
     case headers(Bin, [], undefined, false, <<>>) of
+        {ok, Headers, _, _, _, _} when length(Headers) > ?MAX_HEADERS ->
+            {error, 431};
         {ok, Headers, Host, Body, Connection, Rest} ->
             request(Method, Target, Query, Fragment, Version, Headers, Host,
                     Body, Connection, Rest);
@@ -800,13 +821,16 @@ request(Method, Target0, Query0, Fragment, Version, Headers, Host0, Body,
         undefined -> <<>>;
         _ -> Host0
     end,
-    {HostName, Port} = case binary:match(Host, <<":">>) of
-        {At, 1} ->
-            <<Name:At/binary, $:, P/binary>> = Host,
-            {Name, try binary_to_integer(P) catch error:badarg -> 80 end};
-        nomatch ->
-            {Host, 80}
-    end,
+    case authority(Host) of
+        {ok, HostName, Port} ->
+            request(Method, Target0, Query0, Fragment, Version, Headers,
+                    HostName, Port, Body, Connection, Rest);
+        error ->
+            {error, 400}
+    end.
+
+request(Method, Target0, Query0, Fragment, Version, Headers, HostName, Port,
+        Body, Connection, Rest) ->
     %% a fragment is not sent to servers: dropped if it is
     Target = case Fragment of
         none -> Target0;
@@ -823,6 +847,61 @@ request(Method, Target0, Query0, Fragment, Version, Headers, Host0, Body,
                {some, Port}, Path, Query},
     Close = Body orelse close_requested(Version, Connection),
     {ok, Request, Version, Close, Rest}.
+
+%% The Host header (RFC 9110 7.2): `host [":" port]`, the host a name of at
+%% most 255 bytes (letters, digits and the other characters of a URI's
+%% reg-name: no space, `/`, `@`, `?`, `#` or non-ASCII byte), an IPv4
+%% address or a bracketed IPv6 one. {ok, Host, Port} (80 when there is no
+%% port) or error. The length bound keeps every later host walk (wildcard
+%% rules look up each parent domain) short.
+-define(MAX_HOST, 255).
+
+authority(<<"[", _/binary>> = Host) ->
+    case binary:match(Host, <<"]">>) of
+        {Close, 1} when Close =< ?MAX_HOST ->
+            <<Literal:(Close + 1)/binary, Port/binary>> = Host,
+            case ip_literal(binary:part(Literal, 1, Close - 1)) of
+                true -> port(Literal, Port);
+                false -> error
+            end;
+        _ ->
+            error
+    end;
+authority(Host) ->
+    authority(Host, 0).
+
+authority(Host, N) ->
+    case Host of
+        <<_:N/binary, C, _/binary>> when ?REG_NAME(C), N < ?MAX_HOST ->
+            authority(Host, N + 1);
+        <<Name:N/binary, $:, Port/binary>> ->
+            port(Name, <<$:, Port/binary>>);
+        <<_:N/binary>> ->
+            {ok, Host, 80};
+        _ ->
+            error
+    end.
+
+%% `:digits`, at most 65535; an empty port (`host:`) is the default one.
+port(Name, <<>>) -> {ok, Name, 80};
+port(Name, <<":">>) -> {ok, Name, 80};
+port(Name, <<":", Digits/binary>>) when byte_size(Digits) =< 5 ->
+    case all_digits(Digits) andalso binary_to_integer(Digits) of
+        P when is_integer(P), P =< 65535 -> {ok, Name, P};
+        _ -> error
+    end;
+port(_, _) -> error.
+
+all_digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> all_digits(Rest);
+all_digits(<<>>) -> true;
+all_digits(_) -> false.
+
+%% Inside the brackets: an IPv6 address (possibly ending with an IPv4 one).
+ip_literal(Address) ->
+    case inet:parse_ipv6strict_address(binary_to_list(Address)) of
+        {ok, _} -> true;
+        {error, _} -> false
+    end.
 
 close_requested({1, 1}, <<>>) -> false;
 close_requested({1, 1}, Connection) -> has_token(Connection, <<"close">>);
@@ -890,6 +969,10 @@ lower(C) -> C.
 %% send to the client (relay_body/6)
 -define(RELAYED, '$redirect_proxy_relayed').
 -define(MAX_RESPONSE_HEAD, 65536).
+%% 1xx responses relayed before a final one: an upstream sending them
+%% without end would keep the request waiting
+-define(MAX_INTERIM, 10).
+%% process dictionary key: payload bytes of the chunked request body so far
 
 %% headers that only concern one connection (RFC 9110 7.6.1), and the ones
 %% the server sets itself
@@ -919,7 +1002,9 @@ lower(C) -> C.
     done,
     %% a request without a body that may be sent again on a new connection
     %% when a reused one turns out to be closed
-    retry
+    retry,
+    %% 1xx responses read so far
+    interim = 0
 }).
 
 %% The request a handler leaves to the upstream.
@@ -932,6 +1017,10 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
         {error, Status} ->
             done(Done, Status, 0, none),
             reject(Status, C);
+        {ok, {length, N}, _, _, _, _} when N > C#conn.upstream#up.max_body,
+                                           C#conn.upstream#up.max_body > 0 ->
+            done(Done, 413, 0, none),
+            reject(413, C);
         {ok, Body, Tokens, Upgrade, Expect, HasHost} ->
             Up = C#conn.upstream,
             %% the client's values of the headers the handler sets, and of
@@ -1065,24 +1154,25 @@ essential(_) -> false.
 %% here), `Content-Length` (sent once, normalised) and the ones in Drop:
 %% named by its `Connection` header, set or dropped by the handler. Some
 %% servers read `_` in a header name as `-` (CGI variables): `x_real_ip`
-%% is dropped with `x-real-ip`.
+%% is dropped with `x-real-ip`, and `transfer_encoding` or
+%% `content_length` with the framing headers (next to the normalised ones,
+%% they would give such an upstream two framings of one body).
 request_headers([{Name, Value} | Rest], Drop) ->
-    case Name of
-        _ when ?HOP_BY_HOP(Name) -> request_headers(Rest, Drop);
-        <<"expect">> -> request_headers(Rest, Drop);
-        <<"content-length">> -> request_headers(Rest, Drop);
-        _ ->
-            Dropped = lists:member(Name, Drop) orelse case binary:match(Name, <<"_">>) of
-                nomatch -> false;
-                _ -> lists:member(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
-            end,
-            case Dropped of
-                true -> request_headers(Rest, Drop);
-                false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
-            end
+    Dropped = case binary:match(Name, <<"_">>) of
+        nomatch -> dropped(Name, Drop);
+        _ -> dropped(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
+    end,
+    case Dropped of
+        true -> request_headers(Rest, Drop);
+        false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
     end;
 request_headers([], _) ->
     [].
+
+dropped(Name, _) when ?HOP_BY_HOP(Name) -> true;
+dropped(<<"expect">>, _) -> true;
+dropped(<<"content-length">>, _) -> true;
+dropped(Name, Drop) -> lists:member(Name, Drop).
 
 method_name(get) -> <<"GET">>;
 method_name(head) -> <<"HEAD">>;
@@ -1117,6 +1207,9 @@ send_request(Socket, Reused, Rest, F, C) ->
                 {error, {client, timeout}} ->
                     done(F#fwd.done, 408, 0, none),
                     reject(408, C);
+                {error, too_large} ->
+                    done(F#fwd.done, 413, 0, none),
+                    reject(413, C);
                 {error, {client, _}} ->
                     %% the client went away before its request was complete
                     done(F#fwd.done, 499, 0, none),
@@ -1151,7 +1244,8 @@ send_body({length, N}, Rest, Socket, C) ->
     end;
 send_body(chunked, Rest, Socket, C) ->
     Emit = upstream_emit(Socket),
-    case copy_chunked(Rest, client_recv(C), chunk_emit(Emit), 0) of
+    Chunk = body_limit(chunk_emit(Emit), C#conn.upstream#up.max_body),
+    case copy_chunked(Rest, client_recv(C), Chunk, 0) of
         {ok, Rest1, _} ->
             case Emit(<<"0\r\n\r\n">>) of
                 ok -> {ok, Rest1};
@@ -1174,6 +1268,8 @@ response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
             end;
         {ok, 101, _, _, _, _} ->
             fail(502, invalid_response, unexpected_upgrade, F, C);
+        {ok, Status, _, _, _, _} when Status < 200, F#fwd.interim >= ?MAX_INTERIM ->
+            fail(502, invalid_response, too_many_interim_responses, F, C);
         {ok, Status, Reason, _, Headers, Buffer1} when Status < 200 ->
             %% interim responses (103 Early Hints...); the 100 Continue of
             %% the upstream is not: the client already got one
@@ -1185,7 +1281,8 @@ response(Socket, Reused, Buffer, Rest, BodyDone, F, #conn{upstream = Up} = C) ->
                 false ->
                     ok
             end,
-            response(Socket, false, Buffer1, Rest, BodyDone, F, C);
+            response(Socket, false, Buffer1, Rest, BodyDone,
+                     F#fwd{interim = F#fwd.interim + 1}, C);
         {ok, Status, Reason, Minor, Headers, Buffer1} ->
             relay(Socket, Status, Reason, Minor, Headers, Buffer1, Rest, BodyDone, F, C);
         {error, closed} when Reused, F#fwd.retry ->
@@ -1623,6 +1720,8 @@ copy_close(Buffer, Recv, Emit, Bytes) ->
 copy_chunked(Buffer, Recv, Emit, Bytes) ->
     case chunk_size(Buffer) of
         {ok, 0, Rest} -> trailers(Rest, Recv, Bytes, 0);
+        {ok, Size, _} when is_tuple(Emit), Bytes + Size > element(2, Emit) ->
+            {error, too_large, Bytes};
         {ok, Size, Rest} -> chunk_data(Rest, Size, Recv, Emit, Bytes);
         more -> refill(Buffer, Recv, Bytes, fun(B) -> copy_chunked(B, Recv, Emit, Bytes) end);
         error -> {error, bad_chunk, Bytes}
@@ -1762,6 +1861,7 @@ refill(Buffer, Recv, Bytes, Next) ->
     end.
 
 emit(_, <<>>) -> ok;
+emit({limit, _, Emit}, Data) -> Emit(Data);
 emit(Emit, Data) -> Emit(Data).
 
 chunk_emit(Emit) ->
@@ -1769,8 +1869,17 @@ chunk_emit(Emit) ->
         Emit([integer_to_binary(byte_size(Data), 16), <<"\r\n">>, Data, <<"\r\n">>])
     end.
 
-%% The client's bytes, from the socket's messages.
-client_recv(#conn{socket = Socket, upstream = #up{timeout = Timeout}}) ->
+%% Emit, for a chunked request body of at most Max bytes of payload (0: no
+%% limit): its length is only known as it comes, so copy_chunked checks
+%% each chunk's size against it.
+body_limit(Emit, 0) -> Emit;
+body_limit(Emit, Max) -> {limit, Max, Emit}.
+
+%% The client's bytes, from the socket's messages. A request body must keep
+%% coming: no more than the idle timeout between two packets (a client
+%% sending a byte now and then would hold an upstream connection, and the
+%% upstream's worker, for as long as it likes).
+client_recv(#conn{socket = Socket, idle_timeout = Timeout}) ->
     fun Recv() ->
         receive
             {tcp, Socket, Data} ->
@@ -1887,7 +1996,7 @@ up_close({ssl, S}) -> ssl:close(S).
 %% The upstream settings of the Gleam `Upstream`, resolved once.
 upstream_settings(none) ->
     none;
-upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify}}) ->
+upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify, MaxBody}}) ->
     Name = binary_to_list(Host),
     {Address, IsIp} = case inet:parse_address(Name) of
         {ok, Ip} -> {Ip, true};
@@ -1921,7 +2030,7 @@ upstream_settings({some, {upstream, Tls, Host, Port, Timeout, Verify}}) ->
             end
     end,
     #up{tls = Tls, address = Address, port = Port, timeout = Timeout,
-        authority = Authority, url = <<Scheme/binary, Authority/binary>>,
+        max_body = MaxBody, authority = Authority, url = <<Scheme/binary, Authority/binary>>,
         tls_options = TlsOptions}.
 
 trim(Bin) -> trim_end(skip_ows(Bin)).
@@ -2121,6 +2230,7 @@ status_line(404) -> <<"HTTP/1.1 404 Not Found\r\n">>;
 status_line(405) -> <<"HTTP/1.1 405 Method Not Allowed\r\n">>;
 status_line(408) -> <<"HTTP/1.1 408 Request Timeout\r\n">>;
 status_line(410) -> <<"HTTP/1.1 410 Gone\r\n">>;
+status_line(413) -> <<"HTTP/1.1 413 Content Too Large\r\n">>;
 status_line(414) -> <<"HTTP/1.1 414 URI Too Long\r\n">>;
 status_line(431) -> <<"HTTP/1.1 431 Request Header Fields Too Large\r\n">>;
 status_line(451) -> <<"HTTP/1.1 451 Unavailable For Legal Reasons\r\n">>;

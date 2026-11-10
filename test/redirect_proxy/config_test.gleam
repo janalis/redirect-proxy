@@ -359,9 +359,10 @@ pub fn warnings_test() {
   let assert Ok(toml) =
     tom.parse("[auth.odic]\nenabled = true\n[admin]\nlisten = \"0.0.0.0\"\n")
   let assert Ok(cfg) = config_file.from_toml(toml)
-  let assert [typo, exposed] = config_validate.warnings(toml, cfg)
+  let assert [typo, exposed, metrics] = config_validate.warnings(toml, cfg)
   assert typo == "unknown setting auth.odic.enabled (ignored)"
   assert string.starts_with(exposed, "the admin listens on 0.0.0.0")
+  assert string.starts_with(metrics, "/metrics is not served")
   let assert Ok(fine) = tom.parse("[admin]\nlisten = \"127.0.0.1\"\n")
   let assert Ok(cfg) = config_file.from_toml(fine)
   assert config_validate.warnings(fine, cfg) == []
@@ -474,6 +475,17 @@ pub fn more_value_checks_test() {
     refused(config.Config(..d, oidc:)),
     "auth.oidc.issuer",
   )
+  // nobody listed as allowed to sign in: every account of the provider
+  // could, unless that is what is meant
+  let oidc = config.OidcConfig(..oidc, issuer: "https://idp.example.com")
+  assert string.starts_with(
+    refused(config.Config(..d, oidc:)),
+    "auth.oidc needs allowed_emails",
+  )
+  let open = config.OidcConfig(..oidc, allow_any_account: True)
+  let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: open))
+  let listed = config.OidcConfig(..oidc, allowed_groups: ["staff"])
+  let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: listed))
   // a timer of more than about 49 days crashed the store at startup
   let storage = config.StorageConfig(..d.storage, watch_interval: 5_000_000)
   assert string.starts_with(
@@ -485,6 +497,23 @@ pub fn more_value_checks_test() {
 pub fn more_warnings_test() {
   let d = config.default()
   assert config_validate.runtime_warnings(d) == []
+  // an admin reached from elsewhere, without the proxy's addresses: every
+  // client has the proxy's address, and shares its throttling
+  let remote =
+    config.Config(
+      ..d,
+      admin: config.AdminConfig(..d.admin, public_url: "https://rp.example.com"),
+    )
+  let assert [proxies] = config_validate.runtime_warnings(remote)
+  assert string.starts_with(proxies, "admin.public_url is not on this machine")
+  let trusted =
+    config.Config(
+      ..remote,
+      access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+        "10.0.0.0/8",
+      ]),
+    )
+  assert config_validate.runtime_warnings(trusted) == []
   let cfg =
     config.Config(
       ..d,

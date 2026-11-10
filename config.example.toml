@@ -31,6 +31,9 @@ health_path = ""
 metrics_path = ""
 # Requests with a longer path (in bytes) get a 414 without rule lookup.
 max_path_bytes = 8192
+# Requests forwarded to the upstream with a longer body (in bytes) get a 413
+# (0: no limit, as the upstream's own limit applies).
+max_request_body_bytes = 0
 # Redirect plain HTTP requests to the same URL over HTTPS (301, or 308 for
 # methods other than GET and HEAD), before any rule. Requests that a TLS
 # proxy marks with X-Forwarded-Proto: https go to the rules (only from
@@ -42,8 +45,10 @@ https_redirect = false
 # path. Empty: off. Cannot be combined with fallback_url.
 upstream = ""
 # Seconds to wait for the upstream's response head, and the idle timeout
-# of every read and write while a request is forwarded (and of upgraded
-# connections, such as WebSockets). The connect timeout is 5 seconds.
+# of every write to and read from the upstream while a request is
+# forwarded (and of upgraded connections, such as WebSockets). The connect
+# timeout is 5 seconds. A client sending a request body may pause 10
+# seconds between packets, then gets 408.
 upstream_timeout = 60
 # For an https:// upstream: check its certificate (system CAs, host name).
 # false for an internal upstream with a self-signed certificate.
@@ -123,7 +128,8 @@ public_url = "http://localhost:8081"
 # random secret is generated and stored in <data_dir>/secret_key_base.
 secret_key_base = ""
 # Bearer token required by /metrics (at least 16 characters). Empty: /metrics
-# is public, like /healthz and /readyz.
+# is public, like /healthz and /readyz, when the listener is on the loopback
+# interface, and not served (404) on any other address.
 metrics_token = ""
 # Session lifetime in seconds.
 session_ttl = 28800
@@ -163,12 +169,15 @@ issuer = "https://idp.example.com/realms/main"
 client_id = "redirect-proxy"
 client_secret = ""
 scopes = ["openid", "email", "profile"]
-# Who may sign in. With all three lists empty every user of the provider is
-# accepted. Otherwise a user must match at least one entry. E-mails and
+# Who may sign in: a user must match at least one entry. E-mails and
 # domains only match when the ID token has email_verified = true.
 allowed_emails = []
 allowed_domains = []
 allowed_groups = []
+# With all three lists empty the server does not start, unless this says
+# that every account of the provider may sign in (a provider of your own;
+# never a public one such as accounts.google.com).
+allow_any_account = false
 groups_claim = "groups"
 button_label = "Sign in with SSO"
 # On logout, also sign out at the provider and come back to the login page.
@@ -240,10 +249,10 @@ audience = "redirect-proxy"
 # ("scp" is always read too).
 scope_claim = "scope"
 # Only accept tokens whose header says they are access tokens (typ at+jwt,
-# RFC 9068). Turn it on when your server sets it (Keycloak, Auth0, Okta and
-# Entra ID can): an ID token issued for the same audience is then refused
-# even without a nonce.
-require_at_jwt = false
+# RFC 9068): an ID token issued for the same audience is then refused even
+# without a nonce. Turn it off only when your server cannot type its access
+# tokens that way, and give the API an audience of its own.
+require_at_jwt = true
 # Names of the scopes at your authorization server.
 read_scope = "redirects:read"
 write_scope = "redirects:write"

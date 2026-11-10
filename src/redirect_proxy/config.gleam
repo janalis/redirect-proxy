@@ -126,6 +126,9 @@ pub type ServerConfig {
     metrics_path: String,
     /// Requests whose path is longer than this many bytes get a 414.
     max_path_bytes: Int,
+    /// Requests forwarded to the upstream with a longer body (in bytes) get
+    /// a 413 (0: no limit).
+    max_request_body_bytes: Int,
     /// Plain HTTP requests are redirected to the same URL over HTTPS before
     /// any rule (requests a proxy marks `X-Forwarded-Proto: https` are not).
     https_redirect: Bool,
@@ -242,6 +245,9 @@ pub type OidcConfig {
     allowed_emails: List(String),
     allowed_domains: List(String),
     allowed_groups: List(String),
+    /// With all three lists empty, sign-in is refused at startup unless
+    /// this says that any account of the provider is meant to sign in.
+    allow_any_account: Bool,
     groups_claim: String,
     button_label: String,
     /// On logout, also end the session at the provider (its
@@ -323,6 +329,7 @@ pub fn default() -> Config {
       health_path: "",
       metrics_path: "",
       max_path_bytes: 8192,
+      max_request_body_bytes: 0,
       https_redirect: False,
       upstream: "",
       upstream_timeout: 60,
@@ -355,6 +362,7 @@ pub fn default() -> Config {
       allowed_emails: [],
       allowed_domains: [],
       allowed_groups: [],
+      allow_any_account: False,
       groups_claim: "groups",
       admin_groups: [],
       editor_groups: [],
@@ -384,7 +392,7 @@ pub fn default() -> Config {
         issuer: "",
         audience: "redirect-proxy",
         scope_claim: "scope",
-        require_at_jwt: False,
+        require_at_jwt: True,
         read_scope: "redirects:read",
         write_scope: "redirects:write",
         ops_scope: "redirects:ops",

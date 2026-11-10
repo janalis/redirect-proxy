@@ -563,6 +563,22 @@ pub fn logout_test() {
   assert get(env.admin <> "/rules", [#("cookie", cookie)]).status == 303
 }
 
+/// Signing in again from a browser ends the session it held.
+pub fn login_ends_the_previous_session_test() {
+  let env = boot(config.default())
+  let #(old, _) = login(env)
+  let resp =
+    post_form(env, "/login", old, [
+      #("username", "admin"),
+      #("password", admin_password),
+    ])
+  assert resp.status == 303
+  let new = session_cookie(resp)
+  assert new != old
+  assert get(env.admin <> "/rules", [#("cookie", old)]).status == 303
+  assert get(env.admin <> "/rules", [#("cookie", new)]).status == 200
+}
+
 pub fn viewer_role_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login_with_role(env, "vera", role.Viewer)

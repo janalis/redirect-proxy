@@ -81,6 +81,7 @@ fn upstream(port: Int) -> proxy_http.Upstream {
     port:,
     timeout_ms: 500,
     tls_verify: True,
+    max_body_bytes: 0,
   )
 }
 
@@ -222,6 +223,52 @@ pub fn chunked_bodies_are_forwarded_test() {
   assert string.contains(text, "\ntransfer-encoding: chunked\n")
   assert string.contains(text, "framing=chunked\nbody=hello world")
   assert string.contains(text, "GET /next\nconn=1\n")
+}
+
+pub fn bodies_over_the_limit_get_413_test() {
+  let #(port, counter) = start_upstream()
+  let proxy =
+    start_with(
+      proxy_http.Upstream(..upstream(port), max_body_bytes: 10),
+      counter,
+    )
+  // a length over the limit: refused before anything is sent upstream
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 11\r\n\r\nhello world",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 413 ")
+  assert closed
+  assert connections(counter) == 0
+  let f = forwarded(proxy)
+  assert f.status == 413
+  // a chunked body, once it has grown over the limit
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /up HTTP/1.1\r\nhost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 413 ")
+  assert closed
+  // up to the limit
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /up HTTP/1.1\r\nhost: a\r\nTransfer-Encoding: chunked\r\nconnection: close\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+    ])
+  assert string.contains(text, "framing=chunked\nbody=helloworld")
+}
+
+/// A body must keep coming: the idle timeout (300 ms here) between two
+/// packets, not the upstream's.
+pub fn stalled_bodies_get_408_test() {
+  let #(port, counter) = start_upstream()
+  let proxy =
+    start_with(proxy_http.Upstream(..upstream(port), timeout_ms: 5000), counter)
+  let #(text, closed) =
+    exchange(proxy, [
+      "POST /form HTTP/1.1\r\nhost: a\r\ncontent-length: 11\r\n\r\nhello",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 408 ")
+  assert closed
 }
 
 pub fn upstream_connections_are_reused_test() {
@@ -416,6 +463,23 @@ pub fn hop_by_hop_headers_are_not_forwarded_test() {
   assert string.contains(echoed, "\nx-forwarded-for: 192.0.2.1\n")
 }
 
+/// Some servers read `_` in a header name as `-`: the `_` spellings of the
+/// framing and hop-by-hop headers would give them a second framing.
+pub fn underscore_framing_headers_are_not_forwarded_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, [
+      "POST /echo HTTP/1.1\r\nhost: a\r\nContent_Length: 40\r\nTransfer_Encoding: chunked\r\nKeep_Alive: 1\r\nconnection_: x\r\nT_E: x\r\nX_Other: kept\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi",
+    ])
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert string.contains(text, "\nx_other: kept\n")
+  assert !string.contains(text, "content_length")
+  assert !string.contains(text, "transfer_encoding")
+  assert !string.contains(text, "keep_alive")
+  assert string.contains(text, "\nconnection_: x\n")
+  assert string.contains(text, "\nt_e: x\n")
+}
+
 pub fn the_upstream_date_is_kept_test() {
   let proxy = start()
   let #(text, _) = exchange(proxy, ["GET /date HTTP/1.1\r\nhost: a\r\n\r\n"])
@@ -431,6 +495,16 @@ pub fn interim_responses_are_relayed_test() {
     text,
     "HTTP/1.1 103 Early Hints\r\nlink: </a.css>\r\n\r\nHTTP/1.1 200 OK\r\n",
   )
+}
+
+/// At most 10 interim responses before the final one.
+pub fn endless_interim_responses_are_a_502_test() {
+  let proxy = start()
+  let #(text, _) =
+    exchange(proxy, ["GET /many-hints HTTP/1.1\r\nhost: a\r\n\r\n"])
+  assert string.contains(text, "HTTP/1.1 502 Bad Gateway\r\n")
+  assert count(text, "HTTP/1.1 103 ") == 10
+  assert !string.contains(text, "200 OK")
 }
 
 pub fn expect_continue_is_answered_here_test() {

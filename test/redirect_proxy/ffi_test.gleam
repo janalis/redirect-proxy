@@ -221,7 +221,7 @@ fn mode(path: String) -> Int {
 }
 
 /// Files with secrets are created 0600; an existing file keeps the
-/// permissions it was given.
+/// permissions it was given, but is never readable by others.
 pub fn atomic_write_private_mode_test() {
   let dir = support.temp_dir()
   let path = dir <> "/users.json"
@@ -231,12 +231,39 @@ pub fn atomic_write_private_mode_test() {
   let assert Ok(Nil) = ffi.atomic_write_private(path, "{\"a\":1}")
   assert mode(path) == 0o640
   assert simplifile.read(path) == Ok("{\"a\":1}")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o644)
+  let assert Ok(Nil) = ffi.atomic_write_private(path, "{}")
+  assert mode(path) == 0o640
   // other files: the old permissions too
   let rules = dir <> "/redirects.json"
   let assert Ok(Nil) = ffi.atomic_write(rules, "[]")
   let assert Ok(Nil) = simplifile.set_permissions_octal(rules, 0o604)
   let assert Ok(Nil) = ffi.atomic_write(rules, "[ ]")
   assert mode(rules) == 0o604
+}
+
+/// A copy has the permissions of its source from its creation.
+pub fn copy_file_as_test() {
+  let dir = support.temp_dir()
+  let source = dir <> "/redirects.json"
+  let assert Ok(Nil) = ffi.atomic_write(source, "[]")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o640)
+  let copy = dir <> "/copy.json"
+  let assert Ok(Nil) = ffi.copy_file_as(source, copy)
+  assert mode(copy) == 0o640
+  assert simplifile.read(copy) == Ok("[]")
+  // never over an existing file
+  let assert Error(_) = ffi.copy_file_as(source, copy)
+  // a source its owner cannot write
+  let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o440)
+  let read_only = dir <> "/read-only.json"
+  let assert Ok(Nil) = ffi.copy_file_as(source, read_only)
+  assert mode(read_only) == 0o440
+  assert simplifile.read(read_only) == Ok("[]")
+  // a failed copy leaves nothing behind
+  let missing = dir <> "/failed.json"
+  let assert Error(_) = ffi.copy_file_as(dir, missing)
+  assert simplifile.is_file(missing) == Ok(False)
 }
 
 /// Dates that do not exist are refused, not shifted to the next month.
@@ -256,4 +283,18 @@ pub fn rfc3339_is_strict_test() {
       assert ffi.parse_rfc3339(bad) == Error(Nil)
     },
   )
+}
+
+/// Only signature keys of the token's algorithm verify it: a key published
+/// for encryption, or for another algorithm, is not used.
+pub fn jwt_keys_are_for_signatures_test() {
+  let #(jwks, key) = support.keypair()
+  let token = support.sign(key, "{\"sub\":\"a\"}")
+  let assert Ok(_) = ffi.jwt_verify(jwks, token)
+  let enc = string.replace(jwks, "\"use\":\"sig\"", "\"use\":\"enc\"")
+  assert enc != jwks
+  let assert Error(_) = ffi.jwt_verify(enc, token)
+  let other = string.replace(jwks, "\"alg\":\"RS256\"", "\"alg\":\"RS512\"")
+  assert other != jwks
+  let assert Error(_) = ffi.jwt_verify(other, token)
 }

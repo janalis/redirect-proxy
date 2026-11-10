@@ -113,8 +113,10 @@ pub fn external_env() -> #(App, String, support.Key) {
   #(env, issuer, key)
 }
 
+/// An access token typed as such (RFC 9068), as `require_at_jwt` wants by
+/// default.
 pub fn jwt(key: support.Key, claims: List(#(String, json.Json))) -> String {
-  support.sign(key, json.object(claims) |> json.to_string)
+  support.sign_typed(key, "at+jwt", json.object(claims) |> json.to_string)
 }
 
 pub fn own_port(admin_enabled: Bool) -> App {

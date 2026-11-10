@@ -82,6 +82,7 @@ pub const known_keys = [
   "auth.header.trusted_proxies",
   "auth.header.user_header",
   "auth.local.enabled",
+  "auth.oidc.allow_any_account",
   "auth.oidc.allowed_domains",
   "auth.oidc.allowed_emails",
   "auth.oidc.allowed_groups",
@@ -105,6 +106,7 @@ pub const known_keys = [
   "server.metrics_path",
   "server.https_redirect",
   "server.max_path_bytes",
+  "server.max_request_body_bytes",
   "log.format",
   "log.level",
   "server.listen",
@@ -184,6 +186,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "max_path_bytes"],
     d.server.max_path_bytes,
+  ))
+  use max_request_body_bytes <- result.try(integer(
+    t,
+    ["server", "max_request_body_bytes"],
+    d.server.max_request_body_bytes,
   ))
   use https_redirect <- result.try(boolean(
     t,
@@ -287,6 +294,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["auth", "oidc", "allowed_groups"],
     o.allowed_groups,
+  ))
+  use allow_any_account <- result.try(boolean(
+    t,
+    ["auth", "oidc", "allow_any_account"],
+    o.allow_any_account,
   ))
   use groups_claim <- result.try(str(
     t,
@@ -484,6 +496,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       health_path:,
       metrics_path:,
       max_path_bytes:,
+      max_request_body_bytes:,
       https_redirect:,
       upstream:,
       upstream_timeout:,
@@ -516,6 +529,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       allowed_emails:,
       allowed_domains:,
       allowed_groups:,
+      allow_any_account:,
       groups_claim:,
       button_label:,
       logout_at_provider:,
