@@ -392,7 +392,7 @@ pub fn default() -> Config {
         issuer: "",
         audience: "redirect-proxy",
         scope_claim: "scope",
-        require_at_jwt: False,
+        require_at_jwt: True,
         read_scope: "redirects:read",
         write_scope: "redirects:write",
         ops_scope: "redirects:ops",

@@ -211,12 +211,13 @@ pub fn external_access_tokens_test() {
   assert api(env, Get, "/api/redirects", anonymous, "").status == 401
 }
 
-/// `api.oauth.require_at_jwt`: only tokens typed as access tokens (RFC
-/// 9068) are accepted, so that an ID token for the same audience is not.
-pub fn external_tokens_can_require_at_jwt_test() {
+/// `api.oauth.require_at_jwt` (on by default): only tokens typed as access
+/// tokens (RFC 9068) are accepted, so that an ID token for the same
+/// audience is not.
+pub fn external_tokens_must_be_typed_as_access_tokens_test() {
   let #(issuer, key) = support.start_fake_authorization_server()
   let d = config.default()
-  let env =
+  let boot = fn(require_at_jwt) {
     support.boot(
       config.Config(
         ..d,
@@ -227,11 +228,12 @@ pub fn external_tokens_can_require_at_jwt_test() {
             enabled: True,
             issuer:,
             audience: "redirect-proxy",
-            require_at_jwt: True,
+            require_at_jwt:,
           ),
         ),
       ),
     )
+  }
   let now = ffi.now_seconds()
   let claims =
     json.object([
@@ -242,11 +244,19 @@ pub fn external_tokens_can_require_at_jwt_test() {
       #("scope", json.string("redirects:read")),
     ])
     |> json.to_string
-  let status = fn(token) { api(env, Get, "/api/redirects", token, "").status }
-  assert status(support.sign_typed(key, "at+jwt", claims)) == 200
-  assert status(support.sign_typed(key, "application/at+JWT", claims)) == 200
-  assert status(support.sign_typed(key, "JWT", claims)) == 401
-  assert status(support.sign(key, claims)) == 401
+  assert d.api.oauth.require_at_jwt
+  let env = boot(True)
+  let status = fn(env, token) {
+    api(env, Get, "/api/redirects", token, "").status
+  }
+  assert status(env, support.sign_typed(key, "at+jwt", claims)) == 200
+  assert status(env, support.sign_typed(key, "application/at+JWT", claims))
+    == 200
+  assert status(env, support.sign_typed(key, "JWT", claims)) == 401
+  assert status(env, support.sign(key, claims)) == 401
+  // turned off, for servers that cannot type their access tokens
+  let env = boot(False)
+  assert status(env, support.sign_typed(key, "JWT", claims)) == 200
 }
 
 pub fn check_claims_unit_test() {

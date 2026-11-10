@@ -246,10 +246,10 @@ audience = "redirect-proxy"
 # ("scp" is always read too).
 scope_claim = "scope"
 # Only accept tokens whose header says they are access tokens (typ at+jwt,
-# RFC 9068). Turn it on when your server sets it (Keycloak, Auth0, Okta and
-# Entra ID can): an ID token issued for the same audience is then refused
-# even without a nonce.
-require_at_jwt = false
+# RFC 9068): an ID token issued for the same audience is then refused even
+# without a nonce. Turn it off only when your server cannot type its access
+# tokens that way, and give the API an audience of its own.
+require_at_jwt = true
 # Names of the scopes at your authorization server.
 read_scope = "redirects:read"
 write_scope = "redirects:write"
