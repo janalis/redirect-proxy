@@ -22,6 +22,12 @@ pub fn is_empty(cidrs: Cidrs) -> Bool
 @external(erlang, "redirect_proxy_ffi", "cidrs_contain_peer")
 pub fn contains_peer(cidrs: Cidrs, ip: mist.IpAddress) -> Bool
 
+/// The client address in `X-Forwarded-For` header lines: the rightmost hop
+/// not in the networks (the leftmost when all are), when it is an IP
+/// address.
+@external(erlang, "redirect_proxy_ffi", "forwarded_hop")
+pub fn forwarded_hop(lines: List(String), trusted: Cidrs) -> Result(String, Nil)
+
 /// Whether an address (text, from a header) is in one of the networks;
 /// `False` when it is not an address.
 @external(erlang, "redirect_proxy_ffi", "cidrs_contain")

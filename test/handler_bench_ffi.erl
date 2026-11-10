@@ -1,5 +1,15 @@
 -module(handler_bench_ffi).
--export([best_ns/3, reductions/2, parse/1, profile/1]).
+-export([best_ns/3, reductions/2, parse/1, profile/1, start_access_log/0]).
+
+%% The access log's shared state (the timestamp cache), as when the server
+%% runs, without a handler: the lines are discarded.
+start_access_log() ->
+    Groups = case os:getenv("ACCESS_LOG_FILE") of
+        false -> [];
+        Path -> [{list_to_binary(Path), [redirect_listener]}]
+    end,
+    {ok, nil} = redirect_proxy_access_ffi:start(Groups, 0, 0, false),
+    nil.
 
 %% Best average over Rounds runs of N calls, in ns per call.
 best_ns(F, N, Rounds) ->

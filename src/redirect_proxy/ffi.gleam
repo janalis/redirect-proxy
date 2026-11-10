@@ -74,6 +74,11 @@ pub fn atomic_write_private(
 @external(erlang, "redirect_proxy_ffi", "copy_file_as")
 pub fn copy_file_as(source: String, dest: String) -> Result(Nil, String)
 
+/// The first item of a comma-separated header value, trimmed and ASCII
+/// lower-cased.
+@external(erlang, "redirect_proxy_ffi", "first_item")
+pub fn first_item(value: String) -> String
+
 @external(erlang, "redirect_proxy_ffi", "append_line")
 pub fn append_line(path: String, line: String) -> Result(Nil, String)
 

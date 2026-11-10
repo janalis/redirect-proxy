@@ -27,6 +27,9 @@ fn reductions(f: fn() -> a, n: Int) -> Int
 @external(erlang, "handler_bench_ffi", "profile")
 fn profile(f: fn() -> a) -> Nil
 
+@external(erlang, "handler_bench_ffi", "start_access_log")
+fn start_access_log() -> Nil
+
 @external(erlang, "handler_bench_ffi", "parse")
 fn parse(head: BitArray) -> Request(proxy_http.Peer)
 
@@ -127,6 +130,10 @@ fn logged(
   let req = with_peer(parse(raw))
   let h = best_ns(fn() { handler(req) }, 50_000, 15)
   let r = reductions(fn() { handler(with_peer(parse(raw))) }, 50_000)
+  case name {
+    "logged-forwarded" -> profile(fn() { handler(req) })
+    _ -> Nil
+  }
   io.println(
     name
     <> ": handler "
@@ -169,6 +176,7 @@ pub fn main() -> Nil {
       <> " reductions",
     )
   })
+  start_access_log()
   let proxies = ["10.0.0.0/8", "192.168.0.0/16", "fd00::/8", "::1/128"]
   // the access log on, default settings: no trusted proxy
   logged("logged", mist.IpV4(192, 0, 2, 1), [], "")

@@ -392,15 +392,11 @@ fn forwarded_https(
 fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
   case list.key_find(req.headers, "x-forwarded-proto") {
     Ok(proto) ->
-      // the first value: the client side of the first proxy
-      case string.split(proto, ",") {
-        // `wss`: Traefik's value for a WebSocket upgrade over TLS
-        [first, ..] ->
-          case string.lowercase(string.trim(first)) {
-            "https" | "wss" -> True
-            _ -> False
-          }
-        [] -> False
+      // the first value: the client side of the first proxy; `wss`:
+      // Traefik's value for a WebSocket upgrade over TLS
+      case ffi.first_item(proto) {
+        "https" | "wss" -> True
+        _ -> False
       }
     Error(Nil) -> False
   }

@@ -12,7 +12,7 @@
     with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
     ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2,
-    cidrs_contain_peer_result/2,
+    cidrs_contain_peer_result/2, forwarded_hop/2, first_item/1,
     is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,
     on_sighup/1,
@@ -490,6 +490,62 @@ cidrs_contain_peer(Cidrs, {ip_v6, A, B, C, D, E, F, G, H}) ->
 cidrs_contain_peer_result({[], []}, _) -> false;
 cidrs_contain_peer_result(Cidrs, {ok, Peer}) -> cidrs_contain_peer(Cidrs, Peer);
 cidrs_contain_peer_result(_, _) -> false.
+
+%% The client address in X-Forwarded-For lines (in order; several lines are
+%% one comma-separated list): the rightmost hop that is not in Trusted, or
+%% the leftmost when all are. {ok, Ip} when that hop is an IP address, else
+%% {error, nil}. Byte splits and trims, each hop parsed once: this runs on
+%% every request from a trusted proxy.
+forwarded_hop(Lines, Trusted) ->
+    Hops = [H || Line <- Lines, Item <- binary:split(Line, <<",">>, [global]),
+                 H <- [trim_ows(Item)], H =/= <<>>],
+    rightmost_untrusted(lists:reverse(Hops), Trusted).
+
+rightmost_untrusted([], _) ->
+    {error, nil};
+rightmost_untrusted([Hop], Trusted) ->
+    %% untrusted, or the leftmost of trusted ones: the answer either way
+    _ = Trusted,
+    as_ip(Hop);
+rightmost_untrusted([Hop | Rest], Trusted) ->
+    case parse_ip(Hop) of
+        {ok, Ip} ->
+            case cidrs_contain_ip(Ip, Trusted) of
+                true -> rightmost_untrusted(Rest, Trusted);
+                false -> {ok, Hop}
+            end;
+        _ ->
+            %% not an address: not a trusted proxy, so the client, which
+            %% is not usable
+            {error, nil}
+    end.
+
+as_ip(Hop) ->
+    case parse_ip(Hop) of
+        {ok, _} -> {ok, Hop};
+        _ -> {error, nil}
+    end.
+
+%% The first item of a comma-separated header value, without surrounding
+%% whitespace, ASCII lower-cased (`X-Forwarded-Proto: HTTPS, http`).
+first_item(Value) ->
+    Item = case binary:match(Value, <<",">>) of
+        {At, 1} -> binary:part(Value, 0, At);
+        nomatch -> Value
+    end,
+    lowercase_ascii(trim_ows(Item)).
+
+trim_ows(Bin) -> trim_ows_end(trim_ows_start(Bin)).
+
+trim_ows_start(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> trim_ows_start(Rest);
+trim_ows_start(Bin) -> Bin.
+
+trim_ows_end(<<>>) -> <<>>;
+trim_ows_end(Bin) ->
+    case binary:last(Bin) of
+        C when C =:= $\s; C =:= $\t -> trim_ows_end(binary:part(Bin, 0, byte_size(Bin) - 1));
+        _ -> Bin
+    end.
 
 %% Whether an address (text) is in the CIDRs; false when it is not one.
 cidrs_contain({[], []}, _) -> false;

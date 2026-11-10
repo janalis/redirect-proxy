@@ -109,3 +109,21 @@ pub fn is_empty_test() {
   assert !cidr.is_empty(cidr.compile(["::1"]))
   assert !cidr.contains_peer(cidr.compile([]), mist.IpV4(10, 0, 0, 1))
 }
+
+/// The client in `X-Forwarded-For`: the rightmost hop that is not a trusted
+/// proxy, over all the header lines.
+pub fn forwarded_hop_test() {
+  let trusted = cidr.compile(["10.0.0.0/8", "::1/128"])
+  assert cidr.forwarded_hop(["203.0.113.9, 10.0.0.2"], trusted)
+    == Ok("203.0.113.9")
+  // a client's own line ahead of the proxy's
+  assert cidr.forwarded_hop(["6.6.6.6", " 198.51.100.7 ,10.0.0.3"], trusted)
+    == Ok("198.51.100.7")
+  // every hop trusted: the leftmost
+  assert cidr.forwarded_hop(["10.0.0.1,\t10.0.0.2"], trusted) == Ok("10.0.0.1")
+  // the rightmost untrusted hop is not an address
+  assert cidr.forwarded_hop(["203.0.113.9, unknown"], trusted) == Error(Nil)
+  assert cidr.forwarded_hop([" , "], trusted) == Error(Nil)
+  assert cidr.forwarded_hop(["::ffff:203.0.113.9, ::1"], trusted)
+    == Ok("::ffff:203.0.113.9")
+}

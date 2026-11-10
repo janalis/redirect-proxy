@@ -356,29 +356,18 @@ pub fn forwarded_client_ip(
 ) -> String {
   // several header lines are one comma-separated list, in order: a client
   // can send its own line ahead of the proxy's
-  let forwarded = case list.key_filter(headers, "x-forwarded-for") {
-    [_, ..] as lines -> {
-      let hops =
-        lines
-        |> string.join(",")
-        |> string.split(",")
-        |> list.map(string.trim)
-        |> list.filter(fn(h) { h != "" })
-        |> list.reverse
-      case list.find(hops, fn(h) { !cidr.contains(trusted, h) }) {
-        Ok(ip) -> Ok(ip)
-        Error(Nil) -> list.last(hops)
+  case list.key_filter(headers, "x-forwarded-for") {
+    [_, ..] as lines ->
+      cidr.forwarded_hop(lines, trusted) |> result.unwrap(peer)
+    [] ->
+      case list.key_find(headers, "x-real-ip") |> result.map(string.trim) {
+        Ok(ip) ->
+          case ffi.is_ip_address(ip) {
+            True -> ip
+            False -> peer
+          }
+        Error(Nil) -> peer
       }
-    }
-    [] -> list.key_find(headers, "x-real-ip") |> result.map(string.trim)
-  }
-  case forwarded {
-    Ok(ip) ->
-      case ffi.is_ip_address(ip) {
-        True -> ip
-        False -> peer
-      }
-    Error(Nil) -> peer
   }
 }
 
