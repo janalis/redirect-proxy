@@ -273,7 +273,9 @@ pub fn indexed_matching_agrees_with_reference_test() {
     let actual =
       matcher.lookup(m, "test.local", path)
       |> result.map(fn(found) { found.location })
-    assert actual == reference_lookup(rules, path)
+    // the matcher hands over header values (non-ASCII percent-encoded)
+    assert actual
+      == reference_lookup(rules, path) |> result.map(ffi.header_value)
   })
 }
 

@@ -2,9 +2,9 @@
 
 import logging
 
-/// Sets the application log level. The level applies to the application log
-/// handler only, so that the access log (emitted at `info`, see
-/// `access_log`) keeps working with `RP_LOG_LEVEL=warning`.
+/// Sets the application log level, on its handler (the primary level stays
+/// at `info` or `debug`). The access log does not go through the logger
+/// (see `access_log`): this level does not affect it.
 pub fn configure(level: String) -> Nil {
   configure_with(level, "text")
 }

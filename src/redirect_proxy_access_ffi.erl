@@ -1,146 +1,85 @@
-%% Access log plumbing: a dedicated logger_std_h handler, value escaping,
-%% timestamps and IP anonymisation.
+%% Access log plumbing: one writer per output, value escaping, timestamps
+%% and IP anonymisation.
 -module(redirect_proxy_access_ffi).
 
 -export([
-    start/4, stop/0, emit/2, format/2, filter/2, set_levels/2,
+    start/4, stop/0, sync/0, emit/2, set_levels/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
     now_micros/0, monotonic_micros/0
 ]).
 
--define(DOMAIN, [redirect_proxy, access]).
-
 %% Rendered timestamps of the current second, shared by request processes.
 -define(TIME_CACHE, redirect_proxy_access_time).
 
+%% #{Listener => Writer}: where each listener's lines go.
+-define(WRITERS, redirect_proxy_access_writers).
+
 %% ---------------------------------------------------------------------------
-%% Handlers
+%% Writers
 %% ---------------------------------------------------------------------------
 
 %% Groups: [{Output, [Listener]}] with Output <<"stdout">>, <<"stderr">> or a
 %% file path, and Listener an atom (redirect_listener, admin_listener...).
-%% One logger_std_h handler is installed per output.
+%% One writer (redirect_proxy_access_writer) is started per output.
+%% The writers of an earlier start are stopped once the new ones are in
+%% place, so that a reload loses no line (and keeps them on an error).
 start(Groups, MaxBytes, MaxFiles, Compress) ->
-    _ = stop(),
     ensure_time_cache(),
-    keep_out_of_default_handler(),
-    let_info_events_through(),
-    start_groups(Groups, 1, MaxBytes, MaxFiles, Compress).
+    Previous = persistent_term:get(?WRITERS, #{}),
+    case start_groups(Groups, MaxBytes, MaxFiles, Compress, #{}, []) of
+        {ok, nil} ->
+            stop_writers(Previous),
+            {ok, nil};
+        Error ->
+            Error
+    end.
 
-start_groups([], _N, _MaxBytes, _MaxFiles, _Compress) ->
+start_groups([], _, _, _, Routes, _) ->
+    persistent_term:put(?WRITERS, Routes),
     {ok, nil};
-start_groups([{Output, Listeners} | Rest], N, MaxBytes, MaxFiles, Compress) ->
-    case add_handler(handler_id(N), Output, Listeners, MaxBytes, MaxFiles, Compress) of
-        {ok, nil} -> start_groups(Rest, N + 1, MaxBytes, MaxFiles, Compress);
-        Error -> _ = stop(), Error
-    end.
-
-handler_id(N) -> list_to_atom("redirect_proxy_access_" ++ integer_to_list(N)).
-
-add_handler(Id, Output, Listeners, MaxBytes, MaxFiles, Compress) ->
-    case handler_type(Output) of
+start_groups([{Output, Listeners} | Rest], MaxBytes, MaxFiles, Compress,
+             Routes, Started) ->
+    case redirect_proxy_access_writer:start(Output, MaxBytes, MaxFiles, Compress) of
+        {ok, Writer} ->
+            Routes1 = lists:foldl(fun(L, Acc) -> Acc#{L => Writer} end,
+                                  Routes, Listeners),
+            start_groups(Rest, MaxBytes, MaxFiles, Compress, Routes1,
+                         [Writer | Started]);
         {error, Reason} ->
-            {error, Reason};
-        {ok, Type} ->
-            Rotation = case Type of
-                {file, _} ->
-                    #{max_no_bytes => case MaxBytes of 0 -> infinity; N -> N end,
-                      max_no_files => MaxFiles,
-                      compress_on_rotate => Compress,
-                      %% batch writes, but flush at least twice a second
-                      modes => [raw, append, {delayed_write, 65536, 500}],
-                      %% reopen the file when it was renamed (logrotate)
-                      file_check => 1000};
-                _ -> #{}
-            end,
-            Config = #{
-                level => all,
-                filter_default => stop,
-                filters => [{access, {fun ?MODULE:filter/2, Listeners}}],
-                formatter => {?MODULE, #{}},
-                config => Rotation#{
-                    type => Type,
-                    %% Never make request processes wait for the log and
-                    %% never throttle it: under extreme overload lines are
-                    %% dropped (and the drop is reported) instead.
-                    burst_limit_enable => false,
-                    sync_mode_qlen => 10000,
-                    drop_mode_qlen => 10000,
-                    flush_qlen => 20000,
-                    overload_kill_enable => false
-                }
-            },
-            case logger:add_handler(Id, logger_std_h, Config) of
-                ok -> {ok, nil};
-                {error, Error} -> {error, describe(Output, Error)}
-            end
+            lists:foreach(fun redirect_proxy_access_writer:stop/1, Started),
+            {error, Reason}
     end.
 
-%% Handler filter: only the access events of this handler's listeners.
-filter(#{meta := #{domain := [redirect_proxy, access, Listener]}} = Event,
-       Listeners) ->
-    case lists:member(Listener, Listeners) of
-        true -> Event;
-        false -> stop
-    end;
-filter(_Event, _Listeners) ->
-    stop.
-
-handler_type(<<"stdout">>) -> {ok, standard_io};
-handler_type(<<"stderr">>) -> {ok, standard_error};
-handler_type(Path) ->
-    case filelib:ensure_dir(Path) of
-        ok -> {ok, {file, unicode:characters_to_list(Path)}};
-        {error, Reason} -> {error, describe(Path, Reason)}
-    end.
-
-describe(Output, Reason) ->
-    unicode:characters_to_binary(
-        io_lib:format("cannot open access log ~ts: ~p", [Output, Reason])).
-
+%% Writes what is waiting and stops the writers.
 stop() ->
-    [logger:remove_handler(Id) || Id <- logger:get_handler_ids(),
-                                  is_access_handler(Id)],
-    nil.
-
-is_access_handler(Id) ->
-    lists:prefix("redirect_proxy_access_", atom_to_list(Id)).
-
-keep_out_of_default_handler() ->
-    _ = logger:add_handler_filter(default, redirect_proxy_access,
-            {fun logger_filters:domain/2, {stop, sub, ?DOMAIN}}),
-    ok.
-
-%% Access events are emitted at `info`. When the primary level is stricter
-%% (the application log level was set on it), move that level to the default
-%% handler so the application log is unchanged, and let `info` through.
-let_info_events_through() ->
-    #{level := Primary} = logger:get_primary_config(),
-    case Primary =/= all andalso Primary =/= none
-         andalso logger:compare_levels(Primary, info) =:= gt of
-        false -> ok;
-        true ->
-            case logger:get_handler_config(default) of
-                {ok, #{level := Default}} ->
-                    Stricter = case Default =:= all orelse
-                                    logger:compare_levels(Primary, Default) =:= gt of
-                        true -> Primary;
-                        false -> Default
-                    end,
-                    _ = logger:set_handler_config(default, level, Stricter);
-                _ -> ok
-            end,
-            logger:set_primary_config(level, info)
+    case persistent_term:get(?WRITERS, none) of
+        none ->
+            nil;
+        Routes ->
+            persistent_term:put(?WRITERS, #{}),
+            stop_writers(Routes),
+            nil
     end.
 
-emit(Listener, Line) ->
-    logger:log(info, Line, #{domain => [redirect_proxy, access, Listener]}),
+%% Returns once every writer has handled the lines sent before (tests).
+sync() ->
+    lists:foreach(fun redirect_proxy_access_writer:sync/1,
+                  lists:usort(maps:values(persistent_term:get(?WRITERS, #{})))),
     nil.
 
-%% logger formatter: the line is rendered by the request process already.
-format(#{msg := {string, Line}}, _Config) -> [Line, $\n];
-format(_Event, _Config) -> [].
+stop_writers(Routes) ->
+    lists:foreach(fun redirect_proxy_access_writer:stop/1,
+                  lists:usort(maps:values(Routes))).
+
+%% A rendered line of Listener's log: a counter and a message, from the
+%% request process.
+emit(Listener, Line) ->
+    case persistent_term:get(?WRITERS, #{}) of
+        #{Listener := Writer} -> redirect_proxy_access_writer:send(Writer, Line);
+        _ -> ok
+    end,
+    nil.
 
 %% Primary level and default (application log) handler level.
 set_levels(Primary, Default) ->

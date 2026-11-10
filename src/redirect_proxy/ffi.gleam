@@ -11,6 +11,11 @@ pub fn snapshot_put(key: String, value: a) -> Nil
 @external(erlang, "redirect_proxy_ffi", "snapshot_get")
 pub fn snapshot_get(key: String) -> Result(a, Nil)
 
+/// The value of `key`, published from `init()` the first time: for values
+/// only this function publishes (counters).
+@external(erlang, "redirect_proxy_ffi", "snapshot_or_init")
+pub fn snapshot_or_init(key: String, init: fn() -> a) -> a
+
 // --- regex ------------------------------------------------------------------
 
 pub type CompiledRegex
@@ -73,6 +78,11 @@ pub fn atomic_write_private(
 /// `source` (never more readable, not even while it is written).
 @external(erlang, "redirect_proxy_ffi", "copy_file_as")
 pub fn copy_file_as(source: String, dest: String) -> Result(Nil, String)
+
+/// The first item of a comma-separated header value, trimmed and ASCII
+/// lower-cased.
+@external(erlang, "redirect_proxy_ffi", "first_item")
+pub fn first_item(value: String) -> String
 
 @external(erlang, "redirect_proxy_ffi", "append_line")
 pub fn append_line(path: String, line: String) -> Result(Nil, String)
@@ -394,8 +404,8 @@ pub fn garbage_collect() -> Nil
 
 // --- access log -----------------------------------------------------------------
 
-/// Installs one access log handler per output, each accepting the listed
-/// listeners.
+/// Starts one access log writer per output, each taking the lines of the
+/// listed listeners. Replaces any previous writers.
 @external(erlang, "redirect_proxy_access_ffi", "start")
 pub fn access_log_start(
   groups: List(#(String, List(Listener))),
@@ -404,8 +414,13 @@ pub fn access_log_start(
   compress: Bool,
 ) -> Result(Nil, String)
 
+/// Writes the lines still waiting, then stops the writers.
 @external(erlang, "redirect_proxy_access_ffi", "stop")
 pub fn access_log_stop() -> Nil
+
+/// Returns once the writers have handled every line sent before (tests).
+@external(erlang, "redirect_proxy_access_ffi", "sync")
+pub fn access_log_sync() -> Nil
 
 @external(erlang, "redirect_proxy_access_ffi", "emit")
 pub fn access_log_emit(listener: Listener, line: String) -> Nil

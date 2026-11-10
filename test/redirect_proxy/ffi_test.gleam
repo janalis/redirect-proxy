@@ -298,3 +298,10 @@ pub fn jwt_keys_are_for_signatures_test() {
   assert other != jwks
   let assert Error(_) = ffi.jwt_verify(other, token)
 }
+
+pub fn first_item_test() {
+  assert ffi.first_item(" HTTPS , http") == "https"
+  assert ffi.first_item("wss") == "wss"
+  assert ffi.first_item("") == ""
+  assert ffi.first_item(",https") == ""
+}
