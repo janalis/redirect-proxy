@@ -279,6 +279,45 @@ pub fn import_keeps_creation_dates_test() {
   assert list.all(store.all(s), fn(r) { r.created_at != "" })
 }
 
+/// Imports and bulk enabling refuse rules that loop or can never apply, as
+/// a change of one rule does; rules they leave alone are not checked.
+pub fn set_changes_check_the_rules_they_change_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let a = Rule(..new_rule("/a", "/b"), id: "a")
+  let b = Rule(..new_rule("/b", "/a"), id: "b")
+  // a loop
+  let assert Error(errors) = store.import_rules(s, [a, b], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(_) = store.preview_import(s, [a, b], store.Merge, by: "t")
+  // a target that never redirects
+  let unsafe = Rule(..new_rule("/u/", "https://$1x.com/"), kind: rule.Prefix)
+  let assert Error([error]) =
+    store.import_rules(s, [unsafe], store.Merge, by: "t")
+  assert string.contains(error, "never redirect")
+  // enabling the second half of a loop
+  let off = Rule(..b, enabled: False)
+  assert store.import_rules(s, [a, off], store.Merge, by: "t") == Ok(2)
+  let assert Error(errors) =
+    store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
+  assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
+  // a file that loaded with a problem imports again, unchanged
+  let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  assert store.import_rules(s, [legacy], store.Replace, by: "t") == Ok(1)
+  assert store.bulk_versioned(s, ["legacy"], store.Disable, None, by: "t")
+    == Ok(1)
+}
+
+fn errors_of(error: store.SetChangeError) -> List(String) {
+  case error {
+    store.Rejected(errors) -> errors
+    _ -> []
+  }
+}
+
 pub fn keep_created_at_test() {
   let at = fn(id, created, updated) {
     Rule(

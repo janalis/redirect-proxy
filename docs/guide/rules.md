@@ -149,17 +149,19 @@ A rule is rejected if any of these hold:
 
 - It duplicates the source of another enabled exact rule on the same host.
 - It redirects to itself.
-- When created or edited, a request to it would be redirected back to it,
-  directly or through other rules (for example `/a/` → `/a/b/$1`). Up to 10
-  redirects are followed, as a browser would. When the rules file is
-  loaded, loops are logged as warnings instead, so a file that loaded before
-  keeps loading.
-- When created or edited, it can never apply as written: an exact or prefix
-  source with a query string (`?`: use `query` instead) or a fragment
-  (`#`), or starting with `//` (the server reads a request for `//a/b` as
-  the path `/b`), or a host with a port. These are also logged as warnings
-  when the file is loaded or rules
-  are imported. Loop checks follow `server.trailing_slash`.
+- When created, edited, imported or enabled, a request to it would be
+  redirected back to it, directly or through other rules (for example
+  `/a/` → `/a/b/$1`). Up to 10 redirects are followed, as a browser would.
+- When created, edited, imported or enabled, it can never apply as
+  written: an exact or prefix source with a query string (`?`: use `query`
+  instead) or a fragment (`#`), or starting with `//` (the server reads a
+  request for `//a/b` as the path `/b`), a host with a port, or
+  placeholders in the target's host that never redirect.
+
+Loop checks follow `server.trailing_slash`. When the rules file is loaded,
+these two problems are logged as warnings instead, so a file that loaded
+before keeps loading; an import checks only the rules it adds or changes,
+so such a file can also be imported again as it is.
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 

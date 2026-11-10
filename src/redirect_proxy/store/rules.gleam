@@ -43,6 +43,40 @@ pub fn check_lint(changed: Rule) -> Result(Nil, List(String)) {
   }
 }
 
+/// The rules of `after` that are new, or changed other than in their dates
+/// and author, compared to `before`.
+pub fn changed_rules(before: List(Rule), after: List(Rule)) -> List(Rule) {
+  let d = diff(before, after)
+  let ids = set.from_list(list.append(d.added, d.changed))
+  list.filter(after, fn(r) { set.contains(ids, r.id) })
+}
+
+/// Refuses a change of several rules (`changed`, in the matcher `built`)
+/// when one of them could never apply as written or loops, as a change of
+/// one rule is. Rules the change leaves alone are not checked: a file that
+/// loaded before can still be imported again.
+pub fn check_changed(
+  built: matcher.Matcher,
+  changed: List(Rule),
+  ignore_trailing_slash: Bool,
+) -> Result(Nil, List(String)) {
+  let errors =
+    list.flat_map(changed, fn(r) {
+      let loop = case check_loop(built, r, ignore_trailing_slash) {
+        Ok(Nil) -> []
+        Error(errors) -> errors
+      }
+      list.append(rule.lint(r), loop)
+      |> list.map(fn(e) {
+        "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
+      })
+    })
+  case errors {
+    [] -> Ok(Nil)
+    _ -> Error(errors)
+  }
+}
+
 /// Logs the redirect loops of a rule set, each cycle once, and the rules that
 /// can never apply (loading never fails on them, so that a file that loaded
 /// before keeps loading).
