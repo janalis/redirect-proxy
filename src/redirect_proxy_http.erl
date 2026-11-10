@@ -7,7 +7,11 @@
 %%
 %% - a pool of acceptors, up to a number of open connections, and of ports
 %%   in the VM (90 % of its port limit: a connection over it is closed at
-%%   once, rather than the VM running out of ports); one process per connection, its socket in
+%%   once, rather than the VM running out of ports), and of open
+%%   connections per client address (`max_connections_per_ip`, an IPv6 /64
+%%   counting as one address; loopback and trusted proxies are not
+%%   limited): one client
+%%   cannot take them all; one process per connection, its socket in
 %%   `{active, N}` mode, so a request costs one message (the receive timeout
 %%   is the idle timeout: no timer) and one `send`
 %% - the head parsed in one pass (`parse/1`), headers kept as a list
@@ -131,12 +135,14 @@
 -define(WARNED, {?MODULE, warned}).
 -define(UPSTREAM_LOG, 1).
 -define(LISTENER_LOG, 2).
+-define(ADDRESS_LOG, 3).
 
 %% The pg scope, and group, of the redirect listeners (`drain/0`).
 -define(SCOPE, redirect_proxy_listeners).
 
-%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer, upstream)`;
-%% tests can add the connection cap (`{options, ..., MaxConnections}`).
+%% Opts: the Gleam `Options(idle_timeout_ms, max_head_bytes, peer, upstream,
+%% max_connections_per_ip, unlimited_peers)`; tests can add the connection
+%% cap (`{options, ..., MaxConnections}`).
 %% Returns the `actor.Started(Int)` (the bound port) of a gleam_otp child, or
 %% an `actor.StartError`.
 start(Address, Port, Handler, Opts) ->
@@ -154,18 +160,28 @@ describe(Reason) ->
 %% Listener: owns the listening socket and the acceptors
 %% ---------------------------------------------------------------------------
 
-init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream}) ->
+init(Parent, Address, Port, Handler,
+     {options, Idle, MaxHead, Peer, Upstream, PerIp, Unlimited}) ->
     Cap = max(1, port_cap()),
-    init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap});
-init(Parent, Address, Port, Handler, {options, Idle, MaxHead, Peer, Upstream, Cap}) ->
+    init(Parent, Address, Port, Handler,
+         {options, Idle, MaxHead, Peer, Upstream, PerIp, Unlimited, Cap});
+init(Parent, Address, Port, Handler,
+     {options, Idle, MaxHead, Peer, Upstream, PerIp, Unlimited, Cap}) ->
     process_flag(trap_exit, true),
     case persistent_term:get(?WARNED, undefined) of
-        undefined -> persistent_term:put(?WARNED, atomics:new(2, []));
+        undefined -> persistent_term:put(?WARNED, atomics:new(3, []));
         _ -> ok
     end,
     Opts = {options, Idle, MaxHead, Peer, upstream_settings(Upstream)},
-    %% the open connections, and their cap
-    Limit = {self(), atomics:new(1, []), Cap},
+    %% the open connections, and their cap; per client address: the
+    %% counts (#{Address => N} in an ETS table), the cap and the peers it
+    %% does not apply to
+    PerAddress = case PerIp of
+        0 -> none;
+        _ -> {ets:new(?MODULE, [set, public, {write_concurrency, true}]),
+              PerIp, Unlimited}
+    end,
+    Limit = {self(), atomics:new(1, []), Cap, PerAddress},
     Listened = case ip(Address) of
         {ok, Ip} ->
             gen_tcp:listen(Port, [
@@ -201,13 +217,14 @@ ip(Address) ->
 %% acceptors are busy accepting), and its count goes down when one ends,
 %% whatever the way (a monitor is not lost in hibernation, as a `try` is).
 %% It keeps their pids (Conns) to tell them when the node drains (`drain/0`).
-listener_loop(Parent, Listen, Handler, Opts, {_, Count, _} = Limit, Conns) ->
+listener_loop(Parent, Listen, Handler, Opts, {_, Count, _, PerAddress} = Limit, Conns) ->
     receive
-        {connection, Pid} ->
+        {connection, Pid, Key} ->
             _ = erlang:monitor(process, Pid),
-            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns#{Pid => []});
+            listener_loop(Parent, Listen, Handler, Opts, Limit, Conns#{Pid => Key});
         {'DOWN', _, process, Pid, _} ->
             atomics:sub(Count, 1, 1),
+            release(PerAddress, maps:get(Pid, Conns, none)),
             listener_loop(Parent, Listen, Handler, Opts, Limit, maps:remove(Pid, Conns));
         drain ->
             maps:foreach(fun(Pid, _) -> Pid ! drain end, Conns),
@@ -258,7 +275,7 @@ join_listeners() ->
 spawn_acceptor(Listen, Handler, Opts, Limit) ->
     spawn_link(fun() -> accept(Listen, Handler, Opts, Limit) end).
 
-accept(Listen, Handler, Opts, {_, Count, Cap} = Limit) ->
+accept(Listen, Handler, Opts, {_, Count, Cap, PerAddress} = Limit) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
             %% the connections of this listener, and the ports of the whole
@@ -279,14 +296,28 @@ accept(Listen, Handler, Opts, {_, Count, Cap} = Limit) ->
                     end),
                     accept(Listen, Handler, Opts, Limit);
                 false ->
-                    try
-                        serve(Socket, Handler, Opts, Limit)
-                    catch
-                        error:Reason ->
-                            %% no process for it (system_limit): not counted
+                    case claim(PerAddress, Socket) of
+                        {ok, Key} ->
+                            try
+                                serve(Socket, Handler, Opts, Limit, Key)
+                            catch
+                                error:Reason ->
+                                    %% no process for it (system_limit): not counted
+                                    atomics:sub(Count, 1, 1),
+                                    release(PerAddress, Key),
+                                    gen_tcp:close(Socket),
+                                    backoff(Reason)
+                            end;
+                        {over, Address, N} ->
                             atomics:sub(Count, 1, 1),
                             gen_tcp:close(Socket),
-                            backoff(Reason)
+                            limited(?ADDRESS_LOG, fun() ->
+                                logger:warning(iolist_to_binary(io_lib:format(
+                                    "redirect listener: ~ts has ~B open connections"
+                                    " (server.max_connections_per_ip): closing new ones"
+                                    " (at most one such warning a second is logged)",
+                                    [Address, N])))
+                            end)
                     end,
                     accept(Listen, Handler, Opts, Limit)
             end;
@@ -301,8 +332,55 @@ accept(Listen, Handler, Opts, {_, Count, Cap} = Limit) ->
             accept(Listen, Handler, Opts, Limit)
     end.
 
-%% A process for the accepted Socket, which the listener monitors.
-serve(Socket, Handler, Opts, {Listener, _, _}) ->
+%% Counts a connection against its client address: {ok, Key} (none when
+%% not counted: no limit, loopback, a trusted proxy, an unknown address), or
+%% {over, Address, Open} past the cap.
+claim(none, _) ->
+    {ok, none};
+claim({Tab, Max, Unlimited}, Socket) ->
+    case inet:peername(Socket) of
+        {ok, {Ip, _}} ->
+            case redirect_proxy_ffi:cidrs_contain_ip(Ip, Unlimited) of
+                true ->
+                    {ok, none};
+                false ->
+                    Key = address_key(Ip),
+                    case ets:update_counter(Tab, Key, {2, 1}, {Key, 0}) of
+                        N when N > Max ->
+                            release({Tab, Max, Unlimited}, Key),
+                            {over, address_text(Key), N - 1};
+                        _ ->
+                            {ok, Key}
+                    end
+            end;
+        _ ->
+            {ok, none}
+    end.
+
+release(_, none) ->
+    ok;
+release({Tab, _, _}, Key) ->
+    %% the last one: the entry goes (delete_object: unless another
+    %% connection of the address counted itself in the meantime)
+    case ets:update_counter(Tab, Key, {2, -1}) of
+        0 -> ets:delete_object(Tab, {Key, 0});
+        _ -> true
+    end,
+    ok.
+
+%% IPv4 addresses (IPv4-mapped IPv6 ones too) count alone, IPv6 ones by
+%% /64: a host usually holds a whole /64.
+address_key({0, 0, 0, 0, 0, 16#ffff, A, B}) ->
+    {v4, {A bsr 8, A band 255, B bsr 8, B band 255}};
+address_key({A, B, C, D, _, _, _, _}) -> {v6, {A, B, C, D, 0, 0, 0, 0}};
+address_key(Ip) -> {v4, Ip}.
+
+address_text({v4, Ip}) -> inet:ntoa(Ip);
+address_text({v6, Ip}) -> [inet:ntoa(Ip), "/64"].
+
+%% A process for the accepted Socket, which the listener monitors, and the
+%% Key it counts under (release/2 when it ends).
+serve(Socket, Handler, Opts, {Listener, _, _, _}, Key) ->
     Pid = spawn_opt(fun() ->
         receive
             {go, S} -> connection(S, Handler, Opts)
@@ -310,7 +388,7 @@ serve(Socket, Handler, Opts, {Listener, _, _}) ->
             exit(normal)
         end
     end, [{min_heap_size, ?CONN_HEAP}]),
-    Listener ! {connection, Pid},
+    Listener ! {connection, Pid, Key},
     case gen_tcp:controlling_process(Socket, Pid) of
         ok -> Pid ! {go, Socket};
         {error, _} -> gen_tcp:close(Socket), exit(Pid, kill)

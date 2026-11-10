@@ -26,7 +26,9 @@ List the address the TLS proxy connects from in
 connects from that container's address: with only `127.0.0.1/32` listed,
 its `X-Forwarded-Proto: https` is ignored, HTTPS requests are redirected
 to HTTPS again, and browsers loop. List the network's CIDR (the Compose
-network's subnet, the cluster's pod CIDR) instead.
+network's subnet, the cluster's pod CIDR) instead. Unlisted, the proxy is
+also held to `server.max_connections_per_ip` connections (256) as one
+client address.
 :::
 
 ## In front of a website

@@ -151,7 +151,9 @@ saturated (every connection always has a request in flight).
   this port: put a TLS proxy in front (`server.https_redirect` redirects
   the requests it does not mark `X-Forwarded-Proto: https`).
 - A connection idle for 10 s, or that takes as long to send a request
-  head, is closed.
+  head, is closed. One client address holds at most
+  `server.max_connections_per_ip` connections (256; see
+  [Connection limits](operations#connection-limits)).
 - A request head (request line and headers) is limited to
   `server.max_path_bytes` + 64 KiB: a longer request line gets 414, longer
   headers 431, as do more than 100 header lines.

@@ -10,6 +10,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/string
+import redirect_proxy/cidr
 import redirect_proxy/proxy/http as proxy_http
 import support
 
@@ -56,6 +57,14 @@ fn start() -> Int {
 }
 
 fn start_with_idle_timeout(idle_timeout_ms: Int) -> Int {
+  start_with(idle_timeout_ms, 0, [])
+}
+
+fn start_with(
+  idle_timeout_ms: Int,
+  max_connections_per_ip: Int,
+  unlimited: List(String),
+) -> Int {
   let assert Ok(started) =
     proxy_http.start(
       "127.0.0.1",
@@ -66,6 +75,8 @@ fn start_with_idle_timeout(idle_timeout_ms: Int) -> Int {
         max_head_bytes: 1024,
         peer: True,
         upstream: option.None,
+        max_connections_per_ip:,
+        unlimited_peers: cidr.compile(unlimited),
       ),
     )
   started.data
@@ -609,6 +620,33 @@ pub fn connections_over_the_cap_are_closed_test() {
   assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
   close(second)
   close(fourth)
+}
+
+/// One client address cannot hold more than `max_connections_per_ip`
+/// connections; a closed one makes room, and trusted proxies are not
+/// limited.
+pub fn connections_over_the_address_cap_are_closed_test() {
+  let port = start_with(5000, 2, [])
+  let first = open(port)
+  let second = open(port)
+  assert string.starts_with(get(first, 100).0, "HTTP/1.1 200 OK\r\n")
+  assert string.starts_with(get(second, 100).0, "HTTP/1.1 200 OK\r\n")
+  let third = open(port)
+  assert get(third, 500) == #("", True)
+  close(third)
+  close(first)
+  process.sleep(100)
+  let fourth = open(port)
+  assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
+  close(second)
+  close(fourth)
+
+  let trusted = start_with(5000, 1, ["127.0.0.0/8"])
+  let sockets = list.map([1, 2, 3], fn(_) { open(trusted) })
+  list.each(sockets, fn(socket) {
+    assert string.starts_with(get(socket, 100).0, "HTTP/1.1 200 OK\r\n")
+  })
+  list.each(sockets, close)
 }
 
 /// A hibernated connection sleeps until its idle timeout or a message: it

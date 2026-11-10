@@ -53,6 +53,10 @@ pub fn http_options(
       || option.is_some(upstream)
       || { config.https_redirect && trusted_proxies != [] },
     upstream:,
+    max_connections_per_ip: config.max_connections_per_ip,
+    // local processes (a TLS proxy on the same host) and trusted proxies
+    // hold the connections of many clients
+    unlimited_peers: cidr.compile(["127.0.0.0/8", "::1/128", ..trusted_proxies]),
   )
 }
 

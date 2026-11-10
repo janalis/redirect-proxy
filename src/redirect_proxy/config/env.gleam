@@ -24,6 +24,7 @@ pub const int_env_vars = [
   "RP_API_PORT",
   "RP_API_TOKEN_TTL",
   "RP_SERVER_CACHE_MAX_AGE",
+  "RP_SERVER_MAX_CONNECTIONS_PER_IP",
   "RP_SERVER_MAX_PATH_BYTES",
   "RP_SERVER_MAX_REQUEST_BODY_BYTES",
   "RP_SERVER_PORT",
@@ -268,6 +269,10 @@ pub fn apply_env(
       max_request_body_bytes: i(
         "RP_SERVER_MAX_REQUEST_BODY_BYTES",
         server.max_request_body_bytes,
+      ),
+      max_connections_per_ip: i(
+        "RP_SERVER_MAX_CONNECTIONS_PER_IP",
+        server.max_connections_per_ip,
       ),
       https_redirect: b("RP_SERVER_HTTPS_REDIRECT", server.https_redirect),
       upstream: s("RP_SERVER_UPSTREAM", server.upstream),

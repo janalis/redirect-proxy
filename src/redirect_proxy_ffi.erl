@@ -11,7 +11,7 @@
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
     counter_new/1, counter_add/3, counter_get/2, counter_put/3,
-    ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2,
+    ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2, cidrs_contain_ip/2,
     cidrs_contain_peer_result/2, forwarded_hop/2, first_item/1,
     is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
     now_seconds/0, now_millis/0, rfc3339/1, parse_rfc3339/1,

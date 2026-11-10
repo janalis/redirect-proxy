@@ -29,6 +29,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_METRICS_PATH` | (none: off; needs `RP_ADMIN_METRICS_TOKEN`) |
 | `RP_SERVER_MAX_PATH_BYTES` | `8192` (longer paths get a 414) |
 | `RP_SERVER_MAX_REQUEST_BODY_BYTES` | `0` (forwarded requests with a longer body get a 413; 0: no limit) |
+| `RP_SERVER_MAX_CONNECTIONS_PER_IP` | `256` (open connections per client address, an IPv6 /64, on the redirect listener; loopback peers and `access_log.trusted_proxies` are not limited; 0: no limit) |
 | `RP_SERVER_HTTPS_REDIRECT` | `false` (redirect plain HTTP requests to HTTPS before any rule) |
 | `RP_SERVER_UPSTREAM` | (none: off; an `http://` or `https://` origin that requests no rule answers are forwarded to, see [In front of a website](deployment#in-front-of-a-website)) |
 | `RP_SERVER_UPSTREAM_TIMEOUT` | `60` (seconds to wait for the upstream's response head; idle timeout of upstream reads and writes) |

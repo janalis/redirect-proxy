@@ -107,6 +107,7 @@ pub const known_keys = [
   "server.https_redirect",
   "server.max_path_bytes",
   "server.max_request_body_bytes",
+  "server.max_connections_per_ip",
   "log.format",
   "log.level",
   "server.listen",
@@ -191,6 +192,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["server", "max_request_body_bytes"],
     d.server.max_request_body_bytes,
+  ))
+  use max_connections_per_ip <- result.try(integer(
+    t,
+    ["server", "max_connections_per_ip"],
+    d.server.max_connections_per_ip,
   ))
   use https_redirect <- result.try(boolean(
     t,
@@ -497,6 +503,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       metrics_path:,
       max_path_bytes:,
       max_request_body_bytes:,
+      max_connections_per_ip:,
       https_redirect:,
       upstream:,
       upstream_timeout:,
