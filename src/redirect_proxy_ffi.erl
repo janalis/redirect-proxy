@@ -4,7 +4,7 @@
     snapshot_put/2, snapshot_get/1,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
-    atomic_write/2, atomic_write_private/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
+    atomic_write/2, atomic_write_private/2, copy_file_as/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
@@ -156,14 +156,43 @@ atomic_write(Path, Content, NewMode) ->
 
 %% The new file replaces the old one: give it the old one's permissions
 %% (e.g. 0640 for a group-readable redirections file) instead of the umask
-%% default. A new file gets NewMode, or the umask default.
+%% default. A new file gets NewMode, or the umask default. A private file
+%% (with a NewMode) is never readable by others: its group may have been
+%% given access on purpose, the rest of the system never is.
 set_mode(Path, Tmp, NewMode) ->
     case {file:read_file_info(Path), NewMode} of
-        {{ok, #file_info{mode = Mode}}, _} -> _ = file:change_mode(Tmp, Mode band 8#7777);
+        {{ok, #file_info{mode = Mode}}, default} -> _ = file:change_mode(Tmp, Mode band 8#7777);
+        {{ok, #file_info{mode = Mode}}, _} -> _ = file:change_mode(Tmp, Mode band 8#7770);
         {{error, _}, default} -> ok;
         {{error, _}, _} -> _ = file:change_mode(Tmp, NewMode)
     end,
     ok.
+
+%% Copies Source to a new file Dest that has Source's permissions before it
+%% holds any of its bytes (a copy then a chmod leaves the copy readable with
+%% the umask default for a moment).
+copy_file_as(Source, Dest) ->
+    Result =
+        case file:read_file_info(Source) of
+            {ok, #file_info{mode = Mode}} ->
+                case file:open(Dest, [write, exclusive, raw, binary]) of
+                    {ok, Fd} ->
+                        _ = file:change_mode(Dest, Mode band 8#7777),
+                        _ = file:close(Fd),
+                        case file:copy(Source, Dest) of
+                            {ok, _} -> ok;
+                            CopyError -> CopyError
+                        end;
+                    OpenError ->
+                        OpenError
+                end;
+            InfoError ->
+                InfoError
+        end,
+    case Result of
+        ok -> {ok, nil};
+        {error, Reason} -> {error, atom_to_binary_safe(Reason)}
+    end.
 
 %% Makes the rename durable: without it, a power loss right after a write
 %% can bring the old file back. Best effort: a file system that cannot open

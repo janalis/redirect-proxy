@@ -221,7 +221,7 @@ fn mode(path: String) -> Int {
 }
 
 /// Files with secrets are created 0600; an existing file keeps the
-/// permissions it was given.
+/// permissions it was given, but is never readable by others.
 pub fn atomic_write_private_mode_test() {
   let dir = support.temp_dir()
   let path = dir <> "/users.json"
@@ -231,12 +231,29 @@ pub fn atomic_write_private_mode_test() {
   let assert Ok(Nil) = ffi.atomic_write_private(path, "{\"a\":1}")
   assert mode(path) == 0o640
   assert simplifile.read(path) == Ok("{\"a\":1}")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o644)
+  let assert Ok(Nil) = ffi.atomic_write_private(path, "{}")
+  assert mode(path) == 0o640
   // other files: the old permissions too
   let rules = dir <> "/redirects.json"
   let assert Ok(Nil) = ffi.atomic_write(rules, "[]")
   let assert Ok(Nil) = simplifile.set_permissions_octal(rules, 0o604)
   let assert Ok(Nil) = ffi.atomic_write(rules, "[ ]")
   assert mode(rules) == 0o604
+}
+
+/// A copy has the permissions of its source from its creation.
+pub fn copy_file_as_test() {
+  let dir = support.temp_dir()
+  let source = dir <> "/redirects.json"
+  let assert Ok(Nil) = ffi.atomic_write(source, "[]")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o640)
+  let copy = dir <> "/copy.json"
+  let assert Ok(Nil) = ffi.copy_file_as(source, copy)
+  assert mode(copy) == 0o640
+  assert simplifile.read(copy) == Ok("[]")
+  // never over an existing file
+  let assert Error(_) = ffi.copy_file_as(source, copy)
 }
 
 /// Dates that do not exist are refused, not shifted to the next month.
