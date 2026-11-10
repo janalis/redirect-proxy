@@ -245,6 +245,9 @@ pub fn oidc_logout_at_provider_test() {
       )
     let cookie = session_cookie(sso_login(env))
     let page = get(env.admin <> "/rules", [#("cookie", cookie)])
+    // the logout form may send the browser on to the provider
+    let assert Ok(csp) = response.get_header(page, "content-security-policy")
+    assert string.contains(csp, "form-action 'self' " <> issuer) == at_provider
     location(
       post_form(env, "/logout", cookie, [#("csrf_token", csrf_token(page.body))]),
     )

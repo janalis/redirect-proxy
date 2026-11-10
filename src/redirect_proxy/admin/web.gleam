@@ -96,6 +96,29 @@ fn host_prefixed(req: Request, ctx: Context) -> Bool {
   https_admin(ctx) && !local_http
 }
 
+/// The logout form sends the browser on to the identity provider's logout
+/// endpoint with `logout_at_provider`: browsers apply `form-action` to that
+/// redirect too, so the provider's origin (the issuer's) must be allowed.
+fn provider_logout_origin(ctx: Context) -> String {
+  let oidc = ctx.config.oidc
+  case oidc.enabled && oidc.logout_at_provider {
+    False -> ""
+    True ->
+      case uri.parse(oidc.issuer) {
+        Ok(uri.Uri(scheme: Some(scheme), host: Some(host), port:, ..)) ->
+          " "
+          <> scheme
+          <> "://"
+          <> host
+          <> case port {
+            Some(port) -> ":" <> int.to_string(port)
+            None -> ""
+          }
+        _ -> ""
+      }
+  }
+}
+
 fn https_admin(ctx: Context) -> Bool {
   string.starts_with(string.lowercase(ctx.config.admin.public_url), "https://")
 }
@@ -146,12 +169,13 @@ pub fn strict_transport_security(
   }
 }
 
-pub fn security_headers(next: fn() -> Response) -> Response {
+pub fn security_headers(ctx: Context, next: fn() -> Response) -> Response {
   next()
   |> wisp.set_header(
     "content-security-policy",
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-      <> "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      <> "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+      <> provider_logout_origin(ctx),
   )
   |> wisp.set_header("x-frame-options", "DENY")
   |> wisp.set_header("x-content-type-options", "nosniff")

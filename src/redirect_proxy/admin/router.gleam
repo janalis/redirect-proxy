@@ -41,7 +41,7 @@ import wisp.{type Request, type Response}
 pub fn handle(req: Request, ctx: Context) -> Response {
   metrics.incr(metrics.AdminRequests)
   use <- strict_transport_security(ctx)
-  use <- security_headers
+  use <- security_headers(ctx)
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
   use <- wisp.serve_static(req, under: "/static", from: ctx.static_dir)
