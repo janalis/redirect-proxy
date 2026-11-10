@@ -706,10 +706,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
         use Nil <- result.try(check_collection_version(state, expected))
-        let rules = case mode {
-          Replace -> prepared
-          Merge -> merge(state.rules, prepared)
-        }
+        let rules =
+          case mode {
+            Replace -> prepared
+            Merge -> merge(state.rules, prepared)
+          }
+          |> store_rules.keep_created_at(state.rules, _)
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
@@ -744,10 +746,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
-      let rules = case mode {
-        Replace -> prepared
-        Merge -> merge(state.rules, prepared)
-      }
+      let rules =
+        case mode {
+          Replace -> prepared
+          Merge -> merge(state.rules, prepared)
+        }
+        |> store_rules.keep_created_at(state.rules, _)
       process.send(
         reply,
         store_rules.check_conflicts(rules)

@@ -213,10 +213,8 @@ pub fn prepare_import(
         "" -> id.uuid()
         given -> given
       },
-      created_at: case r.created_at {
-        "" -> now
-        c -> c
-      },
+      // a blank creation date is resolved against the current rules
+      // (`keep_created_at`): an export without it must not reset it
       updated_at: now,
       updated_by: actor_name,
     )
@@ -232,6 +230,26 @@ pub fn prepare_import(
         )
     }
   }
+}
+
+/// Gives the imported rules without a creation date (a CSV file has none)
+/// the one of the current rule with the same id, else now.
+pub fn keep_created_at(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
+  let created =
+    list.fold(existing, dict.new(), fn(acc, r: Rule) {
+      dict.insert(acc, r.id, r.created_at)
+    })
+  let now = ffi.now_rfc3339()
+  list.map(rules, fn(r) {
+    case r.created_at {
+      "" ->
+        rule.Rule(
+          ..r,
+          created_at: dict.get(created, r.id) |> result.unwrap(now),
+        )
+      _ -> r
+    }
+  })
 }
 
 pub fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {

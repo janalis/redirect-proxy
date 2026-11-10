@@ -257,6 +257,28 @@ pub fn import_merge_and_replace_test() {
   assert redirect("/d") == Error(Nil)
 }
 
+/// A CSV export has no creation date: importing it back keeps the dates of
+/// the rules it updates.
+pub fn import_keeps_creation_dates_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let created = "2020-01-01T00:00:00Z"
+  let dated = Rule(..new_rule("/a", "/1"), id: "a", created_at: created)
+  assert store.import_rules(s, [dated], store.Merge, by: "t") == Ok(1)
+  let undated = Rule(..dated, target: "/2", created_at: "")
+  assert store.import_rules(s, [undated], store.Merge, by: "t") == Ok(1)
+  let assert Ok(after) = store.get(s, "a")
+  assert after.target == "/2"
+  assert after.created_at == created
+  let fresh = Rule(..new_rule("/b", "/3"), created_at: "")
+  let undated = Rule(..undated, target: "/4")
+  assert store.import_rules(s, [undated, fresh], store.Replace, by: "t")
+    == Ok(2)
+  let assert Ok(after) = store.get(s, "a")
+  assert after.created_at == created
+  assert list.all(store.all(s), fn(r) { r.created_at != "" })
+}
+
 pub fn validate_all_reports_rule_numbers_test() {
   let assert Error([error]) =
     store_rules.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
