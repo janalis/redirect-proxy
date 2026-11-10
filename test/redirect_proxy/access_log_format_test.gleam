@@ -111,6 +111,15 @@ pub fn credentials_are_refused_test() {
   assert string.contains(e, "credentials")
   let assert Error(_) = fmt.parse("$http_cookie", "default")
   let assert Error(_) = fmt.parse("${http_proxy_authorization}", "default")
+  // other spellings of the same headers
+  let assert Error(_) = fmt.parse("${http_proxy-authorization}", "default")
+  let assert Error(_) = fmt.parse("${http_Cookie}", "default")
+  let assert Error(_) = fmt.parse("${http_AUTHORIZATION}", "default")
+}
+
+pub fn header_names_are_lowercased_test() {
+  let assert Ok(f) = fmt.parse("${http_X_Id}", "default")
+  assert f.segments == [Var(Header("x-id"))]
 }
 
 pub fn parse_test() {

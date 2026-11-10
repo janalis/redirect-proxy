@@ -229,10 +229,16 @@ fn field(name: String) -> Result(Field, String) {
     "location" | "sent_http_location" -> Ok(Location)
     "rule_id" -> Ok(RuleId)
     "listener" -> Ok(ListenerName)
-    "http_authorization" | "http_proxy_authorization" | "http_cookie" ->
-      Error("$" <> name <> " is refused: it would write credentials to the log")
     "http_" <> header if header != "" ->
-      Ok(Header(string.replace(header, "_", "-")))
+      // `${http_Proxy-Authorization}` names the same header as
+      // `$http_proxy_authorization`: refuse credentials by header name
+      case string.lowercase(string.replace(header, "_", "-")) {
+        "authorization" | "proxy-authorization" | "cookie" ->
+          Error(
+            "$" <> name <> " is refused: it would write credentials to the log",
+          )
+        header -> Ok(Header(header))
+      }
     _ -> Error("unknown variable $" <> name)
   }
 }
