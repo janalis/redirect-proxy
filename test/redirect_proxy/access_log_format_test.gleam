@@ -120,6 +120,9 @@ pub fn credentials_are_refused_test() {
 pub fn header_names_are_lowercased_test() {
   let assert Ok(f) = fmt.parse("${http_X_Id}", "default")
   assert f.segments == [Var(Header("x-id"))]
+  let assert Ok(f) = fmt.parse("${http_Referer} ${http_User-Agent}", "default")
+  assert f.segments
+    == [Var(fmt.HttpReferer), Literal(" "), Var(fmt.HttpUserAgent)]
 }
 
 pub fn parse_test() {

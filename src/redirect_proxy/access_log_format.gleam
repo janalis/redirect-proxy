@@ -237,6 +237,9 @@ fn field(name: String) -> Result(Field, String) {
           Error(
             "$" <> name <> " is refused: it would write credentials to the log",
           )
+        // the named fields (the referer's query string is stripped)
+        "referer" -> Ok(HttpReferer)
+        "user-agent" -> Ok(HttpUserAgent)
         header -> Ok(Header(header))
       }
     _ -> Error("unknown variable $" <> name)
