@@ -504,6 +504,12 @@ pub fn more_value_checks_test() {
   )
   let open = config.OidcConfig(..oidc, allow_any_account: True)
   let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: open))
+  let no_openid = config.OidcConfig(..open, scopes: ["email", "profile"])
+  assert refused(config.Config(..d, oidc: no_openid))
+    == "auth.oidc.scopes must include openid"
+  let no_scopes = config.OidcConfig(..open, scopes: [])
+  assert refused(config.Config(..d, oidc: no_scopes))
+    == "auth.oidc.scopes must include openid"
   let listed = config.OidcConfig(..oidc, allowed_groups: ["staff"])
   let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: listed))
   // a timer of more than about 49 days crashed the store at startup

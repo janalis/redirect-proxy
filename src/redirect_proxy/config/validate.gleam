@@ -380,6 +380,11 @@ pub fn validate(config: Config) -> Result(Config, String) {
     config.oidc.enabled && !is_http_url(config.oidc.issuer),
     Error("auth.oidc.issuer must be an http:// or https:// URL"),
   )
+  // without it the provider returns no id_token: every sign-in would fail
+  use <- bool.guard(
+    config.oidc.enabled && !list.contains(config.oidc.scopes, "openid"),
+    Error("auth.oidc.scopes must include openid"),
+  )
   use <- bool.guard(
     open_oidc(config) && !config.oidc.allow_any_account,
     Error(
