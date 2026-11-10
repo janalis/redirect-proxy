@@ -746,12 +746,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
-      let rules =
-        case mode {
-          Replace -> prepared
-          Merge -> merge(state.rules, prepared)
-        }
-        |> store_rules.keep_created_at(state.rules, _)
+      // creation dates do not matter here: diff ignores them
+      let rules = case mode {
+        Replace -> prepared
+        Merge -> merge(state.rules, prepared)
+      }
       process.send(
         reply,
         store_rules.check_conflicts(rules)

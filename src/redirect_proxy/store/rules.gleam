@@ -233,19 +233,21 @@ pub fn prepare_import(
 }
 
 /// Gives the imported rules without a creation date (a CSV file has none)
-/// the one of the current rule with the same id, else now.
+/// the one of the current rule with the same id, else their import date.
 pub fn keep_created_at(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
   let created =
     list.fold(existing, dict.new(), fn(acc, r: Rule) {
-      dict.insert(acc, r.id, r.created_at)
+      case r.created_at {
+        "" -> acc
+        c -> dict.insert(acc, r.id, c)
+      }
     })
-  let now = ffi.now_rfc3339()
   list.map(rules, fn(r) {
     case r.created_at {
       "" ->
         rule.Rule(
           ..r,
-          created_at: dict.get(created, r.id) |> result.unwrap(now),
+          created_at: dict.get(created, r.id) |> result.unwrap(r.updated_at),
         )
       _ -> r
     }

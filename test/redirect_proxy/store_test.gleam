@@ -279,6 +279,22 @@ pub fn import_keeps_creation_dates_test() {
   assert list.all(store.all(s), fn(r) { r.created_at != "" })
 }
 
+pub fn keep_created_at_test() {
+  let at = fn(id, created, updated) {
+    Rule(
+      ..new_rule("/" <> id, "/x"),
+      id:,
+      created_at: created,
+      updated_at: updated,
+    )
+  }
+  let existing = [at("a", "2020", "2021"), at("b", "", "2021")]
+  let imported = [at("a", "", "2030"), at("b", "", "2030"), at("c", "", "2030")]
+  assert store_rules.keep_created_at(existing, imported)
+    |> list.map(fn(r) { r.created_at })
+    == ["2020", "2030", "2030"]
+}
+
 pub fn validate_all_reports_rule_numbers_test() {
   let assert Error([error]) =
     store_rules.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
