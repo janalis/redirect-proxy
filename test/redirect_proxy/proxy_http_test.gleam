@@ -707,3 +707,17 @@ pub fn requests_received_before_draining_are_answered_test() {
   assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
   assert string.contains(text, "\r\nx-path: /next\r\n")
 }
+
+@external(erlang, "test_net_ffi", "shrink_warned")
+fn shrink_warned() -> Nil
+
+@external(erlang, "test_net_ffi", "warned_size")
+fn warned_size() -> Int
+
+/// After a hot upgrade, the warning timestamps an older version left have
+/// too few slots: a listener started then makes room for every kind.
+pub fn listener_resizes_old_warning_slots_test() {
+  shrink_warned()
+  let _ = start()
+  assert warned_size() == 3
+}

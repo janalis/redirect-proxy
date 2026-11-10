@@ -131,11 +131,13 @@
 }).
 
 %% atomics: the second of the last warning about the upstream
-%% (?UPSTREAM_LOG), and about the listener (?LISTENER_LOG)
+%% (?UPSTREAM_LOG), the listener (?LISTENER_LOG) and a client address
+%% (?ADDRESS_LOG); ?WARNED_KINDS slots
 -define(WARNED, {?MODULE, warned}).
 -define(UPSTREAM_LOG, 1).
 -define(LISTENER_LOG, 2).
 -define(ADDRESS_LOG, 3).
+-define(WARNED_KINDS, 3).
 
 %% The pg scope, and group, of the redirect listeners (`drain/0`).
 -define(SCOPE, redirect_proxy_listeners).
@@ -168,10 +170,7 @@ init(Parent, Address, Port, Handler,
 init(Parent, Address, Port, Handler,
      {options, Idle, MaxHead, Peer, Upstream, PerIp, Unlimited, Cap}) ->
     process_flag(trap_exit, true),
-    case persistent_term:get(?WARNED, undefined) of
-        undefined -> persistent_term:put(?WARNED, atomics:new(3, []));
-        _ -> ok
-    end,
+    warned_init(),
     Opts = {options, Idle, MaxHead, Peer, upstream_settings(Upstream)},
     %% the open connections, and their cap; per client address: the
     %% counts (#{Address => N} in an ETS table), the cap and the peers it
@@ -415,7 +414,11 @@ connection(Socket, Handler, {options, IdleTimeout, MaxHead, WithPeer, Upstream},
     end,
     %% exit_on_close: a client that shuts down its side after its request
     %% (half-close) still gets the response
-    ok = inet:setopts(Socket, [{active, ?ACTIVE}, {exit_on_close, false}]),
+    %% a client gone before this process got the socket: nothing to answer
+    case inet:setopts(Socket, [{active, ?ACTIVE}, {exit_on_close, false}]) of
+        ok -> ok;
+        {error, _} -> gen_tcp:close(Socket), exit(normal)
+    end,
     request(<<>>, #conn{
         socket = Socket,
         handler = Handler,
@@ -1747,6 +1750,19 @@ warn(#conn{upstream = Up}, Format, Args) ->
             "upstream ~ts: " ++ Format ++ " (at most one such warning a second is logged)",
             [Up#up.url | Args])))
     end).
+
+%% Creates the ?WARNED atomics, or replaces them when they have fewer slots
+%% than this version uses (left by an older version of the module: a hot
+%% upgrade must not make limited/2 fail with badarg).
+warned_init() ->
+    case persistent_term:get(?WARNED, undefined) of
+        undefined -> persistent_term:put(?WARNED, atomics:new(?WARNED_KINDS, []));
+        Ref ->
+            case maps:get(size, atomics:info(Ref)) < ?WARNED_KINDS of
+                true -> persistent_term:put(?WARNED, atomics:new(?WARNED_KINDS, []));
+                false -> ok
+            end
+    end.
 
 %% Calls Log at most once a second for the whole node, per Kind of message.
 limited(Kind, Log) ->

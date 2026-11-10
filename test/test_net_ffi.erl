@@ -3,7 +3,17 @@
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, upload/4, parse_outcome/1,
          trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
-         start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1]).
+         start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1,
+         shrink_warned/0, warned_size/0]).
+
+%% The warning timestamps of redirect_proxy_http as an older version of the
+%% module left them (two slots), and their size.
+shrink_warned() ->
+    persistent_term:put({redirect_proxy_http, warned}, atomics:new(2, [])),
+    nil.
+
+warned_size() ->
+    maps:get(size, atomics:info(persistent_term:get({redirect_proxy_http, warned}))).
 
 free_port() ->
     {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {reuseaddr, true}]),
