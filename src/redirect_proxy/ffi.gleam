@@ -408,8 +408,8 @@ pub fn garbage_collect() -> Nil
 
 // --- access log -----------------------------------------------------------------
 
-/// Installs one access log handler per output, each accepting the listed
-/// listeners.
+/// Starts one access log writer per output, each taking the lines of the
+/// listed listeners. Replaces any previous writers.
 @external(erlang, "redirect_proxy_access_ffi", "start")
 pub fn access_log_start(
   groups: List(#(String, List(Listener))),
@@ -418,6 +418,7 @@ pub fn access_log_start(
   compress: Bool,
 ) -> Result(Nil, String)
 
+/// Writes the lines still waiting, then stops the writers.
 @external(erlang, "redirect_proxy_access_ffi", "stop")
 pub fn access_log_stop() -> Nil
 

@@ -1,9 +1,9 @@
 //// Access (traffic) logs of the redirect, admin and API listeners.
 ////
-//// Each request process renders its own line; one dedicated `logger_std_h`
-//// handler per output (stdout, stderr or a file) batches the writes. The
-//// handlers never block request processes: under extreme overload they drop
-//// lines instead.
+//// Each request process renders its own line and sends it to the writer of
+//// its output (stdout, stderr or a file: `redirect_proxy_access_writer`),
+//// which batches the writes. Writers never block request processes: under
+//// extreme overload they drop lines instead.
 
 import gleam/bytes_tree
 import gleam/http
