@@ -127,6 +127,18 @@ pub fn crud_round_trip_test() {
   assert resp.status == 415
   assert header(resp, "content-type") == "application/problem+json"
   assert field(resp.body, ["status"], decode.int) == 415
+  // media types are case-insensitive
+  let resp =
+    support.send(
+      Post,
+      env.api <> "/api/redirects",
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "Application/JSON; charset=utf-8"),
+      ],
+      "{\"source\":\"/case\",\"target\":\"/c\"}",
+    )
+  assert resp.status == 201
 
   // delete
   assert api(env, Delete, "/api/redirects/" <> id, token, "").status == 204

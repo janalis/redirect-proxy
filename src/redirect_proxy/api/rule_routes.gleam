@@ -320,8 +320,11 @@ fn require_import_body(
 
 /// Reads a body sent as JSON (415 otherwise).
 fn require_json_body(req: Request, next: fn(String) -> Response) -> Response {
+  // media types are case-insensitive (RFC 9110)
   let content_type =
-    request.get_header(req, "content-type") |> result.unwrap("")
+    request.get_header(req, "content-type")
+    |> result.unwrap("")
+    |> string.lowercase
   use <- bool.lazy_guard(
     !string.starts_with(content_type, "application/json")
       && !string.starts_with(content_type, "application/merge-patch+json"),
