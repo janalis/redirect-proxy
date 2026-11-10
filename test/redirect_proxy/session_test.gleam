@@ -1,3 +1,4 @@
+import gleam/list
 import redirect_proxy/admin/auth/session
 import redirect_proxy/role
 
@@ -36,4 +37,23 @@ pub fn external_names_are_prefixed_test() {
   assert session.get(local.token, 0) == Error(Nil)
   let assert Ok(_) = session.get(sso.token, 0)
   let assert Ok(_) = session.get(proxy.token, 0)
+}
+
+@external(erlang, "redirect_proxy_ffi", "ets_to_list")
+fn ets_to_list(table: String) -> List(#(String, #(Int, session.Session)))
+
+/// The table holds the hash of each token, not the token: a memory dump
+/// gives no session to replay.
+pub fn tokens_are_not_kept_test() {
+  session.init()
+  let s = session.create("alice", session.Local, 60, "", role.Admin)
+  let entries = ets_to_list("redirect_proxy_sessions")
+  assert !list.any(entries, fn(entry) {
+    entry.0 == s.token || entry.1.1.token == s.token
+  })
+  // the session is found by its token, and given back with it
+  let assert Ok(found) = session.get(s.token, 0)
+  assert found.token == s.token
+  session.destroy(s.token)
+  assert session.get(s.token, 0) == Error(Nil)
 }

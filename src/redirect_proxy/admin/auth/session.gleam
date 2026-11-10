@@ -1,5 +1,7 @@
 //// Server-side sessions kept in ETS. The browser only holds a signed,
 //// random session token; sessions can be revoked and expire server-side.
+//// The table holds the SHA-256 of each token, not the token: a memory or
+//// crash dump gives no session to replay.
 
 import gleam/bit_array
 import gleam/crypto
@@ -78,8 +80,16 @@ pub fn create(
       last_seen: now,
     )
   // Stored as #(expires_at, session) so that `ets_delete_older` can purge.
-  ffi.ets_put(table, session.token, #(session.expires_at, session))
+  ffi.ets_put(table, key(session.token), #(
+    session.expires_at,
+    Session(..session, token: ""),
+  ))
   session
+}
+
+/// The key of a session in the table.
+fn key(token: String) -> String {
+  crypto.hash(crypto.Sha256, <<token:utf8>>) |> bit_array.base16_encode
 }
 
 /// The live session of a token. A session unused for `idle_timeout` seconds
@@ -94,7 +104,8 @@ pub fn get_at(
   idle_timeout: Int,
   now: Int,
 ) -> Result(Session, Nil) {
-  case ffi.ets_get(table, token) {
+  let key = key(token)
+  case ffi.ets_get(table, key) {
     Ok(#(expires_at, session)) -> {
       let session: Session = session
       let idle = idle_timeout > 0 && now - session.last_seen >= idle_timeout
@@ -102,16 +113,16 @@ pub fn get_at(
         True -> {
           case now - session.last_seen >= touch_interval {
             True ->
-              ffi.ets_put(table, token, #(
+              ffi.ets_put(table, key, #(
                 expires_at,
                 Session(..session, last_seen: now),
               ))
             False -> Nil
           }
-          Ok(session)
+          Ok(Session(..session, token:))
         }
         False -> {
-          ffi.ets_delete(table, token)
+          ffi.ets_delete(table, key)
           Error(Nil)
         }
       }
@@ -144,6 +155,8 @@ pub fn header_session(
     Ok(s) -> #(s, False)
     Error(Nil) -> {
       let s = create(name, Header, ttl, "", role)
+      // the token itself: every browser the proxy vouches for gets it (the
+      // proxy's sign-in, checked on every request, is what protects it)
       ffi.ets_put(header_index, key, #(s.expires_at, s.token))
       #(s, True)
     }
@@ -151,7 +164,7 @@ pub fn header_session(
 }
 
 pub fn destroy(token: String) -> Nil {
-  ffi.ets_delete(table, token)
+  ffi.ets_delete(table, key(token))
 }
 
 /// The name a session acts as. Names from the identity provider or the proxy

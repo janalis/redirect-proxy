@@ -163,16 +163,24 @@ pub fn security_headers(next: fn() -> Response) -> Response {
   )
 }
 
+/// Sets the cookie of session `s`, ending the session the browser held
+/// until then (an earlier login's would otherwise stay valid until it
+/// expires).
 pub fn set_session_cookie(
   resp: Response,
   req: Request,
   ctx: Context,
   s: Session,
 ) -> Response {
+  let name = session_cookie_name(req, ctx)
+  case wisp.get_cookie(req, name, wisp.Signed) {
+    Ok(old) if old != s.token -> session.destroy(old)
+    _ -> Nil
+  }
   wisp.set_cookie(
     resp,
     req,
-    session_cookie_name(req, ctx),
+    name,
     s.token,
     wisp.Signed,
     ctx.config.admin.session_ttl,
@@ -214,7 +222,7 @@ pub fn require_csrf_form(
   case session_token_matches(s, token) {
     True -> next(form)
     False -> {
-      log.warning("CSRF token mismatch for " <> s.username)
+      log.warning("CSRF token mismatch for " <> log_value(s.username))
       wisp.response(403) |> wisp.string_body("Invalid CSRF token")
     }
   }
