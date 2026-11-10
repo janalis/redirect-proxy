@@ -24,6 +24,7 @@ import redirect_proxy/api/rule_routes
 import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
+import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/health
 import redirect_proxy/log
@@ -47,6 +48,19 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
   |> wisp.set_header("x-content-type-options", "nosniff")
   |> wisp.set_header("x-frame-options", "DENY")
   |> wisp.set_header("referrer-policy", "no-referrer")
+  |> fn(resp) {
+    // as the admin: clients must not fall back to HTTP once they used HTTPS
+    case
+      string.starts_with(
+        string.lowercase(config.api_public_url(ctx.config)),
+        "https://",
+      )
+    {
+      True ->
+        wisp.set_header(resp, "strict-transport-security", "max-age=31536000")
+      False -> resp
+    }
+  }
 }
 
 const max_token_request_bytes = 65_536

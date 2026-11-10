@@ -27,6 +27,16 @@ fn is_http_url(url: String) -> Bool {
 }
 
 /// An `http://` URL whose host is not the loopback interface.
+/// A URL whose host is not this machine's (`localhost` or a loopback
+/// address): the admin is reached through something else.
+fn remote_url(url: String) -> Bool {
+  case uri.parse(url) {
+    Ok(uri.Uri(host: Some(host), ..)) ->
+      string.lowercase(host) != "localhost" && !ffi.is_loopback_address(host)
+    _ -> False
+  }
+}
+
 fn plain_http_remote(url: String) -> Bool {
   case uri.parse(url) {
     Ok(uri.Uri(scheme: Some(scheme), host: Some(host), ..)) ->
@@ -131,6 +141,16 @@ pub fn runtime_warnings(config: Config) -> List(String) {
     {
       True -> [
         "api.oauth.audience is the auth.oidc client_id: use an audience of its own for API access tokens, so that tokens issued for the admin sign-in are not meant for the API",
+      ]
+      False -> []
+    },
+    case
+      admin.enabled
+      && remote_url(admin.public_url)
+      && config.access_log.trusted_proxies == []
+    {
+      True -> [
+        "admin.public_url is not on this machine but access_log.trusted_proxies is empty: behind a reverse proxy every client has the proxy's address, so one client's failed sign-ins throttle sign-ins, API tokens and API calls for all; list the proxy's addresses in trusted_proxies",
       ]
       False -> []
     },

@@ -274,3 +274,17 @@ pub fn rfc3339_is_strict_test() {
     },
   )
 }
+
+/// Only signature keys of the token's algorithm verify it: a key published
+/// for encryption, or for another algorithm, is not used.
+pub fn jwt_keys_are_for_signatures_test() {
+  let #(jwks, key) = support.keypair()
+  let token = support.sign(key, "{\"sub\":\"a\"}")
+  let assert Ok(_) = ffi.jwt_verify(jwks, token)
+  let enc = string.replace(jwks, "\"use\":\"sig\"", "\"use\":\"enc\"")
+  assert enc != jwks
+  let assert Error(_) = ffi.jwt_verify(enc, token)
+  let other = string.replace(jwks, "\"alg\":\"RS256\"", "\"alg\":\"RS512\"")
+  assert other != jwks
+  let assert Error(_) = ffi.jwt_verify(other, token)
+}

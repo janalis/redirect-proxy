@@ -715,9 +715,13 @@ jwt_verify(JwksJson, Token) ->
             false -> {error, <<"unsupported signing algorithm: ", Alg/binary>>};
             true ->
                 Kid = maps:get(<<"kid">>, Header, undefined),
+                %% keys for signatures (not encryption), of this algorithm
+                %% when they name one (RFC 7517 4.2, 4.4)
                 Candidates = [K || K <- Keys,
                                    Kid =:= undefined orelse
-                                   maps:get(<<"kid">>, K, Kid) =:= Kid],
+                                   maps:get(<<"kid">>, K, Kid) =:= Kid,
+                                   maps:get(<<"use">>, K, <<"sig">>) =:= <<"sig">>,
+                                   maps:get(<<"alg">>, K, Alg) =:= Alg],
                 verify_with(Candidates, Alg, Token)
         end
     catch

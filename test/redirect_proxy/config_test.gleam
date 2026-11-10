@@ -496,6 +496,23 @@ pub fn more_value_checks_test() {
 pub fn more_warnings_test() {
   let d = config.default()
   assert config_validate.runtime_warnings(d) == []
+  // an admin reached from elsewhere, without the proxy's addresses: every
+  // client has the proxy's address, and shares its throttling
+  let remote =
+    config.Config(
+      ..d,
+      admin: config.AdminConfig(..d.admin, public_url: "https://rp.example.com"),
+    )
+  let assert [proxies] = config_validate.runtime_warnings(remote)
+  assert string.starts_with(proxies, "admin.public_url is not on this machine")
+  let trusted =
+    config.Config(
+      ..remote,
+      access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+        "10.0.0.0/8",
+      ]),
+    )
+  assert config_validate.runtime_warnings(trusted) == []
   let cfg =
     config.Config(
       ..d,

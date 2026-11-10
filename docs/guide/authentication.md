@@ -67,6 +67,14 @@ interface). Keep the admin listener (`admin.listen`) off addresses other
 clients can reach, and never point `server.upstream` at the admin port.
 :::
 
+::: tip The website behind `server.upstream`
+The redirect listener drops these identity headers (and their `_`
+spellings) from clients outside `trusted_proxies` only while `auth.header`
+is enabled. When the website behind `server.upstream` trusts such headers
+itself (behind oauth2-proxy, for instance), make sure the proxy in front
+sets them on every request, so that a client cannot send its own.
+:::
+
 ## Roles
 
 Every session has a role, and each includes the one before:
@@ -113,6 +121,9 @@ API clients are not affected: they have scopes (see [REST API](api)).
     password changes, including from the CLI. Changing your own password
     keeps you signed in, in a new session.
   - SSO logins are bound to the browser that started them.
+  - Signing in ends the session the browser held before.
+  - The server keeps a hash of each session token, not the token: a
+    memory or crash dump gives no session to replay.
 - **Passwords.** Changing a local password, yours or another user's, needs
   your current password and a local session: administrators signed in with
   SSO or proxy headers cannot change local passwords. Deleting a user or an
@@ -138,12 +149,15 @@ API clients are not affected: they have scopes (see [REST API](api)).
   cores, at least 2): past that, a login gets a 503 with `Retry-After: 1`,
   so that a burst of logins leaves CPU for the redirect listener. Behind a
   proxy, list it in `access_log.trusted_proxies` so that the client address
-  is the forwarded one.
+  is the forwarded one: otherwise every client has the proxy's address and
+  one client's failures throttle everyone (the server warns at startup
+  when `admin.public_url` is not on the machine and the list is empty).
 - **Input limits.** Admin forms are limited to 64 KB (imports: like the API,
   `api.max_body_bytes`) and usernames to 64 bytes.
 - **HTTP headers.** A strict Content-Security-Policy (no inline scripts),
   `X-Frame-Options: DENY` and `nosniff`. When `admin.public_url` is
-  `https://`, responses carry `Strict-Transport-Security` and the session
+  `https://`, responses carry `Strict-Transport-Security` (so does the API
+  on its own port when `api.public_url` is `https://`) and the session
   and SSO state cookies are named `__Host-rp_session` and
   `__Host-rp_oidc_state`, which a sibling subdomain cannot set or shadow.
 
