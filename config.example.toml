@@ -166,12 +166,15 @@ issuer = "https://idp.example.com/realms/main"
 client_id = "redirect-proxy"
 client_secret = ""
 scopes = ["openid", "email", "profile"]
-# Who may sign in. With all three lists empty every user of the provider is
-# accepted. Otherwise a user must match at least one entry. E-mails and
+# Who may sign in: a user must match at least one entry. E-mails and
 # domains only match when the ID token has email_verified = true.
 allowed_emails = []
 allowed_domains = []
 allowed_groups = []
+# With all three lists empty the server does not start, unless this says
+# that every account of the provider may sign in (a provider of your own;
+# never a public one such as accounts.google.com).
+allow_any_account = false
 groups_claim = "groups"
 button_label = "Sign in with SSO"
 # On logout, also sign out at the provider and come back to the login page.

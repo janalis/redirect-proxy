@@ -22,8 +22,11 @@ authenticate with OAuth 2.0 instead: see [REST API](api).
   warning.
 - To allow users, set `allowed_emails`, `allowed_domains` (checked against
   verified emails) and/or `allowed_groups` (from `groups_claim`). With all
-  three lists empty, every account of the provider is accepted, and the
-  server logs a warning at startup (and `check-config` reports it).
+  three lists empty the server does not start: set
+  `allow_any_account = true` to accept every account of the provider (a
+  provider of your own, never a public one such as Google, where anyone
+  can make an account). It then logs a warning at startup (and
+  `check-config` reports it).
 - An email counts as verified only when the ID token says
   `email_verified: true`. Providers that never send that claim, such as
   Entra ID, can only be restricted with `allowed_groups`.

@@ -58,14 +58,9 @@ pub fn runtime_warnings(config: Config) -> List(String) {
   let oidc = config.oidc
   let admin = config.admin
   list.flatten([
-    case
-      oidc.enabled
-      && oidc.allowed_emails == []
-      && oidc.allowed_domains == []
-      && oidc.allowed_groups == []
-    {
+    case open_oidc(config) {
       True -> [
-        "auth.oidc has no allowed_emails, allowed_domains or allowed_groups: every account of the provider can sign in to the admin",
+        "auth.oidc has no allowed_emails, allowed_domains or allowed_groups and allow_any_account is set: every account of the provider can sign in to the admin",
       ]
       False -> []
     },
@@ -148,6 +143,15 @@ pub fn runtime_warnings(config: Config) -> List(String) {
       False -> []
     },
   ])
+}
+
+/// OIDC sign-in with no list of who may sign in.
+fn open_oidc(config: Config) -> Bool {
+  let oidc = config.oidc
+  oidc.enabled
+  && oidc.allowed_emails == []
+  && oidc.allowed_domains == []
+  && oidc.allowed_groups == []
 }
 
 fn is_loopback(address: String) -> Bool {
@@ -328,6 +332,12 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.oidc.enabled && !is_http_url(config.oidc.issuer),
     Error("auth.oidc.issuer must be an http:// or https:// URL"),
+  )
+  use <- bool.guard(
+    open_oidc(config) && !config.oidc.allow_any_account,
+    Error(
+      "auth.oidc needs allowed_emails, allowed_domains or allowed_groups (or allow_any_account = true): otherwise every account of the provider can sign in to the admin",
+    ),
   )
   use <- bool.guard(
     config.header_auth.enabled

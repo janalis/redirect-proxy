@@ -44,7 +44,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_STORAGE_WATCH_INTERVAL` | `0` (seconds between checks of the rules file, `0`: off) |
 | `RP_STORAGE_AUDIT_MAX_BYTES` / `RP_STORAGE_AUDIT_FILES` | `10485760` (10 MB, `0`: never rotate) / `5` rotated files kept |
 | `RP_AUTH_LOCAL_ENABLED` | `true` |
-| `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS` | disabled |
+| `RP_AUTH_OIDC_ENABLED`, `_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPES`, `_ALLOWED_EMAILS`, `_ALLOWED_DOMAINS`, `_ALLOWED_GROUPS`, `_ALLOW_ANY_ACCOUNT` | disabled |
 | `RP_AUTH_OIDC_GROUPS_CLAIM`, `_BUTTON_LABEL`, `_LOGOUT_AT_PROVIDER` | `groups`, `Sign in with SSO`, `false` |
 | `RP_AUTH_OIDC_ADMIN_GROUPS`, `RP_AUTH_OIDC_EDITOR_GROUPS`, `RP_AUTH_OIDC_VIEWER_GROUPS`, `RP_AUTH_OIDC_DEFAULT_ROLE` | (none), `viewer` (see [Roles](authentication#roles)) |
 | `RP_AUTH_HEADER_ENABLED`, `_TRUSTED_PROXIES` | disabled |

@@ -474,6 +474,17 @@ pub fn more_value_checks_test() {
     refused(config.Config(..d, oidc:)),
     "auth.oidc.issuer",
   )
+  // nobody listed as allowed to sign in: every account of the provider
+  // could, unless that is what is meant
+  let oidc = config.OidcConfig(..oidc, issuer: "https://idp.example.com")
+  assert string.starts_with(
+    refused(config.Config(..d, oidc:)),
+    "auth.oidc needs allowed_emails",
+  )
+  let open = config.OidcConfig(..oidc, allow_any_account: True)
+  let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: open))
+  let listed = config.OidcConfig(..oidc, allowed_groups: ["staff"])
+  let assert Ok(_) = config_validate.validate(config.Config(..d, oidc: listed))
   // a timer of more than about 49 days crashed the store at startup
   let storage = config.StorageConfig(..d.storage, watch_interval: 5_000_000)
   assert string.starts_with(

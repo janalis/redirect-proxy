@@ -245,6 +245,9 @@ pub type OidcConfig {
     allowed_emails: List(String),
     allowed_domains: List(String),
     allowed_groups: List(String),
+    /// With all three lists empty, sign-in is refused at startup unless
+    /// this says that any account of the provider is meant to sign in.
+    allow_any_account: Bool,
     groups_claim: String,
     button_label: String,
     /// On logout, also end the session at the provider (its
@@ -359,6 +362,7 @@ pub fn default() -> Config {
       allowed_emails: [],
       allowed_domains: [],
       allowed_groups: [],
+      allow_any_account: False,
       groups_claim: "groups",
       admin_groups: [],
       editor_groups: [],

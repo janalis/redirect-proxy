@@ -82,6 +82,7 @@ pub const known_keys = [
   "auth.header.trusted_proxies",
   "auth.header.user_header",
   "auth.local.enabled",
+  "auth.oidc.allow_any_account",
   "auth.oidc.allowed_domains",
   "auth.oidc.allowed_emails",
   "auth.oidc.allowed_groups",
@@ -293,6 +294,11 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
     t,
     ["auth", "oidc", "allowed_groups"],
     o.allowed_groups,
+  ))
+  use allow_any_account <- result.try(boolean(
+    t,
+    ["auth", "oidc", "allow_any_account"],
+    o.allow_any_account,
   ))
   use groups_claim <- result.try(str(
     t,
@@ -523,6 +529,7 @@ pub fn from_toml(t: Dict(String, Toml)) -> Result(Config, String) {
       allowed_emails:,
       allowed_domains:,
       allowed_groups:,
+      allow_any_account:,
       groups_claim:,
       button_label:,
       logout_at_provider:,
