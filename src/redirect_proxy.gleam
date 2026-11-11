@@ -483,27 +483,33 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   use valid <- result.try(
     case file {
       "" -> store_rules.validate_all(rules)
-      _ ->
-        // the configuration of the server it is for, if any (without one,
-        // the defaults): its trailing slash setting, and its current rules,
-        // whose ids are kept
-        case load(config_path) {
-          Error(reason) -> Error([reason])
-          Ok(cfg) -> {
-            let current =
-              simplifile.read(config.rules_path(cfg))
-              |> result.replace_error(Nil)
-              |> result.try(fn(content) {
-                rule.file_from_string(content) |> result.replace_error(Nil)
-              })
-              |> result.unwrap([])
-            store_rules.check_import(
-              rules,
-              current,
-              config.ignore_trailing_slash(cfg),
-            )
-          }
-        }
+      _ -> {
+        // the server it is for (its configuration, or the defaults when
+        // none is given or installed): its trailing slash setting, and its
+        // current rules, whose ids are kept (none before its first start)
+        use cfg <- result.try(load(config_path) |> result.map_error(list.wrap))
+        let path = config.rules_path(cfg)
+        use current <- result.try(case simplifile.read(path) {
+          Error(simplifile.Enoent) -> Ok([])
+          Error(e) ->
+            Error([
+              "cannot read the current rules, "
+              <> path
+              <> ": "
+              <> simplifile.describe_error(e),
+            ])
+          Ok(content) ->
+            rule.file_from_string(content)
+            |> result.map_error(fn(e) {
+              ["the current rules, " <> path <> ", are invalid: " <> e]
+            })
+        })
+        store_rules.check_import(
+          rules,
+          current,
+          config.ignore_trailing_slash(cfg),
+        )
+      }
     }
     |> result.map_error(string.join(_, "\n")),
   )
