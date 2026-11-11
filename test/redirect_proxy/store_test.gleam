@@ -523,6 +523,33 @@ pub fn each_imported_rule_is_followed_at_its_own_times_test() {
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
+/// Past the matchers a change keeps, a rule that starts later is still
+/// followed at its start: it can only loop from then.
+pub fn rules_starting_later_are_followed_past_the_kept_matchers_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+  let fillers =
+    int.range(10, 50, [], fn(acc, n) {
+      let n = int.to_string(n)
+      [
+        Rule(
+          ..new_rule("/s" <> n, "/t"),
+          id: "s" <> n,
+          starts_at: "29" <> n <> "-01-01T00:00:00Z",
+        ),
+        ..acc
+      ]
+    })
+    |> list.reverse
+  let b =
+    Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) =
+    store.import_rules(s, list.append(fillers, [b]), store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
 /// Every check applies to disabled rules too, one at a time or in sets,
 /// but for disabling a rule that loaded with a problem: it then still
 /// imports again unchanged.

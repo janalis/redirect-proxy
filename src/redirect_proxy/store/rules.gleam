@@ -29,16 +29,49 @@ pub fn check_loop(
   changed: Rule,
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  follow_loop(built, rules, dict.new(), changed, ignore_trailing_slash).0
+  follow_loop(built, rules, later(rules), changed, ignore_trailing_slash).0
 }
 
-/// The matchers of later times, by time, built once per check.
-type Later =
-  Dict(Int, matcher.Matcher)
+/// What a check knows of the times to come: when the rules in effect
+/// change (a rule starts or expires), worked out once, and the matchers
+/// of the times it built, kept for the other rules of the change.
+type Later {
+  Later(changes: List(Change), matchers: Dict(Int, matcher.Matcher))
+}
+
+/// A rule (`id`) starts, or expires, `at` a time to come.
+type Change {
+  Change(at: Int, id: String, expires: Bool)
+}
+
+fn later(rules: List(Rule)) -> Later {
+  let now = ffi.now_seconds()
+  let changes =
+    list.fold(rules, [], fn(acc, r) {
+      case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
+        False -> acc
+        True -> {
+          let #(starts, expires) = rule.window(r)
+          let acc = case starts > now {
+            True -> [Change(starts, r.id, False), ..acc]
+            False -> acc
+          }
+          case expires > now && expires < max_window_end {
+            True -> [Change(expires, r.id, True), ..acc]
+            False -> acc
+          }
+        }
+      }
+    })
+    |> list.sort(fn(a, b) { int.compare(a.at, b.at) })
+  Later(changes:, matchers: dict.new())
+}
+
+const max_window_end = 1_000_000_000_000
 
 /// The most times to come a rule is followed at, the nearest (see
-/// `follow_loop`), and the most matchers a check builds for them, all
-/// rules of a change together (each is a matcher of every rule, kept).
+/// `follow_loop`), and the most matchers a check keeps for them, all rules
+/// of a change together (each is a matcher of every rule).
 const max_times_ahead = 8
 
 const max_matchers_ahead = 32
@@ -57,31 +90,44 @@ fn follow_loop(
   let refused = fn(cycle) {
     Error(["target: redirect loop: " <> describe_cycle(cycle)])
   }
+  let #(starts, _) = rule.window(changed)
   case found(built) {
     Ok(cycle) -> #(refused(cycle), later)
     Error(Nil) ->
       list.fold_until(
-        changes_ahead(rules, changed) |> list.take(max_times_ahead),
+        changes_ahead(later.changes, changed),
         #(Ok(Nil), later),
         fn(acc, at) {
-          case dict.get(acc.1, at), dict.size(acc.1) < max_matchers_ahead {
-            Ok(matcher), _ ->
-              case found(matcher) {
-                Ok(cycle) -> list.Stop(#(refused(cycle), acc.1))
-                Error(Nil) -> list.Continue(acc)
-              }
-            // each time is a matcher of every rule, built and kept: past
-            // the nearest ones, a loop is logged when it comes about
-            // (the store republishes the rules then, and checks them)
-            Error(Nil), False -> list.Stop(acc)
-            Error(Nil), True -> {
-              let matcher = matcher.build_at(rules, at)
-              let later = dict.insert(acc.1, at, matcher)
-              case found(matcher) {
-                Ok(cycle) -> list.Stop(#(refused(cycle), later))
-                Error(Nil) -> list.Continue(#(Ok(Nil), later))
-              }
+          let #(_, later) = acc
+          let follow = fn(matcher, later) {
+            case found(matcher) {
+              Ok(cycle) -> list.Stop(#(refused(cycle), later))
+              Error(Nil) -> list.Continue(#(Ok(Nil), later))
             }
+          }
+          case dict.get(later.matchers, at) {
+            Ok(matcher) -> follow(matcher, later)
+            Error(Nil) ->
+              case dict.size(later.matchers) < max_matchers_ahead {
+                True -> {
+                  let matcher = matcher.build_at(rules, at)
+                  follow(
+                    matcher,
+                    Later(
+                      ..later,
+                      matchers: dict.insert(later.matchers, at, matcher),
+                    ),
+                  )
+                }
+                // past them, the start of a rule that starts later is
+                // still followed (it can only loop from then), with a
+                // matcher not kept; a loop that comes about at another
+                // time is logged then (the store republishes the rules,
+                // and checks them)
+                False if at == starts ->
+                  follow(matcher.build_at(rules, at), later)
+                False -> list.Continue(acc)
+              }
           }
         },
       )
@@ -90,30 +136,16 @@ fn follow_loop(
 
 /// The times to come, within the window of `changed`, at which the rules
 /// in effect change: its start, and the starts and expiries of the other
-/// rules. None, the usual case, when no rule has a schedule.
-fn changes_ahead(rules: List(Rule), changed: Rule) -> List(Int) {
-  let now = ffi.now_seconds()
+/// rules; the nearest. None, the usual case, when no rule has a schedule.
+fn changes_ahead(changes: List(Change), changed: Rule) -> List(Int) {
   let #(from, until) = rule.window(changed)
-  let ahead = fn(at) { at > now && at >= from && at < until }
-  rules
-  |> list.fold([], fn(acc, r) {
-    case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
-      False -> acc
-      True -> {
-        let #(starts, expires) = rule.window(r)
-        let acc = case ahead(starts) {
-          True -> [starts, ..acc]
-          False -> acc
-        }
-        case ahead(expires) && r.id != changed.id {
-          True -> [expires, ..acc]
-          False -> acc
-        }
-      }
-    }
+  changes
+  |> list.filter(fn(c) {
+    c.at >= from && c.at < until && !{ c.expires && c.id == changed.id }
   })
+  |> list.map(fn(c) { c.at })
   |> list.unique
-  |> list.sort(int.compare)
+  |> list.take(max_times_ahead)
 }
 
 /// Refuses a change to a rule that could never apply as written.
@@ -143,7 +175,7 @@ pub fn check_changed(
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
   let #(errors, _) =
-    list.fold(changed, #([], dict.new()), fn(acc, r) {
+    list.fold(changed, #([], later(rules)), fn(acc, r) {
       let #(errors, later) = acc
       let #(loop, later) =
         follow_loop(built, rules, later, r, ignore_trailing_slash)
@@ -350,8 +382,8 @@ pub fn check_import(
 ) -> Result(List(Rule), List(String)) {
   use rules <- result.try(prepare_import(incoming, "cli"))
   let rules = resolve_ids(current, rules)
+  // `prepare_import` checked the conflicts already (`validate_all`)
   use Nil <- result.try(check_new_ids(current, rules))
-  use Nil <- result.try(check_conflicts(rules))
   // as an import, the rules it leaves as they are are not checked again
   use Nil <- result.try(check_changed(
     matcher.build(rules),
