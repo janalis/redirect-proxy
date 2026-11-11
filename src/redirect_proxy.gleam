@@ -489,21 +489,31 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
         // current rules, whose ids are kept (none before its first start)
         use cfg <- result.try(load(config_path) |> result.map_error(list.wrap))
         let path = config.rules_path(cfg)
-        use current <- result.try(case simplifile.read(path) {
-          Error(simplifile.Enoent) -> Ok([])
+        // the file checked does not depend on them: without them (a CI
+        // job that cannot read the server's file), only the ids an import
+        // keeps and the rules it leaves alone are checked too
+        let without = fn(problem) {
+          io.println_error(
+            "warning: " <> problem <> "; checking against no current rules",
+          )
+          []
+        }
+        let current = case simplifile.read(path) {
+          Error(simplifile.Enoent) -> []
           Error(e) ->
-            Error([
+            without(
               "cannot read the current rules, "
               <> path
               <> ": "
               <> simplifile.describe_error(e),
-            ])
+            )
           Ok(content) ->
-            rule.file_from_string(content)
-            |> result.map_error(fn(e) {
-              ["the current rules, " <> path <> ", are invalid: " <> e]
-            })
-        })
+            case rule.file_from_string(content) {
+              Ok(rules) -> rules
+              Error(e) ->
+                without("the current rules, " <> path <> ", are invalid: " <> e)
+            }
+        }
         store_rules.check_import(
           rules,
           current,

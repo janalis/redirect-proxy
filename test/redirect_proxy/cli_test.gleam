@@ -139,11 +139,11 @@ pub fn rules_commands_test() {
       "--config",
       config_path,
     ])
-  // current rules that cannot be read are an error, not none
+  // current rules that cannot be read are reported, then taken for none
   let assert Ok(Nil) = simplifile.write(dir <> "/data/redirects.json", "[{]")
   let assert Ok(Nil) =
     simplifile.write(import_file, "[{\"source\": \"/z\", \"target\": \"/y\"}]")
-  let assert Error(_) =
+  let assert Ok(Nil) =
     redirect_proxy.run([
       "rules",
       "validate",
