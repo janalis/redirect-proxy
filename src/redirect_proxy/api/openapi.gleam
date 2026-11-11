@@ -1249,7 +1249,7 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                               "verdict",
                               enum_schema([
                                 "applied", "shadowed", "disabled",
-                                "out_of_schedule",
+                                "out_of_schedule", "refused",
                               ]),
                             ),
                             #("rule", ref("Rule")),

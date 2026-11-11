@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/result
 import gleam/string
 import redirect_proxy/ffi
 import redirect_proxy/matcher
@@ -63,6 +64,13 @@ pub fn host_is_normalised_test() {
   assert location(m, "EXAMPLE.com:8080", "/a") == Ok("/b")
   assert matcher.normalise_request_host("[::1]:8080") == "[::1]"
   assert matcher.normalise_request_host("Example.com") == "example.com"
+  // every trailing dot: the listener accepts `example.com..`
+  assert location(m, "example.com.", "/a") == Ok("/b")
+  assert location(m, "example.com..:80", "/a") == Ok("/b")
+  assert matcher.normalise_request_host("..") == ""
+  // in one pass: a long run of dots costs bytes, not graphemes squared
+  let dots = "example.com" <> string.repeat(".", 100_000)
+  assert matcher.normalise_request_host(dots) == "example.com"
 }
 
 pub fn precedence_exact_prefix_regex_test() {
@@ -475,6 +483,27 @@ pub fn trailing_slash_tolerance_test() {
   assert tolerant("/") == Error(Nil)
 }
 
+/// The trailing slash retry is made host by host: the request host's rule
+/// for the other form wins over a `*` or `*.parent` rule for the form sent.
+pub fn trailing_slash_retry_is_per_host_test() {
+  let m =
+    matcher.build([
+      r("docs", "a.example.test", rule.Exact, "/docs", "/host"),
+      r("wild", "*.example.test", rule.Exact, "/docs/", "/wildcard"),
+      r("all", "*", rule.Prefix, "/", "/catch-all"),
+    ])
+  let tolerant = fn(host, path) {
+    matcher.lookup_tolerant(m, host, path) |> result.map(fn(m) { m.location })
+  }
+  assert tolerant("a.example.test", "/docs/") == Ok("/host")
+  assert tolerant("a.example.test", "/docs") == Ok("/host")
+  // another subdomain: its parent's rule, for either form, before `*`
+  assert tolerant("b.example.test", "/docs") == Ok("/wildcard")
+  assert tolerant("other.test", "/docs/") == Ok("/catch-all")
+  // without the retry, the catch-all takes what the host has no rule for
+  assert location(m, "a.example.test", "/docs/") == Ok("/wildcard")
+}
+
 pub fn redirect_loop_through_trailing_slash_retry_test() {
   // /docs misses, is retried as /docs/ and redirected to /docs again
   let slash = r("s", "*", rule.Exact, "/docs/", "/docs")
@@ -497,6 +526,29 @@ pub fn regex_budget_is_per_request_test() {
   let three =
     matcher.build([expensive("1"), expensive("2"), expensive("3"), cheap])
   assert location(three, "x.test", path) == Error(Nil)
+}
+
+/// A request that exhausts a host's regex budget is a miss: it does not go
+/// on to the rules of `*.parent` hosts or `*`, which a crafted path could
+/// otherwise reach past the host's own regex rules.
+pub fn regex_budget_stops_the_lookup_test() {
+  let path = "/" <> string.repeat("a", 30) <> "!"
+  let expensive = fn(id) { r(id, "x.test", rule.Regex, "^/(a+)+$", "/x") }
+  let catch_all = fn(host) { r("all", host, rule.Prefix, "/", "/caught") }
+  let rules = [expensive("1"), expensive("2"), expensive("3")]
+  assert location(matcher.build([catch_all("*"), ..rules]), "x.test", path)
+    == Error(Nil)
+  assert location(matcher.build([catch_all("*.test"), ..rules]), "x.test", path)
+    == Error(Nil)
+  assert matcher.lookup_tolerant(
+      matcher.build([catch_all("*"), ..rules]),
+      "x.test",
+      path,
+    )
+    == Error(Nil)
+  // a path the regexes refuse cheaply still reaches the broader rules
+  assert location(matcher.build([catch_all("*"), ..rules]), "x.test", "/b")
+    == Ok("/caught")
 }
 
 /// Substitutions apply to prefix and regex rules only: an exact rule's
@@ -592,6 +644,41 @@ pub fn explain_follows_queries_test() {
   let assert Ok(explained) = explain.explain(m, rules, "http://h.test/a", False)
   assert list.map(explained.chain, fn(h) { h.rule_id }) == ["a", "ax"]
   assert !explained.loops
+}
+
+/// The tester reports a rule whose substitution would leave its target's
+/// host as refused, not as shadowing the rule that applies instead.
+pub fn explain_reports_refused_targets_test() {
+  let rules = [
+    r("go", "*", rule.Prefix, "/go", "https://example.com$1"),
+    Rule(
+      ..r("u", "*.test", rule.Regex, "^/u/(.*)$", "https://$1.example.com/"),
+      enabled: False,
+    ),
+    r("sub", "*.test", rule.Prefix, "/s", "https://${sub}.example.com/p$1"),
+    r("all", "*", rule.Prefix, "/", "/home"),
+  ]
+  let m = matcher.build(rules)
+  let verdicts = fn(url) {
+    let assert Ok(explained) = explain.explain(m, rules, url, False)
+    list.map(explained.candidates, fn(c) { #(c.rule.id, c.verdict) })
+  }
+  assert verdicts("http://h.test/go.evil.com")
+    == [#("go", explain.Refused), #("all", explain.Applied)]
+  assert verdicts("http://h.test/go/page")
+    == [#("go", explain.Applied), #("all", explain.Shadowed)]
+  // refused whether enabled or not: enabling it would not help
+  assert verdicts("http://h.test/u/evil.com/x")
+    == [#("u", explain.Refused), #("all", explain.Applied)]
+  assert verdicts("http://h.test/u/blog")
+    == [#("u", explain.Disabled), #("all", explain.Applied)]
+  // `${sub}` is what the `*` of the rule's host stands for, as when serving
+  assert verdicts("http://a.test/s/x")
+    == [#("sub", explain.Applied), #("all", explain.Shadowed)]
+  assert location(m, "a.test", "/s/x") == Ok("https://a.example.com/p/x")
+  assert verdicts("http://a.h.test/s/x")
+    == [#("sub", explain.Applied), #("all", explain.Shadowed)]
+  assert location(m, "a.h.test", "/s/x") == Ok("https://a.h.example.com/p/x")
 }
 
 pub fn hit_records_test() {
@@ -758,4 +845,75 @@ pub fn regex_cost_per_request_is_bounded_test() {
   assert ffi.regex_limit_count() == before + 1
   // usual paths cost nothing near the budget
   assert location(m, "h", "/plain!") == Ok("/caught")
+}
+
+/// A rule of a `*.domain` host is sampled under a host of that domain, so
+/// that `${host}` and `${sub}` apply and its loops are seen.
+pub fn wildcard_host_loops_are_detected_test() {
+  let looping =
+    r("w", "*.example.com", rule.Prefix, "/old", "https://${host}/old$1")
+  let m = matcher.build([looping])
+  let assert Ok([first, again]) = matcher_loop.redirect_loop(m, looping, False)
+  assert first.id == "w" && again.id == "w"
+  let sub =
+    r(
+      "s",
+      "*.example.com",
+      rule.Prefix,
+      "/go",
+      "https://${sub}.example.com/go$1",
+    )
+  let m = matcher.build([sub])
+  assert matcher_loop.redirect_loop(m, sub, False) |> result.is_ok
+  // one that leaves the domain does not loop
+  let away = r("a", "*.example.com", rule.Prefix, "/x", "https://new.test/x$1")
+  assert matcher_loop.redirect_loop(matcher.build([away]), away, False)
+    == Error(Nil)
+}
+
+/// A chain still redirecting after the 20 redirects browsers follow is
+/// reported as a loop, even when every URL is new; a longer chain that
+/// ends is not.
+pub fn explain_reports_endless_chains_test() {
+  let growing = r("g", "*", rule.Prefix, "/a", "/a/a$1")
+  let rules = [growing]
+  let assert Ok(explained) =
+    explain.explain(matcher.build(rules), rules, "http://h.test/a/x", False)
+  assert explained.loops
+  assert list.length(explained.chain) == 21
+  // a chain of 15 redirects that ends is not one
+  let ends =
+    int.range(from: 1, to: 16, with: [], run: list.prepend)
+    |> list.map(fn(i) {
+      let n = int.to_string(i)
+      r(n, "*", rule.Exact, "/" <> n, "/" <> int.to_string(i + 1))
+    })
+  let assert Ok(explained) =
+    explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
+  assert !explained.loops
+  assert list.length(explained.chain) == 15
+}
+
+/// Query conditions, as documented: a parameter sent several times matches
+/// if one of its values does; names and values keep their case, even on a
+/// case-insensitive rule; other parameters are allowed.
+pub fn query_conditions_as_documented_test() {
+  let m =
+    matcher.build([
+      Rule(
+        ..r("q", "*", rule.Exact, "/p", "/q"),
+        query: "a=2",
+        case_insensitive: True,
+      ),
+    ])
+  let found = fn(query) {
+    matcher.lookup_query(m, "h", "/p", query) |> result.is_ok
+  }
+  assert found("a=1&a=2")
+  assert found("x=9&a=2")
+  assert found("a=%32")
+  assert !found("A=2")
+  assert !found("a=1")
+  // the path keeps ignoring case
+  assert matcher.lookup_query(m, "h", "/P", "a=2") |> result.is_ok
 }

@@ -160,6 +160,10 @@ fn explanation_view(e: explain.Explanation) -> Element(Nil) {
                         h.span([a.class("badge theme-warning")], [
                           h.text("not in its starts_at / expires_at window"),
                         ])
+                      explain.Refused ->
+                        h.span([a.class("badge theme-warning")], [
+                          h.text("its target would leave its host"),
+                        ])
                     },
                   ]),
                 ])

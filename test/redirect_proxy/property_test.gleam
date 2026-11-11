@@ -330,6 +330,54 @@ pub fn wildcard_lookup_agrees_with_reference_test() {
   assert actual == expected
 }
 
+/// With trailing slashes ignored, each host in lookup order is tried with
+/// the path as sent, then with its trailing slash added or removed, before
+/// the next host: a rule of the request host for either form wins over
+/// the rules of `*.parent` hosts and `*`.
+pub fn tolerant_lookup_agrees_with_reference_test() {
+  // few paths, so that rules and requests often share one in either form
+  let source =
+    qcheck.from_generators(qcheck.return("/"), [
+      qcheck.return("/a"),
+      qcheck.return("/a/"),
+      qcheck.return("/a/b"),
+      qcheck.return("/a/b/"),
+    ])
+  use #(rules, probe_host, probe_path) <- check(qcheck.tuple3(
+    qcheck.generic_list(
+      elements_from: qcheck.map2(wildcard_host(), source, fn(host, source) {
+        Rule(..rule.blank(), id: host <> source, host:, source:, target: host)
+      }),
+      length_from: qcheck.bounded_int(0, 10),
+    ),
+    qcheck.from_generators(qcheck.return("a.b.x.test"), [
+      qcheck.return("b.x.test"),
+      qcheck.return("c.b.x.test"),
+      qcheck.return("other.test"),
+    ]),
+    source,
+  ))
+  let other = case probe_path, string.ends_with(probe_path, "/") {
+    "/", _ -> Error(Nil)
+    _, True -> Ok(string.drop_end(probe_path, 1))
+    _, False -> Ok(probe_path <> "/")
+  }
+  let in_host = fn(h, path) {
+    list.find(rules, fn(r) { r.host == h && r.source == path })
+  }
+  let expected =
+    reference_hosts(probe_host)
+    |> list.find_map(fn(h) {
+      in_host(h, probe_path)
+      |> result.lazy_or(fn() { result.try(other, in_host(h, _)) })
+    })
+    |> result.map(fn(r) { r.target })
+  let actual =
+    matcher.lookup_tolerant(matcher.build(rules), probe_host, probe_path)
+    |> result.map(fn(m) { m.location })
+  assert actual == expected
+}
+
 pub fn path_normalisation_is_idempotent_test() {
   use path <- qcheck.given(
     qcheck.string_from(

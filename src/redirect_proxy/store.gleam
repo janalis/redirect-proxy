@@ -387,7 +387,7 @@ pub fn start(
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          commit.loaded(target(settings), rules, checker.Problems)
+          commit.loaded(target(settings), rules, fingerprint, checker.Problems)
           metrics.reloaded(ffi.monotonic_micros() - started)
           log.info(
             "loaded "
@@ -412,12 +412,16 @@ pub fn start(
                 <> " rule(s) loaded before: "
                 <> reason,
               )
+              // read with the version of the state: the next change
+              // re-reads the file
+              commit.set_view(settings.rules_path, rules, "")
               Ok(initial_state(settings, rules, "", before))
             }
             Error(Nil) -> Error(reason)
           }
       },
     )
+    commit.register(subject, settings.rules_path)
     schedule_watch(settings, subject)
     hits.load(settings.hits_path)
     process.send_after(subject, 1000, SaveHits(subject))
@@ -432,16 +436,35 @@ pub fn start(
   |> actor.start
 }
 
+/// `all` and `versioned` do not wait for a change in progress: while the
+/// store runs, they get the rules in effect (`commit.view`). Before it has
+/// started, or while it restarts, they ask it (unavailable then, as any
+/// call).
 pub fn all(store: Store) -> List(Rule) {
-  read(store, timeout, All)
+  case view(store) {
+    Ok(#(rules, _)) -> rules
+    Error(Nil) -> read(store, timeout, All)
+  }
+}
+
+fn view(store: Store) -> Result(#(List(Rule), String), Nil) {
+  case process.subject_owner(store) {
+    Ok(_) -> commit.view(store)
+    Error(Nil) -> Error(Nil)
+  }
 }
 
 /// Every rule and the version of the rule set (the fingerprint of the file
 /// last read or written), for `import_rules_versioned` and `bulk_versioned`.
 pub fn versioned(store: Store) -> #(List(Rule), String) {
-  read(store, timeout, Versioned)
+  case view(store) {
+    Ok(view) -> view
+    Error(Nil) -> read(store, timeout, Versioned)
+  }
 }
 
+/// Asks the store, which sends back the one rule: reading the rules in
+/// effect would copy them all into the caller.
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
   read(store, timeout, Get(id, _))
 }
@@ -749,19 +772,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Import(prepared, mode, expected, actor_name, reply) -> {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
-        let prepared = store_rules.resolve_ids(state.rules, prepared)
         use Nil <- result.try(check_collection_version(state, expected))
-        use Nil <- result.try(
-          store_rules.check_new_ids(state.rules, prepared)
-          |> result.map_error(Rejected),
+        use #(prepared, rules) <- result.try(
+          imported(state.rules, prepared, mode) |> result.map_error(Rejected),
         )
-        let rules =
-          case mode {
-            Replace -> prepared
-            Merge -> merge(state.rules, prepared)
-          }
-          |> store_rules.keep_created_at(state.rules, _)
-          |> store_rules.keep_unchanged(state.rules, _)
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
@@ -801,14 +815,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
-      let prepared = store_rules.resolve_ids(state.rules, prepared)
-      // creation dates do not matter here: diff ignores them
-      let rules = case mode {
-        Replace -> prepared
-        Merge -> merge(state.rules, prepared)
-      }
       process.send(reply, {
-        use Nil <- result.try(store_rules.check_new_ids(state.rules, prepared))
+        use #(_, rules) <- result.try(imported(state.rules, prepared, mode))
         use Nil <- result.try(store_rules.check_conflicts(rules))
         Ok(Preview(
           diff: store_rules.diff(state.rules, rules),
@@ -922,7 +930,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
-          commit.loaded(target(state.settings), state.rules, checker.Loops)
+          commit.loaded(
+            target(state.settings),
+            state.rules,
+            state.fingerprint,
+            checker.Loops,
+          )
         }
       }
       let next = case crossed {
@@ -1069,6 +1082,26 @@ fn reload_file(
   #(state, result.map_error(outcome, store_file.reason))
 }
 
+/// The rules an import of `prepared` leaves, and `prepared` with its ids
+/// resolved against the `existing` rules: the same for an import and its
+/// preview. Rules imported again unchanged are kept as they were.
+fn imported(
+  existing: List(Rule),
+  prepared: List(Rule),
+  mode: ImportMode,
+) -> Result(#(List(Rule), List(Rule)), List(String)) {
+  let prepared = store_rules.resolve_ids(existing, prepared)
+  use Nil <- result.try(store_rules.check_new_ids(existing, prepared))
+  let rules =
+    case mode {
+      Replace -> prepared
+      Merge -> merge(existing, prepared)
+    }
+    |> store_rules.keep_created_at(existing, _)
+    |> store_rules.keep_unchanged(existing, _)
+  Ok(#(prepared, rules))
+}
+
 /// The rules in effect are now `rules`, from the file of `fingerprint`:
 /// nothing the watcher rejected is left to skip.
 fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
@@ -1093,7 +1126,12 @@ fn reload_file_or_busy(
     )
   {
     Ok(#(rules, fingerprint)) -> {
-      commit.loaded(target(state.settings), rules, checker.Problems)
+      commit.loaded(
+        target(state.settings),
+        rules,
+        fingerprint,
+        checker.Problems,
+      )
       metrics.incr(metrics.Reloads)
       metrics.reloaded(ffi.monotonic_micros() - started)
       audit_rules_change(
@@ -1243,7 +1281,12 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              commit.loaded(target(state.settings), rules, checker.Problems)
+              commit.loaded(
+                target(state.settings),
+                rules,
+                fingerprint,
+                checker.Problems,
+              )
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(

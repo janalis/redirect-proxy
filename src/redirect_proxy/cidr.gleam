@@ -11,30 +11,30 @@ import mist
 pub type Cidrs
 
 /// Parses networks: `10.0.0.0/8`, `::1/128`, or an address alone.
-@external(erlang, "redirect_proxy_ffi", "compile_cidrs")
+@external(erlang, "redirect_proxy_net_ffi", "compile_cidrs")
 pub fn compile(cidrs: List(String)) -> Cidrs
 
 /// Whether no network is listed (no valid one).
-@external(erlang, "redirect_proxy_ffi", "cidrs_empty")
+@external(erlang, "redirect_proxy_net_ffi", "cidrs_empty")
 pub fn is_empty(cidrs: Cidrs) -> Bool
 
 /// Whether a connection's address is in one of the networks.
-@external(erlang, "redirect_proxy_ffi", "cidrs_contain_peer")
+@external(erlang, "redirect_proxy_net_ffi", "cidrs_contain_peer")
 pub fn contains_peer(cidrs: Cidrs, ip: mist.IpAddress) -> Bool
 
 /// The client address in `X-Forwarded-For` header lines: the rightmost hop
 /// not in the networks (the leftmost when all are), when it is an IP
 /// address.
-@external(erlang, "redirect_proxy_ffi", "forwarded_hop")
+@external(erlang, "redirect_proxy_net_ffi", "forwarded_hop")
 pub fn forwarded_hop(lines: List(String), trusted: Cidrs) -> Result(String, Nil)
 
 /// Whether an address (text, from a header) is in one of the networks;
 /// `False` when it is not an address.
-@external(erlang, "redirect_proxy_ffi", "cidrs_contain")
+@external(erlang, "redirect_proxy_net_ffi", "cidrs_contain")
 pub fn contains(cidrs: Cidrs, ip: String) -> Bool
 
 /// Whether a connection's address, when known, is in one of the networks.
-@external(erlang, "redirect_proxy_ffi", "cidrs_contain_peer_result")
+@external(erlang, "redirect_proxy_net_ffi", "cidrs_contain_peer_result")
 pub fn contains_peer_result(
   cidrs: Cidrs,
   peer: Result(mist.IpAddress, Nil),

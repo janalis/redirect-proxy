@@ -532,12 +532,17 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
   }
 }
 
-/// Strips the port and a trailing dot (`example.com.`) from a Host header
+/// Strips the port and trailing dots (`example.com.`) from a Host header
 /// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  let host = ffi.strip_port(ffi.lowercase_host(host))
+  drop_trailing_dots(ffi.strip_port(ffi.lowercase_host(host)))
+}
+
+/// Byte by byte (`.` is one byte): `string.drop_end` would count the
+/// graphemes of the host for each dot.
+fn drop_trailing_dots(host: String) -> String {
   case string.ends_with(host, ".") {
-    True -> string.drop_end(host, 1)
+    True -> drop_trailing_dots(ffi.byte_take(host, string.byte_size(host) - 1))
     False -> host
   }
 }
@@ -564,7 +569,32 @@ pub fn lookup_query(
   query: String,
 ) -> Result(Match, Nil) {
   let #(host, vars) = request_host(host)
-  lookup_normalised(matcher, host, ffi.normalise_path(path), query, vars)
+  lookup_normalised(
+    matcher,
+    host,
+    ffi.normalise_path(path),
+    Error(Nil),
+    query,
+    vars,
+  )
+  |> to_result
+}
+
+/// The outcome of looking a request up: `Stopped` when it spent its regex
+/// budget. The lookup then ends there, a miss: the rules of broader hosts
+/// (`*.parent`, `*`) are not tried, nor the trailing slash retry, since a
+/// crafted path could otherwise reach them past the host's own regex rules.
+type Lookup {
+  Found(Match)
+  Missed
+  Stopped
+}
+
+fn to_result(found: Lookup) -> Result(Match, Nil) {
+  case found {
+    Found(m) -> Ok(m)
+    Missed | Stopped -> Error(Nil)
+  }
 }
 
 /// The normalised request host and the variables it gives.
@@ -582,42 +612,48 @@ fn request_host(host: String) -> #(String, template.RequestVars) {
   #(host, vars)
 }
 
-/// `lookup_query` for a normalised host and path.
+/// `lookup_query` for a normalised host and path. With `other` (the path
+/// with its trailing slash added or removed), each host is retried with it
+/// before the next one: the request host's rule for either form wins over
+/// the rules of `*.parent` hosts and `*`.
 fn lookup_normalised(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
-) -> Result(Match, Nil) {
+) -> Lookup {
   // nested cases rather than `result.lazy_or`: no closure per step, on
   // every request
   let own = case matcher.any_host_only {
-    True -> Error(Nil)
-    False -> lookup_host(matcher, host, path, query, vars)
+    True -> Missed
+    False -> lookup_host(matcher, host, path, other, query, vars)
   }
   case own {
-    Ok(_) -> own
-    Error(Nil) -> {
+    Found(_) | Stopped -> own
+    Missed -> {
       // one lookup per parent domain: a host longer than any DNS name (the
       // listener refuses those, the rule tester may not) matches no `*.`
       // rule
       let parents = case
         matcher.wildcards && string.byte_size(host) <= max_host_bytes
       {
-        True -> lookup_wildcards(matcher, host, path, query, vars)
-        False -> Error(Nil)
+        True -> lookup_wildcards(matcher, host, path, other, query, vars)
+        False -> Missed
       }
       case parents {
-        Ok(_) -> parents
-        Error(Nil) -> lookup_host(matcher, "*", path, query, vars)
+        Found(_) | Stopped -> parents
+        Missed -> lookup_host(matcher, "*", path, other, query, vars)
       }
     }
   }
 }
 
 /// `lookup`, retrying a miss with the trailing slash added or removed
-/// (`/docs/` finds the `/docs` rule and the other way round).
+/// (`/docs/` finds the `/docs` rule and the other way round), host by
+/// host: a rule for the path as sent wins within a host, and a rule of the
+/// request host, for either form, wins over `*.parent` and `*` rules.
 pub fn lookup_tolerant(
   matcher: Matcher,
   host: String,
@@ -633,34 +669,21 @@ pub fn lookup_tolerant_query(
   path: String,
   query: String,
 ) -> Result(Match, Nil) {
-  // the host and path are normalised once for both lookups (a trailing
-  // `/` is kept by the normalisation, so the retry can add or drop it on
+  // the host and path are normalised once for both forms (a trailing `/`
+  // is kept by the normalisation, so the other form adds or drops it on
   // the normalised path)
   let #(host, vars) = request_host(host)
   let normalised = ffi.normalise_path(path)
-  use <- result.lazy_or(lookup_normalised(
-    matcher,
-    host,
-    normalised,
-    query,
-    vars,
-  ))
-  case normalised {
+  let other = case normalised {
     "/" | "" -> Error(Nil)
     _ ->
       case string.ends_with(normalised, "/") {
-        True ->
-          lookup_normalised(
-            matcher,
-            host,
-            string.drop_end(normalised, 1),
-            query,
-            vars,
-          )
-        False ->
-          lookup_normalised(matcher, host, normalised <> "/", query, vars)
+        True -> Ok(string.drop_end(normalised, 1))
+        False -> Ok(normalised <> "/")
       }
   }
+  lookup_normalised(matcher, host, normalised, other, query, vars)
+  |> to_result
 }
 
 /// The longest request host whose parent domains are looked up for `*.`
@@ -673,9 +696,10 @@ fn lookup_wildcards(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
-) -> Result(Match, Nil) {
+) -> Lookup {
   case string.split_once(host, ".") {
     Ok(#(_, parent)) -> {
       // byte counts, not graphemes: this runs once per label of the host
@@ -687,41 +711,60 @@ fn lookup_wildcards(
             string.byte_size(full) - string.byte_size(parent) - 1,
           )
       }
-      lookup_host(
-        matcher,
-        "*." <> parent,
-        path,
-        query,
-        template.RequestVars(..vars, sub:),
-      )
-      |> result.lazy_or(fn() {
-        lookup_wildcards(matcher, parent, path, query, vars)
-      })
+      case
+        lookup_host(
+          matcher,
+          "*." <> parent,
+          path,
+          other,
+          query,
+          template.RequestVars(..vars, sub:),
+        )
+      {
+        Missed -> lookup_wildcards(matcher, parent, path, other, query, vars)
+        found -> found
+      }
     }
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> Missed
   }
 }
 
+/// The rules of `host` for `path`, then for `other` (the other trailing
+/// slash form, when retried): a request that spent its regex budget on the
+/// first is not retried.
 fn lookup_host(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
-) -> Result(Match, Nil) {
+) -> Lookup {
   case dict.get(matcher.hosts, host) {
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> Missed
     Ok(rules) ->
-      case match_query(rules, path, query) {
-        Ok(_) as found -> found
+      case match_rules(rules, path, query, vars), other {
+        Missed, Ok(other) -> match_rules(rules, other, query, vars)
+        found, _ -> found
+      }
+  }
+}
+
+fn match_rules(
+  rules: HostRules,
+  path: String,
+  query: String,
+  vars: template.RequestVars,
+) -> Lookup {
+  case match_query(rules, path, query) {
+    Ok(found) -> Found(found)
+    Error(Nil) ->
+      case match_exact(rules, path) {
+        Ok(found) -> Found(found)
         Error(Nil) ->
-          case match_exact(rules, path) {
-            Ok(_) as found -> found
-            Error(Nil) ->
-              case match_prefix(rules, path, vars) {
-                Ok(_) as found -> found
-                Error(Nil) -> match_regex(rules, path, vars)
-              }
+          case match_prefix(rules, path, vars) {
+            Ok(found) -> Found(found)
+            Error(Nil) -> match_regex(rules, path, vars)
           }
       }
   }
@@ -881,6 +924,24 @@ fn prefix_location(
   |> result.map(fn(location) { Match(p.rule, ffi.header_value(location)) })
 }
 
+/// Whether rule `r`, which matches `path`, would redirect a request for
+/// `host`: false when the substitution of a prefix or regex rule would
+/// leave its target's host, the request then going to the next rule. For
+/// the URL testers, which check every rule, not only the one that applies:
+/// the rule is looked up alone, enabled, as the listener would run it.
+pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
+  case r.kind {
+    Exact -> True
+    Prefix | Regex ->
+      build_at(
+        [rule.Rule(..r, enabled: True, starts_at: "", expires_at: "")],
+        0,
+      )
+      |> lookup(host, path)
+      |> result.is_ok
+  }
+}
+
 /// The rest of `path` after the source of prefix rule `r`.
 fn prefix_remainder(r: Rule, path: String) -> String {
   case r.case_insensitive {
@@ -894,7 +955,7 @@ fn match_regex(
   rules: HostRules,
   path: String,
   vars: template.RequestVars,
-) -> Result(Match, Nil) {
+) -> Lookup {
   let indexed =
     candidates(rules.regex, path)
     |> list.sort(fn(a, b) { int.compare(a.rank, b.rank) })
@@ -933,7 +994,7 @@ fn run_regexes(
   exhausted: Int,
   runs: Int,
   until: Int,
-) -> Result(Match, Nil) {
+) -> Lookup {
   let next = case a, b {
     [], [] -> Error(Nil)
     [x, ..rest], [] -> Ok(#(x, rest, []))
@@ -952,11 +1013,11 @@ fn run_regexes(
     _ -> until
   }
   case next {
-    Error(Nil) -> Error(Nil)
-    // over budget: a miss, counted like an exhausted run
+    Error(Nil) -> Missed
+    // over budget: the lookup stops, counted like an exhausted run
     Ok(_) if until < 0 -> {
       ffi.count_regex_limit()
-      Error(Nil)
+      Stopped
     }
     Ok(#(entry, a, b)) ->
       case ffi.regex_run(entry.regex, path) {
@@ -968,7 +1029,7 @@ fn run_regexes(
               vars,
             )
           {
-            Ok(location) -> Ok(Match(entry.rule, ffi.header_value(location)))
+            Ok(location) -> Found(Match(entry.rule, ffi.header_value(location)))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
@@ -977,7 +1038,7 @@ fn run_regexes(
         // a run exhausting its budget is counted by `regex_run`
         Error(ffi.LimitExceeded) ->
           case exhausted + 1 >= max_exhausted_runs {
-            True -> Error(Nil)
+            True -> Stopped
             False -> run_regexes(a, b, path, vars, exhausted + 1, runs, until)
           }
       }

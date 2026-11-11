@@ -25,6 +25,10 @@ pub type Verdict {
   Disabled
   /// Enabled and matching, but outside its `starts_at`/`expires_at` window.
   OutOfSchedule
+  /// Matches the path, but its substitution would leave its target's host
+  /// (open redirect guard): the request goes to the next rule, whether this
+  /// one is enabled or not.
+  Refused
 }
 
 pub type Candidate {
@@ -43,12 +47,15 @@ pub type Explanation {
     path: String,
     candidates: List(Candidate),
     chain: List(Hop),
-    /// The chain comes back to a URL it already visited.
+    /// The chain comes back to a URL it already visited, or still
+    /// redirects after `max_hops`, where browsers stop with too many
+    /// redirects.
     loops: Bool,
   )
 }
 
-const max_hops = 10
+/// The redirects browsers follow (Chrome and Firefox: 20).
+const max_hops = 20
 
 /// `rules` are all the rules (disabled ones too); `matcher` is the published
 /// one, which decides the rule that applies.
@@ -85,11 +92,15 @@ pub fn explain(
     |> list.map(fn(r) {
       Candidate(r, case r.id == applied_id, r.enabled {
         True, _ -> Applied
-        False, False -> Disabled
-        False, True ->
-          case rule.is_active(r, now) {
-            True -> Shadowed
-            False -> OutOfSchedule
+        False, enabled ->
+          case matcher.target_allowed(r, host, path), enabled {
+            False, _ -> Refused
+            True, False -> Disabled
+            True, True ->
+              case rule.is_active(r, now) {
+                True -> Shadowed
+                False -> OutOfSchedule
+              }
           }
       })
     })
@@ -216,11 +227,7 @@ fn follow(
   hops: Int,
 ) -> #(List(Hop), Bool) {
   let chain = [Hop(location, current.rule.status, current.rule.id), ..chain]
-  let next = case hops {
-    0 -> Error(Nil)
-    _ -> loop.next_request(host, location)
-  }
-  case next {
+  case loop.next_request(host, location) {
     Error(Nil) -> #(list.reverse(chain), False)
     Ok(#(next_host, next_path, next_query)) -> {
       let next_host = matcher.normalise_request_host(next_host)
@@ -228,6 +235,8 @@ fn follow(
       case set.contains(seen, key), find(next_host, next_path, next_query) {
         True, Ok(_) -> #(list.reverse(chain), True)
         _, Error(Nil) -> #(list.reverse(chain), False)
+        // still redirecting after `max_hops`
+        False, Ok(_) if hops == 0 -> #(list.reverse(chain), True)
         False, Ok(m) ->
           follow(
             find,

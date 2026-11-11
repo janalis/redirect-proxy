@@ -40,8 +40,8 @@ Moving redirects out of nginx or Apache? See
 | `target` | (required) | An absolute `http(s)://` URL, a protocol-relative `//host/path` or a path `/path`. |
 | `status` | `301` | `301`, `302`, `303`, `307` or `308`. |
 | `preserve_query` | `false` | Append the request query string to the target. Parameters the target sets itself win: a request parameter of the same name is dropped (`/new?lang=fr` with `?lang=en&utm=x` gives `/new?lang=fr&utm=x`). |
-| `case_insensitive` | `false` | Match the source without regard to case. |
-| `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed). For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
+| `case_insensitive` | `false` | Match the source without regard to case. Query parameters (`query`) are still compared with their case. |
+| `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed, and a parameter sent several times matches if one of its values does). Names and values are compared decoded and with their case, even with `case_insensitive`. For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
 | `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`, unless the source itself ends with `/` (`/blog/` matches everything below `/blog/`). Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |
@@ -119,15 +119,21 @@ Escapes of unreserved characters and of valid UTF-8 are decoded; the
 others, such as `%2F` (which is not a path separator), are kept and
 compared in upper case. Then `.` and `..` segments are removed, encoded
 or not (`/a/%2E%2E/b` is `/b`), so a capture can never climb out of its
-target's path. Regex rules see the path in this form too. In the
+target's path. Regex rules see the path in this form too, so a pattern
+must be written in it: `^/café`, not `^/caf%C3%A9`; `~`, not `%7E`; `%2F`,
+not `%2f` (unless case-insensitive); and no `\.` or `\.\.` segment
+(lint refuses the other forms, which never match). In the
 `Location` header, non-ASCII characters are percent-encoded.
 
 ## Trailing slashes
 
 By default `/docs` and `/docs/` are different paths.
 With `server.trailing_slash = "ignore"` (`RP_SERVER_TRAILING_SLASH`), a
-request that matches no rule is retried with the trailing slash added or
-removed. A rule for the exact form always wins.
+request is also matched with the trailing slash added or removed, host by
+host: within a host, a rule for the form sent wins; across hosts, a rule
+of the request host for either form wins over the `*.parent` and `*`
+rules (a request for `/docs/` on `a.example.com` gets its `/docs` rule,
+not a `*` catch-all).
 
 ## When nothing matches
 
@@ -156,8 +162,10 @@ A rule is rejected if any of these hold:
   written: an exact or prefix source with a query string (`?`: use `query`
   instead) or a fragment (`#`), or starting with `//` (the server reads a
   request for `//a/b` as the path `/b`), a host with a port, or
-  placeholders in the target's host that never redirect, or `${host}` or
-  `${sub}` in the target of an exact rule.
+  placeholders in the target's host that never redirect, `${host}` or
+  `${sub}` in the target of an exact rule, or a regex that requires a form
+  of the path requests are never compared in (see
+  [Equivalent paths](#equivalent-paths)).
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 
@@ -169,8 +177,10 @@ adds or changes, so such a file can also be imported again as it is.
 At request time, each regex match also has a fixed backtracking budget,
 and the regex rules of a host have a budget for the whole request: a path
 crafted to make every unindexed regex work hard is answered as a miss once
-it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). Real
-rules come nowhere near it.
+it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). The
+lookup stops there: the rules of `*.parent` hosts and `*` are not tried,
+nor the trailing slash retry, so such a path cannot reach them past the
+host's own regex rules. Real rules come nowhere near it.
 
 ## Substitutions cannot leave the target's host
 

@@ -697,6 +697,54 @@ pub fn waits_for_the_file_lock_test() {
   assert simplifile.is_file(lock) == Ok(False)
 }
 
+/// Reads of the rules do not wait for a change in progress (here, one
+/// waiting for the file lock another process holds): they answer with the
+/// rules in effect, and a change's caller reads it once it returns.
+pub fn reads_do_not_wait_for_changes_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let done = process.new_subject()
+  process.spawn(fn() {
+    process.send(done, store.create(s, new_rule("/c", "/d"), by: "t"))
+  })
+  // the change has reached the store, which waits for the lock
+  process.sleep(100)
+  let started = ffi.monotonic_micros()
+  assert store.all(s) == [a]
+  let #(rules, version) = store.versioned(s)
+  assert rules == [a] && version != ""
+  assert ffi.monotonic_micros() - started < 50_000
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Ok(Ok(c)) = process.receive(done, 5000)
+  assert store.all(s) == [a, c]
+  assert store.get(s, c.id) == Ok(c)
+}
+
+/// Once the store has stopped, reads fail like any call to it, instead of
+/// answering with the rules it had.
+pub fn reads_of_a_stopped_store_fail_test() {
+  let dir = support.temp_dir()
+  let assert Ok(started) =
+    store.start(settings(dir, 0), process.new_name("store_test"))
+  let assert Ok(_) = store.create(started.data, new_rule("/a", "/b"), by: "t")
+  assert list.length(store.all(started.data)) == 1
+  process.unlink(started.pid)
+  process.kill(started.pid)
+  support.wait_until(fn() { !process.is_alive(started.pid) }, 1000)
+  let unavailable = fn(read) { ffi.rescue_store_timeout(read, fn() { True }) }
+  assert unavailable(fn() {
+    let _ = store.all(started.data)
+    False
+  })
+  assert unavailable(fn() {
+    let _ = store.versioned(started.data)
+    False
+  })
+}
+
 pub fn stale_lock_is_broken_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
@@ -909,6 +957,9 @@ pub fn watched_file_is_reloaded_test() {
     )
   support.wait_until(fn() { redirect("/watched") == Ok("/reloaded") }, 2000)
   assert list.map(store.all(store), fn(r) { r.source }) == ["/watched"]
+  // counted once the new rules are published
+  support.wait_until(fn() { reloads(dir) == 1 }, 2000)
+  process.sleep(100)
   assert reloads(dir) == 1
 
   // an invalid file is reported once and the rules are kept
@@ -1097,6 +1148,35 @@ pub fn versioned_set_changes_test() {
     == Ok(1)
   assert store.bulk_versioned(s, [], store.Disable, Some("*"), by: "t")
     == Error(store.Rejected(["ids: select at least one rule"]))
+}
+
+/// The preview of an import tells exactly what the import then changes: a
+/// rule imported again unchanged (with other dates and author) is neither
+/// changed nor rewritten.
+pub fn import_preview_matches_the_import_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) = store.create(s, new_rule("/a", "/1"), by: "t")
+  let assert Ok(b) = store.create(s, new_rule("/b", "/2"), by: "t")
+  let before = store.all(s)
+  let incoming = [
+    Rule(..a, updated_at: "", updated_by: "someone"),
+    Rule(..b, target: "/changed"),
+    // a new rule without an id gets a new one at each import or preview
+    Rule(..new_rule("/c", "/3"), id: "c"),
+  ]
+  let assert Ok(#(preview, _)) =
+    store.preview_import(s, incoming, store.Merge, by: "t")
+  assert preview.added == ["c"]
+  assert preview.changed == [b.id]
+  assert preview.removed == []
+  let assert Ok(3) = store.import_rules(s, incoming, store.Merge, by: "t")
+  let after = store.all(s)
+  let applied = store_rules.diff(before, after)
+  assert applied.added == preview.added
+  assert applied.changed == preview.changed
+  assert applied.removed == preview.removed
+  assert store.get(s, a.id) == Ok(a)
 }
 
 /// Hit counts survive a restart: saved when a stop begins (and every
