@@ -65,7 +65,13 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
         working-directory: docs
-      - run: npx playwright install --with-deps chromium
+      # the system packages come from the Ubuntu mirrors, which runners
+      # cannot always reach; the image has what headless Chromium needs
+      # (the fallback only lacks some fonts)
+      - name: Chromium
+        run: |
+          npx playwright install --with-deps chromium \
+            || npx playwright install chromium
         working-directory: docs
       - name: Screenshots
         run: npm run screenshots
