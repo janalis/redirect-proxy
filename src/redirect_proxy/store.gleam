@@ -741,6 +741,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Import(prepared, mode, expected, actor_name, reply) -> {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
+        let prepared = store_rules.resolve_ids(state.rules, prepared)
         use Nil <- result.try(check_collection_version(state, expected))
         use Nil <- result.try(
           store_rules.check_new_ids(state.rules, prepared)
@@ -791,6 +792,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
+      let prepared = store_rules.resolve_ids(state.rules, prepared)
       // creation dates do not matter here: diff ignores them
       let rules = case mode {
         Replace -> prepared

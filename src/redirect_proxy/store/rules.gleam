@@ -339,9 +339,10 @@ pub fn prepare_import(
   |> list.map(fn(r) {
     rule.Rule(
       ..r,
+      // trimmed against the current rules: `resolve_ids`
       id: case string.trim(r.id) {
         "" -> id.uuid()
-        given -> given
+        _ -> r.id
       },
       // a blank creation date is resolved against the current rules
       // (`keep_created_at`): an export without it must not reset it
@@ -361,6 +362,7 @@ pub fn check_import(
   ignore_trailing_slash: Bool,
 ) -> Result(List(Rule), List(String)) {
   use rules <- result.try(prepare_import(incoming, "cli"))
+  let rules = resolve_ids(current, rules)
   use Nil <- result.try(check_new_ids(current, rules))
   use Nil <- result.try(check_conflicts(rules))
   // as an import, the rules it leaves as they are are not checked again
@@ -371,6 +373,18 @@ pub fn check_import(
     ignore_trailing_slash,
   ))
   Ok(rules)
+}
+
+/// The ids of imported rules: kept as given when a current rule has it
+/// (spaces and all: a file may have loaded with them), else trimmed.
+pub fn resolve_ids(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
+  let known = list.map(existing, fn(r) { r.id }) |> set.from_list
+  list.map(incoming, fn(r) {
+    case set.contains(known, r.id) {
+      True -> r
+      False -> rule.Rule(..r, id: string.trim(r.id))
+    }
+  })
 }
 
 /// Refuses imported rules that would add an id that is not URL-safe or is

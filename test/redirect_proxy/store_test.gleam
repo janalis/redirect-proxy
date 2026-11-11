@@ -343,6 +343,20 @@ pub fn loaded_reserved_ids_import_again_test() {
   assert string.contains(error, "reserved")
 }
 
+/// An id the file loaded with, spaces and all, names the same rule in an
+/// import; a new one is trimmed.
+pub fn loaded_ids_with_spaces_import_again_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let spaced = Rule(..new_rule("/s", "/t"), id: " a")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([spaced]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
+  assert store.import_rules(s, [spaced, fresh], store.Merge, by: "t") == Ok(2)
+  assert list.map(store.all(s), fn(r) { r.id }) == [" a", "b"]
+}
+
 /// A rule that starts later would loop once it starts: the loop is
 /// followed with the rules active at its start.
 pub fn scheduled_loops_are_refused_test() {
