@@ -1,6 +1,8 @@
 //// Committing a rule set: checking it, writing the redirections file, then
 //// publishing the compiled matcher. Used by the store actor only.
 
+import gleam/list
+import gleam/option.{type Option, Some}
 import gleam/result
 import redirect_proxy/ffi
 import redirect_proxy/log
@@ -54,23 +56,20 @@ pub fn loaded(target: Target, rules: List(Rule), check: checker.Check) -> Nil {
   checker.request(target.files.rules_path, check)
 }
 
-/// Checks then commits a change of one rule (`changed`, in `rules`): it
-/// must be able to apply (when enabled), conflict with no other rule and not loop. With
+/// Checks then commits a change of one rule (`changed`, in `rules`, the
+/// new version of `previous`): it must be able to apply (see
+/// `check_lint_change`), conflict with no other rule and not loop. With
 /// `uncovers`, loops the change uncovers elsewhere are logged (an updated
 /// rule may no longer shadow one that loops). Returns the fingerprint of the
 /// file.
 pub fn one(
   target: Target,
   changed: Rule,
+  previous: Option(Rule),
   rules: List(Rule),
   uncovers uncovers: Bool,
 ) -> Result(String, List(String)) {
-  // a disabled rule never applies: one that loaded with a problem can be
-  // disabled (as in bulk)
-  use Nil <- result.try(case changed.enabled {
-    True -> check_lint(changed)
-    False -> Ok(Nil)
-  })
+  use Nil <- result.try(check_lint_change(changed, previous))
   use Nil <- result.try(check_conflicts(rules))
   let built = matcher.build(rules)
   use Nil <- result.try(check_loop(
@@ -85,6 +84,24 @@ pub fn one(
     False -> Nil
   }
   Ok(fingerprint)
+}
+
+/// A new rule must be able to apply. A changed one may keep the problems
+/// it loaded with while it stays disabled, or enabled (a note, a tag, or
+/// disabling it, as in bulk), but neither gain one nor be enabled with one.
+fn check_lint_change(changed: Rule, previous: Option(Rule)) {
+  case previous {
+    Some(previous) if !changed.enabled || previous.enabled -> {
+      let before = rule.lint(previous)
+      case
+        list.filter(rule.lint(changed), fn(p) { !list.contains(before, p) })
+      {
+        [] -> Ok(Nil)
+        added -> Error(added)
+      }
+    }
+    _ -> check_lint(changed)
+  }
 }
 
 /// Commits a change of a set of rules (bulk, import, delete), checking

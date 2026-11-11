@@ -176,11 +176,7 @@ pub fn size(matcher: Matcher) -> Int {
 /// have gone through `rule.validate`; a regex that fails to compile is
 /// skipped.
 pub fn build(rules: List(Rule)) -> Matcher {
-  build_at(rules, ffi.now_seconds())
-}
-
-/// The matcher `build` gives at `now` (seconds): the rules active then.
-pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
+  let now = ffi.now_seconds()
   let enabled =
     rules
     |> list.filter(rule.is_active(_, now))

@@ -641,6 +641,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use fingerprint <- result.try(commit.one(
           target(state.settings),
           valid,
+          None,
           rules,
           uncovers: False,
         ))
@@ -683,7 +684,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           })
         // the old version may have shadowed a rule that loops
         use fingerprint <- result.try(
-          commit.one(target(state.settings), valid, rules, uncovers: True)
+          commit.one(
+            target(state.settings),
+            valid,
+            Some(existing),
+            rules,
+            uncovers: True,
+          )
           |> result.map_error(Invalid),
         )
         audit.record(

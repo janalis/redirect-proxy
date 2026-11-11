@@ -376,6 +376,53 @@ pub fn scheduled_loops_are_refused_test() {
     )
 }
 
+/// The other way round: a rule active now that loops with one that starts
+/// later, once it starts.
+pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let later =
+    Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Ok(_) = store.create(s, later, by: "t")
+  let now = Rule(..new_rule("/a", "/b"), id: "a")
+  let assert Error(errors) = store.create(s, now, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) = store.import_rules(s, [now], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  // one that expires before the other starts does not loop
+  let assert Ok(_) =
+    store.create(s, Rule(..now, expires_at: "2998-01-01T00:00:00Z"), by: "t")
+  // nor do two rules whose windows do not overlap
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(
+        ..new_rule("/c", "/d"),
+        id: "c",
+        starts_at: "2999-01-01T00:00:00Z",
+        expires_at: "2999-02-01T00:00:00Z",
+      ),
+      by: "t",
+    )
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/d", "/c"), id: "d", starts_at: "2999-03-01T00:00:00Z"),
+      by: "t",
+    )
+}
+
+/// Every check applies to disabled rules too, one at a time or in sets,
+/// but for disabling a rule that loaded with a problem: it then still
+/// imports again unchanged.
+pub fn disabled_rules_are_checked_too_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let bad = Rule(..new_rule("/q?x=1", "/t"), id: "bad", enabled: False)
+  let assert Error([_]) = store.create(s, bad, by: "t")
+  let assert Error(_) = store.import_rules(s, [bad], store.Merge, by: "t")
+}
+
 fn errors_of(error: store.SetChangeError) -> List(String) {
   case error {
     store.Rejected(errors) -> errors
