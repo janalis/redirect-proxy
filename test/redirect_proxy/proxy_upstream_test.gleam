@@ -140,8 +140,17 @@ fn start() -> Proxy {
 }
 
 fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
+  exchange_waiting(proxy, chunks, 800)
+}
+
+/// Like exchange/2, waiting up to `wait_ms` for each answer.
+fn exchange_waiting(
+  proxy: Proxy,
+  chunks: List(String),
+  wait_ms: Int,
+) -> #(String, Bool) {
   let #(received, closed) =
-    session(proxy.port, list.map(chunks, bit_array.from_string), 800)
+    session(proxy.port, list.map(chunks, bit_array.from_string), wait_ms)
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -150,8 +159,22 @@ fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
 /// does something 20 ms after a response (/idle-close, /linger), even one
 /// that needs a TLS handshake first.
 fn paced_exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
+  paced_exchange_waiting(proxy, chunks, 800)
+}
+
+/// Like paced_exchange/2, waiting up to `wait_ms` for each answer.
+fn paced_exchange_waiting(
+  proxy: Proxy,
+  chunks: List(String),
+  wait_ms: Int,
+) -> #(String, Bool) {
   let #(received, closed) =
-    paced_session(proxy.port, list.map(chunks, bit_array.from_string), 200, 800)
+    paced_session(
+      proxy.port,
+      list.map(chunks, bit_array.from_string),
+      200,
+      wait_ms,
+    )
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -687,21 +710,31 @@ pub fn https_upstreams_test() {
       ),
       counter,
     )
+  // and the client waits as long for the answer
   let #(text, _) =
-    exchange(proxy, [
-      "POST /tls HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
-      "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
-    ])
+    exchange_waiting(
+      proxy,
+      [
+        "POST /tls HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
+        "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
+      ],
+      3000,
+    )
   assert string.contains(text, "POST /tls\nconn=1\n")
   assert string.contains(text, "body=hi")
   assert string.contains(text, "GET /again\nconn=1\n")
   // closed by the upstream, or sent unasked bytes, while idle: replaced
+  // (each with a new handshake)
   let #(text, _) =
-    paced_exchange(proxy, [
-      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
-      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
-      "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
-    ])
+    paced_exchange_waiting(
+      proxy,
+      [
+        "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+        "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+        "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
+      ],
+      3000,
+    )
   assert string.contains(text, "GET /idle-close\nconn=2\n")
   assert string.contains(text, "GET /linger\nconn=3\n")
   assert string.contains(text, "GET /last\nconn=4\n")
