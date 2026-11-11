@@ -532,12 +532,15 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
   }
 }
 
-/// Strips the port and a trailing dot (`example.com.`) from a Host header
+/// Strips the port and trailing dots (`example.com.`) from a Host header
 /// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  let host = ffi.strip_port(ffi.lowercase_host(host))
+  drop_trailing_dots(ffi.strip_port(ffi.lowercase_host(host)))
+}
+
+fn drop_trailing_dots(host: String) -> String {
   case string.ends_with(host, ".") {
-    True -> string.drop_end(host, 1)
+    True -> drop_trailing_dots(string.drop_end(host, 1))
     False -> host
   }
 }

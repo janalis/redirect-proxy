@@ -40,8 +40,8 @@ Moving redirects out of nginx or Apache? See
 | `target` | (required) | An absolute `http(s)://` URL, a protocol-relative `//host/path` or a path `/path`. |
 | `status` | `301` | `301`, `302`, `303`, `307` or `308`. |
 | `preserve_query` | `false` | Append the request query string to the target. Parameters the target sets itself win: a request parameter of the same name is dropped (`/new?lang=fr` with `?lang=en&utm=x` gives `/new?lang=fr&utm=x`). |
-| `case_insensitive` | `false` | Match the source without regard to case. |
-| `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed). For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
+| `case_insensitive` | `false` | Match the source without regard to case. Query parameters (`query`) are still compared with their case. |
+| `query` | `""` | Exact rules only: query parameters the request must have, with these values (`id=42&lang=fr`; other parameters are allowed, and a parameter sent several times matches if one of its values does). Names and values are compared decoded and with their case, even with `case_insensitive`. For the same path, a rule with query parameters wins over one without, and more parameters win. Written to the file only when set. |
 | `whole_segments` | `false` | Prefix rules only: match whole path segments, so that `/blog` matches `/blog` and `/blog/…` but not `/blogger`. `$1` is then empty or starts with `/`, unless the source itself ends with `/` (`/blog/` matches everything below `/blog/`). Written to the file only when `true`. |
 | `priority` | `100` | Lower runs first, among regex rules and among prefix rules of the same length. |
 | `enabled` | `true` | Disabled rules are kept but ignored. |

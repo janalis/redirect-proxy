@@ -64,6 +64,10 @@ pub fn host_is_normalised_test() {
   assert location(m, "EXAMPLE.com:8080", "/a") == Ok("/b")
   assert matcher.normalise_request_host("[::1]:8080") == "[::1]"
   assert matcher.normalise_request_host("Example.com") == "example.com"
+  // every trailing dot: the listener accepts `example.com..`
+  assert location(m, "example.com.", "/a") == Ok("/b")
+  assert location(m, "example.com..:80", "/a") == Ok("/b")
+  assert matcher.normalise_request_host("..") == ""
 }
 
 pub fn precedence_exact_prefix_regex_test() {
@@ -857,4 +861,28 @@ pub fn explain_reports_endless_chains_test() {
   let assert Ok(explained) =
     explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
   assert !explained.loops
+}
+
+/// Query conditions, as documented: a parameter sent several times matches
+/// if one of its values does; names and values keep their case, even on a
+/// case-insensitive rule; other parameters are allowed.
+pub fn query_conditions_as_documented_test() {
+  let m =
+    matcher.build([
+      Rule(
+        ..r("q", "*", rule.Exact, "/p", "/q"),
+        query: "a=2",
+        case_insensitive: True,
+      ),
+    ])
+  let found = fn(query) {
+    matcher.lookup_query(m, "h", "/p", query) |> result.is_ok
+  }
+  assert found("a=1&a=2")
+  assert found("x=9&a=2")
+  assert found("a=%32")
+  assert !found("A=2")
+  assert !found("a=1")
+  // the path keeps ignoring case
+  assert matcher.lookup_query(m, "h", "/P", "a=2") |> result.is_ok
 }
