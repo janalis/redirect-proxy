@@ -301,6 +301,24 @@ pub fn prepare_import(
   |> validate_all
 }
 
+/// The checks of an import of `incoming` into an empty rule set: the
+/// prepared rules, or every problem found.
+pub fn check_import(
+  incoming: List(Rule),
+  ignore_trailing_slash: Bool,
+) -> Result(List(Rule), List(String)) {
+  use rules <- result.try(prepare_import(incoming, "cli"))
+  use Nil <- result.try(check_new_ids([], rules))
+  use Nil <- result.try(check_conflicts(rules))
+  use Nil <- result.try(check_changed(
+    matcher.build(rules),
+    rules,
+    rules,
+    ignore_trailing_slash,
+  ))
+  Ok(rules)
+}
+
 /// Refuses imported rules that would add an id that is not URL-safe or is
 /// reserved (`rule.is_valid_id`). The ids of current rules are kept: a file
 /// that loaded with them can be imported again.

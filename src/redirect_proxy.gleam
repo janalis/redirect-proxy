@@ -463,6 +463,9 @@ fn client_delete(
 
 // --- rules ------------------------------------------------------------------
 
+/// Validates the rules file of the server, as loading does, or a file to
+/// import, as `rules import` does (but for the current rules it may
+/// conflict with).
 fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   use path <- result.try(case file {
     "" -> load(config_path) |> result.map(config.rules_path)
@@ -478,7 +481,17 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
     rule_csv.parse_import(content) |> result.map_error(string.join(_, "\n")),
   )
   use valid <- result.try(
-    store_rules.validate_all(rules) |> result.map_error(string.join(_, "\n")),
+    case file {
+      "" -> store_rules.validate_all(rules)
+      _ -> {
+        let ignore_trailing_slash =
+          load(config_path)
+          |> result.map(config.ignore_trailing_slash)
+          |> result.unwrap(False)
+        store_rules.check_import(rules, ignore_trailing_slash)
+      }
+    }
+    |> result.map_error(string.join(_, "\n")),
   )
   io.println(
     path <> ": " <> int.to_string(list.length(valid)) <> " valid rule(s)",

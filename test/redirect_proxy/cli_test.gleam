@@ -1,4 +1,5 @@
 import envoy
+import gleam/list
 import gleam/string
 import redirect_proxy
 import redirect_proxy/api/clients
@@ -108,6 +109,16 @@ pub fn rules_commands_test() {
 
   let assert Ok(Nil) = simplifile.write(import_file, "[{\"source\": \"bad\"}]")
   let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
+  // what an import refuses: a reserved id, a loop, a rule that never applies
+  [
+    "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    "[{\"source\": \"/a\", \"target\": \"/b\"}, {\"source\": \"/b\", \"target\": \"/a\"}]",
+    "[{\"source\": \"/q?x=1\", \"target\": \"/t\"}]",
+  ]
+  |> list.each(fn(content) {
+    let assert Ok(Nil) = simplifile.write(import_file, content)
+    let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
+  })
   let _ = config.default()
 }
 
