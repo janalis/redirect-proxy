@@ -1113,8 +1113,9 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
             Up = C#conn.upstream,
             %% the client's values of the headers the handler sets, and of
             %% the ones it drops (forwarding headers from untrusted peers)
-            Drop = [T || T <- Tokens, not essential(T)]
-                ++ [N || {N, _} <- XForwarded] ++ Dropped,
+            %% in the form request_headers/2 compares (`_` read as `-`)
+            Drop = [dashed(N) || N <- [T || T <- Tokens, not essential(T)]
+                ++ [N || {N, _} <- XForwarded] ++ Dropped],
             HasBody = Body =/= none andalso Body =/= {length, 0},
             Head = [method_name(Method), $\s, Path,
                     case Query of none -> []; {some, Q} -> [$?, Q] end,
@@ -1246,16 +1247,18 @@ essential(_) -> false.
 %% `content_length` with the framing headers (next to the normalised ones,
 %% they would give such an upstream two framings of one body).
 request_headers([{Name, Value} | Rest], Drop) ->
-    Dropped = case binary:match(Name, <<"_">>) of
-        nomatch -> dropped(Name, Drop);
-        _ -> dropped(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
-    end,
-    case Dropped of
+    case dropped(dashed(Name), Drop) of
         true -> request_headers(Rest, Drop);
         false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
     end;
 request_headers([], _) ->
     [].
+
+dashed(Name) ->
+    case binary:match(Name, <<"_">>) of
+        nomatch -> Name;
+        _ -> binary:replace(Name, <<"_">>, <<"-">>, [global])
+    end.
 
 dropped(Name, _) when ?HOP_BY_HOP(Name) -> true;
 dropped(<<"expect">>, _) -> true;
