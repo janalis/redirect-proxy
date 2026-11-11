@@ -433,16 +433,39 @@ fn rehash_if_needed(
   case password.needs_rehash(user.password_hash) {
     False -> user
     True -> {
-      let stored =
+      case
         users.rehash_password(
           ctx.users,
           user.username,
           user.password_hash,
           password.hash(pass),
         )
-        |> result.map(option.unwrap(_, user))
-      case stored {
-        Ok(updated) -> updated
+      {
+        // the same password: the user's sessions go on
+        Ok(Some(updated)) -> {
+          session.refingerprint_user(
+            user.username,
+            session.user_fingerprint(user.password_hash, user.updated_at),
+            session.user_fingerprint(updated.password_hash, updated.updated_at),
+          )
+          updated
+        }
+        // changed meanwhile: by a sign-in re-hashing it at the same time,
+        // the session is opened for the user as stored; by a change of
+        // password, as signed in (it then ends at once)
+        Ok(None) ->
+          case users.get(ctx.users, user.username) {
+            Ok(stored) ->
+              case
+                hashing_password(fn() {
+                  password.verify(pass, stored.password_hash)
+                })
+              {
+                Ok(True) -> stored
+                Ok(False) | Error(Nil) -> user
+              }
+            Error(Nil) -> user
+          }
         Error(reason) -> {
           log.warning(
             "could not re-hash the password of "

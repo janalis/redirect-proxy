@@ -202,6 +202,27 @@ pub fn destroy_user(username: String) -> Nil {
   })
 }
 
+/// Moves the sessions of a local user from fingerprint `from` to `to`:
+/// after its password was re-hashed, which does not change it.
+pub fn refingerprint_user(username: String, from: String, to: String) -> Nil {
+  let entries: List(#(String, #(Int, Session))) = ffi.ets_to_list(table)
+  list.each(entries, fn(entry) {
+    let #(key, #(expires_at, session)) = entry
+    case
+      session.method == Local
+      && session.username == username
+      && session.fingerprint == from
+    {
+      True ->
+        ffi.ets_put(table, key, #(
+          expires_at,
+          Session(..session, fingerprint: to),
+        ))
+      False -> Nil
+    }
+  })
+}
+
 pub fn purge_expired() -> Int {
   let now = ffi.now_seconds()
   let _ = ffi.ets_delete_older(header_index, now)

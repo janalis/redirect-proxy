@@ -700,3 +700,17 @@ pub fn admins_change_roles_test() {
   assert demote_self.status == 422
   assert string.contains(demote_self.body, "last administrator")
 }
+
+/// Re-hashing a password at sign-in does not change it: the user's other
+/// sessions go on (here one opened while the re-hash could not be saved).
+pub fn a_password_rehash_keeps_the_other_sessions_test() {
+  let env = boot(config.default())
+  // the users file cannot be replaced: the first sign-in cannot re-hash
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o500)
+  let #(first, _) = login(env)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
+  let #(_, _) = login(env)
+  let assert Ok(content) = simplifile.read(env.dir <> "/users.json")
+  assert !string.contains(content, "$1000$")
+  assert get(env.admin <> "/account", [#("cookie", first)]).status == 200
+}
