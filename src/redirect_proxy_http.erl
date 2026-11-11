@@ -639,11 +639,19 @@ request(Buffer, #conn{max_head = Max} = C) ->
 %% One pass over the head, without `erlang:decode_packet` (whose header
 %% lines cost several times the rest of the parse): the request line, then
 %% each header line, the bytes checked as they are read.
-%% blank lines before a request line are ignored (RFC 9112 2.2)
-parse(<<"\r\n", Rest/binary>>) -> parse(Rest);
-parse(<<"\n", Rest/binary>>) -> parse(Rest);
-parse(<<"\r">>) -> more;
-parse(Buffer) -> method(Buffer).
+%% Blank lines before a request line are ignored (RFC 9112 2.2), up to
+%% ?MAX_BLANK_LINES: a head made only of blank lines is not complete, so
+%% each new packet of it would be parsed again from its first byte, up to
+%% max_head bytes.
+-define(MAX_BLANK_LINES, 8).
+parse(Buffer) -> parse(Buffer, 0).
+
+parse(<<"\r\n", _/binary>>, ?MAX_BLANK_LINES) -> {error, 400};
+parse(<<"\n", _/binary>>, ?MAX_BLANK_LINES) -> {error, 400};
+parse(<<"\r\n", Rest/binary>>, N) -> parse(Rest, N + 1);
+parse(<<"\n", Rest/binary>>, N) -> parse(Rest, N + 1);
+parse(<<"\r">>, _) -> more;
+parse(Buffer, _) -> method(Buffer).
 
 %% The method: the common ones matched whole, any other token kept as is.
 method(<<"GET ", Rest/binary>>) -> target(Rest, get);

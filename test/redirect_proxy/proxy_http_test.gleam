@@ -367,6 +367,25 @@ pub fn blank_lines_before_a_request_are_ignored_test() {
   assert string.starts_with(text, "HTTP/1.1 200 ")
 }
 
+// each new packet of a head made only of blank lines would parse it again
+// from its first byte: their number is bounded
+pub fn too_many_blank_lines_before_a_request_are_rejected_test() {
+  let request = "GET / HTTP/1.1\r\nhost: a\r\n\r\n"
+  assert parse_outcome(bit_array.from_string(
+      string.repeat("\r\n", 8) <> request,
+    ))
+    == "ok"
+  assert parse_outcome(bit_array.from_string(string.repeat("\n", 8) <> request))
+    == "ok"
+  assert parse_outcome(bit_array.from_string(string.repeat("\r\n", 9)))
+    == "error:400"
+  assert parse_outcome(bit_array.from_string(string.repeat("\n", 9)))
+    == "error:400"
+  let #(text, closed) = exchange([string.repeat("\r\n", 100)])
+  assert string.starts_with(text, "HTTP/1.1 400 ")
+  assert closed
+}
+
 @external(erlang, "test_net_ffi", "parse_outcome")
 fn parse_outcome(head: BitArray) -> String
 
