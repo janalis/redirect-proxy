@@ -55,7 +55,7 @@ pub fn loaded(target: Target, rules: List(Rule), check: checker.Check) -> Nil {
 }
 
 /// Checks then commits a change of one rule (`changed`, in `rules`): it
-/// must be able to apply, conflict with no other rule and not loop. With
+/// must be able to apply (when enabled), conflict with no other rule and not loop. With
 /// `uncovers`, loops the change uncovers elsewhere are logged (an updated
 /// rule may no longer shadow one that loops). Returns the fingerprint of the
 /// file.
@@ -65,7 +65,12 @@ pub fn one(
   rules: List(Rule),
   uncovers uncovers: Bool,
 ) -> Result(String, List(String)) {
-  use Nil <- result.try(check_lint(changed))
+  // a disabled rule never applies: one that loaded with a problem can be
+  // disabled (as in bulk)
+  use Nil <- result.try(case changed.enabled {
+    True -> check_lint(changed)
+    False -> Ok(Nil)
+  })
   use Nil <- result.try(check_conflicts(rules))
   let built = matcher.build(rules)
   use Nil <- result.try(check_loop(

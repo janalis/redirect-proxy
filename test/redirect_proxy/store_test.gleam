@@ -311,6 +311,20 @@ pub fn set_changes_check_the_rules_they_change_test() {
     == Ok(1)
 }
 
+/// A rule that loaded although it can never apply can be disabled one at a
+/// time too (as in bulk), but not enabled.
+pub fn rules_that_never_apply_can_be_disabled_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  let assert Ok(_) = store.update(s, Rule(..legacy, enabled: False), by: "t")
+  let assert Error([error]) = store.update(s, legacy, by: "t")
+  assert string.contains(error, "query string")
+}
+
 /// A file that loaded with a reserved id imports again: only new ids are
 /// refused.
 pub fn loaded_reserved_ids_import_again_test() {
