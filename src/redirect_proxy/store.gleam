@@ -756,6 +756,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             Merge -> merge(state.rules, prepared)
           }
           |> store_rules.keep_created_at(state.rules, _)
+          |> store_rules.keep_unchanged(state.rules, _)
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"

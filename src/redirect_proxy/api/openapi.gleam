@@ -1109,11 +1109,17 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ),
                 #(
                   "updated_at",
-                  typed("string", "Exported; set to the import time."),
+                  typed(
+                    "string",
+                    "Exported; set to the import time for a rule the import adds or changes.",
+                  ),
                 ),
                 #(
                   "updated_by",
-                  typed("string", "Exported; set to the importer."),
+                  typed(
+                    "string",
+                    "Exported; set to the importer for a rule the import adds or changes.",
+                  ),
                 ),
               ],
             ]),

@@ -411,6 +411,29 @@ pub fn keep_created_at(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
   })
 }
 
+/// Gives the imported rules that are the same as current ones but for
+/// their dates and author (as `diff` compares them) back as they were:
+/// importing rules again unchanged leaves their version (ETag) alone.
+pub fn keep_unchanged(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
+  let content = fn(r: Rule) {
+    rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
+  }
+  let current =
+    list.fold(existing, dict.new(), fn(acc, r: Rule) {
+      dict.insert(acc, r.id, r)
+    })
+  list.map(rules, fn(r) {
+    case dict.get(current, r.id) {
+      Ok(before) ->
+        case content(before) == content(r) {
+          True -> before
+          False -> r
+        }
+      Error(Nil) -> r
+    }
+  })
+}
+
 pub fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
   let incoming_by_id =
     list.fold(incoming, dict.new(), fn(acc, r) { dict.insert(acc, r.id, r) })

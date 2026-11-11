@@ -325,6 +325,26 @@ pub fn rules_that_never_apply_can_be_disabled_test() {
   assert string.contains(error, "query string")
 }
 
+/// Importing rules again unchanged leaves them as they are: their version
+/// (ETag), dates and author; changed ones are stamped.
+pub fn unchanged_imported_rules_keep_their_version_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) =
+    store.create(s, Rule(..new_rule("/a", "/t"), id: "a"), by: "alice")
+  let assert Ok(b) =
+    store.create(s, Rule(..new_rule("/b", "/t"), id: "b"), by: "alice")
+  process.sleep(1100)
+  let assert Ok(2) =
+    store.import_rules(s, [a, Rule(..b, target: "/u")], store.Merge, by: "bob")
+  let assert Ok(a2) = store.get(s, "a")
+  let assert Ok(b2) = store.get(s, "b")
+  assert rule.version(a2) == rule.version(a)
+  assert #(a2.updated_at, a2.updated_by) == #(a.updated_at, "alice")
+  assert b2.updated_by == "bob"
+  assert rule.version(b2) != rule.version(b)
+}
+
 /// A file that loaded with a reserved id imports again: only new ids are
 /// refused.
 pub fn loaded_reserved_ids_import_again_test() {
