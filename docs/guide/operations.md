@@ -80,7 +80,9 @@ Each change keeps the previous file as
 
 `<data_dir>/audit.jsonl` records who changed what, with the rule
 before and after, and sign-ins: logins, failed logins (with the client
-address) and logouts, for local, SSO and proxy-header sessions. SSO entries
+address) and logouts, for local, SSO and proxy-header sessions, and wrong
+current passwords given to change a password
+(`auth.password_check_failed`). SSO entries
 carry the provider `issuer` and `subject`, failed ones the reason. Names
 from SSO and proxy headers are recorded as `sso:<name>` and
 `proxy:<name>`, so that they cannot pass for a local user, `system` or an

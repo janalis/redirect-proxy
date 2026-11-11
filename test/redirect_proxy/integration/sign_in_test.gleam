@@ -380,9 +380,15 @@ pub fn password_changes_need_the_current_password_test() {
       #("current_password", current),
     ])
   }
+  // other tests spend the audit log's budget for failures
+  ratelimit.reset("audit-failures")
   let resp = change("not my password")
   assert resp.status == 422
   assert string.contains(resp.body, "current password is not correct")
+  // audited like a failed sign-in: a stolen session guessing it
+  let assert [failed, ..] = audit.tail(env.dir <> "/audit.jsonl", 1)
+  assert #(failed.actor, failed.action, failed.target)
+    == #("admin", "auth.password_check_failed", "local")
   assert change("").status == 422
   // nothing changed: the old password still signs in
   let #(_, _) = login(env)

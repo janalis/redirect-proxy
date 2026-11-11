@@ -262,6 +262,15 @@ pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
     True -> end_password_check(ctx, username, Passed)
     False -> {
       end_password_check(ctx, username, Failed)
+      // a stolen session guessing the password: audited like a failed
+      // sign-in, within the same budget
+      audit.record_failure(
+        config.audit_path(ctx.config),
+        username,
+        "auth.password_check_failed",
+        "local",
+        json.object([#("client_ip", json.string(ctx.client_ip))]),
+      )
       log.warning(
         "wrong current password for user="
         <> log_value(username)
