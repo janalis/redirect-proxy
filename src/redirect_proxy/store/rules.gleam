@@ -433,9 +433,6 @@ pub fn keep_created_at(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
 /// their dates and author (as `diff` compares them) back as they were:
 /// importing rules again unchanged leaves their version (ETag) alone.
 pub fn keep_unchanged(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
-  let content = fn(r: Rule) {
-    rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
-  }
   let current =
     list.fold(existing, dict.new(), fn(acc, r: Rule) {
       dict.insert(acc, r.id, r)
@@ -450,6 +447,12 @@ pub fn keep_unchanged(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
       Error(Nil) -> r
     }
   })
+}
+
+/// A rule without its dates and author: two rules the same but for them
+/// are the same change (`diff`, `keep_unchanged`).
+fn content(r: Rule) -> Rule {
+  rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
 }
 
 pub fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
@@ -481,9 +484,6 @@ pub type Diff {
 /// Compares two rule sets. Timestamps and authors are ignored: an import
 /// sets them on every rule even when nothing else changed.
 pub fn diff(before: List(Rule), after: List(Rule)) -> Diff {
-  let content = fn(r: Rule) {
-    rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
-  }
   let index = fn(rules: List(Rule)) {
     list.fold(rules, dict.new(), fn(acc, r) {
       dict.insert(acc, r.id, content(r))
