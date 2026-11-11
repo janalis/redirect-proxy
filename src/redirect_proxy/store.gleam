@@ -305,16 +305,9 @@ type State {
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
     /// The fingerprint of the content the watcher last could not load: it
-    /// is reported once, not at every tick that reads it again. Content that
-    /// may load later as it is (`rejected_retry`: valid, but its ids could
-    /// not be written, or the lock not created) is tried again, quietly,
-    /// every minute (`retry_rejected`), until it loads.
+    /// is reported once, not at every tick that reads it again, and tried
+    /// again when the file changes (or on `SIGHUP`).
     rejected: String,
-    rejected_at: Int,
-    rejected_retry: Bool,
-    /// Whether its content was read (not only the lock refused): tried
-    /// again, it is reported only if not.
-    rejected_read: Bool,
     /// The stamp of the file the watcher last could not read, for the same
     /// reason.
     unreadable: String,
@@ -359,9 +352,6 @@ fn initial_state(
     fingerprint:,
     stamp:,
     rejected: "",
-    rejected_at: 0,
-    rejected_retry: False,
-    rejected_read: False,
     unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
@@ -942,8 +932,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Watch(self) -> {
       schedule_watch(state.settings, self)
       let stamp = ffi.file_stamp(state.settings.rules_path)
-      let retry = retry_rejected(state)
-      case stamp == state.stamp && !ffi.stamp_is_recent(stamp) && !retry {
+      case stamp == state.stamp && !ffi.stamp_is_recent(stamp) {
         True -> actor.continue(state)
         False -> {
           let content = simplifile.read_bits(state.settings.rules_path)
@@ -958,12 +947,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           case content {
             Ok(content) if content != <<>> -> {
               let found = store_file.fingerprint(content)
-              case
-                found == state.fingerprint
-                || { found == state.rejected && !retry }
-              {
+              case found == state.fingerprint || found == state.rejected {
                 // the content in effect (reverted, or loaded by a change
-                // made meanwhile): nothing left to try again
+                // made meanwhile): nothing rejected left to skip
                 True if found == state.fingerprint ->
                   actor.continue(
                     State(
@@ -973,50 +959,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                   )
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
-                  // trying again content already reported: quietly
                   let #(reloaded, outcome) =
-                    reload_file_or_busy(
-                      State(..state, stamp:),
-                      "watch",
-                      quiet: found == state.rejected && state.rejected_read,
-                    )
+                    reload_file_or_busy(State(..state, stamp:), "watch")
                   case outcome {
                     Ok(_) -> actor.continue(reloaded)
                     // the lock held by another process: the next tick
                     // tries again
                     Error(store_file.LockHeld(_)) ->
                       actor.continue(State(..reloaded, stamp: state.stamp))
-                    // a file that does not load (invalid, or without ids
-                    // a read-only replica cannot write) is reported once
-                    // (the content load read, which may be newer)
-                    // a file that does not load is reported once (the
-                    // content load read, which may be newer); one that may
-                    // load later as it is is tried again by the minute,
-                    // quietly if its content was read
-                    Error(failure) -> {
-                      let #(read, retry, was_read) = case failure {
-                        store_file.LockNotCreated(_) -> #("", True, False)
-                        store_file.IdsNotWritten(read:, ..) -> #(
-                          read,
-                          True,
-                          True,
-                        )
-                        store_file.Invalid(read:, ..) -> #(read, False, True)
-                        store_file.LockHeld(_) -> #("", False, False)
-                      }
+                    // a file that does not load (invalid, its ids not
+                    // written, the lock not created) is reported once (the
+                    // content load read, which may be newer): tried again
+                    // when it changes, or on SIGHUP
+                    Error(failure) ->
                       actor.continue(
-                        State(
-                          ..reloaded,
-                          rejected: case read {
-                            "" -> found
-                            read -> read
-                          },
-                          rejected_at: ffi.now_seconds(),
-                          rejected_retry: retry,
-                          rejected_read: was_read,
-                        ),
+                        State(..reloaded, rejected: case failure {
+                          store_file.Invalid(read:, ..)
+                            | store_file.IdsNotWritten(read:, ..)
+                            if read != ""
+                          -> read
+                          _ -> found
+                        }),
                       )
-                    }
                   }
                 }
               }
@@ -1061,38 +1025,20 @@ fn reload_file(
   state: State,
   actor_name: String,
 ) -> #(State, Result(Int, String)) {
-  let #(state, outcome) = reload_file_or_busy(state, actor_name, quiet: False)
+  let #(state, outcome) = reload_file_or_busy(state, actor_name)
   #(state, result.map_error(outcome, fn(failure) { failure.reason }))
 }
 
 /// The rules in effect are now `rules`, from the file of `fingerprint`:
-/// nothing the watcher rejected is left to try or to skip.
+/// nothing the watcher rejected is left to skip.
 fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
-  State(
-    ..state,
-    rules:,
-    fingerprint:,
-    rejected: "",
-    rejected_retry: False,
-    rejected_read: False,
-  )
-}
-
-/// Whether the content the watcher could not load was valid, and failed a
-/// minute ago or more: writing its ids may succeed now (a disk no longer
-/// full).
-fn retry_rejected(state: State) -> Bool {
-  state.rejected_retry
-  && ffi.now_seconds() - state.rejected_at
-  >= ffi.tunable("rejected_retry_seconds", 60)
+  State(..state, rules:, fingerprint:, rejected: "")
 }
 
 /// `reload_file`, saying why it failed (`store_file.LoadFailure`).
-/// `quiet`, a failure is not reported (content tried again).
 fn reload_file_or_busy(
   state: State,
   actor_name: String,
-  quiet quiet: Bool,
 ) -> #(State, Result(Int, store_file.LoadFailure)) {
   let started = ffi.monotonic_micros()
   case
@@ -1117,7 +1063,6 @@ fn reload_file_or_busy(
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
       #(in_effect(state, rules, fingerprint), Ok(list.length(rules)))
     }
-    Error(failure) if quiet -> #(state, Error(failure))
     Error(failure) -> {
       let reason = failure.reason
       metrics.incr(metrics.ReloadFailures)

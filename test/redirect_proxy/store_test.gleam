@@ -942,7 +942,6 @@ pub fn unreadable_watched_file_is_reported_once_test() {
 /// Valid content that could not be loaded, then reverted, then written
 /// again once it can be loaded, is loaded.
 pub fn watched_content_rejected_then_written_again_is_loaded_test() {
-  ffi.set_tunable("rejected_retry_seconds", 1)
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
   use st <- with_watching_store(s)
@@ -961,7 +960,6 @@ pub fn watched_content_rejected_then_written_again_is_loaded_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   let assert Ok(Nil) = simplifile.write(s.rules_path, content)
   support.wait_until(loaded, 4000)
-  ffi.clear_tunable("rejected_retry_seconds")
 }
 
 /// A file the watcher could not read is loaded once it can be: a change
@@ -1011,45 +1009,15 @@ pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
   use _ <- with_watching_store(s)
-  // tried again every second, but not reported again
-  ffi.set_tunable("rejected_retry_seconds", 1)
   process.sleep(50)
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   capture_logs()
   let assert Ok(Nil) =
     simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
-  process.sleep(2500)
-  ffi.clear_tunable("rejected_retry_seconds")
+  process.sleep(500)
   let logs = captured_logs()
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   assert list.count(logs, string.contains(_, "reload rejected")) == 1
-}
-
-/// Valid content that could not be loaded because writing its ids failed
-/// (a full disk) is tried again later, unchanged.
-pub fn watched_valid_file_that_failed_to_load_is_tried_again_test() {
-  ffi.set_tunable("rejected_retry_seconds", 1)
-  let dir = support.temp_dir()
-  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
-  use st <- with_watching_store(s)
-  // this store's rules (the stores of other tests, still watching, may
-  // publish theirs)
-  let loaded = fn() {
-    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/later" })
-  }
-  process.sleep(50)
-  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
-  let assert Ok(Nil) =
-    simplifile.write(
-      s.rules_path,
-      "[{\"source\": \"/later\", \"target\": \"/y\"}]",
-    )
-  process.sleep(300)
-  assert !loaded()
-  // the disk has room again
-  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  support.wait_until(loaded, 4000)
-  ffi.clear_tunable("rejected_retry_seconds")
 }
 
 fn audit_actions(dir: String, action: String) -> Int {
