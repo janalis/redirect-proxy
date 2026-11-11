@@ -833,6 +833,11 @@ pub fn bulk_delete_of_many_matching_rules_test() {
   assert confirm.status == 200
   assert string.contains(confirm.body, "2000 redirection(s) will be removed")
   assert !string.contains(confirm.body, "name=\"ids\"")
+  // not without the version the confirmation showed
+  let unversioned =
+    list.filter(confirm_fields(confirm.body), fn(kv) { kv.0 != "version" })
+  assert post_form(env, "/rules/bulk", cookie, unversioned).status == 409
+  assert get(env.redirect <> "/many/1999", []).status == 301
   let resp = post_form(env, "/rules/bulk", cookie, confirm_fields(confirm.body))
   assert resp.status == 303
   assert get(env.redirect <> "/many/1999", []).status == 404
