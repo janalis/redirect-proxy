@@ -890,12 +890,15 @@ pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
   use _ <- with_watching_store(s)
+  // tried again every second, but not reported again
+  ffi.set_tunable("rejected_retry_seconds", 1)
   process.sleep(50)
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   capture_logs()
   let assert Ok(Nil) =
     simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
-  process.sleep(500)
+  process.sleep(2500)
+  ffi.clear_tunable("rejected_retry_seconds")
   let logs = captured_logs()
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   assert list.count(logs, string.contains(_, "reload rejected")) == 1

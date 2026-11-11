@@ -306,8 +306,8 @@ type State {
     stamp: ffi.FileStamp,
     /// The fingerprint of the content the watcher last could not load: it
     /// is reported once, not at every tick that reads it again. Valid
-    /// content (only writing its ids failed) is tried again a minute
-    /// after (`retry_rejected`).
+    /// content (only writing its ids failed) is tried again, quietly, every
+    /// minute (`retry_rejected`), until it loads.
     rejected: String,
     rejected_at: Int,
     rejected_valid: Bool,
@@ -937,11 +937,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Watch(self) -> {
       schedule_watch(state.settings, self)
       let stamp = ffi.file_stamp(state.settings.rules_path)
-      case
-        stamp == state.stamp
-        && !ffi.stamp_is_recent(stamp)
-        && !retry_rejected(state)
-      {
+      let retry = retry_rejected(state)
+      case stamp == state.stamp && !ffi.stamp_is_recent(stamp) && !retry {
         True -> actor.continue(state)
         False -> {
           let content = simplifile.read_bits(state.settings.rules_path)
@@ -958,12 +955,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               let found = store_file.fingerprint(content)
               case
                 found == state.fingerprint
-                || { found == state.rejected && !retry_rejected(state) }
+                || { found == state.rejected && !retry }
               {
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
+                  // trying again content already reported: quietly
                   let #(reloaded, outcome) =
-                    reload_file_or_busy(State(..state, stamp:), "watch")
+                    reload_file_or_busy(
+                      State(..state, stamp:),
+                      "watch",
+                      quiet: found == state.rejected,
+                    )
                   case outcome {
                     Ok(_) -> actor.continue(reloaded)
                     // the lock held by another process: the next tick
@@ -1034,7 +1036,7 @@ fn reload_file(
   state: State,
   actor_name: String,
 ) -> #(State, Result(Int, String)) {
-  let #(state, outcome) = reload_file_or_busy(state, actor_name)
+  let #(state, outcome) = reload_file_or_busy(state, actor_name, quiet: False)
   #(state, result.map_error(outcome, fn(failure) { failure.reason }))
 }
 
@@ -1048,9 +1050,11 @@ fn retry_rejected(state: State) -> Bool {
 }
 
 /// `reload_file`, saying why it failed (`store_file.LoadFailure`).
+/// `quiet`, a failure is not reported (content tried again).
 fn reload_file_or_busy(
   state: State,
   actor_name: String,
+  quiet quiet: Bool,
 ) -> #(State, Result(Int, store_file.LoadFailure)) {
   let started = ffi.monotonic_micros()
   case
@@ -1073,8 +1077,13 @@ fn reload_file_or_busy(
         fingerprint,
       )
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
-      #(State(..state, rules:, fingerprint:), Ok(list.length(rules)))
+      // nothing left to try again
+      #(
+        State(..state, rules:, fingerprint:, rejected_valid: False),
+        Ok(list.length(rules)),
+      )
     }
+    Error(failure) if quiet -> #(state, Error(failure))
     Error(failure) -> {
       let reason = failure.reason
       metrics.incr(metrics.ReloadFailures)
