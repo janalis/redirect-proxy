@@ -236,6 +236,10 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("server.port and admin.port must differ"),
   )
   use <- bool.guard(
+    string.trim(config.storage.data_dir) == "",
+    Error("storage.data_dir must not be empty"),
+  )
+  use <- bool.guard(
     config.storage.backups < 0,
     Error("storage.backups must be >= 0"),
   )
@@ -329,6 +333,14 @@ pub fn validate(config: Config) -> Result(Config, String) {
   use <- bool.guard(
     config.server.fallback_url != "" && !is_http_url(config.server.fallback_url),
     Error("server.fallback_url must be an http:// or https:// URL"),
+  )
+  // sent as is in `Location`
+  use <- bool.guard(
+    !ffi.no_control_chars(config.server.fallback_url)
+      || string.contains(config.server.fallback_url, " "),
+    Error(
+      "server.fallback_url must not contain spaces or control characters (percent-encode them)",
+    ),
   )
   use Nil <- result.try(case config.server.upstream {
     "" -> Ok(Nil)

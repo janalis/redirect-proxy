@@ -126,6 +126,27 @@ pub fn validation_errors_test() {
       ..d,
       storage: config.StorageConfig(..d.storage, watch_interval: -1),
     ),
+    // the data files would be written at the root of the filesystem
+    config.Config(..d, storage: config.StorageConfig(..d.storage, data_dir: "")),
+    config.Config(
+      ..d,
+      storage: config.StorageConfig(..d.storage, data_dir: "  "),
+    ),
+    // sent as is in `Location`
+    config.Config(
+      ..d,
+      server: config.ServerConfig(
+        ..d.server,
+        fallback_url: "https://x.test/\r\nSet-Cookie: a=b",
+      ),
+    ),
+    config.Config(
+      ..d,
+      server: config.ServerConfig(
+        ..d.server,
+        fallback_url: "https://x.test/a b",
+      ),
+    ),
   ]
   list.each(invalid, fn(cfg) {
     let assert Error(_) = config_validate.validate(cfg)
