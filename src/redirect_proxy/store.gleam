@@ -1003,7 +1003,6 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                       actor.continue(
                         State(
                           ..reloaded,
-                          busy: None,
                           // the write and content the load read, which may
                           // be newer than this tick's (else this tick's)
                           rejected: Some(case failure {

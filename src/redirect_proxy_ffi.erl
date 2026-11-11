@@ -262,10 +262,13 @@ file_stamp(Path) ->
         {error, _} -> missing
     end.
 
-%% Whether two stamps are of one write of the file: the same file (inode)
-%% and size, its time moved by a second at most (a write in place may set
-%% it again after the content).
-same_write({Inode, MTimeA, Size}, {Inode, MTimeB, Size}) -> abs(MTimeA - MTimeB) =< 1;
+%% Whether stamp B may be of the write of stamp A: the same file (inode)
+%% and size, its time moved forward by a second at most (a write in place
+%% may set it again after the content). Times have a one second
+%% resolution: the same content written again within that second cannot
+%% be told apart from it.
+same_write({Inode, MTimeA, Size}, {Inode, MTimeB, Size}) ->
+    MTimeB >= MTimeA andalso MTimeB - MTimeA =< 1;
 same_write(_, _) -> false.
 
 %% Whether a stamp's modification time is within the last two seconds:

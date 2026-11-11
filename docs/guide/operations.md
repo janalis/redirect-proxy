@@ -18,8 +18,8 @@ session.
   editor. The server's own writes are not taken for changes, and a file
   that does not load is reported once (`rules.reload_failed`), not at
   every check, and tried again when it is written again, even unchanged
-  (a file renamed over it, or a write over a second later), or on
-  `SIGHUP`: an invalid one, or one with rules without ids whose
+  (a file renamed over it, or written two seconds later at least: file
+  times count whole seconds), or on `SIGHUP`: an invalid one, or one with rules without ids whose
   ids the server could not write (a read-only volume, a full disk).
 
 - If the rule store restarts after a crash while the file is invalid, it

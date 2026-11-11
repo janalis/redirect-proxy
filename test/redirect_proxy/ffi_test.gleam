@@ -305,3 +305,18 @@ pub fn first_item_test() {
   assert ffi.first_item("") == ""
   assert ffi.first_item(",https") == ""
 }
+
+@external(erlang, "redirect_proxy_ffi", "same_write")
+fn same_write(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> Bool
+
+/// A stamp (inode, time, size) may be of the same write as another when
+/// only its time moved forward, by a second at most.
+pub fn same_write_test() {
+  assert same_write(#(7, 100, 10), #(7, 100, 10))
+  assert same_write(#(7, 100, 10), #(7, 101, 10))
+  // later, back in time (`cp -p`), another file, another size
+  assert !same_write(#(7, 100, 10), #(7, 102, 10))
+  assert !same_write(#(7, 100, 10), #(7, 99, 10))
+  assert !same_write(#(7, 100, 10), #(8, 100, 10))
+  assert !same_write(#(7, 100, 10), #(7, 100, 11))
+}
