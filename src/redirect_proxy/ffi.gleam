@@ -111,6 +111,10 @@ pub fn ets_put(table: String, key: k, value: v) -> Nil
 @external(erlang, "redirect_proxy_ffi", "ets_get")
 pub fn ets_get(table: String, key: k) -> Result(v, Nil)
 
+/// `ets_get` on a table that may not exist yet (a miss then).
+@external(erlang, "redirect_proxy_ffi", "ets_find")
+pub fn ets_find(table: String, key: k) -> Result(v, Nil)
+
 @external(erlang, "redirect_proxy_ffi", "ets_delete")
 pub fn ets_delete(table: String, key: k) -> Nil
 

@@ -21,19 +21,43 @@ pub type Target {
   Target(files: store_file.Files, ignore_trailing_slash: Bool)
 }
 
-/// The last rules published, by file path: what a restarted store resumes
-/// from when the file has become invalid.
-const last_good_table = "redirect_proxy_store_last_good"
+/// The rules in effect and their version (the fingerprint of the file), by
+/// file path, and the file path of each store (by its subject). Reads take
+/// them from here (`view`), so that they do not wait for a change in
+/// progress (file lock, matcher build, fsyncs, audit); a restarted store
+/// resumes from them when the file has become invalid (`last_good`). Set
+/// just before the matcher is published, so that a reader that gets the
+/// new redirects, or a caller whose change returned, gets the new rules too.
+/// One copy of the rules: copying them into the table is most of what it
+/// costs a change.
+const rules_table = "redirect_proxy_store_last_good"
 
-/// Creates the table of the last good rules. Called by the process starting
+/// Creates the table of the rules in effect. Called by the process starting
 /// the store (the supervisor), so that it outlives the store process.
 pub fn init() -> Nil {
-  ffi.ets_new(last_good_table)
+  ffi.ets_new(rules_table)
+}
+
+/// Says that `store` serves the rules of `rules_path`.
+pub fn register(store: store, rules_path: String) -> Nil {
+  ffi.ets_put(rules_table, store, rules_path)
+}
+
+/// Sets the rules in effect at `rules_path` and their version.
+pub fn set_view(rules_path: String, rules: List(Rule), version: String) -> Nil {
+  ffi.ets_put(rules_table, rules_path, #(rules, version))
+}
+
+/// The rules in effect for `store` and their version, once it has started.
+pub fn view(store: store) -> Result(#(List(Rule), String), Nil) {
+  use rules_path <- result.try(ffi.ets_find(rules_table, store))
+  ffi.ets_find(rules_table, rules_path)
 }
 
 /// The rules last published from the file at `rules_path`.
 pub fn last_good(rules_path: String) -> Result(List(Rule), Nil) {
-  ffi.ets_get(last_good_table, rules_path)
+  ffi.ets_find(rules_table, rules_path)
+  |> result.map(fn(view: #(List(Rule), String)) { view.0 })
 }
 
 /// Publishes `built`, the matcher of `rules`, keeping the hit counts.
@@ -41,8 +65,9 @@ pub fn publish(
   target: Target,
   built: matcher.Matcher,
   rules: List(Rule),
+  version: String,
 ) -> Nil {
-  ffi.ets_put(last_good_table, target.files.rules_path, rules)
+  set_view(target.files.rules_path, rules, version)
   built
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
@@ -51,8 +76,14 @@ pub fn publish(
 }
 
 /// Publishes rules loaded from the file, then has them checked.
-pub fn loaded(target: Target, rules: List(Rule), check: checker.Check) -> Nil {
-  publish(target, matcher.build(rules), rules)
+/// `version` is the fingerprint of the file they were loaded from.
+pub fn loaded(
+  target: Target,
+  rules: List(Rule),
+  version: String,
+  check: checker.Check,
+) -> Nil {
+  publish(target, matcher.build(rules), rules, version)
   checker.request(target.files.rules_path, check)
 }
 
@@ -138,7 +169,7 @@ fn write(
 ) -> Result(String, List(String)) {
   case store_file.persist(target.files, rules) {
     Ok(fingerprint) -> {
-      publish(target, built, rules)
+      publish(target, built, rules, fingerprint)
       Ok(fingerprint)
     }
     Error(reason) -> {

@@ -387,7 +387,7 @@ pub fn start(
         )
       {
         Ok(#(rules, fingerprint)) -> {
-          commit.loaded(target(settings), rules, checker.Problems)
+          commit.loaded(target(settings), rules, fingerprint, checker.Problems)
           metrics.reloaded(ffi.monotonic_micros() - started)
           log.info(
             "loaded "
@@ -412,12 +412,16 @@ pub fn start(
                 <> " rule(s) loaded before: "
                 <> reason,
               )
+              // read with the version of the state: the next change
+              // re-reads the file
+              commit.set_view(settings.rules_path, rules, "")
               Ok(initial_state(settings, rules, "", before))
             }
             Error(Nil) -> Error(reason)
           }
       },
     )
+    commit.register(subject, settings.rules_path)
     schedule_watch(settings, subject)
     hits.load(settings.hits_path)
     process.send_after(subject, 1000, SaveHits(subject))
@@ -432,18 +436,29 @@ pub fn start(
   |> actor.start
 }
 
+/// The reads below do not wait for a change in progress: they get the rules
+/// in effect (`commit.view`), from the store only before it has started.
 pub fn all(store: Store) -> List(Rule) {
-  read(store, timeout, All)
+  case commit.view(store) {
+    Ok(#(rules, _)) -> rules
+    Error(Nil) -> read(store, timeout, All)
+  }
 }
 
 /// Every rule and the version of the rule set (the fingerprint of the file
 /// last read or written), for `import_rules_versioned` and `bulk_versioned`.
 pub fn versioned(store: Store) -> #(List(Rule), String) {
-  read(store, timeout, Versioned)
+  case commit.view(store) {
+    Ok(view) -> view
+    Error(Nil) -> read(store, timeout, Versioned)
+  }
 }
 
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
-  read(store, timeout, Get(id, _))
+  case commit.view(store) {
+    Ok(#(rules, _)) -> list.find(rules, fn(r: Rule) { r.id == id })
+    Error(Nil) -> read(store, timeout, Get(id, _))
+  }
 }
 
 pub fn create(
@@ -922,7 +937,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         False -> Nil
         True -> {
           log.info("a scheduled rule starts or expires: rules republished")
-          commit.loaded(target(state.settings), state.rules, checker.Loops)
+          commit.loaded(
+            target(state.settings),
+            state.rules,
+            state.fingerprint,
+            checker.Loops,
+          )
         }
       }
       let next = case crossed {
@@ -1093,7 +1113,12 @@ fn reload_file_or_busy(
     )
   {
     Ok(#(rules, fingerprint)) -> {
-      commit.loaded(target(state.settings), rules, checker.Problems)
+      commit.loaded(
+        target(state.settings),
+        rules,
+        fingerprint,
+        checker.Problems,
+      )
       metrics.incr(metrics.Reloads)
       metrics.reloaded(ffi.monotonic_micros() - started)
       audit_rules_change(
@@ -1243,7 +1268,12 @@ fn refresh(state: State) -> Result(State, String) {
               )
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
-              commit.loaded(target(state.settings), rules, checker.Problems)
+              commit.loaded(
+                target(state.settings),
+                rules,
+                fingerprint,
+                checker.Problems,
+              )
               metrics.incr(metrics.Reloads)
               metrics.reloaded(ffi.monotonic_micros() - started)
               audit_rules_change(

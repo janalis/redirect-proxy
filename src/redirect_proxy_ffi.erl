@@ -6,7 +6,7 @@
     count_regex_limit/0, reductions/0,
     atomic_write/2, atomic_write_private/2, copy_file_as/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1, same_write/2,
     pbkdf2_sha256/4, secure_compare/2,
-    ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
+    ets_new/1, ets_put/3, ets_get/2, ets_find/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
@@ -354,6 +354,15 @@ ets_get(Table, Key) ->
     case ets:lookup(binary_to_existing_atom(Table), Key) of
         [{_, Value}] -> {ok, Value};
         [] -> {error, nil}
+    end.
+
+%% `ets_get`, for a table that may not exist yet: a miss then.
+ets_find(Table, Key) ->
+    try ets:lookup(binary_to_existing_atom(Table), Key) of
+        [{_, Value}] -> {ok, Value};
+        [] -> {error, nil}
+    catch
+        error:badarg -> {error, nil}
     end.
 
 ets_delete(Table, Key) ->

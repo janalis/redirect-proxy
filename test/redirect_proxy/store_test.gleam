@@ -697,6 +697,33 @@ pub fn waits_for_the_file_lock_test() {
   assert simplifile.is_file(lock) == Ok(False)
 }
 
+/// Reads do not wait for a change in progress (here, one waiting for the
+/// file lock another process holds): they answer with the rules in effect,
+/// and a change's caller reads it once it returns.
+pub fn reads_do_not_wait_for_changes_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let done = process.new_subject()
+  process.spawn(fn() {
+    process.send(done, store.create(s, new_rule("/c", "/d"), by: "t"))
+  })
+  // the change has reached the store, which waits for the lock
+  process.sleep(100)
+  let started = ffi.monotonic_micros()
+  assert store.all(s) == [a]
+  assert store.get(s, a.id) == Ok(a)
+  let #(rules, version) = store.versioned(s)
+  assert rules == [a] && version != ""
+  assert ffi.monotonic_micros() - started < 50_000
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Ok(Ok(c)) = process.receive(done, 5000)
+  assert store.all(s) == [a, c]
+  assert store.get(s, c.id) == Ok(c)
+}
+
 pub fn stale_lock_is_broken_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
@@ -909,6 +936,9 @@ pub fn watched_file_is_reloaded_test() {
     )
   support.wait_until(fn() { redirect("/watched") == Ok("/reloaded") }, 2000)
   assert list.map(store.all(store), fn(r) { r.source }) == ["/watched"]
+  // counted once the new rules are published
+  support.wait_until(fn() { reloads(dir) == 1 }, 2000)
+  process.sleep(100)
   assert reloads(dir) == 1
 
   // an invalid file is reported once and the rules are kept
