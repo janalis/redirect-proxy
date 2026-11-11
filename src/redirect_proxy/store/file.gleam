@@ -37,8 +37,28 @@ pub fn load_locked(
   mode: LoadMode,
   wait: Int,
 ) -> Result(#(List(Rule), String), String) {
-  ffi.with_file_lock(files.rules_path, wait, fn() { load(files, mode) })
-  |> result.flatten
+  load_locked_or_busy(files, mode, wait)
+  |> result.map_error(fn(failure) { failure.reason })
+}
+
+/// Why `load_locked_or_busy` failed.
+pub type LoadFailure {
+  LoadFailure(reason: String, lock_busy: Bool)
+}
+
+/// `load_locked`, saying whether it failed because the lock was not
+/// acquired (another process held it: trying again later may succeed)
+/// rather than because the file did not load.
+pub fn load_locked_or_busy(
+  files: Files,
+  mode: LoadMode,
+  wait: Int,
+) -> Result(#(List(Rule), String), LoadFailure) {
+  case ffi.with_file_lock(files.rules_path, wait, fn() { load(files, mode) }) {
+    Error(reason) -> Error(LoadFailure(reason, lock_busy: True))
+    Ok(Error(reason)) -> Error(LoadFailure(reason, lock_busy: False))
+    Ok(Ok(loaded)) -> Ok(loaded)
+  }
 }
 
 /// Reads, validates and returns the rules with the file fingerprint. Writes

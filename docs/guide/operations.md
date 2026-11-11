@@ -15,9 +15,10 @@ session.
 - With `storage.watch_interval = <seconds>` (`RP_STORAGE_WATCH_INTERVAL`),
   the server checks the file that often and reloads it when it changed,
   without a signal: for a Kubernetes ConfigMap, a GitOps sync or an
-  editor. The server's own writes are not taken for changes, and an
-  invalid file is reported once (`rules.reload_failed`), not at every
-  check.
+  editor. The server's own writes are not taken for changes, and a file
+  that does not load is reported once (`rules.reload_failed`), not at
+  every check: an invalid one, or on a read-only volume one with rules
+  without ids (the server cannot write the ids it gives them).
 
 - If the rule store restarts after a crash while the file is invalid, it
   keeps the rules it had (and logs an error) instead of failing again until

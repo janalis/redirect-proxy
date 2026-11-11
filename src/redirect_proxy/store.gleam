@@ -14,7 +14,6 @@
 //// changed on disk since it was last read or written, reloads it first, so
 //// that outside changes are never silently overwritten.
 
-import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -951,15 +950,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
                   let #(reloaded, outcome) =
-                    reload_file(State(..state, stamp:), "watch")
-                  case outcome, valid_rules(content) {
-                    Ok(_), _ -> actor.continue(reloaded)
-                    // a valid file that could not be loaded now (the lock
-                    // held by another process): the next tick tries again
-                    Error(_), True ->
+                    reload_file_or_busy(State(..state, stamp:), "watch")
+                  case outcome {
+                    Ok(_) -> actor.continue(reloaded)
+                    // the lock held by another process: the next tick
+                    // tries again
+                    Error(store_file.LoadFailure(lock_busy: True, ..)) ->
                       actor.continue(State(..reloaded, stamp: state.stamp))
-                    // an invalid one is reported once
-                    Error(_), False ->
+                    // a file that does not load (invalid, or without ids
+                    // a read-only replica cannot write) is reported once
+                    Error(store_file.LoadFailure(lock_busy: False, ..)) ->
                       actor.continue(State(..reloaded, rejected: found))
                   }
                 }
@@ -1005,9 +1005,18 @@ fn reload_file(
   state: State,
   actor_name: String,
 ) -> #(State, Result(Int, String)) {
+  let #(state, outcome) = reload_file_or_busy(state, actor_name)
+  #(state, result.map_error(outcome, fn(failure) { failure.reason }))
+}
+
+/// `reload_file`, saying why it failed (`store_file.LoadFailure`).
+fn reload_file_or_busy(
+  state: State,
+  actor_name: String,
+) -> #(State, Result(Int, store_file.LoadFailure)) {
   let started = ffi.monotonic_micros()
   case
-    store_file.load_locked(
+    store_file.load_locked_or_busy(
       files(state.settings),
       store_file.Reloading,
       lock_timeout,
@@ -1028,7 +1037,8 @@ fn reload_file(
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
       #(State(..state, rules:, fingerprint:), Ok(list.length(rules)))
     }
-    Error(reason) -> {
+    Error(failure) -> {
+      let reason = failure.reason
       metrics.incr(metrics.ReloadFailures)
       log.error("reload rejected, keeping current rules: " <> reason)
       audit.record(
@@ -1039,21 +1049,8 @@ fn reload_file(
         None,
         Some(json.object([#("error", json.string(reason))])),
       )
-      #(state, Error(reason))
+      #(state, Error(failure))
     }
-  }
-}
-
-/// Whether a file's content is a valid rule set, without the lock or
-/// writing anything.
-fn valid_rules(content: BitArray) -> Bool {
-  case bit_array.to_string(content) {
-    Ok(text) ->
-      case rule.file_from_string(text) {
-        Ok(rules) -> store_rules.validate_all(rules) |> result.is_ok
-        Error(_) -> False
-      }
-    Error(Nil) -> False
   }
 }
 

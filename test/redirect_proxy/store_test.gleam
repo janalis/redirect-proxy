@@ -858,6 +858,23 @@ pub fn invalid_watched_file_unreadable_for_a_moment_is_reported_once_test() {
   assert reload_failures(dir) == 1
 }
 
+/// A replica reading a read-only volume cannot write the ids a file without
+/// them needs: the file is reported once, not at every tick.
+pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _ = start(s)
+  process.sleep(50)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  capture_logs()
+  let assert Ok(Nil) =
+    simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
+  process.sleep(500)
+  let logs = captured_logs()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  assert list.count(logs, string.contains(_, "reload rejected")) == 1
+}
+
 fn audit_actions(dir: String, action: String) -> Int {
   case simplifile.read(dir <> "/audit.jsonl") {
     Ok(content) ->
