@@ -48,13 +48,17 @@ fn later_matcher(
     Built(built) -> #(built, later)
     Unbuilt(rules) -> {
       let now = ffi.now_seconds()
-      let pending =
-        list.filter(rules, fn(r) { r.enabled && rule.window(r).1 > now })
+      // usually none: then nothing is allocated (the store checks every
+      // change of 50 000 rules)
       let built = case
-        list.any(pending, fn(r) { r.starts_at != "" && rule.window(r).0 > now })
+        list.any(rules, fn(r) {
+          r.enabled && r.starts_at != "" && rule.window(r).0 > now
+        })
       {
         False -> None
-        True ->
+        True -> {
+          let pending =
+            list.filter(rules, fn(r) { r.enabled && rule.window(r).1 > now })
           Some(#(
             pending
               |> list.map(fn(r) {
@@ -63,6 +67,7 @@ fn later_matcher(
               |> matcher.build,
             list.map(pending, fn(r) { #(r.id, r) }) |> dict.from_list,
           ))
+        }
       }
       #(built, Built(built))
     }
