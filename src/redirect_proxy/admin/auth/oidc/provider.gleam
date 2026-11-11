@@ -195,6 +195,14 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
 /// tokens signed with keys it already published from being checked.
 const stale_ttl = 86_400
 
+/// Deletes the cached metadata, keys and failures no longer of use: a row
+/// stays `stale_ttl` past its expiry, as a provider outage falls back on
+/// the metadata and keys fetched before for that long. Returns the number
+/// of rows deleted.
+pub fn purge_expired(now: Int) -> Int {
+  ffi.ets_delete_older(table, now - stale_ttl)
+}
+
 fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
   let key = "jwks:" <> provider.jwks_uri
   let cached = fn() {
