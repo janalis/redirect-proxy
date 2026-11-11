@@ -653,6 +653,85 @@ pub fn lint(rule: Rule) -> List(String) {
     "target: placeholders in the host never redirect: use ${host}, or placeholders before a fixed domain ($1.example.com, ${sub}.example.com)",
   )
   |> list.reverse
+  |> list.append(case rule.kind {
+    Regex -> regex_path_problems(rule.source, rule.case_insensitive)
+    Exact | Prefix -> []
+  })
+}
+
+/// Parts of a regex that never match the path it runs on, which is
+/// normalised (`ffi.normalise_path`): percent-escapes outside a character
+/// class that normalisation decodes (unreserved characters, UTF-8) or
+/// writes in upper case, and dot segments (`/\./`, `/\.\./`).
+fn regex_path_problems(source: String, case_insensitive: Bool) -> List(String) {
+  let segments =
+    ["/\\./", "/\\.\\./"]
+    |> list.any(string.contains(source, _))
+    || ["/\\.", "/\\.\\.", "/\\.$", "/\\.\\.$"]
+    |> list.any(string.ends_with(source, _))
+  scan_escapes(string.to_graphemes(source), False, "", [], case_insensitive)
+  |> list.reverse
+  |> check(
+    !segments,
+    "source: dot segments (/\\./, /\\.\\./) never match: request paths are compared with them removed",
+  )
+}
+
+fn scan_escapes(
+  rest: List(String),
+  in_class: Bool,
+  run: String,
+  problems: List(String),
+  case_insensitive: Bool,
+) -> List(String) {
+  let next = fn(rest, in_class, run, problems) {
+    scan_escapes(rest, in_class, run, problems, case_insensitive)
+  }
+  let flushed = fn() { escape_problem(run, case_insensitive, problems) }
+  case in_class, rest {
+    _, [] -> flushed()
+    // inside a character class, `%7E` is three characters
+    True, ["\\", _, ..rest] -> next(rest, True, run, problems)
+    True, ["]", ..rest] -> next(rest, False, run, problems)
+    True, [_, ..rest] -> next(rest, True, run, problems)
+    False, ["\\", "%", a, b, ..rest] | False, ["%", a, b, ..rest] ->
+      case is_hex(a) && is_hex(b) {
+        True -> next(rest, False, run <> "%" <> a <> b, problems)
+        False -> next([a, b, ..rest], False, "", flushed())
+      }
+    False, ["\\", _, ..rest] -> next(rest, False, "", flushed())
+    False, ["[", ..rest] -> next(rest, True, "", flushed())
+    False, [_, ..rest] -> next(rest, False, "", flushed())
+  }
+}
+
+fn is_hex(c: String) -> Bool {
+  string.length(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
+}
+
+/// A run of percent-escapes (`%C3%A9`) never matches when normalisation
+/// writes it otherwise.
+fn escape_problem(
+  run: String,
+  case_insensitive: Bool,
+  problems: List(String),
+) -> List(String) {
+  // after a segment, so that `%2E` is not taken for a dot segment
+  let normalised = ffi.normalise_path("/x" <> run) |> string.drop_start(2)
+  let same = case case_insensitive {
+    True -> string.uppercase(normalised) == string.uppercase(run)
+    False -> normalised == run
+  }
+  case run == "" || same {
+    True -> problems
+    False -> [
+      "source: "
+        <> run
+        <> " never matches: request paths are compared with unreserved characters and UTF-8 decoded, and other escapes in upper case: write "
+        <> string.replace(normalised, ".", "\\."),
+      ..problems
+    ]
+  }
 }
 
 fn check(errors: List(String), ok: Bool, message: String) -> List(String) {

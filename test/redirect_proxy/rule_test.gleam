@@ -1,6 +1,7 @@
 import gleam/json
 import gleam/list
 import gleam/string
+import redirect_proxy/ffi
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/rule/template
 
@@ -314,6 +315,47 @@ pub fn lint_flags_parts_that_never_match_test() {
   assert string.starts_with(slashes, "source: cannot start with //")
   // `?` is a quantifier in a regex
   assert rule.lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
+}
+
+/// A regex runs on the normalised path (unreserved characters and UTF-8
+/// decoded, other escapes in upper case, dot segments removed): one that
+/// requires another form of it never matches, and lint says so. Character
+/// classes, an unescaped `.` and case-insensitive escapes can still match.
+pub fn lint_flags_regex_escapes_that_never_match_test() {
+  let regex = fn(source) { Rule(..base(), kind: rule.Regex, source:) }
+  let problems = fn(source) { rule.lint(regex(source)) }
+  let assert [accent] = problems("^/caf%C3%A9$")
+  assert string.contains(accent, "%C3%A9") && string.contains(accent, "é")
+  let assert [tilde] = problems("^/%7euser/(.*)$")
+  assert string.contains(tilde, "%7e") && string.contains(tilde, "~")
+  let assert [dot] = problems("^/v%2E1$")
+  assert string.contains(dot, "\\.")
+  let assert [escaped_percent] = problems("^/a\\%7E")
+  assert string.contains(escaped_percent, "~")
+  let assert [lower] = problems("^/a%2f(.*)$")
+  assert string.contains(lower, "%2F")
+  let assert [segment] = problems("^/a/\\./b$")
+  assert string.contains(segment, "dot segment")
+  let assert [_] = problems("^/a/\\.\\.$")
+  // these can match
+  assert problems("^/a%2F(.*)$") == []
+  assert problems("^/[%7E]$") == []
+  assert problems("^/a/./b$") == []
+  assert problems("^/50%$") == []
+  assert problems("^/a%zz$") == []
+  assert problems("^/a\\.b$") == []
+  assert rule.lint(Rule(..regex("^/a%2f(.*)$"), case_insensitive: True)) == []
+  // a regex lint refuses indeed never matches, as written or decoded
+  let assert Ok(compiled) = rule.compile(regex("^/caf%C3%A9$"))
+  assert ffi.regex_run(compiled, ffi.normalise_path("/caf%C3%A9")) |> is_error
+  assert ffi.regex_run(compiled, ffi.normalise_path("/café")) |> is_error
+}
+
+fn is_error(result: Result(a, b)) -> Bool {
+  case result {
+    Ok(_) -> False
+    Error(_) -> True
+  }
 }
 
 pub fn whole_segments_test() {

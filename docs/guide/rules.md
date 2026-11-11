@@ -119,7 +119,10 @@ Escapes of unreserved characters and of valid UTF-8 are decoded; the
 others, such as `%2F` (which is not a path separator), are kept and
 compared in upper case. Then `.` and `..` segments are removed, encoded
 or not (`/a/%2E%2E/b` is `/b`), so a capture can never climb out of its
-target's path. Regex rules see the path in this form too. In the
+target's path. Regex rules see the path in this form too, so a pattern
+must be written in it: `^/café`, not `^/caf%C3%A9`; `~`, not `%7E`; `%2F`,
+not `%2f` (unless case-insensitive); and no `\.` or `\.\.` segment
+(lint refuses the other forms, which never match). In the
 `Location` header, non-ASCII characters are percent-encoded.
 
 ## Trailing slashes
@@ -156,8 +159,10 @@ A rule is rejected if any of these hold:
   written: an exact or prefix source with a query string (`?`: use `query`
   instead) or a fragment (`#`), or starting with `//` (the server reads a
   request for `//a/b` as the path `/b`), a host with a port, or
-  placeholders in the target's host that never redirect, or `${host}` or
-  `${sub}` in the target of an exact rule.
+  placeholders in the target's host that never redirect, `${host}` or
+  `${sub}` in the target of an exact rule, or a regex that requires a form
+  of the path requests are never compared in (see
+  [Equivalent paths](#equivalent-paths)).
 - It contains control characters (header injection).
 - Its regex backtracks catastrophically.
 
