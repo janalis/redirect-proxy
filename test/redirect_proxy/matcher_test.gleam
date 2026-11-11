@@ -480,6 +480,27 @@ pub fn trailing_slash_tolerance_test() {
   assert tolerant("/") == Error(Nil)
 }
 
+/// The trailing slash retry is made host by host: the request host's rule
+/// for the other form wins over a `*` or `*.parent` rule for the form sent.
+pub fn trailing_slash_retry_is_per_host_test() {
+  let m =
+    matcher.build([
+      r("docs", "a.example.test", rule.Exact, "/docs", "/host"),
+      r("wild", "*.example.test", rule.Exact, "/docs/", "/wildcard"),
+      r("all", "*", rule.Prefix, "/", "/catch-all"),
+    ])
+  let tolerant = fn(host, path) {
+    matcher.lookup_tolerant(m, host, path) |> result.map(fn(m) { m.location })
+  }
+  assert tolerant("a.example.test", "/docs/") == Ok("/host")
+  assert tolerant("a.example.test", "/docs") == Ok("/host")
+  // another subdomain: its parent's rule, for either form, before `*`
+  assert tolerant("b.example.test", "/docs") == Ok("/wildcard")
+  assert tolerant("other.test", "/docs/") == Ok("/catch-all")
+  // without the retry, the catch-all takes what the host has no rule for
+  assert location(m, "a.example.test", "/docs/") == Ok("/wildcard")
+}
+
 pub fn redirect_loop_through_trailing_slash_retry_test() {
   // /docs misses, is retried as /docs/ and redirected to /docs again
   let slash = r("s", "*", rule.Exact, "/docs/", "/docs")

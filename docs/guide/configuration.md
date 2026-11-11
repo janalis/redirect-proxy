@@ -22,7 +22,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_SERVER_LISTEN` / `RP_SERVER_PORT` | `0.0.0.0` / `8080` |
 | `RP_SERVER_CACHE_MAX_AGE` | `3600` |
 | `RP_SERVER_SHUTDOWN_GRACE` | `5` (seconds) |
-| `RP_SERVER_TRAILING_SLASH` | `strict` (`ignore`: retry a miss with/without the trailing slash) |
+| `RP_SERVER_TRAILING_SLASH` | `strict` (`ignore`: also match with/without the trailing slash, host by host) |
 | `RP_SERVER_FALLBACK_URL` | (none) |
 | `RP_SERVER_NOT_FOUND_BODY` | `Not Found` (body of the 404 when no fallback is set) |
 | `RP_SERVER_HEALTH_PATH` | (none: off) |

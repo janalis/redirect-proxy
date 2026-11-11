@@ -567,7 +567,14 @@ pub fn lookup_query(
   query: String,
 ) -> Result(Match, Nil) {
   let #(host, vars) = request_host(host)
-  lookup_normalised(matcher, host, ffi.normalise_path(path), query, vars)
+  lookup_normalised(
+    matcher,
+    host,
+    ffi.normalise_path(path),
+    Error(Nil),
+    query,
+    vars,
+  )
   |> to_result
 }
 
@@ -603,11 +610,15 @@ fn request_host(host: String) -> #(String, template.RequestVars) {
   #(host, vars)
 }
 
-/// `lookup_query` for a normalised host and path.
+/// `lookup_query` for a normalised host and path. With `other` (the path
+/// with its trailing slash added or removed), each host is retried with it
+/// before the next one: the request host's rule for either form wins over
+/// the rules of `*.parent` hosts and `*`.
 fn lookup_normalised(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
 ) -> Lookup {
@@ -615,7 +626,7 @@ fn lookup_normalised(
   // every request
   let own = case matcher.any_host_only {
     True -> Missed
-    False -> lookup_host(matcher, host, path, query, vars)
+    False -> lookup_host(matcher, host, path, other, query, vars)
   }
   case own {
     Found(_) | Stopped -> own
@@ -626,19 +637,21 @@ fn lookup_normalised(
       let parents = case
         matcher.wildcards && string.byte_size(host) <= max_host_bytes
       {
-        True -> lookup_wildcards(matcher, host, path, query, vars)
+        True -> lookup_wildcards(matcher, host, path, other, query, vars)
         False -> Missed
       }
       case parents {
         Found(_) | Stopped -> parents
-        Missed -> lookup_host(matcher, "*", path, query, vars)
+        Missed -> lookup_host(matcher, "*", path, other, query, vars)
       }
     }
   }
 }
 
 /// `lookup`, retrying a miss with the trailing slash added or removed
-/// (`/docs/` finds the `/docs` rule and the other way round).
+/// (`/docs/` finds the `/docs` rule and the other way round), host by
+/// host: a rule for the path as sent wins within a host, and a rule of the
+/// request host, for either form, wins over `*.parent` and `*` rules.
 pub fn lookup_tolerant(
   matcher: Matcher,
   host: String,
@@ -654,43 +667,21 @@ pub fn lookup_tolerant_query(
   path: String,
   query: String,
 ) -> Result(Match, Nil) {
-  // the host and path are normalised once for both lookups (a trailing
-  // `/` is kept by the normalisation, so the retry can add or drop it on
+  // the host and path are normalised once for both forms (a trailing `/`
+  // is kept by the normalisation, so the other form adds or drops it on
   // the normalised path)
   let #(host, vars) = request_host(host)
   let normalised = ffi.normalise_path(path)
-  case lookup_normalised(matcher, host, normalised, query, vars) {
-    Found(m) -> Ok(m)
-    Stopped -> Error(Nil)
-    Missed -> retry_slash(matcher, host, normalised, query, vars)
-  }
-}
-
-/// `lookup_normalised` with the trailing slash of `normalised` added or
-/// removed.
-fn retry_slash(
-  matcher: Matcher,
-  host: String,
-  normalised: String,
-  query: String,
-  vars: template.RequestVars,
-) -> Result(Match, Nil) {
-  case normalised {
+  let other = case normalised {
     "/" | "" -> Error(Nil)
     _ ->
-      to_result(case string.ends_with(normalised, "/") {
-        True ->
-          lookup_normalised(
-            matcher,
-            host,
-            string.drop_end(normalised, 1),
-            query,
-            vars,
-          )
-        False ->
-          lookup_normalised(matcher, host, normalised <> "/", query, vars)
-      })
+      case string.ends_with(normalised, "/") {
+        True -> Ok(string.drop_end(normalised, 1))
+        False -> Ok(normalised <> "/")
+      }
   }
+  lookup_normalised(matcher, host, normalised, other, query, vars)
+  |> to_result
 }
 
 /// The longest request host whose parent domains are looked up for `*.`
@@ -703,6 +694,7 @@ fn lookup_wildcards(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
 ) -> Lookup {
@@ -722,11 +714,12 @@ fn lookup_wildcards(
           matcher,
           "*." <> parent,
           path,
+          other,
           query,
           template.RequestVars(..vars, sub:),
         )
       {
-        Missed -> lookup_wildcards(matcher, parent, path, query, vars)
+        Missed -> lookup_wildcards(matcher, parent, path, other, query, vars)
         found -> found
       }
     }
@@ -734,26 +727,42 @@ fn lookup_wildcards(
   }
 }
 
+/// The rules of `host` for `path`, then for `other` (the other trailing
+/// slash form, when retried): a request that spent its regex budget on the
+/// first is not retried.
 fn lookup_host(
   matcher: Matcher,
   host: String,
   path: String,
+  other: Result(String, Nil),
   query: String,
   vars: template.RequestVars,
 ) -> Lookup {
   case dict.get(matcher.hosts, host) {
     Error(Nil) -> Missed
     Ok(rules) ->
-      case match_query(rules, path, query) {
+      case match_rules(rules, path, query, vars), other {
+        Missed, Ok(other) -> match_rules(rules, other, query, vars)
+        found, _ -> found
+      }
+  }
+}
+
+fn match_rules(
+  rules: HostRules,
+  path: String,
+  query: String,
+  vars: template.RequestVars,
+) -> Lookup {
+  case match_query(rules, path, query) {
+    Ok(found) -> Found(found)
+    Error(Nil) ->
+      case match_exact(rules, path) {
         Ok(found) -> Found(found)
         Error(Nil) ->
-          case match_exact(rules, path) {
+          case match_prefix(rules, path, vars) {
             Ok(found) -> Found(found)
-            Error(Nil) ->
-              case match_prefix(rules, path, vars) {
-                Ok(found) -> Found(found)
-                Error(Nil) -> match_regex(rules, path, vars)
-              }
+            Error(Nil) -> match_regex(rules, path, vars)
           }
       }
   }

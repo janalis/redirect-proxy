@@ -129,8 +129,11 @@ not `%2f` (unless case-insensitive); and no `\.` or `\.\.` segment
 
 By default `/docs` and `/docs/` are different paths.
 With `server.trailing_slash = "ignore"` (`RP_SERVER_TRAILING_SLASH`), a
-request that matches no rule is retried with the trailing slash added or
-removed. A rule for the exact form always wins.
+request is also matched with the trailing slash added or removed, host by
+host: within a host, a rule for the form sent wins; across hosts, a rule
+of the request host for either form wins over the `*.parent` and `*`
+rules (a request for `/docs/` on `a.example.com` gets its `/docs` rule,
+not a `*` catch-all).
 
 ## When nothing matches
 
