@@ -311,6 +311,39 @@ pub fn set_changes_check_the_rules_they_change_test() {
     == Ok(1)
 }
 
+/// A rule that starts later would loop once it starts: the loop is
+/// followed with the rules active at its start.
+pub fn scheduled_loops_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/a", "/b"), id: "a"), by: "t")
+  let later =
+    Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) = store.create(s, later, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) =
+    store.import_rules(s, [later], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Ok(1) =
+    store.import_rules(s, [Rule(..later, enabled: False)], store.Merge, by: "t")
+  let assert Error(errors) =
+    store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
+  assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
+  // rules whose windows do not overlap do not loop
+  let assert Ok(_) =
+    store.update(
+      s,
+      Rule(
+        ..later,
+        enabled: True,
+        starts_at: "",
+        expires_at: "2000-01-01T00:00:00Z",
+      ),
+      by: "t",
+    )
+}
+
 fn errors_of(error: store.SetChangeError) -> List(String) {
   case error {
     store.Rejected(errors) -> errors

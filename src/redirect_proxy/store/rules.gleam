@@ -1,7 +1,7 @@
 //// Checks and transformations of rule sets, independent of the store
 //// actor: validation, conflicts, redirect loops, imports and export.
 
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -19,8 +19,20 @@ import redirect_proxy/matcher/loop as matcher_loop
 import redirect_proxy/rule.{type Rule}
 
 /// Refuses a change when a request to the changed rule would be redirected
-/// back to it.
+/// back to it. `built` is the matcher of `rules` now; a rule that starts
+/// later is followed with the rules active at its start (it would loop
+/// then).
 pub fn check_loop(
+  built: matcher.Matcher,
+  rules: List(Rule),
+  changed: Rule,
+  ignore_trailing_slash: Bool,
+) -> Result(Nil, List(String)) {
+  let #(matcher, _) = loop_matcher(built, rules, changed, dict.new())
+  follow_loop(matcher, changed, ignore_trailing_slash)
+}
+
+fn follow_loop(
   built: matcher.Matcher,
   changed: Rule,
   ignore_trailing_slash: Bool,
@@ -32,6 +44,32 @@ pub fn check_loop(
     True, Ok(cycle) ->
       Error(["target: redirect loop: " <> describe_cycle(cycle)])
     _, _ -> Ok(Nil)
+  }
+}
+
+/// The matcher to follow the loops of `changed` with: `built`, or for a
+/// rule that starts later, the one of `rules` at its start (kept in
+/// `cache`, by start).
+fn loop_matcher(
+  built: matcher.Matcher,
+  rules: List(Rule),
+  changed: Rule,
+  cache: Dict(Int, matcher.Matcher),
+) -> #(matcher.Matcher, Dict(Int, matcher.Matcher)) {
+  case changed.starts_at {
+    // the common case: no parsing
+    "" -> #(built, cache)
+    _ -> {
+      let #(from, _) = rule.window(changed)
+      case from > ffi.now_seconds(), dict.get(cache, from) {
+        False, _ -> #(built, cache)
+        True, Ok(matcher) -> #(matcher, cache)
+        True, Error(Nil) -> {
+          let matcher = matcher.build_at(rules, from)
+          #(matcher, dict.insert(cache, from, matcher))
+        }
+      }
+    }
   }
 }
 
@@ -57,20 +95,26 @@ pub fn changed_rules(before: List(Rule), after: List(Rule)) -> List(Rule) {
 /// loaded before can still be imported again.
 pub fn check_changed(
   built: matcher.Matcher,
+  rules: List(Rule),
   changed: List(Rule),
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  let errors =
-    list.flat_map(changed, fn(r) {
-      let loop = case check_loop(built, r, ignore_trailing_slash) {
+  let #(errors, _) =
+    list.fold(changed, #([], dict.new()), fn(acc, r) {
+      let #(errors, cache) = acc
+      let #(matcher, cache) = loop_matcher(built, rules, r, cache)
+      let loop = case follow_loop(matcher, r, ignore_trailing_slash) {
         Ok(Nil) -> []
         Error(errors) -> errors
       }
-      list.append(rule.lint(r), loop)
-      |> list.map(fn(e) {
-        "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
-      })
+      let found =
+        list.append(rule.lint(r), loop)
+        |> list.map(fn(e) {
+          "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
+        })
+      #([found, ..errors], cache)
     })
+  let errors = list.reverse(errors) |> list.flatten
   case errors {
     [] -> Ok(Nil)
     _ -> Error(errors)

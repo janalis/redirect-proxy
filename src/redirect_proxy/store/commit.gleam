@@ -68,7 +68,12 @@ pub fn one(
   use Nil <- result.try(check_lint(changed))
   use Nil <- result.try(check_conflicts(rules))
   let built = matcher.build(rules)
-  use Nil <- result.try(check_loop(built, changed, target.ignore_trailing_slash))
+  use Nil <- result.try(check_loop(
+    built,
+    rules,
+    changed,
+    target.ignore_trailing_slash,
+  ))
   use fingerprint <- result.try(write(target, rules, built))
   case uncovers {
     True -> checker.request(target.files.rules_path, checker.Loops)
@@ -94,6 +99,7 @@ pub fn many(
   let built = matcher.build(rules)
   use Nil <- result.try(check_changed(
     built,
+    rules,
     changed,
     target.ignore_trailing_slash,
   ))

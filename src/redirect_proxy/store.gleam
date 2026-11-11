@@ -563,6 +563,7 @@ pub fn preview_import(
     set.from_list(list.append(preview.diff.added, preview.diff.changed))
   use Nil <- result.try(store_rules.check_changed(
     matcher.build(preview.rules),
+    preview.rules,
     list.filter(preview.rules, fn(r) { set.contains(changed_ids, r.id) }),
     preview.ignore_trailing_slash,
   ))
