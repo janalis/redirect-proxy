@@ -939,6 +939,31 @@ pub fn unreadable_watched_file_is_reported_once_test() {
   assert list.count(logs, string.contains(_, "cannot be read")) == 1
 }
 
+/// Valid content that could not be loaded, then reverted, then written
+/// again once it can be loaded, is loaded.
+pub fn watched_content_rejected_then_written_again_is_loaded_test() {
+  ffi.set_tunable("rejected_retry_seconds", 1)
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/again" })
+  }
+  process.sleep(50)
+  let assert Ok(in_effect) = simplifile.read(s.rules_path)
+  let content = "[{\"source\": \"/again\", \"target\": \"/y\"}]"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  process.sleep(300)
+  // reverted, then written again once its ids can be written
+  let assert Ok(Nil) = simplifile.write(s.rules_path, in_effect)
+  process.sleep(300)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  support.wait_until(loaded, 4000)
+  ffi.clear_tunable("rejected_retry_seconds")
+}
+
 /// A file the watcher could not read is loaded once it can be: a change
 /// of its permissions leaves its stamp as it was.
 pub fn watched_file_readable_again_is_loaded_test() {

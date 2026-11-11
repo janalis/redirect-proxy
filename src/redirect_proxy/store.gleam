@@ -960,7 +960,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 // the content in effect (reverted, or loaded by a change
                 // made meanwhile): nothing left to try again
                 True if found == state.fingerprint ->
-                  actor.continue(State(..state, stamp:, rejected_valid: False))
+                  actor.continue(
+                    State(..state, stamp:, rejected: "", rejected_valid: False),
+                  )
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
                   // trying again content already reported: quietly
@@ -1083,7 +1085,13 @@ fn reload_file_or_busy(
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
       // nothing left to try again
       #(
-        State(..state, rules:, fingerprint:, rejected_valid: False),
+        State(
+          ..state,
+          rules:,
+          fingerprint:,
+          rejected: "",
+          rejected_valid: False,
+        ),
         Ok(list.length(rules)),
       )
     }
@@ -1237,7 +1245,15 @@ fn refresh(state: State) -> Result(State, String) {
                 <> int.to_string(list.length(rules))
                 <> " rule(s) before applying the change",
               )
-              Ok(State(..state, rules:, fingerprint:, rejected_valid: False))
+              Ok(
+                State(
+                  ..state,
+                  rules:,
+                  fingerprint:,
+                  rejected: "",
+                  rejected_valid: False,
+                ),
+              )
             }
           }
       }
