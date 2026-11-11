@@ -174,6 +174,10 @@ pub type Counters
 @external(erlang, "redirect_proxy_ffi", "counter_new")
 pub fn counter_new(size: Int) -> Counters
 
+/// The number of counters of `counters`.
+@external(erlang, "redirect_proxy_ffi", "counter_size")
+pub fn counter_size(counters: Counters) -> Int
+
 @external(erlang, "redirect_proxy_ffi", "counter_add")
 pub fn counter_add(ref: Counters, index: Int, amount: Int) -> Nil
 
