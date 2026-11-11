@@ -697,9 +697,9 @@ pub fn waits_for_the_file_lock_test() {
   assert simplifile.is_file(lock) == Ok(False)
 }
 
-/// Reads do not wait for a change in progress (here, one waiting for the
-/// file lock another process holds): they answer with the rules in effect,
-/// and a change's caller reads it once it returns.
+/// Reads of the rules do not wait for a change in progress (here, one
+/// waiting for the file lock another process holds): they answer with the
+/// rules in effect, and a change's caller reads it once it returns.
 pub fn reads_do_not_wait_for_changes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
@@ -714,7 +714,6 @@ pub fn reads_do_not_wait_for_changes_test() {
   process.sleep(100)
   let started = ffi.monotonic_micros()
   assert store.all(s) == [a]
-  assert store.get(s, a.id) == Ok(a)
   let #(rules, version) = store.versioned(s)
   assert rules == [a] && version != ""
   assert ffi.monotonic_micros() - started < 50_000
@@ -722,6 +721,28 @@ pub fn reads_do_not_wait_for_changes_test() {
   let assert Ok(Ok(c)) = process.receive(done, 5000)
   assert store.all(s) == [a, c]
   assert store.get(s, c.id) == Ok(c)
+}
+
+/// Once the store has stopped, reads fail like any call to it, instead of
+/// answering with the rules it had.
+pub fn reads_of_a_stopped_store_fail_test() {
+  let dir = support.temp_dir()
+  let assert Ok(started) =
+    store.start(settings(dir, 0), process.new_name("store_test"))
+  let assert Ok(_) = store.create(started.data, new_rule("/a", "/b"), by: "t")
+  assert list.length(store.all(started.data)) == 1
+  process.unlink(started.pid)
+  process.kill(started.pid)
+  support.wait_until(fn() { !process.is_alive(started.pid) }, 1000)
+  let unavailable = fn(read) { ffi.rescue_store_timeout(read, fn() { True }) }
+  assert unavailable(fn() {
+    let _ = store.all(started.data)
+    False
+  })
+  assert unavailable(fn() {
+    let _ = store.versioned(started.data)
+    False
+  })
 }
 
 pub fn stale_lock_is_broken_test() {

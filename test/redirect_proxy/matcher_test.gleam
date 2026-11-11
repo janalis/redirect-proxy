@@ -68,6 +68,9 @@ pub fn host_is_normalised_test() {
   assert location(m, "example.com.", "/a") == Ok("/b")
   assert location(m, "example.com..:80", "/a") == Ok("/b")
   assert matcher.normalise_request_host("..") == ""
+  // in one pass: a long run of dots costs bytes, not graphemes squared
+  let dots = "example.com" <> string.repeat(".", 100_000)
+  assert matcher.normalise_request_host(dots) == "example.com"
 }
 
 pub fn precedence_exact_prefix_regex_test() {
@@ -868,20 +871,27 @@ pub fn wildcard_host_loops_are_detected_test() {
     == Error(Nil)
 }
 
-/// A chain still redirecting after the hops the tester follows is reported
-/// as a loop, as the loop check refuses it, even when every URL is new.
+/// A chain still redirecting after the 20 redirects browsers follow is
+/// reported as a loop, even when every URL is new; a longer chain that
+/// ends is not.
 pub fn explain_reports_endless_chains_test() {
   let growing = r("g", "*", rule.Prefix, "/a", "/a/a$1")
   let rules = [growing]
   let assert Ok(explained) =
     explain.explain(matcher.build(rules), rules, "http://h.test/a/x", False)
   assert explained.loops
-  assert list.length(explained.chain) == 11
-  // a chain that ends is not one
-  let ends = [r("e", "*", rule.Exact, "/1", "/2")]
+  assert list.length(explained.chain) == 21
+  // a chain of 15 redirects that ends is not one
+  let ends =
+    int.range(from: 1, to: 16, with: [], run: list.prepend)
+    |> list.map(fn(i) {
+      let n = int.to_string(i)
+      r(n, "*", rule.Exact, "/" <> n, "/" <> int.to_string(i + 1))
+    })
   let assert Ok(explained) =
     explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
   assert !explained.loops
+  assert list.length(explained.chain) == 15
 }
 
 /// Query conditions, as documented: a parameter sent several times matches

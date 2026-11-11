@@ -337,6 +337,15 @@ pub fn lint_flags_regex_escapes_that_never_match_test() {
   let assert [segment] = problems("^/a/\\./b$")
   assert string.contains(segment, "dot segment")
   let assert [_] = problems("^/a/\\.\\.$")
+  let assert [_] = problems("^/a/\\.\\./b")
+  let assert [_] = problems("^/a/\\.$")
+  // a dot that does not make a whole segment can match
+  assert problems("^/\\.") == []
+  assert problems("^/\\.\\.") == []
+  assert problems("^/\\.env$") == []
+  assert problems("^/a/\\./?") == []
+  assert problems("^/a/\\./*x") == []
+  assert problems("^/[/\\./]x$") == []
   // these can match
   assert problems("^/a%2F(.*)$") == []
   assert problems("^/[%7E]$") == []

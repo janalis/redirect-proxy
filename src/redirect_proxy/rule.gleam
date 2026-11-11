@@ -1,6 +1,7 @@
 //// Redirection rules: data model, JSON codec and validation.
 
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto
 import gleam/dynamic/decode
 import gleam/int
@@ -662,19 +663,49 @@ pub fn lint(rule: Rule) -> List(String) {
 /// Parts of a regex that never match the path it runs on, which is
 /// normalised (`ffi.normalise_path`): percent-escapes outside a character
 /// class that normalisation decodes (unreserved characters, UTF-8) or
-/// writes in upper case, and dot segments (`/\./`, `/\.\./`).
+/// writes in upper case, and whole dot segments (`/\\./`, `/\\.\\./`,
+/// or one before the closing `$`).
 fn regex_path_problems(source: String, case_insensitive: Bool) -> List(String) {
-  let segments =
-    ["/\\./", "/\\.\\./"]
-    |> list.any(string.contains(source, _))
-    || ["/\\.", "/\\.\\.", "/\\.$", "/\\.\\.$"]
-    |> list.any(string.ends_with(source, _))
   scan_escapes(string.to_graphemes(source), False, "", [], case_insensitive)
   |> list.reverse
   |> check(
-    !segments,
+    !has_dot_segment(without_classes(string.to_graphemes(source), False, [])),
     "source: dot segments (/\\./, /\\.\\./) never match: request paths are compared with them removed",
   )
+}
+
+/// Whether a regex (without its character classes) requires a whole dot
+/// segment: `/\\./` or `/\\.\\./` whose last `/` is not made optional
+/// (`?`, `*`, `{`), or `/\\.` or `/\\.\\.` before the closing `$`. A dot
+/// that only starts a segment (`/\\.env`, `^/\\.`) can match.
+fn has_dot_segment(source: String) -> Bool {
+  let required = fn(segment) {
+    case string.split(source, segment) {
+      [_, ..after] ->
+        list.any(after, fn(rest) {
+          !list.any(["?", "*", "{"], string.starts_with(rest, _))
+        })
+      [] -> False
+    }
+  }
+  required("/\\./")
+  || required("/\\.\\./")
+  || string.ends_with(source, "/\\.$")
+  || string.ends_with(source, "/\\.\\.$")
+}
+
+/// `source` with each character class replaced by `C`: what it holds is
+/// not a path.
+fn without_classes(rest: List(String), in_class: Bool, kept: List(String)) {
+  case in_class, rest {
+    _, [] -> kept |> list.reverse |> string.concat
+    True, ["\\", _, ..rest] -> without_classes(rest, True, kept)
+    True, ["]", ..rest] -> without_classes(rest, False, kept)
+    True, [_, ..rest] -> without_classes(rest, True, kept)
+    False, ["\\", c, ..rest] -> without_classes(rest, False, [c, "\\", ..kept])
+    False, ["[", ..rest] -> without_classes(rest, True, ["C", ..kept])
+    False, [c, ..rest] -> without_classes(rest, False, [c, ..kept])
+  }
 }
 
 fn scan_escapes(
@@ -716,13 +747,14 @@ fn escape_problem(
   case_insensitive: Bool,
   problems: List(String),
 ) -> List(String) {
+  use <- bool.guard(run == "", problems)
   // after a segment, so that `%2E` is not taken for a dot segment
   let normalised = ffi.normalise_path("/x" <> run) |> string.drop_start(2)
   let same = case case_insensitive {
     True -> string.uppercase(normalised) == string.uppercase(run)
     False -> normalised == run
   }
-  case run == "" || same {
+  case same {
     True -> problems
     False -> [
       "source: "

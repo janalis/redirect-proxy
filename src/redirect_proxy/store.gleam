@@ -436,29 +436,37 @@ pub fn start(
   |> actor.start
 }
 
-/// The reads below do not wait for a change in progress: they get the rules
-/// in effect (`commit.view`), from the store only before it has started.
+/// `all` and `versioned` do not wait for a change in progress: while the
+/// store runs, they get the rules in effect (`commit.view`). Before it has
+/// started, or while it restarts, they ask it (unavailable then, as any
+/// call).
 pub fn all(store: Store) -> List(Rule) {
-  case commit.view(store) {
+  case view(store) {
     Ok(#(rules, _)) -> rules
     Error(Nil) -> read(store, timeout, All)
+  }
+}
+
+fn view(store: Store) -> Result(#(List(Rule), String), Nil) {
+  case process.subject_owner(store) {
+    Ok(_) -> commit.view(store)
+    Error(Nil) -> Error(Nil)
   }
 }
 
 /// Every rule and the version of the rule set (the fingerprint of the file
 /// last read or written), for `import_rules_versioned` and `bulk_versioned`.
 pub fn versioned(store: Store) -> #(List(Rule), String) {
-  case commit.view(store) {
+  case view(store) {
     Ok(view) -> view
     Error(Nil) -> read(store, timeout, Versioned)
   }
 }
 
+/// Asks the store, which sends back the one rule: reading the rules in
+/// effect would copy them all into the caller.
 pub fn get(store: Store, id: String) -> Result(Rule, Nil) {
-  case commit.view(store) {
-    Ok(#(rules, _)) -> list.find(rules, fn(r: Rule) { r.id == id })
-    Error(Nil) -> read(store, timeout, Get(id, _))
-  }
+  read(store, timeout, Get(id, _))
 }
 
 pub fn create(
@@ -1074,8 +1082,6 @@ fn reload_file(
   #(state, result.map_error(outcome, store_file.reason))
 }
 
-/// The rules in effect are now `rules`, from the file of `fingerprint`:
-/// nothing the watcher rejected is left to skip.
 /// The rules an import of `prepared` leaves, and `prepared` with its ids
 /// resolved against the `existing` rules: the same for an import and its
 /// preview. Rules imported again unchanged are kept as they were.
@@ -1096,6 +1102,8 @@ fn imported(
   Ok(#(prepared, rules))
 }
 
+/// The rules in effect are now `rules`, from the file of `fingerprint`:
+/// nothing the watcher rejected is left to skip.
 fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
   State(..state, rules:, fingerprint:, rejected: None, busy: None)
 }

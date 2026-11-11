@@ -538,9 +538,11 @@ pub fn normalise_request_host(host: String) -> String {
   drop_trailing_dots(ffi.strip_port(ffi.lowercase_host(host)))
 }
 
+/// Byte by byte (`.` is one byte): `string.drop_end` would count the
+/// graphemes of the host for each dot.
 fn drop_trailing_dots(host: String) -> String {
   case string.ends_with(host, ".") {
-    True -> drop_trailing_dots(string.drop_end(host, 1))
+    True -> drop_trailing_dots(ffi.byte_take(host, string.byte_size(host) - 1))
     False -> host
   }
 }
@@ -922,52 +924,21 @@ fn prefix_location(
   |> result.map(fn(location) { Match(p.rule, ffi.header_value(location)) })
 }
 
-/// Whether rule `r`, which matches `path` (normalised), would redirect a
-/// request for `host`: false when the substitution of a prefix or regex
-/// rule would leave its target's host, the request then going to the next
-/// rule. For the URL testers, which check every rule, not only the one that
-/// applies.
+/// Whether rule `r`, which matches `path`, would redirect a request for
+/// `host`: false when the substitution of a prefix or regex rule would
+/// leave its target's host, the request then going to the next rule. For
+/// the URL testers, which check every rule, not only the one that applies:
+/// the rule is looked up alone, enabled, as the listener would run it.
 pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
-  let #(host, vars) = request_host(host)
-  let vars = case normalise_request_host(r.host) {
-    "*." <> parent ->
-      case vars.host != "" && string.ends_with(host, "." <> parent) {
-        True ->
-          template.RequestVars(
-            ..vars,
-            sub: ffi.byte_take(
-              host,
-              string.byte_size(host) - string.byte_size(parent) - 1,
-            ),
-          )
-        False -> vars
-      }
-    _ -> vars
-  }
-  let allowed = fn(captures) {
-    template.expand_template(
-      template.compile_template(r.target),
-      captures,
-      vars,
-    )
-    |> template.guard_location(template.target_guard(r.target), _, vars)
-    |> result.is_ok
-  }
   case r.kind {
     Exact -> True
-    Prefix -> {
-      let r = rule.Rule(..r, source: ffi.normalise_path(r.source))
-      allowed([path, prefix_remainder(r, path)])
-    }
-    Regex ->
-      case ffi.regex_compile(r.source, r.case_insensitive) {
-        Ok(regex) ->
-          case ffi.regex_run(regex, path) {
-            Ok(captures) -> allowed(captures)
-            Error(_) -> True
-          }
-        Error(_) -> True
-      }
+    Prefix | Regex ->
+      build_at(
+        [rule.Rule(..r, enabled: True, starts_at: "", expires_at: "")],
+        0,
+      )
+      |> lookup(host, path)
+      |> result.is_ok
   }
 }
 

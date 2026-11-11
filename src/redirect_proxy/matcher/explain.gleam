@@ -48,13 +48,14 @@ pub type Explanation {
     candidates: List(Candidate),
     chain: List(Hop),
     /// The chain comes back to a URL it already visited, or still
-    /// redirects after `max_hops` (as the loop check, which refuses such
-    /// rules: a browser stops with too many redirects).
+    /// redirects after `max_hops`, where browsers stop with too many
+    /// redirects.
     loops: Bool,
   )
 }
 
-const max_hops = 10
+/// The redirects browsers follow (Chrome and Firefox: 20).
+const max_hops = 20
 
 /// `rules` are all the rules (disabled ones too); `matcher` is the published
 /// one, which decides the rule that applies.
