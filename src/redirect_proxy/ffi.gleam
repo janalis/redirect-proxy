@@ -294,11 +294,21 @@ pub fn with_file_lock(
   f: fn() -> a,
 ) -> Result(a, String)
 
-/// Whether an error of `with_file_lock` says another process holds the
-/// lock (trying again later may succeed at once), rather than that it
-/// could not be created (a full disk).
-@external(erlang, "redirect_proxy_ffi", "lock_held")
-pub fn lock_held(reason: String) -> Bool
+/// Why `with_file_lock_detailed` did not acquire the lock.
+pub type LockFailure {
+  /// Another process holds it: trying again soon may succeed.
+  Held(message: String)
+  /// It could not be created (a full disk).
+  CannotCreate(message: String)
+}
+
+/// `with_file_lock`, saying why the lock was not acquired.
+@external(erlang, "redirect_proxy_ffi", "with_file_lock_detailed")
+pub fn with_file_lock_detailed(
+  path: String,
+  timeout_ms: Int,
+  f: fn() -> a,
+) -> Result(a, LockFailure)
 
 /// Overrides a delay for tests: `stale_lock_seconds` (10), after which a
 /// lock is taken over, and `store_call_timeout` (milliseconds), how long a

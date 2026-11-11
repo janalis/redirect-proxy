@@ -305,12 +305,13 @@ type State {
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
     /// The fingerprint of the content the watcher last could not load: it
-    /// is reported once, not at every tick that reads it again. Valid
-    /// content (only writing its ids failed) is tried again, quietly, every
-    /// minute (`retry_rejected`), until it loads.
+    /// is reported once, not at every tick that reads it again. Content that
+    /// may load later as it is (`rejected_retry`: valid, but its ids could
+    /// not be written, or the lock not created) is tried again, quietly,
+    /// every minute (`retry_rejected`), until it loads.
     rejected: String,
     rejected_at: Int,
-    rejected_valid: Bool,
+    rejected_retry: Bool,
     /// The stamp of the file the watcher last could not read, for the same
     /// reason.
     unreadable: String,
@@ -356,7 +357,7 @@ fn initial_state(
     stamp:,
     rejected: "",
     rejected_at: 0,
-    rejected_valid: False,
+    rejected_retry: False,
     unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
@@ -961,7 +962,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 // made meanwhile): nothing left to try again
                 True if found == state.fingerprint ->
                   actor.continue(
-                    State(..state, stamp:, rejected: "", rejected_valid: False),
+                    State(..state, stamp:, rejected: "", rejected_retry: False),
                   )
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
@@ -984,7 +985,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                     Error(store_file.LoadFailure(
                       lock_busy: False,
                       read:,
-                      valid:,
+                      retry_later:,
                       ..,
                     )) ->
                       actor.continue(
@@ -995,7 +996,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                             read -> read
                           },
                           rejected_at: ffi.now_seconds(),
-                          rejected_valid: valid,
+                          rejected_retry: retry_later,
                         ),
                       )
                   }
@@ -1050,7 +1051,7 @@ fn reload_file(
 /// minute ago or more: writing its ids may succeed now (a disk no longer
 /// full).
 fn retry_rejected(state: State) -> Bool {
-  state.rejected_valid
+  state.rejected_retry
   && ffi.now_seconds() - state.rejected_at
   >= ffi.tunable("rejected_retry_seconds", 60)
 }
@@ -1090,7 +1091,7 @@ fn reload_file_or_busy(
           rules:,
           fingerprint:,
           rejected: "",
-          rejected_valid: False,
+          rejected_retry: False,
         ),
         Ok(list.length(rules)),
       )
@@ -1251,7 +1252,7 @@ fn refresh(state: State) -> Result(State, String) {
                   rules:,
                   fingerprint:,
                   rejected: "",
-                  rejected_valid: False,
+                  rejected_retry: False,
                 ),
               )
             }

@@ -10,7 +10,7 @@
     ets_delete_older/2, ets_insert_new/3,
          window_record/4, window_get/2, window_purge/2, window_take/5, window_forgive/2,
     with_slot/4, password_check_slots/0,
-    counter_new/1, counter_size/1, counter_add/3, lock_held/1, counter_get/2, counter_put/3,
+    counter_new/1, counter_size/1, counter_add/3, counter_get/2, counter_put/3,
     ip_in_cidr/2, compile_cidrs/1, cidrs_empty/1, cidrs_contain/2, cidrs_contain_peer/2, cidrs_contain_ip/2, client_group/1, client_group_text/1,
     cidrs_contain_peer_result/2, forwarded_hop/2, first_item/1,
     is_ip_address/1, throttle_address/1, valid_cidr/1, valid_listen_address/1, is_loopback_address/1,
@@ -19,7 +19,7 @@
     plain_arguments/0, halt/1, read_password/1,
     memory_bytes/0, process_count/0, app_version/0, start_time_seconds/0,
     jwt_verify/2, jwt_peek_header/1,
-    with_lock/2, with_file_lock/3, tunable/2, set_tunable/2, clear_tunable/1, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
+    with_lock/2, with_file_lock/3, with_file_lock_detailed/3, tunable/2, set_tunable/2, clear_tunable/1, strip_control/1, header_value/1, strip_url_whitespace/1, garbage_collect/0,
     no_control_chars/1,
     is_host_name/1, lowercase_host/1, lowercase_ascii/1, url_host/1,
     split_lines/1,
@@ -463,10 +463,6 @@ window_purge(Table, Now) ->
 
 counter_new(Size) -> counters:new(Size, [write_concurrency]).
 counter_size(Ref) -> maps:get(size, counters:info(Ref)).
-
-%% Whether a with_file_lock/3 error says another process holds the lock
-%% (acquire_lock/3), rather than that it could not be created.
-lock_held(Reason) -> binary:match(Reason, <<" is held by another process (">>) =/= nomatch.
 counter_add(Ref, Index, Amount) -> counters:add(Ref, Index, Amount), nil.
 counter_get(Ref, Index) -> counters:get(Ref, Index).
 counter_put(Ref, Index, Value) -> counters:put(Ref, Index, Value), nil.
@@ -882,6 +878,14 @@ clear_tunable(Name) ->
 %% only ever removes its own lock: when it was held past the stale delay and
 %% another process broke it, releasing leaves the new owner's lock in place.
 with_file_lock(Path, TimeoutMs, Fun) ->
+    case with_file_lock_detailed(Path, TimeoutMs, Fun) of
+        {error, {_, Message}} -> {error, Message};
+        Result -> Result
+    end.
+
+%% with_file_lock/3, failing with {held, Message} (another process holds
+%% the lock) or {cannot_create, Message} (a full disk...).
+with_file_lock_detailed(Path, TimeoutMs, Fun) ->
     Lock = <<Path/binary, ".lock">>,
     Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
     %% the data directory may not exist yet (first CLI command)
@@ -919,8 +923,8 @@ acquire_lock(Lock, Token, Deadline) ->
                 {error, Reason} ->
                     %% an empty lock would never be released by its token
                     _ = file:delete(Lock),
-                    {error, <<"cannot write ", Lock/binary, ": ",
-                              (atom_to_binary_safe(Reason))/binary>>}
+                    {error, {cannot_create, <<"cannot write ", Lock/binary, ": ",
+                              (atom_to_binary_safe(Reason))/binary>>}}
             end;
         {error, Read} when Read =:= eacces; Read =:= erofs; Read =:= eperm ->
             read_only;
@@ -930,16 +934,16 @@ acquire_lock(Lock, Token, Deadline) ->
                 false ->
                     case erlang:monotonic_time(millisecond) >= Deadline of
                         true ->
-                            {error, <<Lock/binary, " is held by another process (",
-                                      (lock_owner(Lock))/binary, ")">>};
+                            {error, {held, <<Lock/binary, " is held by another process (",
+                                      (lock_owner(Lock))/binary, ")">>}};
                         false ->
                             timer:sleep(5 + rand:uniform(20)),
                             acquire_lock(Lock, Token, Deadline)
                     end
             end;
         {error, Reason} ->
-            {error, <<"cannot create ", Lock/binary, ": ",
-                      (atom_to_binary_safe(Reason))/binary>>}
+            {error, {cannot_create, <<"cannot create ", Lock/binary, ": ",
+                      (atom_to_binary_safe(Reason))/binary>>}}
     end.
 
 %% Removes a stale lock and returns true when the caller should retry at
