@@ -588,6 +588,23 @@ pub fn outside_changes_are_reloaded_before_writing_test() {
   assert redirect("/theirs") == Ok("/b")
 }
 
+/// A valid file whose ids could not be written is not called invalid.
+pub fn outside_changes_whose_ids_cannot_be_written_are_told_apart_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "[{\"source\": \"/theirs\", \"target\": \"/b\"}]",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Error([reason]) = result
+  assert string.contains(reason, "could not be written")
+  assert !string.contains(reason, "is invalid")
+}
+
 pub fn invalid_outside_changes_are_not_overwritten_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
@@ -893,6 +910,31 @@ pub fn unreadable_watched_file_is_reported_once_test() {
   let logs = captured_logs()
   let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
   assert list.count(logs, string.contains(_, "cannot be read")) == 1
+}
+
+/// A file the watcher could not read is loaded once it can be: a change
+/// of its permissions leaves its stamp as it was.
+pub fn watched_file_readable_again_is_loaded_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  process.sleep(50)
+  // unreadable before it is written: never read in between
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  let assert Ok(Nil) =
+    simplifile.write(
+      s.rules_path,
+      "[{\"id\": \"p\", \"source\": \"/perm\", \"target\": \"/y\"}]",
+    )
+  let assert Error(_) = simplifile.read(s.rules_path)
+  // past the time a stamp is recent (up to 3 s: whole seconds)
+  process.sleep(4000)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/perm" })
+  }
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  support.wait_until(loaded, 2000)
 }
 
 /// A file that could not be read for a moment, invalid before and after,

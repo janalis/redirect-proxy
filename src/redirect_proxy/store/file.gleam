@@ -62,8 +62,15 @@ pub fn load_locked_or_busy(
       load_reading(files, mode)
     })
   {
+    // another process holds the lock: tried again at once
     Error(reason) ->
-      Error(LoadFailure(reason, lock_busy: True, read: "", valid: False))
+      case ffi.lock_held(reason) {
+        True ->
+          Error(LoadFailure(reason, lock_busy: True, read: "", valid: False))
+        // it could not be created (a full disk): tried again later
+        False ->
+          Error(LoadFailure(reason, lock_busy: False, read: "", valid: True))
+      }
     Ok(Error(#(reason, read, valid))) ->
       Error(LoadFailure(reason, lock_busy: False, read:, valid:))
     Ok(Ok(loaded)) -> Ok(loaded)
@@ -78,6 +85,17 @@ pub fn load(
   mode: LoadMode,
 ) -> Result(#(List(Rule), String), String) {
   load_reading(files, mode) |> result.map_error(fn(failure) { failure.0 })
+}
+
+/// `load`, saying why it failed (`LoadFailure`, never `lock_busy`).
+pub fn load_failing(
+  files: Files,
+  mode: LoadMode,
+) -> Result(#(List(Rule), String), LoadFailure) {
+  load_reading(files, mode)
+  |> result.map_error(fn(failure) {
+    LoadFailure(failure.0, lock_busy: False, read: failure.1, valid: failure.2)
+  })
 }
 
 /// `load`, failing with the fingerprint of the content it read ("" if

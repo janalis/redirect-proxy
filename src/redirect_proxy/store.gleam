@@ -957,6 +957,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 found == state.fingerprint
                 || { found == state.rejected && !retry }
               {
+                // the content in effect (reverted, or loaded by a change
+                // made meanwhile): nothing left to try again
+                True if found == state.fingerprint ->
+                  actor.continue(State(..state, stamp:, rejected_valid: False))
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
                   // trying again content already reported: quietly
@@ -1201,8 +1205,15 @@ fn refresh(state: State) -> Result(State, String) {
       case store_file.fingerprint(content) == state.fingerprint {
         True -> Ok(state)
         False ->
-          case store_file.load(files(state.settings), store_file.Reloading) {
-            Error(reason) ->
+          case
+            store_file.load_failing(files(state.settings), store_file.Reloading)
+          {
+            Error(store_file.LoadFailure(reason:, valid: True, ..)) ->
+              Error(
+                "storage: the redirections file was changed outside the server, and the ids of its rules without one could not be written, so it was not overwritten. Free space or fix the permissions, then retry. "
+                <> reason,
+              )
+            Error(store_file.LoadFailure(reason:, ..)) ->
               Error(
                 "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
                 <> reason,
@@ -1226,7 +1237,7 @@ fn refresh(state: State) -> Result(State, String) {
                 <> int.to_string(list.length(rules))
                 <> " rule(s) before applying the change",
               )
-              Ok(State(..state, rules:, fingerprint:))
+              Ok(State(..state, rules:, fingerprint:, rejected_valid: False))
             }
           }
       }

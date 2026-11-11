@@ -294,6 +294,12 @@ pub fn with_file_lock(
   f: fn() -> a,
 ) -> Result(a, String)
 
+/// Whether an error of `with_file_lock` says another process holds the
+/// lock (trying again later may succeed at once), rather than that it
+/// could not be created (a full disk).
+@external(erlang, "redirect_proxy_ffi", "lock_held")
+pub fn lock_held(reason: String) -> Bool
+
 /// Overrides a delay for tests: `stale_lock_seconds` (10), after which a
 /// lock is taken over, and `store_call_timeout` (milliseconds), how long a
 /// store call waits.
