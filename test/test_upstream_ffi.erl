@@ -25,8 +25,8 @@
 %% - /idle-close-late: the same, 1300 ms later
 %% - /linger: the echo, then 20 ms later the bytes of a response nothing
 %%   asked for
-%% - /stream: a chunked response whose last chunk comes 200 ms after the
-%%   head and the first one
+%% - /stream: a chunked response whose last chunk comes 800 ms after the
+%%   head and the first one (room for a loaded machine to read them apart)
 -module(test_upstream_ffi).
 -export([start/0, start_tls/0, connections/1, closed_port/0]).
 
@@ -136,7 +136,7 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
             serve(Socket, N, Rest);
         <<"/stream">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n">>),
-            timer:sleep(200),
+            timer:sleep(800),
             send(Socket, <<"6\r\n world\r\n0\r\n\r\n">>),
             serve(Socket, N, Rest);
         <<"/close">> ->

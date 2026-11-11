@@ -197,6 +197,38 @@ fn accepted(counter: Counter) -> Int
 
 /// While the provider cannot be reached, the metadata and signing keys
 /// fetched before are used for a day past their hour, not forgotten.
+/// The janitor's purge keeps the metadata a provider outage falls back on
+/// (up to a day past its hour), and drops it once it is too old for that.
+pub fn purge_keeps_the_metadata_an_outage_falls_back_on_test() {
+  let _ = support.boot(config.default())
+  let down = "http://127.0.0.1:1/purge-" <> int.to_string(ffi.now_micros())
+  let provider =
+    oidc_provider.Provider(
+      issuer: down,
+      authorization_endpoint: down <> "/authorize",
+      token_endpoint: down <> "/token",
+      jwks_uri: down <> "/jwks",
+      end_session_endpoint: "",
+    )
+  let now = ffi.now_seconds()
+  // fetched two hours ago: expired an hour ago, still a fallback
+  ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
+    now - 3600,
+    #(now - 7200, provider),
+  ))
+  // fetched over a day ago: no longer one
+  let old = down <> "/old"
+  ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
+    now - 90_000,
+    #(now - 93_600, provider),
+  ))
+  let _ = oidc.purge_expired()
+  assert oidc_provider.discover_issuer(down) == Ok(provider)
+  let gone: Result(#(Int, #(Int, oidc_provider.Provider)), Nil) =
+    ffi.ets_get(oidc_provider.table, "provider:" <> old)
+  assert gone == Error(Nil)
+}
+
 pub fn provider_outage_uses_the_last_good_metadata_test() {
   // the application owns the cache table
   let _ = support.boot(config.default())

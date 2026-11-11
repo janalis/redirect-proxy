@@ -14,8 +14,8 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/oidc/provider.{
-  type Provider, discover, dispatch, table, trim_trailing_slash,
-  verify_signature,
+  type Provider, discover, dispatch, purge_expired as purge_provider_cache,
+  table, trim_trailing_slash, verify_signature,
 } as _
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
@@ -436,5 +436,5 @@ pub fn authorise(cfg: OidcConfig, identity: Identity) -> Result(Nil, String) {
 
 pub fn purge_expired() -> Int {
   let now = ffi.now_seconds()
-  ffi.ets_delete_older(table, now) + ffi.ets_delete_older(used_states, now)
+  purge_provider_cache(now) + ffi.ets_delete_older(used_states, now)
 }

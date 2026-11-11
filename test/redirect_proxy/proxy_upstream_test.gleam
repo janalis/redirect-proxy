@@ -44,6 +44,13 @@ fn send(socket: Socket, data: BitArray) -> Nil
 @external(erlang, "test_net_ffi", "read")
 fn read(socket: Socket, wait_ms: Int) -> #(BitArray, Bool)
 
+@external(erlang, "test_net_ffi", "read_until")
+fn read_until(
+  socket: Socket,
+  suffix: BitArray,
+  wait_ms: Int,
+) -> #(BitArray, Bool)
+
 @external(erlang, "test_net_ffi", "close")
 fn close(socket: Socket) -> Nil
 
@@ -139,6 +146,17 @@ fn start() -> Proxy {
   start_with(upstream(port), counter)
 }
 
+/// `start`, with 2 s idle and upstream timeouts: for tests that leave the
+/// client or the upstream silent on purpose for longer than `start` allows.
+fn start_patient() -> Proxy {
+  let #(port, counter) = start_upstream()
+  start_idle(
+    proxy_http.Upstream(..upstream(port), timeout_ms: 2000),
+    counter,
+    2000,
+  )
+}
+
 fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
   exchange_waiting(proxy, chunks, 800)
 }
@@ -163,16 +181,33 @@ fn paced_exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
 }
 
 /// Like paced_exchange/2, waiting up to `wait_ms` for each answer.
+fn paced_exchange_every(
+  proxy: Proxy,
+  gap_ms: Int,
+  chunks: List(String),
+) -> #(String, Bool) {
+  paced_exchange_with(proxy, chunks, gap_ms, 800)
+}
+
 fn paced_exchange_waiting(
   proxy: Proxy,
   chunks: List(String),
+  wait_ms: Int,
+) -> #(String, Bool) {
+  paced_exchange_with(proxy, chunks, 200, wait_ms)
+}
+
+fn paced_exchange_with(
+  proxy: Proxy,
+  chunks: List(String),
+  gap_ms: Int,
   wait_ms: Int,
 ) -> #(String, Bool) {
   let #(received, closed) =
     paced_session(
       proxy.port,
       list.map(chunks, bit_array.from_string),
-      200,
+      gap_ms,
       wait_ms,
     )
   let assert Ok(text) = bit_array.to_string(received)
@@ -342,9 +377,11 @@ pub fn closed_upstream_connections_are_replaced_test() {
 /// the next request, even one that could not be sent again, goes on a new
 /// one.
 pub fn idle_upstream_connections_closed_by_the_upstream_are_replaced_test() {
-  let proxy = start()
+  let proxy = start_patient()
+  // 600 ms between requests: the proxy sees the upstream close (20 ms
+  // after its answer) before the POST, which it could not retry
   let #(text, _) =
-    paced_exchange(proxy, [
+    paced_exchange_every(proxy, 600, [
       "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
       "POST /after HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
       "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
@@ -427,14 +464,15 @@ pub fn chunked_responses_are_relayed_test() {
 /// The head and the bytes read with it are sent together, but before the
 /// rest of the body is waited for.
 pub fn responses_are_relayed_as_they_come_test() {
-  let proxy = start()
+  let proxy = start_patient()
   let socket = open(proxy.port)
   send(socket, <<"GET /stream HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
-  let #(first, _) = read(socket, 120)
+  // the first chunk comes alone: the last one is sent 800 ms later
+  let #(first, _) = read_until(socket, <<"hello\r\n":utf8>>, 2000)
   let assert Ok(first) = bit_array.to_string(first)
   assert string.starts_with(first, "HTTP/1.1 200 OK\r\n")
   assert string.ends_with(first, "\r\n\r\n5\r\nhello\r\n")
-  let #(rest, _) = read(socket, 300)
+  let #(rest, _) = read_until(socket, <<"0\r\n\r\n":utf8>>, 3000)
   close(socket)
   assert rest == <<"6\r\n world\r\n0\r\n\r\n":utf8>>
   assert forwarded(proxy).bytes == 11
