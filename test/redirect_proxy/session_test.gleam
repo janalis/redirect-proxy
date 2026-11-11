@@ -1,6 +1,7 @@
 import gleam/list
 import redirect_proxy/admin/auth/session
 import redirect_proxy/role
+import redirect_proxy/users
 
 pub fn idle_sessions_end_test() {
   session.init()
@@ -15,10 +16,17 @@ pub fn idle_sessions_end_test() {
 }
 
 pub fn fingerprint_follows_the_password_test() {
-  let a = session.user_fingerprint("hash-1", "2026-11-06T00:00:00Z")
-  assert a == session.user_fingerprint("hash-1", "2026-11-06T00:00:00Z")
-  assert a != session.user_fingerprint("hash-2", "2026-11-06T00:00:00Z")
-  assert a != session.user_fingerprint("hash-1", "2026-11-06T00:00:01Z")
+  let user = fn(hash, at, credentials) {
+    users.User("alice", hash, role.Admin, "", at, credentials)
+  }
+  // users stored without credentials: the hash and the update time
+  let a = users.fingerprint(user("hash-1", "2026-11-06T00:00:00Z", ""))
+  assert a == users.fingerprint(user("hash-1", "2026-11-06T00:00:00Z", ""))
+  assert a != users.fingerprint(user("hash-2", "2026-11-06T00:00:00Z", ""))
+  assert a != users.fingerprint(user("hash-1", "2026-11-06T00:00:01Z", ""))
+  // with them, only they count
+  assert users.fingerprint(user("hash-1", "x", "c")) == "c"
+  assert users.fingerprint(user("hash-2", "y", "c")) == "c"
 }
 
 /// Names from SSO or the proxy act under a prefix: they cannot pass for a

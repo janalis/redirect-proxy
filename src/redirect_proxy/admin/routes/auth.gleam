@@ -117,10 +117,7 @@ fn current_session(req: Request, ctx: Context) -> Result(Session, Nil) {
     session.Local ->
       case users.get(ctx.users, s.username) {
         Ok(user) ->
-          case
-            session.user_fingerprint(user.password_hash, user.updated_at)
-            == s.fingerprint
-          {
+          case users.fingerprint(user) == s.fingerprint {
             // the role as stored now: a demotion applies at once
             True -> Ok(session.Session(..s, role: user.role))
             False -> end_session(s)
@@ -394,7 +391,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
               username,
               session.Local,
               ctx.config.admin.session_ttl,
-              session.user_fingerprint(user.password_hash, user.updated_at),
+              users.fingerprint(user),
               user.role,
             )
           let next = list.key_find(wisp.get_query(req), "next")
@@ -434,6 +431,8 @@ fn rehash_if_needed(
   case password.needs_rehash(user.password_hash) {
     False -> user
     True -> {
+      // a re-hash keeps the user's fingerprint (`users.fingerprint`): its
+      // sessions go on, here or on other instances
       case
         users.rehash_password(
           ctx.users,
@@ -442,31 +441,11 @@ fn rehash_if_needed(
           password.hash(pass),
         )
       {
-        // the same password: the user's sessions go on
-        Ok(Some(updated)) -> {
-          session.refingerprint_user(
-            user.username,
-            session.user_fingerprint(user.password_hash, user.updated_at),
-            session.user_fingerprint(updated.password_hash, updated.updated_at),
-          )
-          updated
-        }
+        Ok(Some(updated)) -> updated
         // changed meanwhile: by a sign-in re-hashing it at the same time,
-        // the session is opened for the user as stored; by a change of
-        // password, as signed in (it then ends at once)
-        Ok(None) ->
-          case users.get(ctx.users, user.username) {
-            Ok(stored) ->
-              case
-                hashing_password(fn() {
-                  password.verify(pass, stored.password_hash)
-                })
-              {
-                Ok(True) -> stored
-                Ok(False) | Error(Nil) -> user
-              }
-            Error(Nil) -> user
-          }
+        // the fingerprint is the same; by a change of password, the
+        // session ends at once
+        Ok(None) -> user
         Error(reason) -> {
           log.warning(
             "could not re-hash the password of "

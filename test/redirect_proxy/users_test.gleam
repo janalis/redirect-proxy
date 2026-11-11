@@ -125,3 +125,38 @@ pub fn users_without_a_role_are_admins_test() {
   let assert Ok(old) = users.get(s, "old")
   assert old.role == role.Admin
 }
+
+/// A re-hash keeps the fingerprint the sessions of the user carry, a change
+/// of password does not, for users stored before their credentials too.
+pub fn fingerprint_survives_a_rehash_only_test() {
+  let s = settings()
+  let old = password.hash_with("pw", 10)
+  let assert Ok(Nil) =
+    simplifile.write(
+      s.path,
+      "{\"version\": 1, \"users\": [{\"username\": \"carol\", \"password_hash\": \""
+        <> old
+        <> "\", \"updated_at\": \"2026-01-01T00:00:00Z\"}]}",
+    )
+  let assert Ok(before) = users.get(s, "carol")
+  let assert Ok(Some(rehashed)) =
+    users.rehash_password(s, "carol", old, password.hash_with("pw", 20))
+  assert users.fingerprint(rehashed) == users.fingerprint(before)
+  let assert Ok(stored) = users.get(s, "carol")
+  assert users.fingerprint(stored) == users.fingerprint(before)
+  let assert Ok(Nil) =
+    users.set_password(s, "carol", password.hash_with("new", 10), by: "t")
+  let assert Ok(changed) = users.get(s, "carol")
+  assert users.fingerprint(changed) != users.fingerprint(before)
+  // and for a user stored with them
+  let assert Ok(dave) =
+    users.create(s, "dave", password.hash_with("pw", 10), by: "t")
+  let assert Ok(Some(rehashed)) =
+    users.rehash_password(
+      s,
+      "dave",
+      dave.password_hash,
+      password.hash_with("pw", 20),
+    )
+  assert users.fingerprint(rehashed) == users.fingerprint(dave)
+}

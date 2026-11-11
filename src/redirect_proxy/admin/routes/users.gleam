@@ -264,7 +264,7 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
                 username,
                 session.Local,
                 ctx.config.admin.session_ttl,
-                session.user_fingerprint(user.password_hash, user.updated_at),
+                users.fingerprint(user),
                 user.role,
               )
               |> set_session_cookie(resp, req, ctx, _)
