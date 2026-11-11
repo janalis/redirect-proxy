@@ -55,11 +55,14 @@ src/redirect_proxy/
   rule.gleam, matcher.gleam   rule model, validation, compiled matcher
   rule/template.gleam         target templates and their host guard
   store.gleam                 single writer actor: persistence, backups, audit, reload
-  proxy/server.gleam          redirect listener (mist, hot path)
+  proxy/server.gleam          redirect handler (hot path)
   admin/                      router, auth (local, OIDC, header, sessions), views
   api/                        REST API: router, handlers, token endpoint, clients, OpenAPI
   app.gleam                   supervision tree
-src/redirect_proxy_ffi.erl    persistent_term, PCRE limits, atomic writes, crypto, JWT
+src/redirect_proxy_*_ffi.erl  Erlang helpers by area: snapshot (persistent_term), regex
+                              (PCRE limits), file (atomic writes, locks), crypto (JWT),
+                              ets, net, system, text (path normalisation)
+src/redirect_proxy_http.erl   redirect listener's HTTP/1.1 server and reverse proxy
 packaging/                    launcher, systemd unit, Debian scripts, Homebrew formula
 scripts/                      bundle, .deb packaging, coverage, benchmark
 ```

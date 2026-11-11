@@ -47,7 +47,7 @@ pub fn external_names_are_prefixed_test() {
   let assert Ok(_) = session.get(proxy.token, 0)
 }
 
-@external(erlang, "redirect_proxy_ffi", "ets_to_list")
+@external(erlang, "redirect_proxy_ets_ffi", "ets_to_list")
 fn ets_to_list(table: String) -> List(#(String, #(Int, session.Session)))
 
 /// The table holds the hash of each token, not the token: a memory dump

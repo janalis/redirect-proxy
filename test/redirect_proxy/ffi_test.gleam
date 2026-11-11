@@ -306,7 +306,7 @@ pub fn first_item_test() {
   assert ffi.first_item(",https") == ""
 }
 
-@external(erlang, "redirect_proxy_ffi", "same_write")
+@external(erlang, "redirect_proxy_file_ffi", "same_write")
 fn same_write(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> Bool
 
 /// A stamp (inode, time, size) may be of the same write as another when

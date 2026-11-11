@@ -339,15 +339,15 @@ claim(none, _) ->
 claim({Tab, Max, Unlimited}, Socket) ->
     case inet:peername(Socket) of
         {ok, {Ip, _}} ->
-            case redirect_proxy_ffi:cidrs_contain_ip(Ip, Unlimited) of
+            case redirect_proxy_net_ffi:cidrs_contain_ip(Ip, Unlimited) of
                 true ->
                     {ok, none, Ip};
                 false ->
-                    Key = redirect_proxy_ffi:client_group(Ip),
+                    Key = redirect_proxy_net_ffi:client_group(Ip),
                     case ets:update_counter(Tab, Key, {2, 1}, {Key, 0}) of
                         N when N > Max ->
                             release({Tab, Max, Unlimited}, Key),
-                            {over, redirect_proxy_ffi:client_group_text(Key), N - 1};
+                            {over, redirect_proxy_net_ffi:client_group_text(Key), N - 1};
                         _ ->
                             {ok, Key, Ip}
                     end
