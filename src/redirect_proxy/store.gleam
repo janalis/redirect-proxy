@@ -764,19 +764,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Import(prepared, mode, expected, actor_name, reply) -> {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
-        let prepared = store_rules.resolve_ids(state.rules, prepared)
         use Nil <- result.try(check_collection_version(state, expected))
-        use Nil <- result.try(
-          store_rules.check_new_ids(state.rules, prepared)
-          |> result.map_error(Rejected),
+        use #(prepared, rules) <- result.try(
+          imported(state.rules, prepared, mode) |> result.map_error(Rejected),
         )
-        let rules =
-          case mode {
-            Replace -> prepared
-            Merge -> merge(state.rules, prepared)
-          }
-          |> store_rules.keep_created_at(state.rules, _)
-          |> store_rules.keep_unchanged(state.rules, _)
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
@@ -816,14 +807,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
-      let prepared = store_rules.resolve_ids(state.rules, prepared)
-      // creation dates do not matter here: diff ignores them
-      let rules = case mode {
-        Replace -> prepared
-        Merge -> merge(state.rules, prepared)
-      }
       process.send(reply, {
-        use Nil <- result.try(store_rules.check_new_ids(state.rules, prepared))
+        use #(_, rules) <- result.try(imported(state.rules, prepared, mode))
         use Nil <- result.try(store_rules.check_conflicts(rules))
         Ok(Preview(
           diff: store_rules.diff(state.rules, rules),
@@ -1091,6 +1076,26 @@ fn reload_file(
 
 /// The rules in effect are now `rules`, from the file of `fingerprint`:
 /// nothing the watcher rejected is left to skip.
+/// The rules an import of `prepared` leaves, and `prepared` with its ids
+/// resolved against the `existing` rules: the same for an import and its
+/// preview. Rules imported again unchanged are kept as they were.
+fn imported(
+  existing: List(Rule),
+  prepared: List(Rule),
+  mode: ImportMode,
+) -> Result(#(List(Rule), List(Rule)), List(String)) {
+  let prepared = store_rules.resolve_ids(existing, prepared)
+  use Nil <- result.try(store_rules.check_new_ids(existing, prepared))
+  let rules =
+    case mode {
+      Replace -> prepared
+      Merge -> merge(existing, prepared)
+    }
+    |> store_rules.keep_created_at(existing, _)
+    |> store_rules.keep_unchanged(existing, _)
+  Ok(#(prepared, rules))
+}
+
 fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
   State(..state, rules:, fingerprint:, rejected: None, busy: None)
 }

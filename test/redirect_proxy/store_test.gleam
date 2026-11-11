@@ -1129,6 +1129,35 @@ pub fn versioned_set_changes_test() {
     == Error(store.Rejected(["ids: select at least one rule"]))
 }
 
+/// The preview of an import tells exactly what the import then changes: a
+/// rule imported again unchanged (with other dates and author) is neither
+/// changed nor rewritten.
+pub fn import_preview_matches_the_import_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) = store.create(s, new_rule("/a", "/1"), by: "t")
+  let assert Ok(b) = store.create(s, new_rule("/b", "/2"), by: "t")
+  let before = store.all(s)
+  let incoming = [
+    Rule(..a, updated_at: "", updated_by: "someone"),
+    Rule(..b, target: "/changed"),
+    // a new rule without an id gets a new one at each import or preview
+    Rule(..new_rule("/c", "/3"), id: "c"),
+  ]
+  let assert Ok(#(preview, _)) =
+    store.preview_import(s, incoming, store.Merge, by: "t")
+  assert preview.added == ["c"]
+  assert preview.changed == [b.id]
+  assert preview.removed == []
+  let assert Ok(3) = store.import_rules(s, incoming, store.Merge, by: "t")
+  let after = store.all(s)
+  let applied = store_rules.diff(before, after)
+  assert applied.added == preview.added
+  assert applied.changed == preview.changed
+  assert applied.removed == preview.removed
+  assert store.get(s, a.id) == Ok(a)
+}
+
 /// Hit counts survive a restart: saved when a stop begins (and every
 /// minute), restored by the next start.
 pub fn hit_counts_survive_a_restart_test() {
