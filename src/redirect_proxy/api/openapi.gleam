@@ -1,6 +1,7 @@
 //// OpenAPI 3.1 description of the REST API, generated at runtime so that
 //// deprecations from the registry are always reflected.
 
+import gleam/bool
 import gleam/http
 import gleam/int
 import gleam/json.{type Json}
@@ -1013,8 +1014,10 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
           object_schema(
             registry,
             "RulePatch",
-            // a merge patch sets a field to null to reset it to its default
+            // a merge patch sets a field to null to reset it to its default,
+            // but for the required ones
             list.map(rule_properties(False), fn(p) {
+              use <- bool.guard(p.0 == "source" || p.0 == "target", p)
               #(
                 p.0,
                 json.object([

@@ -76,7 +76,8 @@ fn pick(patch: Option(Option(a)), current: a, default: a) -> a {
 }
 
 /// JSON merge patch (RFC 7396) of the writable rule fields: absent fields are
-/// kept, `null` resets a field to its default, other values replace it.
+/// kept, `null` resets a field to its default (and is refused for the
+/// required `source` and `target`), other values replace it.
 pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
   let defaults = rule.blank()
   let kind_decoder = {
@@ -106,7 +107,9 @@ pub fn patch_decoder() -> decode.Decoder(fn(Rule) -> Rule) {
       ..r,
       host: pick(host, r.host, defaults.host),
       kind: pick(kind, r.kind, defaults.kind),
-      source: pick(source, r.source, defaults.source),
+      // required: null leaves it empty, which is refused (like `target`),
+      // not `/`, the default of a blank rule
+      source: pick(source, r.source, ""),
       target: pick(target, r.target, defaults.target),
       status: pick(status, r.status, defaults.status),
       preserve_query: pick(

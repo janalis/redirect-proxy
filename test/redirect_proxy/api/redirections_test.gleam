@@ -99,6 +99,22 @@ pub fn crud_round_trip_test() {
   assert field(resp.body, ["note"], decode.string) == "hello"
   assert field(resp.body, ["status"], decode.int) == 301
   assert field(resp.body, ["target"], decode.string) == "/summer"
+  // a required field has no default to reset to
+  let resp =
+    support.send(
+      Patch,
+      env.api <> "/api/redirects/" <> id,
+      [
+        #("authorization", "Bearer " <> token),
+        #("content-type", "application/merge-patch+json"),
+      ],
+      "{\"source\":null}",
+    )
+  assert resp.status == 422
+  assert string.contains(
+    resp.body,
+    "{\"field\":\"source\",\"message\":\"is required\"}",
+  )
 
   // validation errors
   let resp =
