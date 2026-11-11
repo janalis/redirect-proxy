@@ -14,8 +14,11 @@ import redirect_proxy/matcher.{
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
 
 /// Host used to sample requests to wildcard rules: no host-specific rule
-/// applies to it.
+/// applies to it. A `*.domain` rule is sampled under `loop-check.domain`,
+/// so that `${host}` and `${sub}` apply as for a real request.
 const loop_check_host = "loop-check.invalid"
+
+const loop_check_label = "loop-check"
 
 /// Whether a sample request to `r` is redirected back to `r`: follows the
 /// redirects, as a browser would, through this matcher for up to 10 hops.
@@ -45,6 +48,7 @@ pub fn redirect_loop(
   })
   let host = case normalise_request_host(r.host) {
     "*" -> loop_check_host
+    "*." <> domain -> loop_check_label <> "." <> domain
     h -> h
   }
   case lookup(matcher, host, path, r.query) {

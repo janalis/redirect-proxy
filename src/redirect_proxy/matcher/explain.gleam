@@ -47,7 +47,9 @@ pub type Explanation {
     path: String,
     candidates: List(Candidate),
     chain: List(Hop),
-    /// The chain comes back to a URL it already visited.
+    /// The chain comes back to a URL it already visited, or still
+    /// redirects after `max_hops` (as the loop check, which refuses such
+    /// rules: a browser stops with too many redirects).
     loops: Bool,
   )
 }
@@ -224,11 +226,7 @@ fn follow(
   hops: Int,
 ) -> #(List(Hop), Bool) {
   let chain = [Hop(location, current.rule.status, current.rule.id), ..chain]
-  let next = case hops {
-    0 -> Error(Nil)
-    _ -> loop.next_request(host, location)
-  }
-  case next {
+  case loop.next_request(host, location) {
     Error(Nil) -> #(list.reverse(chain), False)
     Ok(#(next_host, next_path, next_query)) -> {
       let next_host = matcher.normalise_request_host(next_host)
@@ -236,6 +234,8 @@ fn follow(
       case set.contains(seen, key), find(next_host, next_path, next_query) {
         True, Ok(_) -> #(list.reverse(chain), True)
         _, Error(Nil) -> #(list.reverse(chain), False)
+        // still redirecting after `max_hops`
+        False, Ok(_) if hops == 0 -> #(list.reverse(chain), True)
         False, Ok(m) ->
           follow(
             find,

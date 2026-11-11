@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/result
 import gleam/string
 import redirect_proxy/ffi
 import redirect_proxy/matcher
@@ -816,4 +817,44 @@ pub fn regex_cost_per_request_is_bounded_test() {
   assert ffi.regex_limit_count() == before + 1
   // usual paths cost nothing near the budget
   assert location(m, "h", "/plain!") == Ok("/caught")
+}
+
+/// A rule of a `*.domain` host is sampled under a host of that domain, so
+/// that `${host}` and `${sub}` apply and its loops are seen.
+pub fn wildcard_host_loops_are_detected_test() {
+  let looping =
+    r("w", "*.example.com", rule.Prefix, "/old", "https://${host}/old$1")
+  let m = matcher.build([looping])
+  let assert Ok([first, again]) = matcher_loop.redirect_loop(m, looping, False)
+  assert first.id == "w" && again.id == "w"
+  let sub =
+    r(
+      "s",
+      "*.example.com",
+      rule.Prefix,
+      "/go",
+      "https://${sub}.example.com/go$1",
+    )
+  let m = matcher.build([sub])
+  assert matcher_loop.redirect_loop(m, sub, False) |> result.is_ok
+  // one that leaves the domain does not loop
+  let away = r("a", "*.example.com", rule.Prefix, "/x", "https://new.test/x$1")
+  assert matcher_loop.redirect_loop(matcher.build([away]), away, False)
+    == Error(Nil)
+}
+
+/// A chain still redirecting after the hops the tester follows is reported
+/// as a loop, as the loop check refuses it, even when every URL is new.
+pub fn explain_reports_endless_chains_test() {
+  let growing = r("g", "*", rule.Prefix, "/a", "/a/a$1")
+  let rules = [growing]
+  let assert Ok(explained) =
+    explain.explain(matcher.build(rules), rules, "http://h.test/a/x", False)
+  assert explained.loops
+  assert list.length(explained.chain) == 11
+  // a chain that ends is not one
+  let ends = [r("e", "*", rule.Exact, "/1", "/2")]
+  let assert Ok(explained) =
+    explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
+  assert !explained.loops
 }
