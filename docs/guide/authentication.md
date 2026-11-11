@@ -141,8 +141,11 @@ API clients are not affected: they have scopes (see [REST API](api)).
   are too long to guess, so such a limit would only let anyone lock a
   pipeline out. Token requests are limited to 64 KB. A client may start 30
   SSO logins that it does not complete (completed ones are not counted, so
-  many people behind one address can sign in) and fail 20 SSO callbacks,
-  and the API accepts 100 invalid
+  many people behind one address can sign in) and fail 20 SSO callbacks;
+  requests to them a browser says are not navigations
+  (`Sec-Fetch-Mode`), such as images on another site, are refused
+  uncounted, so that a page cannot spend its visitors' budget. The API
+  accepts 100 invalid
   access tokens from one client before answering 429 without checking more.
   A throttled request gets a 429 with `Retry-After`. An attempt is counted
   before the password is checked, so parallel guesses get no more than

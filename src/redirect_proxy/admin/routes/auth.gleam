@@ -2,6 +2,7 @@
 
 import gleam/bool
 import gleam/http.{Get}
+import gleam/http/request
 import gleam/int
 import gleam/json
 import gleam/list
@@ -588,6 +589,7 @@ fn sso_start_key(ctx: Context) -> String {
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  use <- navigation_only(req)
   let start_key = sso_start_key(ctx)
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
   ratelimit.record_failure(start_key, login_window)
@@ -611,8 +613,21 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
   }
 }
 
+/// Refuses, before it counts against any budget, a request the browser
+/// says is not a navigation (Fetch Metadata): an image or a script of
+/// another site pointing at a sign-in page, which would spend the budget
+/// of the visitor's address, or replace a sign-in in progress. Clients
+/// that do not send the header are not refused.
+fn navigation_only(req: Request, next: fn() -> Response) -> Response {
+  case request.get_header(req, "sec-fetch-mode") {
+    Ok(mode) if mode != "navigate" -> wisp.response(403)
+    _ -> next()
+  }
+}
+
 pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  use <- navigation_only(req)
   let failure_key = "sso-callback-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
   let outcome =
