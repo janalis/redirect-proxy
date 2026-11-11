@@ -304,9 +304,13 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
-    /// The fingerprint of the content the watcher last found invalid: it is
-    /// reported once, not at every tick that reads it again.
+    /// The fingerprint of the content the watcher last could not load: it
+    /// is reported once, not at every tick that reads it again. Valid
+    /// content (only writing its ids failed) is tried again a minute
+    /// after (`retry_rejected`).
     rejected: String,
+    rejected_at: Int,
+    rejected_valid: Bool,
     /// The stamp of the file the watcher last could not read, for the same
     /// reason.
     unreadable: String,
@@ -351,6 +355,8 @@ fn initial_state(
     fingerprint:,
     stamp:,
     rejected: "",
+    rejected_at: 0,
+    rejected_valid: False,
     unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
@@ -931,7 +937,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Watch(self) -> {
       schedule_watch(state.settings, self)
       let stamp = ffi.file_stamp(state.settings.rules_path)
-      case stamp == state.stamp && !ffi.stamp_is_recent(stamp) {
+      case
+        stamp == state.stamp
+        && !ffi.stamp_is_recent(stamp)
+        && !retry_rejected(state)
+      {
         True -> actor.continue(state)
         False -> {
           let content = simplifile.read_bits(state.settings.rules_path)
@@ -946,7 +956,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           case content {
             Ok(content) if content != <<>> -> {
               let found = store_file.fingerprint(content)
-              case found == state.fingerprint || found == state.rejected {
+              case
+                found == state.fingerprint
+                || { found == state.rejected && !retry_rejected(state) }
+              {
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
                   let #(reloaded, outcome) =
@@ -959,8 +972,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                       actor.continue(State(..reloaded, stamp: state.stamp))
                     // a file that does not load (invalid, or without ids
                     // a read-only replica cannot write) is reported once
-                    Error(store_file.LoadFailure(lock_busy: False, ..)) ->
-                      actor.continue(State(..reloaded, rejected: found))
+                    // (the content load read, which may be newer)
+                    Error(store_file.LoadFailure(
+                      lock_busy: False,
+                      read:,
+                      valid:,
+                      ..,
+                    )) ->
+                      actor.continue(
+                        State(
+                          ..reloaded,
+                          rejected: case read {
+                            "" -> found
+                            read -> read
+                          },
+                          rejected_at: ffi.now_seconds(),
+                          rejected_valid: valid,
+                        ),
+                      )
                   }
                 }
               }
@@ -1007,6 +1036,15 @@ fn reload_file(
 ) -> #(State, Result(Int, String)) {
   let #(state, outcome) = reload_file_or_busy(state, actor_name)
   #(state, result.map_error(outcome, fn(failure) { failure.reason }))
+}
+
+/// Whether the content the watcher could not load was valid, and failed a
+/// minute ago or more: writing its ids may succeed now (a disk no longer
+/// full).
+fn retry_rejected(state: State) -> Bool {
+  state.rejected_valid
+  && ffi.now_seconds() - state.rejected_at
+  >= ffi.tunable("rejected_retry_seconds", 60)
 }
 
 /// `reload_file`, saying why it failed (`store_file.LoadFailure`).

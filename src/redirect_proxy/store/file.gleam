@@ -41,9 +41,12 @@ pub fn load_locked(
   |> result.map_error(fn(failure) { failure.reason })
 }
 
-/// Why `load_locked_or_busy` failed.
+/// Why `load_locked_or_busy` failed. `read` is the fingerprint of the
+/// content it read ("" if none): the content refused. `valid` when that
+/// content was valid, and only writing the ids it lacked failed (a full
+/// disk, a read-only volume): it may load later as it is.
 pub type LoadFailure {
-  LoadFailure(reason: String, lock_busy: Bool)
+  LoadFailure(reason: String, lock_busy: Bool, read: String, valid: Bool)
 }
 
 /// `load_locked`, saying whether it failed because the lock was not
@@ -54,9 +57,15 @@ pub fn load_locked_or_busy(
   mode: LoadMode,
   wait: Int,
 ) -> Result(#(List(Rule), String), LoadFailure) {
-  case ffi.with_file_lock(files.rules_path, wait, fn() { load(files, mode) }) {
-    Error(reason) -> Error(LoadFailure(reason, lock_busy: True))
-    Ok(Error(reason)) -> Error(LoadFailure(reason, lock_busy: False))
+  case
+    ffi.with_file_lock(files.rules_path, wait, fn() {
+      load_reading(files, mode)
+    })
+  {
+    Error(reason) ->
+      Error(LoadFailure(reason, lock_busy: True, read: "", valid: False))
+    Ok(Error(#(reason, read, valid))) ->
+      Error(LoadFailure(reason, lock_busy: False, read:, valid:))
     Ok(Ok(loaded)) -> Ok(loaded)
   }
 }
@@ -68,61 +77,90 @@ pub fn load(
   files: Files,
   mode: LoadMode,
 ) -> Result(#(List(Rule), String), String) {
+  load_reading(files, mode) |> result.map_error(fn(failure) { failure.0 })
+}
+
+/// `load`, failing with the fingerprint of the content it read ("" if
+/// none), and whether that content was valid.
+fn load_reading(
+  files: Files,
+  mode: LoadMode,
+) -> Result(#(List(Rule), String), #(String, String, Bool)) {
+  let unread = fn(reason) { #(reason, "", False) }
   case simplifile.is_file(files.rules_path), mode {
     Ok(True), _ -> {
       use bits <- result.try(
         simplifile.read_bits(files.rules_path)
         |> result.map_error(fn(e) {
-          "cannot read "
-          <> files.rules_path
-          <> ": "
-          <> simplifile.describe_error(e)
+          unread(
+            "cannot read "
+            <> files.rules_path
+            <> ": "
+            <> simplifile.describe_error(e),
+          )
         }),
       )
-      use content <- result.try(
-        bit_array.to_string(bits)
-        |> result.replace_error(files.rules_path <> ": not valid UTF-8"),
-      )
-      use rules <- result.try(
-        rule.file_from_string(content)
-        |> result.map_error(fn(e) { files.rules_path <> ": " <> e }),
-      )
-      // Hand written files may omit ids: assign them on load and write them
-      // back so that they stay stable across reloads.
-      let missing_ids = list.any(rules, fn(r) { r.id == "" })
-      let rules =
-        list.map(rules, fn(r) {
-          case r.id {
-            "" -> rule.Rule(..r, id: id.uuid())
-            _ -> r
-          }
-        })
-      use rules <- result.try(
-        validate_all(rules)
-        |> result.map_error(fn(errors) {
-          files.rules_path <> ": " <> string.join(errors, "; ")
-        }),
-      )
-      case missing_ids {
-        True ->
-          persist(files, rules)
-          |> result.map(fn(fingerprint) { #(rules, fingerprint) })
-        False -> Ok(#(rules, fingerprint(bits)))
-      }
+      load_content(files, bits)
+      |> result.map_error(fn(failure) {
+        #(failure.0, fingerprint(bits), failure.1)
+      })
     }
     Ok(False), FirstStart -> {
       // First start: create an empty file so operators know where it lives.
-      use fingerprint <- result.try(persist(files, []))
+      use fingerprint <- result.try(
+        persist(files, []) |> result.map_error(unread),
+      )
       Ok(#([], fingerprint))
     }
-    Ok(False), Reloading -> Error(files.rules_path <> ": file not found")
+    Ok(False), Reloading ->
+      Error(unread(files.rules_path <> ": file not found"))
     Error(e), _ ->
-      Error(
+      Error(unread(
         "cannot read "
         <> files.rules_path
         <> ": "
         <> simplifile.describe_error(e),
-      )
+      ))
+  }
+}
+
+/// The rules of the content `bits` of the file, writing the ids it gives
+/// back. Fails with whether the content was valid (only the write failed).
+fn load_content(
+  files: Files,
+  bits: BitArray,
+) -> Result(#(List(Rule), String), #(String, Bool)) {
+  let invalid = fn(reason) { #(reason, False) }
+  use content <- result.try(
+    bit_array.to_string(bits)
+    |> result.replace_error(invalid(files.rules_path <> ": not valid UTF-8")),
+  )
+  use rules <- result.try(
+    rule.file_from_string(content)
+    |> result.map_error(fn(e) { invalid(files.rules_path <> ": " <> e) }),
+  )
+  // Hand written files may omit ids: assign them on load and write them
+  // back so that they stay stable across reloads.
+  let missing_ids = list.any(rules, fn(r) { r.id == "" })
+  let rules =
+    list.map(rules, fn(r) {
+      case r.id {
+        "" -> rule.Rule(..r, id: id.uuid())
+        _ -> r
+      }
+    })
+  use rules <- result.try(
+    validate_all(rules)
+    |> result.map_error(fn(errors) {
+      invalid(files.rules_path <> ": " <> string.join(errors, "; "))
+    }),
+  )
+  case missing_ids {
+    True ->
+      persist(files, rules)
+      |> result.map(fn(fingerprint) { #(rules, fingerprint) })
+      |> result.map_error(fn(reason) { #(reason, True) })
+    False -> Ok(#(rules, fingerprint(bits)))
   }
 }
 
