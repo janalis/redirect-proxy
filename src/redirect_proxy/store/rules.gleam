@@ -36,8 +36,12 @@ pub fn check_loop(
 type Later =
   Dict(Int, matcher.Matcher)
 
-/// The most times to come a check follows loops at (see `follow_loop`).
+/// The most times to come a rule is followed at, the nearest (see
+/// `follow_loop`), and the most matchers a check builds for them, all
+/// rules of a change together (each is a matcher of every rule, kept).
 const max_times_ahead = 8
+
+const max_matchers_ahead = 32
 
 fn follow_loop(
   built: matcher.Matcher,
@@ -57,10 +61,10 @@ fn follow_loop(
     Ok(cycle) -> #(refused(cycle), later)
     Error(Nil) ->
       list.fold_until(
-        changes_ahead(rules, changed),
+        changes_ahead(rules, changed) |> list.take(max_times_ahead),
         #(Ok(Nil), later),
         fn(acc, at) {
-          case dict.get(acc.1, at), dict.size(acc.1) < max_times_ahead {
+          case dict.get(acc.1, at), dict.size(acc.1) < max_matchers_ahead {
             Ok(matcher), _ ->
               case found(matcher) {
                 Ok(cycle) -> list.Stop(#(refused(cycle), acc.1))

@@ -496,6 +496,33 @@ pub fn loops_through_rules_taking_turns_are_refused_test() {
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
+/// Each rule of a change is followed at its own nearest times: the times
+/// of the others do not use up its share.
+pub fn each_imported_rule_is_followed_at_its_own_times_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  // eight times to come, all within the window of `a` below
+  list.each([1, 2, 3, 4, 5, 6, 7, 8], fn(n) {
+    let assert Ok(_) =
+      store.create(
+        s,
+        Rule(
+          ..new_rule("/f" <> int.to_string(n), "/t"),
+          id: "f" <> int.to_string(n),
+          starts_at: "29" <> int.to_string(80 + n) <> "-01-01T00:00:00Z",
+        ),
+        by: "t",
+      )
+  })
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+  let a = Rule(..new_rule("/a", "/z"), id: "a")
+  let b =
+    Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) = store.import_rules(s, [a, b], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
 /// Every check applies to disabled rules too, one at a time or in sets,
 /// but for disabling a rule that loaded with a problem: it then still
 /// imports again unchanged.
