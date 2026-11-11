@@ -950,7 +950,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 }
               }
             }
-            _ -> actor.continue(State(..state, stamp:))
+            Error(simplifile.Enoent) | Ok(_) ->
+              actor.continue(State(..state, stamp:))
+            // reported once per change of the file
+            Error(e) -> {
+              log.error(
+                "the redirections file cannot be read, keeping current rules: "
+                <> simplifile.describe_error(e),
+              )
+              actor.continue(State(..state, stamp:))
+            }
           }
         }
       }
@@ -1114,7 +1123,15 @@ fn abandoned(reply: Subject(a)) -> Bool {
 /// are written back by the mutation).
 fn refresh(state: State) -> Result(State, String) {
   case simplifile.read_bits(state.settings.rules_path) {
-    Error(_) -> Ok(state)
+    Error(simplifile.Enoent) -> Ok(state)
+    // not a missing file: one this process cannot read must not be
+    // overwritten as if it were
+    Error(e) ->
+      Error(
+        "storage: the redirections file cannot be read ("
+        <> simplifile.describe_error(e)
+        <> "), so it was not overwritten. Fix its permissions, then retry.",
+      )
     Ok(content) ->
       case store_file.fingerprint(content) == state.fingerprint {
         True -> Ok(state)

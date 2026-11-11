@@ -376,6 +376,23 @@ pub fn invalid_outside_changes_are_not_overwritten_test() {
   assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
 }
 
+/// A rules file this process cannot read (replaced by a copy owned by
+/// another user) is not taken for a missing one, and overwritten.
+pub fn unreadable_outside_changes_are_not_overwritten_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/redirects.json"
+  let s = start(settings(dir, 0))
+  let theirs =
+    "{\"version\": 1, \"rules\": [{\"id\": \"t\", \"source\": \"/theirs\", \"target\": \"/b\"}]}"
+  let assert Ok(Nil) = simplifile.write(path, theirs)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o200)
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
+  let assert Error([reason]) = result
+  assert string.contains(reason, "cannot be read")
+  assert simplifile.read(path) == Ok(theirs)
+}
+
 /// Two stores on the same file stand for two OS processes (server and CLI):
 /// concurrent writes from both are all kept.
 pub fn concurrent_writers_lose_no_update_test() {
