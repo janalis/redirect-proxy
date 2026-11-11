@@ -939,6 +939,30 @@ pub fn unreadable_watched_file_is_reported_once_test() {
   assert list.count(logs, string.contains(_, "cannot be read")) == 1
 }
 
+/// Content refused because its ids could not be written is tried again
+/// when the file is written again, even with the same content (a sync
+/// applying it again once the volume has room).
+pub fn watched_content_written_again_unchanged_is_tried_again_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/same" })
+  }
+  process.sleep(50)
+  let content = "[{\"source\": \"/same\", \"target\": \"/y\"}]"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  process.sleep(300)
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  // a write of its own: another second (stamps count whole seconds)
+  process.sleep(1100)
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  support.wait_until(loaded, 2000)
+}
+
 /// Valid content that could not be loaded, then reverted, then written
 /// again once it can be loaded, is loaded.
 pub fn watched_content_rejected_then_written_again_is_loaded_test() {

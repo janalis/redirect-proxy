@@ -17,9 +17,9 @@ session.
   without a signal: for a Kubernetes ConfigMap, a GitOps sync or an
   editor. The server's own writes are not taken for changes, and a file
   that does not load is reported once (`rules.reload_failed`), not at
-  every check, and tried again at its next change (or on `SIGHUP`): an
-  invalid one, or one with rules without ids whose ids the server could
-  not write (a read-only volume, a full disk).
+  every check, and tried again when it is written again, even unchanged
+  (or on `SIGHUP`): an invalid one, or one with rules without ids whose
+  ids the server could not write (a read-only volume, a full disk).
 
 - If the rule store restarts after a crash while the file is invalid, it
   keeps the rules it had (and logs an error) instead of failing again until

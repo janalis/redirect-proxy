@@ -128,8 +128,8 @@ fn follow_loop(
                 // through one matcher of every rule not expired, schedules
                 // aside, built once; a loop found there is confirmed with
                 // the rules in effect then (rarely: one matcher each). A
-                // rule not in effect yet may hide one there, logged when
-                // it comes about (the store republishes the rules then,
+                // rule not in effect then (not started yet, or expired by
+                // then) may hide one there, logged when it comes about (the store republishes the rules then,
                 // and checks them), as is a loop at another time.
                 False if at == starts -> {
                   let beyond = case later.beyond {
@@ -138,7 +138,17 @@ fn follow_loop(
                   }
                   let later = Later(..later, beyond: Some(beyond))
                   case found(beyond) {
-                    Ok(_) -> follow(matcher.build_at(rules, at), later)
+                    // kept too: other rules of the change may start then
+                    Ok(_) -> {
+                      let matcher = matcher.build_at(rules, at)
+                      follow(
+                        matcher,
+                        Later(
+                          ..later,
+                          matchers: dict.insert(later.matchers, at, matcher),
+                        ),
+                      )
+                    }
                     Error(Nil) -> list.Continue(#(Ok(Nil), later))
                   }
                 }
