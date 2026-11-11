@@ -764,6 +764,26 @@ pub fn watched_file_is_reloaded_test() {
   assert redirect("/watched") == Ok("/reloaded")
 }
 
+@external(erlang, "test_log_ffi", "capture_stop")
+fn captured_logs() -> List(String)
+
+/// A file the watcher cannot read is reported once per change, though its
+/// stamp stays recent, and read again, for a few ticks.
+pub fn unreadable_watched_file_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _ = start(s)
+  process.sleep(50)
+  capture_logs()
+  let assert Ok(Nil) =
+    simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  process.sleep(1000)
+  let logs = captured_logs()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  assert list.count(logs, string.contains(_, "cannot be read")) == 1
+}
+
 fn audit_actions(dir: String, action: String) -> Int {
   case simplifile.read(dir <> "/audit.jsonl") {
     Ok(content) ->

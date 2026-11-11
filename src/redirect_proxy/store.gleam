@@ -305,8 +305,9 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
-    /// The fingerprint of the content the watcher last found invalid: it is
-    /// reported once, not at every tick that reads it again.
+    /// The fingerprint of the content the watcher last found invalid, or
+    /// the stamp of the file it could not read: it is reported once, not at
+    /// every tick that reads it again.
     rejected: String,
     /// When the hit counts were last saved.
     hits_saved_at: Int,
@@ -960,13 +961,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             }
             Error(simplifile.Enoent) | Ok(_) ->
               actor.continue(State(..state, stamp:))
-            // reported once per change of the file
+            // reported once per change of the file (its stamp stays
+            // recent for a few ticks, read again at each)
             Error(e) -> {
-              log.error(
-                "the redirections file cannot be read, keeping current rules: "
-                <> simplifile.describe_error(e),
-              )
-              actor.continue(State(..state, stamp:))
+              let unreadable = "unreadable " <> string.inspect(stamp)
+              case state.rejected == unreadable {
+                True -> Nil
+                False ->
+                  log.error(
+                    "the redirections file cannot be read, keeping current rules: "
+                    <> simplifile.describe_error(e),
+                  )
+              }
+              actor.continue(State(..state, stamp:, rejected: unreadable))
             }
           }
         }
