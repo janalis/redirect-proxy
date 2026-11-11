@@ -564,6 +564,7 @@ pub fn confirm_bulk_delete(
   session: Session,
   features: layout.Features,
   rules: List(Rule),
+  selection: List(#(String, String)),
   return_to: String,
   version: String,
 ) -> String {
@@ -611,8 +612,8 @@ pub fn confirm_bulk_delete(
                   a.value(return_to),
                 ]),
               ],
-              list.map(rules, fn(r) {
-                h.input([a.type_("hidden"), a.name("ids"), a.value(r.id)])
+              list.map(selection, fn(kv) {
+                h.input([a.type_("hidden"), a.name(kv.0), a.value(kv.1)])
               }),
               [
                 h.button(

@@ -173,12 +173,25 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
         _ -> {
           let wanted = set.from_list(ids)
           let rules = list.filter(rules, fn(r) { set.contains(wanted, r.id) })
+          // every matching rule is confirmed with the filters (under the
+          // version, they select the same rules), not one field per rule:
+          // thousands of ids would go past the form size limit
+          let selection = case form_value(form, "all_matching") {
+            "on" -> [
+              #("all_matching", "on"),
+              ..list.filter(form.values, fn(kv) {
+                string.starts_with(kv.0, "filter_")
+              })
+            ]
+            _ -> list.map(ids, fn(id) { #("ids", id) })
+          }
           html(
             200,
             rules_view.confirm_bulk_delete(
               s,
               features(ctx),
               rules,
+              selection,
               return_to(back, []),
               current,
             ),
