@@ -375,6 +375,22 @@ pub fn loaded_ids_with_spaces_import_again_test() {
   let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
   assert store.import_rules(s, [spaced, fresh], store.Merge, by: "t") == Ok(2)
   assert list.map(store.all(s), fn(r) { r.id }) == [" a", "b"]
+  // two ids that are one once trimmed are duplicates
+  let assert Error(errors) =
+    store.import_rules(
+      s,
+      [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
+      store.Merge,
+      by: "t",
+    )
+  assert list.any(errors, string.contains(_, "duplicate"))
+  let assert Error(_) =
+    store.preview_import(
+      s,
+      [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
+      store.Merge,
+      by: "t",
+    )
 }
 
 /// A rule that starts later would loop once it starts: the loop is

@@ -363,29 +363,34 @@ pub fn resolve_ids(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
 }
 
 /// Refuses imported rules that would add an id that is not URL-safe or is
-/// reserved (`rule.is_valid_id`). The ids of current rules are kept: a file
+/// reserved (`rule.is_valid_id`), and duplicate ids. The ids of current rules are kept: a file
 /// that loaded with them can be imported again.
 pub fn check_new_ids(
   existing: List(Rule),
   rules: List(Rule),
 ) -> Result(Nil, List(String)) {
   let known = list.map(existing, fn(r) { r.id }) |> set.from_list
-  case
+  let invalid =
     list.filter(rules, fn(r) {
       !set.contains(known, r.id) && !rule.is_valid_id(r.id)
     })
-  {
+    |> list.map(fn(r) {
+      case rule.is_reserved_id(r.id) {
+        True ->
+          "id: " <> r.id <> " is reserved (it names a page or an operation)"
+        False -> "id: " <> r.id <> ": " <> rule.valid_id_hint()
+      }
+    })
+  // ids trimmed by `resolve_ids` may now be the same
+  let duplicates =
+    rules
+    |> list.group(fn(r) { r.id })
+    |> dict.filter(fn(_, group) { list.length(group) > 1 })
+    |> dict.keys
+    |> list.map(fn(id) { "id: duplicate id " <> id })
+  case list.append(invalid, duplicates) {
     [] -> Ok(Nil)
-    invalid ->
-      Error(
-        list.map(invalid, fn(r) {
-          case rule.is_reserved_id(r.id) {
-            True ->
-              "id: " <> r.id <> " is reserved (it names a page or an operation)"
-            False -> "id: " <> r.id <> ": " <> rule.valid_id_hint()
-          }
-        }),
-      )
+    errors -> Error(errors)
   }
 }
 
