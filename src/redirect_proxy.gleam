@@ -463,6 +463,9 @@ fn client_delete(
 
 // --- rules ------------------------------------------------------------------
 
+/// Validates the rules file of the server, as loading does, or a file to
+/// import, as `rules import` does (but for the conflicts with the current
+/// rules a merge may have).
 fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   use path <- result.try(case file {
     "" -> load(config_path) |> result.map(config.rules_path)
@@ -478,7 +481,47 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
     rule_csv.parse_import(content) |> result.map_error(string.join(_, "\n")),
   )
   use valid <- result.try(
-    store_rules.validate_all(rules) |> result.map_error(string.join(_, "\n")),
+    case file {
+      "" -> store_rules.validate_all(rules)
+      _ -> {
+        // the server it is for (its configuration, or the defaults when
+        // none is given or installed): its trailing slash setting, and its
+        // current rules, whose ids are kept (none before its first start)
+        use cfg <- result.try(load(config_path) |> result.map_error(list.wrap))
+        let path = config.rules_path(cfg)
+        // the file checked does not depend on them: without them (a CI
+        // job that cannot read the server's file), only the ids an import
+        // keeps and the rules it leaves alone are checked too
+        let without = fn(problem) {
+          io.println_error(
+            "warning: " <> problem <> "; checking against no current rules",
+          )
+          []
+        }
+        let current = case simplifile.read(path) {
+          Error(simplifile.Enoent) -> []
+          Error(e) ->
+            without(
+              "cannot read the current rules, "
+              <> path
+              <> ": "
+              <> simplifile.describe_error(e),
+            )
+          Ok(content) ->
+            case rule.file_from_string(content) {
+              Ok(rules) -> rules
+              Error(e) ->
+                without("the current rules, " <> path <> ", are invalid: " <> e)
+            }
+        }
+        store_rules.check_import(
+          rules,
+          current,
+          config.ignore_trailing_slash(cfg),
+        )
+      }
+    }
+    |> result.map_error(string.join(_, "\n")),
   )
   io.println(
     path <> ": " <> int.to_string(list.length(valid)) <> " valid rule(s)",

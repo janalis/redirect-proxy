@@ -77,6 +77,57 @@ pub fn sso_starts_are_throttled_per_address_test() {
     == list.repeat(303, 35)
 }
 
+/// Another site cannot spend an address's SSO budget with images or
+/// scripts pointing at the start or callback: the browser says they are
+/// not navigations (Fetch Metadata), and they are refused uncounted.
+pub fn sso_requests_that_are_not_navigations_are_refused_test() {
+  let issuer = start_fake_idp("alice@example.com")
+  let d = config.default()
+  let env =
+    boot(
+      config.Config(
+        ..d,
+        access_log: config.AccessLogConfig(..d.access_log, trusted_proxies: [
+          "127.0.0.1/32",
+        ]),
+        oidc: config.OidcConfig(
+          ..d.oidc,
+          enabled: True,
+          issuer:,
+          client_id: "redirect-proxy",
+          client_secret: "secret",
+        ),
+      ),
+    )
+  let request = fn(path, mode, dest) {
+    get(env.admin <> path, [
+      #("x-forwarded-for", "198.51.100.30"),
+      #("sec-fetch-mode", mode),
+      #("sec-fetch-dest", dest),
+      #("sec-fetch-site", "cross-site"),
+    ]).status
+  }
+  // images, and frames (navigations too, but not of the page itself)
+  let embedded =
+    list.map(list.repeat(Nil, 40), fn(_) {
+      #(
+        request("/auth/oidc/start", "no-cors", "image"),
+        request("/auth/oidc/callback?error=x", "no-cors", "image"),
+        request("/auth/oidc/start", "navigate", "iframe"),
+        request("/auth/oidc/callback?error=x", "navigate", "iframe"),
+      )
+    })
+  assert list.unique(embedded) == [#(403, 403, 403, 403)]
+  // the browser of that address still signs in
+  assert request("/auth/oidc/start", "navigate", "document") == 303
+  assert request("/auth/oidc/callback?state=x&code=y", "navigate", "document")
+    == 403
+  assert get(env.admin <> "/auth/oidc/start", [
+      #("x-forwarded-for", "198.51.100.30"),
+    ]).status
+    == 303
+}
+
 pub fn sso_state_cookie_is_host_prefixed_over_https_test() {
   let issuer = start_fake_idp("alice@example.com")
   let d = config.default()

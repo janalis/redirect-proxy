@@ -37,8 +37,52 @@ pub fn load_locked(
   mode: LoadMode,
   wait: Int,
 ) -> Result(#(List(Rule), String), String) {
-  ffi.with_file_lock(files.rules_path, wait, fn() { load(files, mode) })
-  |> result.flatten
+  load_locked_or_busy(files, mode, wait) |> result.map_error(reason)
+}
+
+/// Why a load of the file locked failed.
+pub type LoadFailure {
+  /// Another process held the lock: trying again soon may succeed.
+  LockHeld(reason: String)
+  /// The lock could not be created (a full disk): the content was not read.
+  LockNotCreated(reason: String)
+  /// The content was refused.
+  Content(ContentFailure)
+}
+
+/// Why the content of the file was refused. `read` is its fingerprint ("" if
+/// it could not be read).
+pub type ContentFailure {
+  /// The content is invalid.
+  Invalid(reason: String, read: String)
+  /// The content is valid, but the ids of its rules without one could not
+  /// be written (a full disk, a read-only volume).
+  IdsNotWritten(reason: String, read: String)
+}
+
+/// What went wrong, for the log and the audit trail.
+pub fn reason(failure: LoadFailure) -> String {
+  case failure {
+    LockHeld(reason) | LockNotCreated(reason) -> reason
+    Content(content) -> content.reason
+  }
+}
+
+/// `load_locked`, saying why it failed (`LoadFailure`).
+pub fn load_locked_or_busy(
+  files: Files,
+  mode: LoadMode,
+  wait: Int,
+) -> Result(#(List(Rule), String), LoadFailure) {
+  case
+    ffi.with_file_lock_detailed(files.rules_path, wait, fn() {
+      load_failing(files, mode)
+    })
+  {
+    Error(ffi.Held(message)) -> Error(LockHeld(message))
+    Error(ffi.CannotCreate(message)) -> Error(LockNotCreated(message))
+    Ok(loaded) -> result.map_error(loaded, Content)
+  }
 }
 
 /// Reads, validates and returns the rules with the file fingerprint. Writes
@@ -48,61 +92,104 @@ pub fn load(
   files: Files,
   mode: LoadMode,
 ) -> Result(#(List(Rule), String), String) {
+  load_failing(files, mode) |> result.map_error(fn(failure) { failure.reason })
+}
+
+/// `load`, saying why it failed.
+pub fn load_failing(
+  files: Files,
+  mode: LoadMode,
+) -> Result(#(List(Rule), String), ContentFailure) {
+  load_reading(files, mode)
+  |> result.map_error(fn(failure) {
+    case failure {
+      #(reason, read, True) -> IdsNotWritten(reason, read)
+      #(reason, read, False) -> Invalid(reason, read)
+    }
+  })
+}
+
+/// `load`, failing with the fingerprint of the content it read ("" if
+/// none), and whether that content was valid.
+fn load_reading(
+  files: Files,
+  mode: LoadMode,
+) -> Result(#(List(Rule), String), #(String, String, Bool)) {
+  let unread = fn(reason) { #(reason, "", False) }
   case simplifile.is_file(files.rules_path), mode {
     Ok(True), _ -> {
       use bits <- result.try(
         simplifile.read_bits(files.rules_path)
         |> result.map_error(fn(e) {
-          "cannot read "
-          <> files.rules_path
-          <> ": "
-          <> simplifile.describe_error(e)
+          unread(
+            "cannot read "
+            <> files.rules_path
+            <> ": "
+            <> simplifile.describe_error(e),
+          )
         }),
       )
-      use content <- result.try(
-        bit_array.to_string(bits)
-        |> result.replace_error(files.rules_path <> ": not valid UTF-8"),
-      )
-      use rules <- result.try(
-        rule.file_from_string(content)
-        |> result.map_error(fn(e) { files.rules_path <> ": " <> e }),
-      )
-      // Hand written files may omit ids: assign them on load and write them
-      // back so that they stay stable across reloads.
-      let missing_ids = list.any(rules, fn(r) { r.id == "" })
-      let rules =
-        list.map(rules, fn(r) {
-          case r.id {
-            "" -> rule.Rule(..r, id: id.uuid())
-            _ -> r
-          }
-        })
-      use rules <- result.try(
-        validate_all(rules)
-        |> result.map_error(fn(errors) {
-          files.rules_path <> ": " <> string.join(errors, "; ")
-        }),
-      )
-      case missing_ids {
-        True ->
-          persist(files, rules)
-          |> result.map(fn(fingerprint) { #(rules, fingerprint) })
-        False -> Ok(#(rules, fingerprint(bits)))
-      }
+      load_content(files, bits)
+      |> result.map_error(fn(failure) {
+        #(failure.0, fingerprint(bits), failure.1)
+      })
     }
     Ok(False), FirstStart -> {
       // First start: create an empty file so operators know where it lives.
-      use fingerprint <- result.try(persist(files, []))
+      use fingerprint <- result.try(
+        persist(files, []) |> result.map_error(unread),
+      )
       Ok(#([], fingerprint))
     }
-    Ok(False), Reloading -> Error(files.rules_path <> ": file not found")
+    Ok(False), Reloading ->
+      Error(unread(files.rules_path <> ": file not found"))
     Error(e), _ ->
-      Error(
+      Error(unread(
         "cannot read "
         <> files.rules_path
         <> ": "
         <> simplifile.describe_error(e),
-      )
+      ))
+  }
+}
+
+/// The rules of the content `bits` of the file, writing the ids it gives
+/// back. Fails with whether the content was valid (only the write failed).
+fn load_content(
+  files: Files,
+  bits: BitArray,
+) -> Result(#(List(Rule), String), #(String, Bool)) {
+  let invalid = fn(reason) { #(reason, False) }
+  use content <- result.try(
+    bit_array.to_string(bits)
+    |> result.replace_error(invalid(files.rules_path <> ": not valid UTF-8")),
+  )
+  use rules <- result.try(
+    rule.file_from_string(content)
+    |> result.map_error(fn(e) { invalid(files.rules_path <> ": " <> e) }),
+  )
+  // Hand written files may omit ids: assign them on load and write them
+  // back so that they stay stable across reloads.
+  let missing_ids = list.any(rules, fn(r) { r.id == "" })
+  let rules =
+    list.map(rules, fn(r) {
+      case r.id {
+        "" -> rule.Rule(..r, id: id.uuid())
+        _ -> r
+      }
+    })
+  use rules <- result.try(
+    validate_all(rules)
+    |> result.map_error(fn(errors) {
+      invalid(files.rules_path <> ": " <> string.join(errors, "; "))
+    }),
+  )
+  case missing_ids {
+    True ->
+      persist(files, rules)
+      |> result.map(fn(fingerprint) { #(rules, fingerprint) })
+      |> result.map_error(fn(reason) { #(reason, True) })
+    False -> Ok(#(rules, fingerprint(bits)))
   }
 }
 

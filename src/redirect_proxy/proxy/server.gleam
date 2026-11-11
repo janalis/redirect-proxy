@@ -112,6 +112,7 @@ pub fn handler_with_identity(
     [] -> NoIdentity
     headers ->
       Identity(
+        headers: list.unique(headers),
         drop: list.unique(list.append(untrusted_headers, headers)),
         proxies: cidr.compile(identity_proxies),
       )
@@ -192,10 +193,17 @@ fn forward(
   proxy_http.Forward(
     close: ffi.draining(),
     headers: forwarded_headers(req, trusted),
+    // the headers naming the client from `access_log.trusted_proxies`,
+    // the user's from `auth.header.trusted_proxies`
     drop: case trusted, identity {
-      True, _ -> []
+      True, NoIdentity -> []
       False, NoIdentity -> untrusted_headers
-      False, Identity(drop:, proxies:) ->
+      True, Identity(headers:, proxies:, ..) ->
+        case cidr.contains_peer_result(proxies, req.body) {
+          True -> []
+          False -> headers
+        }
+      False, Identity(drop:, proxies:, ..) ->
         case cidr.contains_peer_result(proxies, req.body) {
           True -> untrusted_headers
           False -> drop
@@ -238,12 +246,13 @@ fn forward(
   )
 }
 
-/// The headers naming the user of an authenticating proxy: dropped (with
-/// the `untrusted_headers`) unless the peer is one of `proxies` (or of
-/// `access_log.trusted_proxies`).
+/// The headers naming the user of an authenticating proxy (`headers`):
+/// dropped unless the peer is one of `proxies`, its own, whether or not
+/// it is one of `access_log.trusted_proxies`. `drop`: them with the
+/// `untrusted_headers`.
 type Identity {
   NoIdentity
-  Identity(drop: List(String), proxies: cidr.Cidrs)
+  Identity(headers: List(String), drop: List(String), proxies: cidr.Cidrs)
 }
 
 /// The forwarding headers, and the ones naming the client: passed on from a

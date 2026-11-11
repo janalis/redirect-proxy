@@ -69,8 +69,9 @@ clients can reach, and never point `server.upstream` at the admin port.
 
 ::: tip The website behind `server.upstream`
 The redirect listener drops these identity headers (and their `_`
-spellings) from clients outside `trusted_proxies` only while `auth.header`
-is enabled. When the website behind `server.upstream` trusts such headers
+spellings) from clients outside `auth.header.trusted_proxies`, even
+those in `access_log.trusted_proxies`, only while `auth.header` is
+enabled. When the website behind `server.upstream` trusts such headers
 itself (behind oauth2-proxy, for instance), make sure the proxy in front
 sets them on every request, so that a client cannot send its own.
 :::
@@ -141,8 +142,12 @@ API clients are not affected: they have scopes (see [REST API](api)).
   are too long to guess, so such a limit would only let anyone lock a
   pipeline out. Token requests are limited to 64 KB. A client may start 30
   SSO logins that it does not complete (completed ones are not counted, so
-  many people behind one address can sign in) and fail 20 SSO callbacks,
-  and the API accepts 100 invalid
+  many people behind one address can sign in) and fail 20 SSO callbacks;
+  requests to them a browser says are not navigations of the page
+  (`Sec-Fetch-Mode`, `Sec-Fetch-Dest`), such as images or frames on
+  another site, are refused
+  uncounted, so that a page cannot spend its visitors' budget. The API
+  accepts 100 invalid
   access tokens from one client before answering 429 without checking more.
   A throttled request gets a 429 with `Retry-After`. An attempt is counted
   before the password is checked, so parallel guesses get no more than

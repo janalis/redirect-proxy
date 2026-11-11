@@ -1,3 +1,4 @@
+import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -57,11 +58,19 @@ pub fn concurrent_failures_are_all_counted_test() {
   assert !ratelimit.is_blocked(k, attempts + 1)
 }
 
+@external(erlang, "ets", "member")
+fn ets_member(table: atom.Atom, key: String) -> Bool
+
+/// The window of the key ends at once: purging removes it. The purger of
+/// an application another test started may get there first, so this
+/// checks that it is gone, not how many this purge removed.
 pub fn ended_windows_are_purged_test() {
   ratelimit.init()
+  let table = atom.create("redirect_proxy_ratelimit")
   let k = key("purge")
   ratelimit.record_failure(k, 0)
-  assert ratelimit.purge_expired() >= 1
+  let _ = ratelimit.purge_expired()
+  assert !ets_member(table, k)
   ratelimit.record_failure(k, 60)
   assert ratelimit.is_blocked(k, 1)
 }

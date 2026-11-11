@@ -33,19 +33,13 @@ pub type Session {
     role: Role,
     csrf_token: String,
     expires_at: Int,
-    /// For local accounts, `user_fingerprint` of the user when the session
+    /// For local accounts, `users.fingerprint` of the user when the session
     /// was created: the session ends when the user is deleted or changes
     /// password, even from another process (the CLI). "" otherwise.
     fingerprint: String,
     /// Last request made with the session (idle timeout).
     last_seen: Int,
   )
-}
-
-/// Changes whenever the password of a local user changes.
-pub fn user_fingerprint(password_hash: String, updated_at: String) -> String {
-  crypto.hash(crypto.Sha256, <<password_hash:utf8, 0, updated_at:utf8>>)
-  |> bit_array.base16_encode
 }
 
 /// `last_seen` is only written back when older than this, to avoid an ETS

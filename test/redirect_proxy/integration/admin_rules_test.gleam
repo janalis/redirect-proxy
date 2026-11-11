@@ -10,8 +10,8 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import integration_support.{
-  between, boot, find_id, get, hidden_value, location, login, login_with_role,
-  post_form, send,
+  type Env, between, boot, find_id, get, hidden_value, location, login,
+  login_with_role, post_form, send,
 }
 import redirect_proxy/config
 import redirect_proxy/ffi
@@ -57,27 +57,13 @@ pub fn admin_bulk_actions_test() {
       #("action", "delete"),
       #("all_matching", "on"),
       #("filter_kind", "regex"),
+      #("version", list_version(env, cookie)),
       #("return_to", "/rules"),
     ])
   assert confirm.status == 200
   assert string.contains(confirm.body, "1 redirection(s) will be removed")
   assert get(env.redirect <> "/blog/1", []).status == 308
-  let resp =
-    post_form(
-      env,
-      "/rules/bulk",
-      cookie,
-      list.flatten([
-        [#("csrf_token", csrf), #("action", "delete"), #("confirm", "yes")],
-        confirm.body
-          |> string.split("name=\"ids\" type=\"hidden\" value=\"")
-          |> list.drop(1)
-          |> list.filter_map(fn(chunk) {
-            string.split_once(chunk, "\"")
-            |> result.map(fn(p) { #("ids", p.0) })
-          }),
-      ]),
-    )
+  let resp = post_form(env, "/rules/bulk", cookie, confirm_fields(confirm.body))
   assert resp.status == 303
   assert get(env.redirect <> "/blog/1", []).status == 404
 }
@@ -809,4 +795,87 @@ pub fn admin_busy_store_answers_503_test() {
   assert !string.contains(rules.body, "/busy")
   let assert Ok(content) = simplifile.read(env.dir <> "/redirects.json")
   assert !string.contains(content, "/busy")
+}
+
+/// Deleting every matching redirection confirms with the filters, not one
+/// field per rule: thousands of ids would go past the form size limit.
+pub fn bulk_delete_of_many_matching_rules_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let rules =
+    int.range(0, 2000, [], fn(acc, n) {
+      let i = int.to_string(n)
+      [
+        "{\"id\":\"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e"
+          <> string.pad_start(i, 3, "0")
+          <> "\",\"source\":\"/many/"
+          <> i
+          <> "\",\"target\":\"/t\"}",
+        ..acc
+      ]
+    })
+  let assert Ok(Nil) =
+    simplifile.write(
+      env.dir <> "/redirects.json",
+      "[{\"source\":\"/kept\",\"target\":\"/t\"},"
+        <> string.join(rules, ",")
+        <> "]",
+    )
+  let assert 303 =
+    post_form(env, "/reload", cookie, [#("csrf_token", csrf)]).status
+  let confirm =
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "delete"),
+      #("all_matching", "on"),
+      #("filter_q", "/many/"),
+      #("version", list_version(env, cookie)),
+      #("return_to", "/rules"),
+    ])
+  assert confirm.status == 200
+  assert string.contains(confirm.body, "2000 redirection(s) will be removed")
+  assert !string.contains(confirm.body, "name=\"ids\"")
+  // not without the version the confirmation showed
+  let unversioned =
+    list.filter(confirm_fields(confirm.body), fn(kv) { kv.0 != "version" })
+  assert post_form(env, "/rules/bulk", cookie, unversioned).status == 409
+  assert get(env.redirect <> "/many/1999", []).status == 301
+  // nor any other action on every matching rule
+  let disable =
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "disable"),
+      #("all_matching", "on"),
+      #("filter_q", "/many/"),
+      #("return_to", "/rules"),
+    ])
+  assert disable.status == 409
+  assert get(env.redirect <> "/many/1999", []).status == 301
+  let resp = post_form(env, "/rules/bulk", cookie, confirm_fields(confirm.body))
+  assert resp.status == 303
+  assert get(env.redirect <> "/many/1999", []).status == 404
+  assert get(env.redirect <> "/kept", []).status == 301
+}
+
+/// The fields of the form of a bulk delete confirmation, as it posts them.
+fn confirm_fields(page: String) -> List(#(String, String)) {
+  let assert Ok(#(_, form)) = string.split_once(page, "action=\"/rules/bulk\"")
+  form
+  |> string.split("<input ")
+  |> list.drop(1)
+  |> list.filter_map(fn(input) {
+    use #(_, rest) <- result.try(string.split_once(input, "name=\""))
+    use #(name, rest) <- result.try(string.split_once(rest, "\""))
+    use #(_, rest) <- result.try(string.split_once(rest, "value=\""))
+    use #(value, _) <- result.try(string.split_once(rest, "\""))
+    Ok(#(name, value))
+  })
+}
+
+/// The version of the rules the list page shows, as its bulk form carries
+/// it.
+fn list_version(env: Env, cookie: String) -> String {
+  let page = get(env.admin <> "/rules", [#("cookie", cookie)]).body
+  let assert Ok(#(_, form)) = string.split_once(page, "id=\"bulk\"")
+  hidden_value(form, "version")
 }

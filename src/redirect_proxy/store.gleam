@@ -14,7 +14,6 @@
 //// changed on disk since it was last read or written, reloads it first, so
 //// that outside changes are never silently overwritten.
 
-import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -305,9 +304,17 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
-    /// The fingerprint of the content the watcher last found invalid: it is
-    /// reported once, not at every tick that reads it again.
-    rejected: String,
+    /// The write of the file (its stamp) the watcher last could not load,
+    /// and the fingerprint of its content: reported once, not at every tick
+    /// that reads it again, and tried again when the file is written again
+    /// (or on `SIGHUP`).
+    rejected: Option(#(ffi.FileStamp, String)),
+    /// The write of the file the watcher last waited for the lock to load:
+    /// said once.
+    busy: Option(ffi.FileStamp),
+    /// The stamp of the file the watcher last could not read, for the same
+    /// reason.
+    unreadable: String,
     /// When the hit counts were last saved.
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
@@ -348,7 +355,9 @@ fn initial_state(
     rules:,
     fingerprint:,
     stamp:,
-    rejected: "",
+    rejected: None,
+    busy: None,
+    unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
@@ -563,6 +572,7 @@ pub fn preview_import(
     set.from_list(list.append(preview.diff.added, preview.diff.changed))
   use Nil <- result.try(store_rules.check_changed(
     matcher.build(preview.rules),
+    preview.rules,
     list.filter(preview.rules, fn(r) { set.contains(changed_ids, r.id) }),
     preview.ignore_trailing_slash,
   ))
@@ -640,6 +650,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         use fingerprint <- result.try(commit.one(
           target(state.settings),
           valid,
+          None,
           rules,
           uncovers: False,
         ))
@@ -682,7 +693,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           })
         // the old version may have shadowed a rule that loops
         use fingerprint <- result.try(
-          commit.one(target(state.settings), valid, rules, uncovers: True)
+          commit.one(
+            target(state.settings),
+            valid,
+            Some(existing),
+            rules,
+            uncovers: True,
+          )
           |> result.map_error(Invalid),
         )
         audit.record(
@@ -732,6 +749,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Import(prepared, mode, expected, actor_name, reply) -> {
       use state <- mutate(state, reply, fn(e) { Rejected([e]) })
       {
+        let prepared = store_rules.resolve_ids(state.rules, prepared)
         use Nil <- result.try(check_collection_version(state, expected))
         use Nil <- result.try(
           store_rules.check_new_ids(state.rules, prepared)
@@ -743,6 +761,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             Merge -> merge(state.rules, prepared)
           }
           |> store_rules.keep_created_at(state.rules, _)
+          |> store_rules.keep_unchanged(state.rules, _)
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
@@ -782,6 +801,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     PreviewImport(prepared, mode, reply) -> {
+      let prepared = store_rules.resolve_ids(state.rules, prepared)
       // creation dates do not matter here: diff ignores them
       let rules = case mode {
         Replace -> prepared
@@ -932,25 +952,94 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           case content {
             Ok(content) if content != <<>> -> {
               let found = store_file.fingerprint(content)
-              case found == state.fingerprint || found == state.rejected {
+              // the same content, of the write refused (its time may have
+              // moved since), not of a write made since
+              let skipped = case state.rejected {
+                Some(#(at, refused)) ->
+                  refused == found && ffi.same_write(at, stamp)
+                None -> False
+              }
+              case found == state.fingerprint || skipped {
+                // the content in effect (reverted, or loaded by a change
+                // made meanwhile): nothing rejected left to skip
+                True if found == state.fingerprint ->
+                  actor.continue(
+                    State(
+                      ..in_effect(state, state.rules, state.fingerprint),
+                      stamp:,
+                    ),
+                  )
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
                   let #(reloaded, outcome) =
-                    reload_file(State(..state, stamp:), "watch")
-                  case outcome, valid_rules(content) {
-                    Ok(_), _ -> actor.continue(reloaded)
-                    // a valid file that could not be loaded now (the lock
-                    // held by another process): the next tick tries again
-                    Error(_), True ->
-                      actor.continue(State(..reloaded, stamp: state.stamp))
-                    // an invalid one is reported once
-                    Error(_), False ->
-                      actor.continue(State(..reloaded, rejected: found))
+                    reload_file_or_busy(
+                      State(..state, stamp:),
+                      "watch",
+                      report_busy: False,
+                    )
+                  case outcome {
+                    Ok(_) -> actor.continue(reloaded)
+                    // the lock held by another process: the next tick
+                    // tries again (said once per write of the file: a
+                    // lock never released keeps the file from loading)
+                    Error(store_file.LockHeld(reason)) -> {
+                      case reloaded.busy == Some(stamp) {
+                        True -> Nil
+                        False ->
+                          log.warning(
+                            "reload of the redirections file waits for its lock: "
+                            <> reason,
+                          )
+                      }
+                      actor.continue(
+                        State(..reloaded, stamp: state.stamp, busy: Some(stamp)),
+                      )
+                    }
+                    // a file that does not load (invalid, its ids not
+                    // written, the lock not created) is reported once:
+                    // tried again when it is written again (a new stamp),
+                    // or on SIGHUP
+                    Error(failure) ->
+                      actor.continue(
+                        State(
+                          ..reloaded,
+                          // the write and content the load read, which may
+                          // be newer than this tick's (else this tick's)
+                          rejected: Some(case failure {
+                            store_file.Content(store_file.Invalid(read:, ..))
+                              | store_file.Content(store_file.IdsNotWritten(
+                                read:,
+                                ..,
+                              ))
+                              if read != ""
+                            -> #(
+                              ffi.file_stamp(state.settings.rules_path),
+                              read,
+                            )
+                            _ -> #(stamp, found)
+                          }),
+                        ),
+                      )
                   }
                 }
               }
             }
-            _ -> actor.continue(State(..state, stamp:))
+            Error(simplifile.Enoent) | Ok(_) ->
+              actor.continue(State(..state, stamp:))
+            // reported once per change of the file (its stamp stays
+            // recent for a few ticks, read again at each)
+            Error(e) -> {
+              let unreadable = "unreadable " <> string.inspect(stamp)
+              case state.unreadable == unreadable {
+                True -> Nil
+                False ->
+                  log.error(
+                    "the redirections file cannot be read, keeping current rules: "
+                    <> simplifile.describe_error(e),
+                  )
+              }
+              actor.continue(State(..state, stamp:, unreadable:))
+            }
           }
         }
       }
@@ -975,9 +1064,29 @@ fn reload_file(
   state: State,
   actor_name: String,
 ) -> #(State, Result(Int, String)) {
+  let #(state, outcome) =
+    reload_file_or_busy(state, actor_name, report_busy: True)
+  #(state, result.map_error(outcome, store_file.reason))
+}
+
+/// The rules in effect are now `rules`, from the file of `fingerprint`:
+/// nothing the watcher rejected is left to skip.
+fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
+  State(..state, rules:, fingerprint:, rejected: None, busy: None)
+}
+
+/// `reload_file`, saying why it failed (`store_file.LoadFailure`). Without
+/// `report_busy`, a lock held by another process is left to the caller to
+/// report (the watcher says it once per write, and tries again at its next
+/// tick).
+fn reload_file_or_busy(
+  state: State,
+  actor_name: String,
+  report_busy report_busy: Bool,
+) -> #(State, Result(Int, store_file.LoadFailure)) {
   let started = ffi.monotonic_micros()
   case
-    store_file.load_locked(
+    store_file.load_locked_or_busy(
       files(state.settings),
       store_file.Reloading,
       lock_timeout,
@@ -996,9 +1105,14 @@ fn reload_file(
         fingerprint,
       )
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
-      #(State(..state, rules:, fingerprint:), Ok(list.length(rules)))
+      #(in_effect(state, rules, fingerprint), Ok(list.length(rules)))
     }
-    Error(reason) -> {
+    Error(store_file.LockHeld(_) as failure) if !report_busy -> #(
+      state,
+      Error(failure),
+    )
+    Error(failure) -> {
+      let reason = store_file.reason(failure)
       metrics.incr(metrics.ReloadFailures)
       log.error("reload rejected, keeping current rules: " <> reason)
       audit.record(
@@ -1009,21 +1123,8 @@ fn reload_file(
         None,
         Some(json.object([#("error", json.string(reason))])),
       )
-      #(state, Error(reason))
+      #(state, Error(failure))
     }
-  }
-}
-
-/// Whether a file's content is a valid rule set, without the lock or
-/// writing anything.
-fn valid_rules(content: BitArray) -> Bool {
-  case bit_array.to_string(content) {
-    Ok(text) ->
-      case rule.file_from_string(text) {
-        Ok(rules) -> store_rules.validate_all(rules) |> result.is_ok
-        Error(_) -> False
-      }
-    Error(Nil) -> False
   }
 }
 
@@ -1080,7 +1181,7 @@ fn mutate(
         Ok(state) ->
           case change(state) {
             Ok(#(value, rules, fingerprint)) -> {
-              let changed = State(..state, rules:, fingerprint:)
+              let changed = in_effect(state, rules, fingerprint)
               #(save_hits_if_removed(state.rules, changed), Ok(value))
             }
             Error(error) -> #(state, Error(error))
@@ -1114,13 +1215,28 @@ fn abandoned(reply: Subject(a)) -> Bool {
 /// are written back by the mutation).
 fn refresh(state: State) -> Result(State, String) {
   case simplifile.read_bits(state.settings.rules_path) {
-    Error(_) -> Ok(state)
+    Error(simplifile.Enoent) -> Ok(state)
+    // not a missing file: one this process cannot read must not be
+    // overwritten as if it were
+    Error(e) ->
+      Error(
+        "storage: the redirections file cannot be read ("
+        <> simplifile.describe_error(e)
+        <> "), so it was not overwritten. Fix its permissions, then retry.",
+      )
     Ok(content) ->
       case store_file.fingerprint(content) == state.fingerprint {
         True -> Ok(state)
         False ->
-          case store_file.load(files(state.settings), store_file.Reloading) {
-            Error(reason) ->
+          case
+            store_file.load_failing(files(state.settings), store_file.Reloading)
+          {
+            Error(store_file.IdsNotWritten(reason:, ..)) ->
+              Error(
+                "storage: the redirections file was changed outside the server, and the ids of its rules without one could not be written, so it was not overwritten. Free space or fix the permissions, then retry. "
+                <> reason,
+              )
+            Error(store_file.Invalid(reason:, ..)) ->
               Error(
                 "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
                 <> reason,
@@ -1144,7 +1260,7 @@ fn refresh(state: State) -> Result(State, String) {
                 <> int.to_string(list.length(rules))
                 <> " rule(s) before applying the change",
               )
-              Ok(State(..state, rules:, fingerprint:))
+              Ok(in_effect(state, rules, fingerprint))
             }
           }
       }

@@ -1,4 +1,5 @@
 import envoy
+import gleam/list
 import gleam/string
 import redirect_proxy
 import redirect_proxy/api/clients
@@ -108,6 +109,57 @@ pub fn rules_commands_test() {
 
   let assert Ok(Nil) = simplifile.write(import_file, "[{\"source\": \"bad\"}]")
   let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
+  // what an import refuses: a reserved id, a loop, a rule that never applies
+  [
+    "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    "[{\"source\": \"/a\", \"target\": \"/b\"}, {\"source\": \"/b\", \"target\": \"/a\"}]",
+    "[{\"source\": \"/q?x=1\", \"target\": \"/t\"}]",
+  ]
+  |> list.each(fn(content) {
+    let assert Ok(Nil) = simplifile.write(import_file, content)
+    let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
+  })
+  // the ids of the server's current rules are kept, as an import keeps
+  // them
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/data/redirects.json",
+      "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      import_file,
+      "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    )
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "rules",
+      "validate",
+      import_file,
+      "--config",
+      config_path,
+    ])
+  // current rules that cannot be read are reported, then taken for none
+  let assert Ok(Nil) = simplifile.write(dir <> "/data/redirects.json", "[{]")
+  let assert Ok(Nil) =
+    simplifile.write(import_file, "[{\"source\": \"/z\", \"target\": \"/y\"}]")
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "rules",
+      "validate",
+      import_file,
+      "--config",
+      config_path,
+    ])
+  // a configuration given that cannot be read is an error
+  let assert Error(_) =
+    redirect_proxy.run([
+      "rules",
+      "validate",
+      import_file,
+      "--config",
+      dir <> "/missing.toml",
+    ])
   let _ = config.default()
 }
 

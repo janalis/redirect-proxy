@@ -2,6 +2,7 @@
 
 import gleam/bool
 import gleam/http.{Get}
+import gleam/http/request
 import gleam/int
 import gleam/json
 import gleam/list
@@ -116,10 +117,7 @@ fn current_session(req: Request, ctx: Context) -> Result(Session, Nil) {
     session.Local ->
       case users.get(ctx.users, s.username) {
         Ok(user) ->
-          case
-            session.user_fingerprint(user.password_hash, user.updated_at)
-            == s.fingerprint
-          {
+          case users.fingerprint(user) == s.fingerprint {
             // the role as stored now: a demotion applies at once
             True -> Ok(session.Session(..s, role: user.role))
             False -> end_session(s)
@@ -262,6 +260,15 @@ pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
     True -> end_password_check(ctx, username, Passed)
     False -> {
       end_password_check(ctx, username, Failed)
+      // a stolen session guessing the password: audited like a failed
+      // sign-in, within the same budget
+      audit.record_failure(
+        config.audit_path(ctx.config),
+        username,
+        "auth.password_check_failed",
+        "local",
+        json.object([#("client_ip", json.string(ctx.client_ip))]),
+      )
       log.warning(
         "wrong current password for user="
         <> log_value(username)
@@ -384,7 +391,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
               username,
               session.Local,
               ctx.config.admin.session_ttl,
-              session.user_fingerprint(user.password_hash, user.updated_at),
+              users.fingerprint(user),
               user.role,
             )
           let next = list.key_find(wisp.get_query(req), "next")
@@ -424,16 +431,21 @@ fn rehash_if_needed(
   case password.needs_rehash(user.password_hash) {
     False -> user
     True -> {
-      let stored =
+      // a re-hash keeps the user's fingerprint (`users.fingerprint`): its
+      // sessions go on, here or on other instances
+      case
         users.rehash_password(
           ctx.users,
           user.username,
           user.password_hash,
           password.hash(pass),
         )
-        |> result.map(option.unwrap(_, user))
-      case stored {
-        Ok(updated) -> updated
+      {
+        Ok(Some(updated)) -> updated
+        // changed meanwhile: by a sign-in re-hashing it at the same time,
+        // the fingerprint is the same; by a change of password, the
+        // session ends at once
+        Ok(None) -> user
         Error(reason) -> {
           log.warning(
             "could not re-hash the password of "
@@ -556,6 +568,7 @@ fn sso_start_key(ctx: Context) -> String {
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  use <- navigation_only(req)
   let start_key = sso_start_key(ctx)
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
   ratelimit.record_failure(start_key, login_window)
@@ -579,8 +592,28 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
   }
 }
 
+/// Refuses, before it counts against any budget, a request the browser
+/// says is not a navigation of the page itself (Fetch Metadata): an image,
+/// a script or a frame of another site pointing at a sign-in page, which would spend the budget
+/// of the visitor's address, or replace a sign-in in progress. Clients
+/// that do not send the header are not refused.
+fn navigation_only(req: Request, next: fn() -> Response) -> Response {
+  let is = fn(header, expected) {
+    case request.get_header(req, header) {
+      Ok(value) -> value == expected
+      Error(Nil) -> True
+    }
+  }
+  // a frame is a navigation too, but not of the page itself
+  case is("sec-fetch-mode", "navigate") && is("sec-fetch-dest", "document") {
+    True -> next()
+    False -> wisp.response(403)
+  }
+}
+
 pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
+  use <- navigation_only(req)
   let failure_key = "sso-callback-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
   let outcome =

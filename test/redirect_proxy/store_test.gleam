@@ -30,6 +30,16 @@ fn start(s: store.Settings) -> store.Store {
   started.data
 }
 
+/// A store watching its file, then stopped once `run` returns: it would
+/// try a file it could not load again later, during another test, and
+/// publish its rules over that test's.
+fn with_watching_store(s: store.Settings, run: fn(store.Store) -> Nil) -> Nil {
+  let assert Ok(started) = store.start(s, process.new_name("store_test"))
+  run(started.data)
+  process.unlink(started.pid)
+  process.kill(started.pid)
+}
+
 fn new_rule(source: String, target: String) -> rule.Rule {
   Rule(..rule.blank(), source:, target:)
 }
@@ -311,6 +321,246 @@ pub fn set_changes_check_the_rules_they_change_test() {
     == Ok(1)
 }
 
+/// A rule that loaded although it can never apply can be disabled one at a
+/// time too (as in bulk), but not enabled.
+pub fn rules_that_never_apply_can_be_disabled_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  let assert Ok(_) = store.update(s, Rule(..legacy, enabled: False), by: "t")
+  let assert Error([error]) = store.update(s, legacy, by: "t")
+  assert string.contains(error, "query string")
+}
+
+/// Importing rules again unchanged leaves them as they are: their version
+/// (ETag), dates and author; changed ones are stamped.
+pub fn unchanged_imported_rules_keep_their_version_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(a) =
+    store.create(s, Rule(..new_rule("/a", "/t"), id: "a"), by: "alice")
+  let assert Ok(b) =
+    store.create(s, Rule(..new_rule("/b", "/t"), id: "b"), by: "alice")
+  process.sleep(1100)
+  let assert Ok(2) =
+    store.import_rules(s, [a, Rule(..b, target: "/u")], store.Merge, by: "bob")
+  let assert Ok(a2) = store.get(s, "a")
+  let assert Ok(b2) = store.get(s, "b")
+  assert rule.version(a2) == rule.version(a)
+  assert #(a2.updated_at, a2.updated_by) == #(a.updated_at, "alice")
+  assert b2.updated_by == "bob"
+  assert rule.version(b2) != rule.version(b)
+}
+
+/// A file that loaded with a reserved id imports again: only new ids are
+/// refused.
+pub fn loaded_reserved_ids_import_again_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let export = Rule(..new_rule("/e", "/t"), id: "export")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([export]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  assert store.import_rules(s, [export], store.Replace, by: "t") == Ok(1)
+  assert store.import_rules(s, [export], store.Merge, by: "t") == Ok(1)
+  let assert Ok(_) = store.preview_import(s, [export], store.Merge, by: "t")
+  let bulk = Rule(..new_rule("/b", "/t"), id: "bulk")
+  let assert Error([error]) =
+    store.import_rules(s, [bulk], store.Merge, by: "t")
+  assert string.contains(error, "reserved")
+}
+
+/// An id the file loaded with, spaces and all, names the same rule in an
+/// import; a new one is trimmed.
+pub fn loaded_ids_with_spaces_import_again_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let spaced = Rule(..new_rule("/s", "/t"), id: " a")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([spaced]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
+  assert store.import_rules(s, [spaced, fresh], store.Merge, by: "t") == Ok(2)
+  assert list.map(store.all(s), fn(r) { r.id }) == [" a", "b"]
+  // two ids that are one once trimmed are duplicates
+  let assert Error(errors) =
+    store.import_rules(
+      s,
+      [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
+      store.Merge,
+      by: "t",
+    )
+  assert list.any(errors, string.contains(_, "duplicate"))
+  let assert Error(_) =
+    store.preview_import(
+      s,
+      [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
+      store.Merge,
+      by: "t",
+    )
+}
+
+/// A rule that starts later would loop once it starts: the loop is
+/// followed with the rules active at its start.
+pub fn scheduled_loops_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/a", "/b"), id: "a"), by: "t")
+  let later =
+    Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) = store.create(s, later, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) =
+    store.import_rules(s, [later], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Ok(1) =
+    store.import_rules(s, [Rule(..later, enabled: False)], store.Merge, by: "t")
+  let assert Error(errors) =
+    store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
+  assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
+  // rules whose windows do not overlap do not loop
+  let assert Ok(_) =
+    store.update(
+      s,
+      Rule(
+        ..later,
+        enabled: True,
+        starts_at: "",
+        expires_at: "2000-01-01T00:00:00Z",
+      ),
+      by: "t",
+    )
+}
+
+/// The other way round: a rule active now that loops with one that starts
+/// later, once it starts.
+pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let later =
+    Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Ok(_) = store.create(s, later, by: "t")
+  let now = Rule(..new_rule("/a", "/b"), id: "a")
+  let assert Error(errors) = store.create(s, now, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) = store.import_rules(s, [now], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  // one that expires before the other starts does not loop
+  let assert Ok(_) =
+    store.create(s, Rule(..now, expires_at: "2998-01-01T00:00:00Z"), by: "t")
+  // nor do two rules whose windows do not overlap
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(
+        ..new_rule("/c", "/d"),
+        id: "c",
+        starts_at: "2999-01-01T00:00:00Z",
+        expires_at: "2999-02-01T00:00:00Z",
+      ),
+      by: "t",
+    )
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/d", "/c"), id: "d", starts_at: "2999-03-01T00:00:00Z"),
+      by: "t",
+    )
+}
+
+/// Rules that take turns on one path do not hide each other: the loop is
+/// followed at each time the rules in effect change.
+pub fn loops_through_rules_taking_turns_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/a", "/b"), id: "a1", expires_at: "2999-01-01T00:00:00Z"),
+      by: "t",
+    )
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/a", "/x"), id: "a2", starts_at: "2999-01-01T00:00:00Z"),
+      by: "t",
+    )
+  let x = Rule(..new_rule("/x", "/a"), id: "x")
+  let assert Error(errors) = store.create(s, x, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) = store.import_rules(s, [x], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
+/// Each rule of a change is followed at its own nearest times: the times
+/// of the others do not use up its share.
+pub fn each_imported_rule_is_followed_at_its_own_times_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  // eight times to come, all within the window of `a` below
+  list.each([1, 2, 3, 4, 5, 6, 7, 8], fn(n) {
+    let assert Ok(_) =
+      store.create(
+        s,
+        Rule(
+          ..new_rule("/f" <> int.to_string(n), "/t"),
+          id: "f" <> int.to_string(n),
+          starts_at: "29" <> int.to_string(80 + n) <> "-01-01T00:00:00Z",
+        ),
+        by: "t",
+      )
+  })
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+  let a = Rule(..new_rule("/a", "/z"), id: "a")
+  let b =
+    Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) = store.import_rules(s, [a, b], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
+/// Past the matchers a change keeps, a rule that starts later is still
+/// followed at its start: it can only loop from then.
+pub fn rules_starting_later_are_followed_past_the_kept_matchers_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+  let fillers =
+    int.range(10, 50, [], fn(acc, n) {
+      let n = int.to_string(n)
+      [
+        Rule(
+          ..new_rule("/s" <> n, "/t"),
+          id: "s" <> n,
+          starts_at: "29" <> n <> "-01-01T00:00:00Z",
+        ),
+        ..acc
+      ]
+    })
+    |> list.reverse
+  let b =
+    Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
+  let assert Error(errors) =
+    store.import_rules(s, list.append(fillers, [b]), store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
+/// Every check applies to disabled rules too, one at a time or in sets,
+/// but for disabling a rule that loaded with a problem: it then still
+/// imports again unchanged.
+pub fn disabled_rules_are_checked_too_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let bad = Rule(..new_rule("/q?x=1", "/t"), id: "bad", enabled: False)
+  let assert Error([_]) = store.create(s, bad, by: "t")
+  let assert Error(_) = store.import_rules(s, [bad], store.Merge, by: "t")
+}
+
 fn errors_of(error: store.SetChangeError) -> List(String) {
   case error {
     store.Rejected(errors) -> errors
@@ -365,6 +615,23 @@ pub fn outside_changes_are_reloaded_before_writing_test() {
   assert redirect("/theirs") == Ok("/b")
 }
 
+/// A valid file whose ids could not be written is not called invalid.
+pub fn outside_changes_whose_ids_cannot_be_written_are_told_apart_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "[{\"source\": \"/theirs\", \"target\": \"/b\"}]",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Error([reason]) = result
+  assert string.contains(reason, "could not be written")
+  assert !string.contains(reason, "is invalid")
+}
+
 pub fn invalid_outside_changes_are_not_overwritten_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
@@ -374,6 +641,23 @@ pub fn invalid_outside_changes_are_not_overwritten_test() {
     store.create(s, new_rule("/x", "/y"), by: "server")
   assert string.contains(reason, "changed outside the server")
   assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
+}
+
+/// A rules file this process cannot read (replaced by a copy owned by
+/// another user) is not taken for a missing one, and overwritten.
+pub fn unreadable_outside_changes_are_not_overwritten_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/redirects.json"
+  let s = start(settings(dir, 0))
+  let theirs =
+    "{\"version\": 1, \"rules\": [{\"id\": \"t\", \"source\": \"/theirs\", \"target\": \"/b\"}]}"
+  let assert Ok(Nil) = simplifile.write(path, theirs)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o200)
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
+  let assert Error([reason]) = result
+  assert string.contains(reason, "cannot be read")
+  assert simplifile.read(path) == Ok(theirs)
 }
 
 /// Two stores on the same file stand for two OS processes (server and CLI):
@@ -633,6 +917,132 @@ pub fn watched_file_is_reloaded_test() {
   process.sleep(100)
   assert reload_failures(dir) == 1
   assert redirect("/watched") == Ok("/reloaded")
+}
+
+@external(erlang, "test_log_ffi", "capture_stop")
+fn captured_logs() -> List(String)
+
+/// A file the watcher cannot read is reported once per change, though its
+/// stamp stays recent, and read again, for a few ticks.
+pub fn unreadable_watched_file_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _ = start(s)
+  process.sleep(50)
+  capture_logs()
+  let assert Ok(Nil) =
+    simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  process.sleep(1000)
+  let logs = captured_logs()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  assert list.count(logs, string.contains(_, "cannot be read")) == 1
+}
+
+/// Content refused because its ids could not be written is tried again
+/// when the file is written again, even with the same content (a sync
+/// applying it again once the volume has room).
+pub fn watched_content_written_again_unchanged_is_tried_again_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/same" })
+  }
+  process.sleep(50)
+  let content = "[{\"source\": \"/same\", \"target\": \"/y\"}]"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  process.sleep(300)
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  // a write of its own, past the seconds a write may still move its
+  // stamp
+  process.sleep(3500)
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  support.wait_until(loaded, 2000)
+}
+
+/// Valid content that could not be loaded, then reverted, then written
+/// again once it can be loaded, is loaded.
+pub fn watched_content_rejected_then_written_again_is_loaded_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/again" })
+  }
+  process.sleep(50)
+  let assert Ok(in_effect) = simplifile.read(s.rules_path)
+  let content = "[{\"source\": \"/again\", \"target\": \"/y\"}]"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  process.sleep(300)
+  // reverted, then written again once its ids can be written
+  let assert Ok(Nil) = simplifile.write(s.rules_path, in_effect)
+  process.sleep(300)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, content)
+  support.wait_until(loaded, 4000)
+}
+
+/// A file the watcher could not read is loaded once it can be: a change
+/// of its permissions leaves its stamp as it was.
+pub fn watched_file_readable_again_is_loaded_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use st <- with_watching_store(s)
+  process.sleep(50)
+  // unreadable before it is written: never read in between
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  let assert Ok(Nil) =
+    simplifile.write(
+      s.rules_path,
+      "[{\"id\": \"p\", \"source\": \"/perm\", \"target\": \"/y\"}]",
+    )
+  let assert Error(_) = simplifile.read(s.rules_path)
+  // past the time a stamp is recent (up to 3 s: whole seconds)
+  process.sleep(4000)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/perm" })
+  }
+  assert !loaded()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  support.wait_until(loaded, 2000)
+}
+
+/// A file that could not be read for a moment, invalid before and after,
+/// is still reported once.
+pub fn invalid_watched_file_unreadable_for_a_moment_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _ = start(s)
+  process.sleep(50)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
+  support.wait_until(fn() { reload_failures(dir) == 1 }, 2000)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  process.sleep(100)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  process.sleep(300)
+  assert reload_failures(dir) == 1
+}
+
+/// A replica reading a read-only volume cannot write the ids a file without
+/// them needs: the file is reported once, not at every tick.
+pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  use _ <- with_watching_store(s)
+  process.sleep(50)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  capture_logs()
+  let assert Ok(Nil) =
+    simplifile.write(s.rules_path, "[{\"source\": \"/x\", \"target\": \"/y\"}]")
+  process.sleep(500)
+  let logs = captured_logs()
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  assert list.count(logs, string.contains(_, "reload rejected")) == 1
 }
 
 fn audit_actions(dir: String, action: String) -> Int {

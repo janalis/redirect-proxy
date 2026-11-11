@@ -5,7 +5,9 @@
 //// overwrite each other's changes.
 //// Password hashing is done by callers, outside the lock.
 
+import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -14,6 +16,7 @@ import gleam/result
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
+import redirect_proxy/id
 import redirect_proxy/role.{type Role}
 import redirect_proxy/rule
 import simplifile
@@ -26,7 +29,27 @@ pub type User {
     role: Role,
     created_at: String,
     updated_at: String,
+    /// Changed by every change of password, but not by a re-hash of the
+    /// same one: the sessions of the user follow it (`fingerprint`). ""
+    /// for users stored before it.
+    credentials: String,
   )
+}
+
+/// Changes whenever the password of the user changes, and only then: the
+/// sessions opened before end. Without `credentials`, it follows the hash
+/// and the update time, as before they were stored.
+pub fn fingerprint(user: User) -> String {
+  case user.credentials {
+    "" ->
+      crypto.hash(crypto.Sha256, <<
+        user.password_hash:utf8,
+        0,
+        user.updated_at:utf8,
+      >>)
+      |> bit_array.base16_encode
+    credentials -> credentials
+  }
 }
 
 pub type Settings {
@@ -77,7 +100,14 @@ pub fn create_with_role(
     False -> {
       let now = ffi.now_rfc3339()
       let user =
-        User(username:, password_hash:, role:, created_at: now, updated_at: now)
+        User(
+          username:,
+          password_hash:,
+          role:,
+          created_at: now,
+          updated_at: now,
+          credentials: id.token(32),
+        )
       use Nil <- result.try(save(settings.path, list.append(users, [user])))
       audit.record(
         settings.audit_path,
@@ -126,6 +156,8 @@ pub fn rehash_password(
     "system",
     "user.password_rehash",
     fn(u) { u.password_hash == previous_hash },
+    // the same password: the user's sessions go on
+    fingerprint,
   )
 }
 
@@ -136,9 +168,16 @@ fn store_password(
   actor: String,
   action: String,
 ) -> Result(Nil, String) {
-  store_password_if(settings, username, password_hash, actor, action, fn(_) {
-    True
-  })
+  store_password_if(
+    settings,
+    username,
+    password_hash,
+    actor,
+    action,
+    fn(_) { True },
+    // a new password: the user's sessions end
+    fn(_) { id.token(32) },
+  )
   |> result.replace(Nil)
 }
 
@@ -149,6 +188,7 @@ fn store_password_if(
   actor: String,
   action: String,
   current: fn(User) -> Bool,
+  credentials: fn(User) -> String,
 ) -> Result(option.Option(User), String) {
   let username = normalise(username)
   use <- ffi.locked_file(settings.path, lock_timeout)
@@ -160,7 +200,12 @@ fn store_password_if(
         False -> Ok(None)
         True -> {
           let stored =
-            User(..user, password_hash:, updated_at: ffi.now_rfc3339())
+            User(
+              ..user,
+              password_hash:,
+              updated_at: ffi.now_rfc3339(),
+              credentials: credentials(user),
+            )
           let users =
             list.map(users, fn(u) {
               case u.username == username {
@@ -283,12 +328,14 @@ fn user_decoder() -> decode.Decoder(User) {
   use role <- decode.optional_field("role", role.Admin, role_decoder())
   use created_at <- decode.optional_field("created_at", "", decode.string)
   use updated_at <- decode.optional_field("updated_at", "", decode.string)
+  use credentials <- decode.optional_field("credentials", "", decode.string)
   decode.success(User(
     username:,
     password_hash:,
     role:,
     created_at:,
     updated_at:,
+    credentials:,
   ))
 }
 
@@ -326,6 +373,7 @@ fn save(path: String, users: List(User)) -> Result(Nil, String) {
             #("role", json.string(role.to_string(u.role))),
             #("created_at", json.string(u.created_at)),
             #("updated_at", json.string(u.updated_at)),
+            #("credentials", json.string(u.credentials)),
           ])
         }),
       ),

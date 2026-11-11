@@ -1,7 +1,8 @@
 //// Checks and transformations of rule sets, independent of the store
 //// actor: validation, conflicts, redirect loops, imports and export.
 
-import gleam/dict
+import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -19,20 +20,173 @@ import redirect_proxy/matcher/loop as matcher_loop
 import redirect_proxy/rule.{type Rule}
 
 /// Refuses a change when a request to the changed rule would be redirected
-/// back to it.
+/// back to it: now (`built`, the matcher of `rules`), or at a later time
+/// within its window when the rules in effect change (a rule starts or
+/// expires).
 pub fn check_loop(
   built: matcher.Matcher,
+  rules: List(Rule),
   changed: Rule,
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  case
-    changed.enabled,
-    matcher_loop.redirect_loop(built, changed, ignore_trailing_slash)
-  {
-    True, Ok(cycle) ->
-      Error(["target: redirect loop: " <> describe_cycle(cycle)])
-    _, _ -> Ok(Nil)
+  follow_loop(built, rules, later(rules), changed, ignore_trailing_slash).0
+}
+
+/// What a check knows of the times to come: when the rules in effect
+/// change (a rule starts or expires), worked out once, and the matchers
+/// of the times it built, kept for the other rules of the change.
+type Later {
+  Later(
+    changes: List(Change),
+    matchers: Dict(Int, matcher.Matcher),
+    /// Past the matchers kept: one of every rule not expired, schedules
+    /// aside (see `follow_loop`), built once.
+    beyond: Option(matcher.Matcher),
+    /// The last matcher built to confirm a loop found there, by time: the
+    /// other rules of the change starting then reuse it.
+    confirmed: Option(#(Int, matcher.Matcher)),
+  )
+}
+
+/// A rule (`id`) starts, or expires, `at` a time to come.
+type Change {
+  Change(at: Int, id: String, expires: Bool)
+}
+
+fn later(rules: List(Rule)) -> Later {
+  let now = ffi.now_seconds()
+  let changes =
+    list.fold(rules, [], fn(acc, r) {
+      case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
+        False -> acc
+        True -> {
+          let #(starts, expires) = rule.window(r)
+          let acc = case starts > now {
+            True -> [Change(starts, r.id, False), ..acc]
+            False -> acc
+          }
+          case expires > now && expires < rule.max_time {
+            True -> [Change(expires, r.id, True), ..acc]
+            False -> acc
+          }
+        }
+      }
+    })
+    |> list.sort(fn(a, b) { int.compare(a.at, b.at) })
+  Later(changes:, matchers: dict.new(), beyond: None, confirmed: None)
+}
+
+/// The most times to come a rule is followed at, the nearest (see
+/// `follow_loop`), and the most matchers a check keeps for them, all rules
+/// of a change together (each is a matcher of every rule).
+const max_times_ahead = 8
+
+const max_matchers_ahead = 32
+
+fn follow_loop(
+  built: matcher.Matcher,
+  rules: List(Rule),
+  later: Later,
+  changed: Rule,
+  ignore_trailing_slash: Bool,
+) -> #(Result(Nil, List(String)), Later) {
+  use <- bool.guard(!changed.enabled, #(Ok(Nil), later))
+  let found = fn(matcher) {
+    matcher_loop.redirect_loop(matcher, changed, ignore_trailing_slash)
   }
+  let refused = fn(cycle) {
+    Error(["target: redirect loop: " <> describe_cycle(cycle)])
+  }
+  let #(starts, _) = rule.window(changed)
+  case found(built) {
+    Ok(cycle) -> #(refused(cycle), later)
+    Error(Nil) ->
+      list.fold_until(
+        changes_ahead(later.changes, changed),
+        #(Ok(Nil), later),
+        fn(acc, at) {
+          let #(_, later) = acc
+          let follow = fn(matcher, later) {
+            case found(matcher) {
+              Ok(cycle) -> list.Stop(#(refused(cycle), later))
+              Error(Nil) -> list.Continue(#(Ok(Nil), later))
+            }
+          }
+          case dict.get(later.matchers, at) {
+            Ok(matcher) -> follow(matcher, later)
+            Error(Nil) ->
+              case dict.size(later.matchers) < max_matchers_ahead {
+                True -> {
+                  let matcher = matcher.build_at(rules, at)
+                  follow(
+                    matcher,
+                    Later(
+                      ..later,
+                      matchers: dict.insert(later.matchers, at, matcher),
+                    ),
+                  )
+                }
+                // past them, the start of a rule that starts later is
+                // still followed (it can only loop from then): first
+                // through one matcher of every rule not expired, schedules
+                // aside, built once; a loop found there is confirmed with
+                // the rules in effect then (rarely: one matcher each). A
+                // rule not in effect then (not started yet, or expired by
+                // then) may hide one there, logged when it comes about (the store republishes the rules then,
+                // and checks them), as is a loop at another time.
+                False if at == starts -> {
+                  let beyond = case later.beyond {
+                    Some(beyond) -> beyond
+                    None -> beyond_matcher(rules)
+                  }
+                  let later = Later(..later, beyond: Some(beyond))
+                  case found(beyond) {
+                    // not among the kept ones, which are bounded: only
+                    // the last is
+                    Ok(_) ->
+                      case later.confirmed {
+                        Some(#(time, matcher)) if time == at ->
+                          follow(matcher, later)
+                        _ -> {
+                          let matcher = matcher.build_at(rules, at)
+                          follow(
+                            matcher,
+                            Later(..later, confirmed: Some(#(at, matcher))),
+                          )
+                        }
+                      }
+                    Error(Nil) -> list.Continue(#(Ok(Nil), later))
+                  }
+                }
+                False -> list.Continue(acc)
+              }
+          }
+        },
+      )
+  }
+}
+
+/// A matcher of the rules not expired, their schedules aside.
+fn beyond_matcher(rules: List(Rule)) -> matcher.Matcher {
+  let now = ffi.now_seconds()
+  rules
+  |> list.filter(fn(r) { r.enabled && rule.window(r).1 > now })
+  |> list.map(fn(r) { rule.Rule(..r, starts_at: "", expires_at: "") })
+  |> matcher.build
+}
+
+/// The times to come, within the window of `changed`, at which the rules
+/// in effect change: its start, and the starts and expiries of the other
+/// rules; the nearest. None, the usual case, when no rule has a schedule.
+fn changes_ahead(changes: List(Change), changed: Rule) -> List(Int) {
+  let #(from, until) = rule.window(changed)
+  changes
+  |> list.filter(fn(c) {
+    c.at >= from && c.at < until && !{ c.expires && c.id == changed.id }
+  })
+  |> list.map(fn(c) { c.at })
+  |> list.unique
+  |> list.take(max_times_ahead)
 }
 
 /// Refuses a change to a rule that could never apply as written.
@@ -57,20 +211,27 @@ pub fn changed_rules(before: List(Rule), after: List(Rule)) -> List(Rule) {
 /// loaded before can still be imported again.
 pub fn check_changed(
   built: matcher.Matcher,
+  rules: List(Rule),
   changed: List(Rule),
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  let errors =
-    list.flat_map(changed, fn(r) {
-      let loop = case check_loop(built, r, ignore_trailing_slash) {
+  let #(errors, _) =
+    list.fold(changed, #([], later(rules)), fn(acc, r) {
+      let #(errors, later) = acc
+      let #(loop, later) =
+        follow_loop(built, rules, later, r, ignore_trailing_slash)
+      let loop = case loop {
         Ok(Nil) -> []
         Error(errors) -> errors
       }
-      list.append(rule.lint(r), loop)
-      |> list.map(fn(e) {
-        "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
-      })
+      let found =
+        list.append(rule.lint(r), loop)
+        |> list.map(fn(e) {
+          "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
+        })
+      #([found, ..errors], later)
     })
+  let errors = list.reverse(errors) |> list.flatten
   case errors {
     [] -> Ok(Nil)
     _ -> Error(errors)
@@ -166,12 +327,7 @@ pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(String)) {
 /// Rejects duplicate ids and duplicate exact sources on the same host, and
 /// exact rules redirecting to themselves.
 pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
-  let duplicate_ids =
-    rules
-    |> list.group(fn(r) { r.id })
-    |> dict.filter(fn(key, group) { key != "" && list.length(group) > 1 })
-    |> dict.keys
-    |> list.map(fn(key) { "id: duplicate id " <> key })
+  let duplicate_ids = duplicate_ids(rules)
 
   // in the form the matcher compares hosts and paths: example.com:8080 and
   // example.com are one host, /café and /caf%C3%A9 one path
@@ -243,9 +399,10 @@ pub fn prepare_import(
   |> list.map(fn(r) {
     rule.Rule(
       ..r,
+      // trimmed against the current rules: `resolve_ids`
       id: case string.trim(r.id) {
         "" -> id.uuid()
-        given -> given
+        _ -> r.id
       },
       // a blank creation date is resolved against the current rules
       // (`keep_created_at`): an export without it must not reset it
@@ -253,40 +410,77 @@ pub fn prepare_import(
       updated_by: actor_name,
     )
   })
-  |> fn(rules) {
-    case list.filter(rules, fn(r) { rule.is_reserved_id(r.id) }) {
-      [] -> validate_all(rules)
-      reserved ->
-        Error(
-          list.map(reserved, fn(r) {
-            "id: " <> r.id <> " is reserved (it names a page or an operation)"
-          }),
-        )
-    }
-  }
+  // ids are checked against the current rules: `check_new_ids`
+  |> validate_all
 }
 
-/// Refuses imported rules that would add an id that is not URL-safe
-/// (`rule.is_valid_id`). The ids of current rules are kept: a file that
-/// loaded with them can be imported again.
+/// The checks of an import of `incoming` that replaces `current`: the
+/// prepared rules, or every problem found.
+pub fn check_import(
+  incoming: List(Rule),
+  current: List(Rule),
+  ignore_trailing_slash: Bool,
+) -> Result(List(Rule), List(String)) {
+  use rules <- result.try(prepare_import(incoming, "cli"))
+  let rules = resolve_ids(current, rules)
+  // `prepare_import` checked the conflicts already (`validate_all`)
+  use Nil <- result.try(check_new_ids(current, rules))
+  // as an import, the rules it leaves as they are are not checked again
+  use Nil <- result.try(check_changed(
+    matcher.build(rules),
+    rules,
+    changed_rules(current, rules),
+    ignore_trailing_slash,
+  ))
+  Ok(rules)
+}
+
+/// The ids of imported rules: kept as given when a current rule has it
+/// (spaces and all: a file may have loaded with them), else trimmed.
+pub fn resolve_ids(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
+  let known = list.map(existing, fn(r) { r.id }) |> set.from_list
+  list.map(incoming, fn(r) {
+    case set.contains(known, r.id) {
+      True -> r
+      False -> rule.Rule(..r, id: string.trim(r.id))
+    }
+  })
+}
+
+/// Refuses imported rules that would add an id that is not URL-safe or is
+/// reserved (`rule.is_valid_id`), and duplicate ids. The ids of current rules are kept: a file
+/// that loaded with them can be imported again.
 pub fn check_new_ids(
   existing: List(Rule),
   rules: List(Rule),
 ) -> Result(Nil, List(String)) {
   let known = list.map(existing, fn(r) { r.id }) |> set.from_list
-  case
+  let invalid =
     list.filter(rules, fn(r) {
       !set.contains(known, r.id) && !rule.is_valid_id(r.id)
     })
-  {
+    |> list.map(fn(r) {
+      case rule.is_reserved_id(r.id) {
+        True ->
+          "id: " <> r.id <> " is reserved (it names a page or an operation)"
+        False -> "id: " <> r.id <> ": " <> rule.valid_id_hint()
+      }
+    })
+  // ids trimmed by `resolve_ids` may now be the same
+  case list.append(invalid, duplicate_ids(rules)) {
     [] -> Ok(Nil)
-    invalid ->
-      Error(
-        list.map(invalid, fn(r) {
-          "id: " <> r.id <> ": " <> rule.valid_id_hint()
-        }),
-      )
+    errors -> Error(errors)
   }
+}
+
+/// The ids that more than one rule has, as errors, in order.
+fn duplicate_ids(rules: List(Rule)) -> List(String) {
+  rules
+  |> list.group(fn(r) { r.id })
+  |> dict.filter(fn(id, group) { id != "" && list.length(group) > 1 })
+  |> dict.keys
+  |> list.sort(string.compare)
+  |> list.map(fn(id) { "id: duplicate id " <> id })
 }
 
 /// Gives the imported rules without a creation date (a CSV file has none)
@@ -309,6 +503,32 @@ pub fn keep_created_at(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
       _ -> r
     }
   })
+}
+
+/// Gives the imported rules that are the same as current ones but for
+/// their dates and author (as `diff` compares them) back as they were:
+/// importing rules again unchanged leaves their version (ETag) alone.
+pub fn keep_unchanged(existing: List(Rule), rules: List(Rule)) -> List(Rule) {
+  let current =
+    list.fold(existing, dict.new(), fn(acc, r: Rule) {
+      dict.insert(acc, r.id, r)
+    })
+  list.map(rules, fn(r) {
+    case dict.get(current, r.id) {
+      Ok(before) ->
+        case content(before) == content(r) {
+          True -> before
+          False -> r
+        }
+      Error(Nil) -> r
+    }
+  })
+}
+
+/// A rule without its dates and author: two rules the same but for them
+/// are the same change (`diff`, `keep_unchanged`).
+fn content(r: Rule) -> Rule {
+  rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
 }
 
 pub fn merge(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
@@ -340,9 +560,6 @@ pub type Diff {
 /// Compares two rule sets. Timestamps and authors are ignored: an import
 /// sets them on every rule even when nothing else changed.
 pub fn diff(before: List(Rule), after: List(Rule)) -> Diff {
-  let content = fn(r: Rule) {
-    rule.Rule(..r, created_at: "", updated_at: "", updated_by: "")
-  }
   let index = fn(rules: List(Rule)) {
     list.fold(rules, dict.new(), fn(acc, r) {
       dict.insert(acc, r.id, content(r))

@@ -85,11 +85,21 @@ fn index(metric: Metric) -> Int {
   }
 }
 
-/// Must be called once at boot.
+/// Must be called once at boot. Counters left with fewer slots than this
+/// version counts (by an older version, in a VM where the application
+/// restarts after a hot upgrade) are replaced: counting in them would fail.
 pub fn init() -> Nil {
-  let _ = counters()
-  let _ = latency()
+  fit(key, counters(), new_counters)
+  fit(latency_key, latency(), new_latency)
   ffi.regex_limit_init()
+}
+
+fn fit(key: String, current: ffi.Counters, new: fn() -> ffi.Counters) -> Nil {
+  let fresh = new()
+  case ffi.counter_size(current) < ffi.counter_size(fresh) {
+    True -> ffi.snapshot_put(key, fresh)
+    False -> Nil
+  }
 }
 
 fn latency() -> ffi.Counters {

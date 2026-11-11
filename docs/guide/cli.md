@@ -170,11 +170,15 @@ redirect-proxy rules validate
 ```
 
 Checks a rules file, JSON or [CSV](rules#csv), as an import would: the
-format, every rule, duplicate ids and exact sources, rules that redirect
-to themselves. It prints `<file>: N valid rule(s)`, or the errors and
+format, every rule, ids that are reserved or not URL-safe, duplicate ids
+and exact sources, redirect loops, and rules that can never apply. It
+does not compare the file with the current rules, which a merge may
+conflict with, but keeps their ids and leaves the rules it would not
+change unchecked, as an import does; when it cannot read them, it says
+so and checks against none. It prints `<file>: N valid rule(s)`, or the errors and
 exits with `1`. Without `FILE`, it checks the configured data directory's
-`redirects.json`, for example after editing it by hand and before sending
-`SIGHUP`. It needs no running server: use it in CI (see
+`redirects.json` as loading does, for example after editing it by hand
+and before sending `SIGHUP`. It needs no running server: use it in CI (see
 [Rules in git](api#rules-in-git)).
 
 ## `rules export`

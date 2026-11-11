@@ -174,6 +174,10 @@ pub type Counters
 @external(erlang, "redirect_proxy_ffi", "counter_new")
 pub fn counter_new(size: Int) -> Counters
 
+/// The number of counters of `counters`.
+@external(erlang, "redirect_proxy_ffi", "counter_size")
+pub fn counter_size(counters: Counters) -> Int
+
 @external(erlang, "redirect_proxy_ffi", "counter_add")
 pub fn counter_add(ref: Counters, index: Int, amount: Int) -> Nil
 
@@ -289,6 +293,22 @@ pub fn with_file_lock(
   timeout_ms: Int,
   f: fn() -> a,
 ) -> Result(a, String)
+
+/// Why `with_file_lock_detailed` did not acquire the lock.
+pub type LockFailure {
+  /// Another process holds it: trying again soon may succeed.
+  Held(message: String)
+  /// It could not be created (a full disk).
+  CannotCreate(message: String)
+}
+
+/// `with_file_lock`, saying why the lock was not acquired.
+@external(erlang, "redirect_proxy_ffi", "with_file_lock_detailed")
+pub fn with_file_lock_detailed(
+  path: String,
+  timeout_ms: Int,
+  f: fn() -> a,
+) -> Result(a, LockFailure)
 
 /// Overrides a delay for tests: `stale_lock_seconds` (10), after which a
 /// lock is taken over, and `store_call_timeout` (milliseconds), how long a
@@ -464,6 +484,13 @@ pub fn file_stamp(path: String) -> FileStamp
 /// did not change may then still hide a change of the same size.
 @external(erlang, "redirect_proxy_ffi", "stamp_is_recent")
 pub fn stamp_is_recent(stamp: FileStamp) -> Bool
+
+/// Whether stamp `b` may be of the write of stamp `a`: the same file and
+/// size, its time moved forward by a second at most (a write in place may
+/// set it again after the content). Times have a one second resolution:
+/// the same content written again within that second is not told apart.
+@external(erlang, "redirect_proxy_ffi", "same_write")
+pub fn same_write(a: FileStamp, b: FileStamp) -> Bool
 
 /// Whether a (lower-case) host holds only letters, digits, `-`, `_` and `.`.
 @external(erlang, "redirect_proxy_ffi", "is_host_name")

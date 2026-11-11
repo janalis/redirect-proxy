@@ -149,17 +149,23 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
   let back = form_value(form, "return_to")
   let version = form_version(form.values)
   let #(rules, current) = store.versioned(ctx.store)
+  let all_matching = form_value(form, "all_matching") == "on"
+  // the filters select the rules the page showed only under its version,
+  // which the list and the confirmation always carry
   use <- bool.lazy_guard(
-    option.map(version, fn(v) { v != current }) |> option.unwrap(False),
+    case version {
+      Some(v) -> v != current
+      None -> all_matching
+    },
     fn() { stale_bulk(ctx, s) },
   )
-  let selected = case form_value(form, "all_matching") {
-    "on" -> {
+  let selected = case all_matching {
+    True -> {
       let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
       matching(rules, filters)
       |> list.map(fn(r) { r.id })
     }
-    _ ->
+    False ->
       form.values
       |> list.filter(fn(kv) { kv.0 == "ids" })
       |> list.map(fn(kv) { kv.1 })
@@ -173,12 +179,25 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
         _ -> {
           let wanted = set.from_list(ids)
           let rules = list.filter(rules, fn(r) { set.contains(wanted, r.id) })
+          // every matching rule is confirmed with the filters (under the
+          // version, they select the same rules), not one field per rule:
+          // thousands of ids would go past the form size limit
+          let selection = case all_matching {
+            True -> [
+              #("all_matching", "on"),
+              ..list.filter(form.values, fn(kv) {
+                string.starts_with(kv.0, "filter_")
+              })
+            ]
+            False -> list.map(ids, fn(id) { #("ids", id) })
+          }
           html(
             200,
             rules_view.confirm_bulk_delete(
               s,
               features(ctx),
               rules,
+              selection,
               return_to(back, []),
               current,
             ),

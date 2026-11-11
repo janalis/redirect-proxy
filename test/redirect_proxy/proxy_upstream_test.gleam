@@ -140,8 +140,17 @@ fn start() -> Proxy {
 }
 
 fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
+  exchange_waiting(proxy, chunks, 800)
+}
+
+/// Like exchange/2, waiting up to `wait_ms` for each answer.
+fn exchange_waiting(
+  proxy: Proxy,
+  chunks: List(String),
+  wait_ms: Int,
+) -> #(String, Bool) {
   let #(received, closed) =
-    session(proxy.port, list.map(chunks, bit_array.from_string), 800)
+    session(proxy.port, list.map(chunks, bit_array.from_string), wait_ms)
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -150,8 +159,22 @@ fn exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
 /// does something 20 ms after a response (/idle-close, /linger), even one
 /// that needs a TLS handshake first.
 fn paced_exchange(proxy: Proxy, chunks: List(String)) -> #(String, Bool) {
+  paced_exchange_waiting(proxy, chunks, 800)
+}
+
+/// Like paced_exchange/2, waiting up to `wait_ms` for each answer.
+fn paced_exchange_waiting(
+  proxy: Proxy,
+  chunks: List(String),
+  wait_ms: Int,
+) -> #(String, Bool) {
   let #(received, closed) =
-    paced_session(proxy.port, list.map(chunks, bit_array.from_string), 200, 800)
+    paced_session(
+      proxy.port,
+      list.map(chunks, bit_array.from_string),
+      200,
+      wait_ms,
+    )
   let assert Ok(text) = bit_array.to_string(received)
   #(text, closed)
 }
@@ -464,6 +487,13 @@ pub fn hop_by_hop_headers_are_not_forwarded_test() {
   assert !string.contains(echoed, "\nte: ")
   assert !string.contains(echoed, "6.6.6.6")
   assert string.contains(echoed, "\nx-forwarded-for: 192.0.2.1\n")
+  // a hop-by-hop header named with `_` in `Connection`
+  let #(text, _) =
+    exchange(proxy, [
+      "GET /echo HTTP/1.1\r\nhost: a\r\nConnection: x_private\r\nX_Private: secret\r\nX-Private: secret\r\nconnection: close\r\n\r\n",
+    ])
+  assert string.contains(text, "\nx-forwarded-for: ")
+  assert !string.contains(text, "secret")
 }
 
 /// Some servers read `_` in a header name as `-`: the `_` spellings of the
@@ -680,21 +710,31 @@ pub fn https_upstreams_test() {
       ),
       counter,
     )
+  // and the client waits as long for the answer
   let #(text, _) =
-    exchange(proxy, [
-      "POST /tls HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
-      "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
-    ])
+    exchange_waiting(
+      proxy,
+      [
+        "POST /tls HTTP/1.1\r\nhost: a\r\ncontent-length: 2\r\n\r\nhi",
+        "GET /again HTTP/1.1\r\nhost: a\r\n\r\n",
+      ],
+      3000,
+    )
   assert string.contains(text, "POST /tls\nconn=1\n")
   assert string.contains(text, "body=hi")
   assert string.contains(text, "GET /again\nconn=1\n")
   // closed by the upstream, or sent unasked bytes, while idle: replaced
+  // (each with a new handshake)
   let #(text, _) =
-    paced_exchange(proxy, [
-      "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
-      "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
-      "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
-    ])
+    paced_exchange_waiting(
+      proxy,
+      [
+        "GET /idle-close HTTP/1.1\r\nhost: a\r\n\r\n",
+        "GET /linger HTTP/1.1\r\nhost: a\r\n\r\n",
+        "GET /last HTTP/1.1\r\nhost: a\r\n\r\n",
+      ],
+      3000,
+    )
   assert string.contains(text, "GET /idle-close\nconn=2\n")
   assert string.contains(text, "GET /linger\nconn=3\n")
   assert string.contains(text, "GET /last\nconn=4\n")
@@ -878,6 +918,14 @@ pub fn content_length_is_sent_once_test() {
 /// test upstream, with these trusted proxies (`access_log`), and the
 /// identity headers of `auth.header` with its trusted proxies (`identity`).
 fn start_server(trusted: List(String), identity: List(String)) -> Int {
+  start_server_with(trusted, ["X-Forwarded-User", "x-auth-role", ""], identity)
+}
+
+fn start_server_with(
+  trusted: List(String),
+  identity_headers: List(String),
+  identity: List(String),
+) -> Int {
   let #(port, _) = start_upstream()
   let d = config.default().server
   let cfg =
@@ -894,7 +942,7 @@ fn start_server(trusted: List(String), identity: List(String)) -> Int {
         "",
         option.None,
         trusted,
-        ["X-Forwarded-User", "x-auth-role", ""],
+        identity_headers,
         identity,
       ),
       server.http_options(cfg, option.None, trusted, []),
@@ -923,8 +971,9 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   assert !string.contains(text, "admin")
   assert string.contains(text, "\nx-other: kept\n")
   assert string.contains(text, "\nx-forwarded-for: 127.0.0.1\n")
-  // trusted proxies pass them on, but for the `_` variants of the
-  // headers this server sets
+  // trusted proxies pass on those naming the client, but for the `_`
+  // variants of the headers this server sets, and not those of
+  // `auth.header`: only its own trusted proxies vouch for a user
   let #(received, _) =
     session(
       start_server(["127.0.0.1/32"], []),
@@ -935,10 +984,29 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   assert string.contains(text, "\nx-client-ip: 6.6.6.1\n")
   assert string.contains(text, "\ntrue-client-ip: 6.6.6.2\n")
   assert string.contains(text, "\nx_real_ip: 6.6.6.3\n")
-  assert string.contains(text, "\nx-forwarded-user: alice\n")
-  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "alice")
+  assert !string.contains(text, "admin")
   assert !string.contains(text, "6.6.6.4")
   assert !string.contains(text, "https")
+}
+
+/// Identity headers configured with `_` in their name are dropped in both
+/// spellings too.
+pub fn identity_headers_named_with_underscores_are_dropped_test() {
+  let #(received, _) =
+    session(
+      start_server_with([], ["x_remote_user"], []),
+      [
+        bit_array.from_string(
+          "GET /echo HTTP/1.1\r\nhost: a\r\nx_remote_user: alice\r\nX-Remote-User: admin\r\nconnection: close\r\n\r\n",
+        ),
+      ],
+      800,
+    )
+  let assert Ok(text) = bit_array.to_string(received)
+  assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+  assert !string.contains(text, "alice")
+  assert !string.contains(text, "admin")
 }
 
 /// The identity headers of `auth.header` are taken from its own trusted

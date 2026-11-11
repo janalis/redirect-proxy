@@ -61,9 +61,10 @@ answering 404 (`server.fallback_url` cannot be set as well).
   HTTP/1.0 request without `Host`) and the others dropped, with
   `X-Client-IP` and `True-Client-IP`, so that the upstream cannot be
   handed a forged address or host. When `auth.header` is enabled, its user, email
-  and role headers are dropped too from peers in neither
-  `access_log.trusted_proxies` nor `auth.header.trusted_proxies`, so that
-  the upstream cannot be handed a forged identity (with `auth.header`
+  and role headers are dropped too from peers outside
+  `auth.header.trusted_proxies` (listing a proxy in
+  `access_log.trusted_proxies` does not vouch for the users it forwards),
+  so that the upstream cannot be handed a forged identity (with `auth.header`
   disabled, they are passed on: an authenticating proxy may set them).
   A header spelled with `_` instead of `-` (`X_Forwarded_For`), which some
   applications read as the same one, is dropped whenever its `-` spelling

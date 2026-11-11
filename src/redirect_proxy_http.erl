@@ -639,11 +639,19 @@ request(Buffer, #conn{max_head = Max} = C) ->
 %% One pass over the head, without `erlang:decode_packet` (whose header
 %% lines cost several times the rest of the parse): the request line, then
 %% each header line, the bytes checked as they are read.
-%% blank lines before a request line are ignored (RFC 9112 2.2)
-parse(<<"\r\n", Rest/binary>>) -> parse(Rest);
-parse(<<"\n", Rest/binary>>) -> parse(Rest);
-parse(<<"\r">>) -> more;
-parse(Buffer) -> method(Buffer).
+%% Blank lines before a request line are ignored (RFC 9112 2.2), up to
+%% ?MAX_BLANK_LINES: a head made only of blank lines is not complete, so
+%% each new packet of it would be parsed again from its first byte, up to
+%% max_head bytes.
+-define(MAX_BLANK_LINES, 8).
+parse(Buffer) -> parse(Buffer, 0).
+
+parse(<<"\r\n", _/binary>>, ?MAX_BLANK_LINES) -> {error, 400};
+parse(<<"\n", _/binary>>, ?MAX_BLANK_LINES) -> {error, 400};
+parse(<<"\r\n", Rest/binary>>, N) -> parse(Rest, N + 1);
+parse(<<"\n", Rest/binary>>, N) -> parse(Rest, N + 1);
+parse(<<"\r">>, _) -> more;
+parse(Buffer, _) -> method(Buffer).
 
 %% The method: the common ones matched whole, any other token kept as is.
 method(<<"GET ", Rest/binary>>) -> target(Rest, get);
@@ -1105,8 +1113,9 @@ forward(Request, Version, Rest, CloseAfter, {XForwarded, Dropped}, Done, C) ->
             Up = C#conn.upstream,
             %% the client's values of the headers the handler sets, and of
             %% the ones it drops (forwarding headers from untrusted peers)
-            Drop = [T || T <- Tokens, not essential(T)]
-                ++ [N || {N, _} <- XForwarded] ++ Dropped,
+            %% in the form request_headers/2 compares (`_` read as `-`)
+            Drop = [dashed(N) || N <- [T || T <- Tokens, not essential(T)]
+                ++ [N || {N, _} <- XForwarded] ++ Dropped],
             HasBody = Body =/= none andalso Body =/= {length, 0},
             Head = [method_name(Method), $\s, Path,
                     case Query of none -> []; {some, Q} -> [$?, Q] end,
@@ -1238,16 +1247,18 @@ essential(_) -> false.
 %% `content_length` with the framing headers (next to the normalised ones,
 %% they would give such an upstream two framings of one body).
 request_headers([{Name, Value} | Rest], Drop) ->
-    Dropped = case binary:match(Name, <<"_">>) of
-        nomatch -> dropped(Name, Drop);
-        _ -> dropped(binary:replace(Name, <<"_">>, <<"-">>, [global]), Drop)
-    end,
-    case Dropped of
+    case dropped(dashed(Name), Drop) of
         true -> request_headers(Rest, Drop);
         false -> [Name, <<": ">>, Value, <<"\r\n">> | request_headers(Rest, Drop)]
     end;
 request_headers([], _) ->
     [].
+
+dashed(Name) ->
+    case binary:match(Name, <<"_">>) of
+        nomatch -> Name;
+        _ -> binary:replace(Name, <<"_">>, <<"-">>, [global])
+    end.
 
 dropped(Name, _) when ?HOP_BY_HOP(Name) -> true;
 dropped(<<"expect">>, _) -> true;

@@ -15,9 +15,12 @@ session.
 - With `storage.watch_interval = <seconds>` (`RP_STORAGE_WATCH_INTERVAL`),
   the server checks the file that often and reloads it when it changed,
   without a signal: for a Kubernetes ConfigMap, a GitOps sync or an
-  editor. The server's own writes are not taken for changes, and an
-  invalid file is reported once (`rules.reload_failed`), not at every
-  check.
+  editor. The server's own writes are not taken for changes, and a file
+  that does not load is reported once (`rules.reload_failed`), not at
+  every check, and tried again when it is written again, even unchanged
+  (a file renamed over it, or written two seconds later at least: file
+  times count whole seconds), or on `SIGHUP`: an invalid one, or one with rules without ids whose
+  ids the server could not write (a read-only volume, a full disk).
 
 - If the rule store restarts after a crash while the file is invalid, it
   keeps the rules it had (and logs an error) instead of failing again until
@@ -80,7 +83,9 @@ Each change keeps the previous file as
 
 `<data_dir>/audit.jsonl` records who changed what, with the rule
 before and after, and sign-ins: logins, failed logins (with the client
-address) and logouts, for local, SSO and proxy-header sessions. SSO entries
+address) and logouts, for local, SSO and proxy-header sessions, and wrong
+current passwords given to change a password
+(`auth.password_check_failed`). SSO entries
 carry the provider `issuer` and `subject`, failed ones the reason. Names
 from SSO and proxy headers are recorded as `sso:<name>` and
 `proxy:<name>`, so that they cannot pass for a local user, `system` or an
