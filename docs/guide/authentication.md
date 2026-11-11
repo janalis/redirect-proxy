@@ -69,8 +69,9 @@ clients can reach, and never point `server.upstream` at the admin port.
 
 ::: tip The website behind `server.upstream`
 The redirect listener drops these identity headers (and their `_`
-spellings) from clients outside `trusted_proxies` only while `auth.header`
-is enabled. When the website behind `server.upstream` trusts such headers
+spellings) from clients outside `auth.header.trusted_proxies`, even
+those in `access_log.trusted_proxies`, only while `auth.header` is
+enabled. When the website behind `server.upstream` trusts such headers
 itself (behind oauth2-proxy, for instance), make sure the proxy in front
 sets them on every request, so that a client cannot send its own.
 :::

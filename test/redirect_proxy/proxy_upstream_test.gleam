@@ -938,8 +938,9 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   assert !string.contains(text, "admin")
   assert string.contains(text, "\nx-other: kept\n")
   assert string.contains(text, "\nx-forwarded-for: 127.0.0.1\n")
-  // trusted proxies pass them on, but for the `_` variants of the
-  // headers this server sets
+  // trusted proxies pass on those naming the client, but for the `_`
+  // variants of the headers this server sets, and not those of
+  // `auth.header`: only its own trusted proxies vouch for a user
   let #(received, _) =
     session(
       start_server(["127.0.0.1/32"], []),
@@ -950,8 +951,8 @@ pub fn identity_headers_from_untrusted_peers_are_dropped_test() {
   assert string.contains(text, "\nx-client-ip: 6.6.6.1\n")
   assert string.contains(text, "\ntrue-client-ip: 6.6.6.2\n")
   assert string.contains(text, "\nx_real_ip: 6.6.6.3\n")
-  assert string.contains(text, "\nx-forwarded-user: alice\n")
-  assert string.contains(text, "\nx_auth_role: admin\n")
+  assert !string.contains(text, "alice")
+  assert !string.contains(text, "admin")
   assert !string.contains(text, "6.6.6.4")
   assert !string.contains(text, "https")
 }
