@@ -312,6 +312,9 @@ type State {
     rejected: String,
     rejected_at: Int,
     rejected_retry: Bool,
+    /// Whether its content was read (not only the lock refused): tried
+    /// again, it is reported only if not.
+    rejected_read: Bool,
     /// The stamp of the file the watcher last could not read, for the same
     /// reason.
     unreadable: String,
@@ -358,6 +361,7 @@ fn initial_state(
     rejected: "",
     rejected_at: 0,
     rejected_retry: False,
+    rejected_read: False,
     unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
@@ -962,7 +966,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                 // made meanwhile): nothing left to try again
                 True if found == state.fingerprint ->
                   actor.continue(
-                    State(..state, stamp:, rejected: "", rejected_retry: False),
+                    State(
+                      ..in_effect(state, state.rules, state.fingerprint),
+                      stamp:,
+                    ),
                   )
                 True -> actor.continue(State(..state, stamp:))
                 False -> {
@@ -971,23 +978,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                     reload_file_or_busy(
                       State(..state, stamp:),
                       "watch",
-                      quiet: found == state.rejected,
+                      quiet: found == state.rejected && state.rejected_read,
                     )
                   case outcome {
                     Ok(_) -> actor.continue(reloaded)
                     // the lock held by another process: the next tick
                     // tries again
-                    Error(store_file.LoadFailure(lock_busy: True, ..)) ->
+                    Error(store_file.LockHeld(_)) ->
                       actor.continue(State(..reloaded, stamp: state.stamp))
                     // a file that does not load (invalid, or without ids
                     // a read-only replica cannot write) is reported once
                     // (the content load read, which may be newer)
-                    Error(store_file.LoadFailure(
-                      lock_busy: False,
-                      read:,
-                      retry_later:,
-                      ..,
-                    )) ->
+                    // a file that does not load is reported once (the
+                    // content load read, which may be newer); one that may
+                    // load later as it is is tried again by the minute,
+                    // quietly if its content was read
+                    Error(failure) -> {
+                      let #(read, retry, was_read) = case failure {
+                        store_file.LockNotCreated(_) -> #("", True, False)
+                        store_file.IdsNotWritten(read:, ..) -> #(
+                          read,
+                          True,
+                          True,
+                        )
+                        store_file.Invalid(read:, ..) -> #(read, False, True)
+                        store_file.LockHeld(_) -> #("", False, False)
+                      }
                       actor.continue(
                         State(
                           ..reloaded,
@@ -996,9 +1012,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                             read -> read
                           },
                           rejected_at: ffi.now_seconds(),
-                          rejected_retry: retry_later,
+                          rejected_retry: retry,
+                          rejected_read: was_read,
                         ),
                       )
+                    }
                   }
                 }
               }
@@ -1047,6 +1065,19 @@ fn reload_file(
   #(state, result.map_error(outcome, fn(failure) { failure.reason }))
 }
 
+/// The rules in effect are now `rules`, from the file of `fingerprint`:
+/// nothing the watcher rejected is left to try or to skip.
+fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
+  State(
+    ..state,
+    rules:,
+    fingerprint:,
+    rejected: "",
+    rejected_retry: False,
+    rejected_read: False,
+  )
+}
+
 /// Whether the content the watcher could not load was valid, and failed a
 /// minute ago or more: writing its ids may succeed now (a disk no longer
 /// full).
@@ -1084,17 +1115,7 @@ fn reload_file_or_busy(
         fingerprint,
       )
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
-      // nothing left to try again
-      #(
-        State(
-          ..state,
-          rules:,
-          fingerprint:,
-          rejected: "",
-          rejected_retry: False,
-        ),
-        Ok(list.length(rules)),
-      )
+      #(in_effect(state, rules, fingerprint), Ok(list.length(rules)))
     }
     Error(failure) if quiet -> #(state, Error(failure))
     Error(failure) -> {
@@ -1167,7 +1188,7 @@ fn mutate(
         Ok(state) ->
           case change(state) {
             Ok(#(value, rules, fingerprint)) -> {
-              let changed = State(..state, rules:, fingerprint:)
+              let changed = in_effect(state, rules, fingerprint)
               #(save_hits_if_removed(state.rules, changed), Ok(value))
             }
             Error(error) -> #(state, Error(error))
@@ -1217,16 +1238,18 @@ fn refresh(state: State) -> Result(State, String) {
           case
             store_file.load_failing(files(state.settings), store_file.Reloading)
           {
-            Error(store_file.LoadFailure(reason:, valid: True, ..)) ->
+            Error(store_file.IdsNotWritten(reason:, ..)) ->
               Error(
                 "storage: the redirections file was changed outside the server, and the ids of its rules without one could not be written, so it was not overwritten. Free space or fix the permissions, then retry. "
                 <> reason,
               )
-            Error(store_file.LoadFailure(reason:, ..)) ->
+            Error(failure) -> {
+              let reason = failure.reason
               Error(
                 "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
                 <> reason,
               )
+            }
             Ok(#(rules, fingerprint)) -> {
               let started = ffi.monotonic_micros()
               commit.loaded(target(state.settings), rules, checker.Problems)
@@ -1246,15 +1269,7 @@ fn refresh(state: State) -> Result(State, String) {
                 <> int.to_string(list.length(rules))
                 <> " rule(s) before applying the change",
               )
-              Ok(
-                State(
-                  ..state,
-                  rules:,
-                  fingerprint:,
-                  rejected: "",
-                  rejected_retry: False,
-                ),
-              )
+              Ok(in_effect(state, rules, fingerprint))
             }
           }
       }

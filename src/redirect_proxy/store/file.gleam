@@ -41,20 +41,17 @@ pub fn load_locked(
   |> result.map_error(fn(failure) { failure.reason })
 }
 
-/// Why a load failed. `lock_busy`: another process held the lock (trying
-/// again soon may succeed). `read` is the fingerprint of the content it
-/// read ("" if none): the content refused. `valid` when that content was
-/// valid, and only writing the ids it lacked failed (a full disk, a
-/// read-only volume). `retry_later` when it may load later as it is: such
-/// content, or a lock that could not be created.
+/// Why a load failed. `read` is the fingerprint of the content refused.
 pub type LoadFailure {
-  LoadFailure(
-    reason: String,
-    lock_busy: Bool,
-    read: String,
-    valid: Bool,
-    retry_later: Bool,
-  )
+  /// Another process held the lock: trying again soon may succeed.
+  LockHeld(reason: String)
+  /// The lock could not be created (a full disk): the content was not read.
+  LockNotCreated(reason: String)
+  /// The content is invalid.
+  Invalid(reason: String, read: String)
+  /// The content is valid, but the ids of its rules without one could not
+  /// be written (a full disk, a read-only volume).
+  IdsNotWritten(reason: String, read: String)
 }
 
 /// `load_locked`, saying why it failed (`LoadFailure`).
@@ -68,22 +65,8 @@ pub fn load_locked_or_busy(
       load_failing(files, mode)
     })
   {
-    Error(ffi.Held(message)) ->
-      Error(LoadFailure(
-        message,
-        lock_busy: True,
-        read: "",
-        valid: False,
-        retry_later: False,
-      ))
-    Error(ffi.CannotCreate(message)) ->
-      Error(LoadFailure(
-        message,
-        lock_busy: False,
-        read: "",
-        valid: False,
-        retry_later: True,
-      ))
+    Error(ffi.Held(message)) -> Error(LockHeld(message))
+    Error(ffi.CannotCreate(message)) -> Error(LockNotCreated(message))
     Ok(loaded) -> loaded
   }
 }
@@ -98,15 +81,17 @@ pub fn load(
   load_failing(files, mode) |> result.map_error(fn(failure) { failure.reason })
 }
 
-/// `load`, saying why it failed (`LoadFailure`, never `lock_busy`).
+/// `load`, saying why it failed (`Invalid` or `IdsNotWritten`).
 pub fn load_failing(
   files: Files,
   mode: LoadMode,
 ) -> Result(#(List(Rule), String), LoadFailure) {
   load_reading(files, mode)
   |> result.map_error(fn(failure) {
-    let #(reason, read, valid) = failure
-    LoadFailure(reason, lock_busy: False, read:, valid:, retry_later: valid)
+    case failure {
+      #(reason, read, True) -> IdsNotWritten(reason, read)
+      #(reason, read, False) -> Invalid(reason, read)
+    }
   })
 }
 

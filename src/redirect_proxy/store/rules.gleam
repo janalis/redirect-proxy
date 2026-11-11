@@ -40,8 +40,8 @@ type Later {
     changes: List(Change),
     matchers: Dict(Int, matcher.Matcher),
     /// Past the matchers kept: one of every rule not expired, schedules
-    /// aside, with the rules by id (see `follow_loop`), built once.
-    beyond: Option(#(matcher.Matcher, Dict(String, Rule))),
+    /// aside (see `follow_loop`), built once.
+    beyond: Option(matcher.Matcher),
   )
 }
 
@@ -124,32 +124,21 @@ fn follow_loop(
                   )
                 }
                 // past them, the start of a rule that starts later is
-                // still followed (it can only loop from then), through one
-                // matcher of every rule not expired, schedules aside: a
-                // cycle found there loops if its rules are all in effect
-                // then (rules taking turns on a path may hide one there).
-                // A loop that comes about at another time is logged then
-                // (the store republishes the rules, and checks them).
+                // still followed (it can only loop from then): first
+                // through one matcher of every rule not expired, schedules
+                // aside, built once; a loop found there is confirmed with
+                // the rules in effect then (rarely: one matcher each). A
+                // rule not in effect yet may hide one there, logged when
+                // it comes about (the store republishes the rules then,
+                // and checks them), as is a loop at another time.
                 False if at == starts -> {
-                  let #(beyond, by_id) = case later.beyond {
+                  let beyond = case later.beyond {
                     Some(beyond) -> beyond
                     None -> beyond_matcher(rules)
                   }
-                  let later = Later(..later, beyond: Some(#(beyond, by_id)))
-                  let in_effect = fn(cycle: List(Rule)) {
-                    list.all(cycle, fn(r) {
-                      case dict.get(by_id, r.id) {
-                        Ok(r) -> rule.is_active(r, at)
-                        Error(Nil) -> False
-                      }
-                    })
-                  }
+                  let later = Later(..later, beyond: Some(beyond))
                   case found(beyond) {
-                    Ok(cycle) ->
-                      case in_effect(cycle) {
-                        True -> list.Stop(#(refused(cycle), later))
-                        False -> list.Continue(#(Ok(Nil), later))
-                      }
+                    Ok(_) -> follow(matcher.build_at(rules, at), later)
                     Error(Nil) -> list.Continue(#(Ok(Nil), later))
                   }
                 }
@@ -161,18 +150,13 @@ fn follow_loop(
   }
 }
 
-/// A matcher of the rules not expired, their schedules aside, and the
-/// rules by id.
-fn beyond_matcher(rules: List(Rule)) -> #(matcher.Matcher, Dict(String, Rule)) {
+/// A matcher of the rules not expired, their schedules aside.
+fn beyond_matcher(rules: List(Rule)) -> matcher.Matcher {
   let now = ffi.now_seconds()
-  let pending =
-    list.filter(rules, fn(r) { r.enabled && rule.window(r).1 > now })
-  #(
-    pending
-      |> list.map(fn(r) { rule.Rule(..r, starts_at: "", expires_at: "") })
-      |> matcher.build,
-    list.map(pending, fn(r) { #(r.id, r) }) |> dict.from_list,
-  )
+  rules
+  |> list.filter(fn(r) { r.enabled && rule.window(r).1 > now })
+  |> list.map(fn(r) { rule.Rule(..r, starts_at: "", expires_at: "") })
+  |> matcher.build
 }
 
 /// The times to come, within the window of `changed`, at which the rules
