@@ -456,7 +456,12 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ),
                 ]),
               ),
-              ..store_errors([#("400", "Invalid match, enabled or sort value.")])
+              ..store_errors([
+                #(
+                  "400",
+                  "Invalid match, enabled, sort, page or per_page value.",
+                ),
+              ])
             ]),
           ),
         ]),
@@ -599,6 +604,10 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               ..store_errors([
                 #("404", "Not found."),
                 #("412", "Version mismatch."),
+                #(
+                  "422",
+                  "The redirections file could not be written, or was changed outside the server and is invalid; rules unchanged.",
+                ),
                 #("428", "If-Match is missing and api.require_if_match is on."),
               ])
             ]),
@@ -1075,6 +1084,43 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
           ]),
         ),
         #(
+          "RulesFileRule",
+          object_schema(
+            registry,
+            "RulesFileRule",
+            list.flatten([
+              [
+                #(
+                  "id",
+                  typed(
+                    "string",
+                    "Identifier: a rule of a merge replaces the current one with the same id; without it, the rule is added with a new one.",
+                  ),
+                ),
+              ],
+              rule_properties(False),
+              [
+                #(
+                  "created_at",
+                  typed(
+                    "string",
+                    "RFC 3339 creation time (empty: kept from the current rule with the same id, else the import time).",
+                  ),
+                ),
+                #(
+                  "updated_at",
+                  typed("string", "Exported; set to the import time."),
+                ),
+                #(
+                  "updated_by",
+                  typed("string", "Exported; set to the importer."),
+                ),
+              ],
+            ]),
+            ["source", "target"],
+          ),
+        ),
+        #(
           "RulesFile",
           json.object([
             #(
@@ -1090,7 +1136,7 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                         "rules",
                         json.object([
                           #("type", json.string("array")),
-                          #("items", ref("RuleInput")),
+                          #("items", ref("RulesFileRule")),
                         ]),
                       ),
                     ]),
@@ -1098,7 +1144,7 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ]),
                 json.object([
                   #("type", json.string("array")),
-                  #("items", ref("RuleInput")),
+                  #("items", ref("RulesFileRule")),
                 ]),
               ]),
             ),
@@ -1281,7 +1327,7 @@ fn components(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   "code",
                   typed(
                     "string",
-                    "Stable, machine-readable kind of problem: tell problems apart by it, not by title or detail. bad_request, missing_token, invalid_token, insufficient_scope, not_found, method_not_allowed, already_exists, precondition_failed, precondition_required, content_too_large, unsupported_media_type, validation_failed, reload_rejected, too_many_requests, internal_error.",
+                    "Stable, machine-readable kind of problem: tell problems apart by it, not by title or detail. bad_request, missing_token, invalid_token, insufficient_scope, not_found, method_not_allowed, already_exists, precondition_failed, precondition_required, content_too_large, unsupported_media_type, validation_failed, reload_rejected, too_many_requests, store_busy, internal_error.",
                   ),
                 ),
                 #("detail", string_schema()),

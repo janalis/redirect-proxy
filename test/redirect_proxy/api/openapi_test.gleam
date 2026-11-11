@@ -70,6 +70,37 @@ pub fn openapi_document_test() {
       decode.list(decode.dynamic),
     )
   assert list.length(patch_status) == 2
+  // statuses and codes the code answers with
+  assert documented("/api/redirects/{id}", "delete", "422")
+  let problem_codes =
+    field(
+      resp.body,
+      ["components", "schemas", "Problem", "properties", "code", "description"],
+      decode.string,
+    )
+  assert string.contains(problem_codes, "store_busy")
+  let list_400 =
+    field(
+      resp.body,
+      ["paths", "/api/redirects", "get", "responses", "400", "description"],
+      decode.string,
+    )
+  assert string.contains(list_400, "page")
+  // an export imports again: its rules keep their ids and dates
+  let exported =
+    field(
+      resp.body,
+      ["components", "schemas", "RulesFileRule", "properties"],
+      decode.dict(decode.string, decode.dynamic),
+    )
+  ["id", "created_at", "updated_at", "updated_by", "source", "target"]
+  |> list.each(fn(name) {
+    let assert Ok(_) = dict_get(exported, name)
+  })
+  assert string.contains(
+    resp.body,
+    "\"items\":{\"$ref\":\"#/components/schemas/RulesFileRule\"}",
+  )
 }
 
 pub fn deprecations_are_announced_test() {
