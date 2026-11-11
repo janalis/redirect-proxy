@@ -99,24 +99,29 @@ pub fn sso_requests_that_are_not_navigations_are_refused_test() {
         ),
       ),
     )
-  let request = fn(path, mode) {
+  let request = fn(path, mode, dest) {
     get(env.admin <> path, [
       #("x-forwarded-for", "198.51.100.30"),
       #("sec-fetch-mode", mode),
+      #("sec-fetch-dest", dest),
       #("sec-fetch-site", "cross-site"),
     ]).status
   }
-  let images =
+  // images, and frames (navigations too, but not of the page itself)
+  let embedded =
     list.map(list.repeat(Nil, 40), fn(_) {
       #(
-        request("/auth/oidc/start", "no-cors"),
-        request("/auth/oidc/callback?error=x", "no-cors"),
+        request("/auth/oidc/start", "no-cors", "image"),
+        request("/auth/oidc/callback?error=x", "no-cors", "image"),
+        request("/auth/oidc/start", "navigate", "iframe"),
+        request("/auth/oidc/callback?error=x", "navigate", "iframe"),
       )
     })
-  assert list.unique(images) == [#(403, 403)]
+  assert list.unique(embedded) == [#(403, 403, 403, 403)]
   // the browser of that address still signs in
-  assert request("/auth/oidc/start", "navigate") == 303
-  assert request("/auth/oidc/callback?state=x&code=y", "navigate") == 403
+  assert request("/auth/oidc/start", "navigate", "document") == 303
+  assert request("/auth/oidc/callback?state=x&code=y", "navigate", "document")
+    == 403
   assert get(env.admin <> "/auth/oidc/start", [
       #("x-forwarded-for", "198.51.100.30"),
     ]).status

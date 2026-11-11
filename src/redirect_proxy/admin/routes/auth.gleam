@@ -614,14 +614,21 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
 }
 
 /// Refuses, before it counts against any budget, a request the browser
-/// says is not a navigation (Fetch Metadata): an image or a script of
-/// another site pointing at a sign-in page, which would spend the budget
+/// says is not a navigation of the page itself (Fetch Metadata): an image,
+/// a script or a frame of another site pointing at a sign-in page, which would spend the budget
 /// of the visitor's address, or replace a sign-in in progress. Clients
 /// that do not send the header are not refused.
 fn navigation_only(req: Request, next: fn() -> Response) -> Response {
-  case request.get_header(req, "sec-fetch-mode") {
-    Ok(mode) if mode != "navigate" -> wisp.response(403)
-    _ -> next()
+  let is = fn(header, expected) {
+    case request.get_header(req, header) {
+      Ok(value) -> value == expected
+      Error(Nil) -> True
+    }
+  }
+  // a frame is a navigation too, but not of the page itself
+  case is("sec-fetch-mode", "navigate") && is("sec-fetch-dest", "document") {
+    True -> next()
+    False -> wisp.response(403)
   }
 }
 
