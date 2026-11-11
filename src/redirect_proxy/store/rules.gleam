@@ -254,12 +254,7 @@ pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(String)) {
 /// Rejects duplicate ids and duplicate exact sources on the same host, and
 /// exact rules redirecting to themselves.
 pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
-  let duplicate_ids =
-    rules
-    |> list.group(fn(r) { r.id })
-    |> dict.filter(fn(key, group) { key != "" && list.length(group) > 1 })
-    |> dict.keys
-    |> list.map(fn(key) { "id: duplicate id " <> key })
+  let duplicate_ids = duplicate_ids(rules)
 
   // in the form the matcher compares hosts and paths: example.com:8080 and
   // example.com are one host, /café and /caf%C3%A9 one path
@@ -399,16 +394,20 @@ pub fn check_new_ids(
       }
     })
   // ids trimmed by `resolve_ids` may now be the same
-  let duplicates =
-    rules
-    |> list.group(fn(r) { r.id })
-    |> dict.filter(fn(_, group) { list.length(group) > 1 })
-    |> dict.keys
-    |> list.map(fn(id) { "id: duplicate id " <> id })
-  case list.append(invalid, duplicates) {
+  case list.append(invalid, duplicate_ids(rules)) {
     [] -> Ok(Nil)
     errors -> Error(errors)
   }
+}
+
+/// The ids that more than one rule has, as errors, in order.
+fn duplicate_ids(rules: List(Rule)) -> List(String) {
+  rules
+  |> list.group(fn(r) { r.id })
+  |> dict.filter(fn(id, group) { id != "" && list.length(group) > 1 })
+  |> dict.keys
+  |> list.sort(string.compare)
+  |> list.map(fn(id) { "id: duplicate id " <> id })
 }
 
 /// Gives the imported rules without a creation date (a CSV file has none)
