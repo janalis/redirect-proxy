@@ -10,8 +10,8 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import integration_support.{
-  between, boot, find_id, get, hidden_value, location, login, login_with_role,
-  post_form, send,
+  type Env, between, boot, find_id, get, hidden_value, location, login,
+  login_with_role, post_form, send,
 }
 import redirect_proxy/config
 import redirect_proxy/ffi
@@ -57,6 +57,7 @@ pub fn admin_bulk_actions_test() {
       #("action", "delete"),
       #("all_matching", "on"),
       #("filter_kind", "regex"),
+      #("version", list_version(env, cookie)),
       #("return_to", "/rules"),
     ])
   assert confirm.status == 200
@@ -828,6 +829,7 @@ pub fn bulk_delete_of_many_matching_rules_test() {
       #("action", "delete"),
       #("all_matching", "on"),
       #("filter_q", "/many/"),
+      #("version", list_version(env, cookie)),
       #("return_to", "/rules"),
     ])
   assert confirm.status == 200
@@ -837,6 +839,17 @@ pub fn bulk_delete_of_many_matching_rules_test() {
   let unversioned =
     list.filter(confirm_fields(confirm.body), fn(kv) { kv.0 != "version" })
   assert post_form(env, "/rules/bulk", cookie, unversioned).status == 409
+  assert get(env.redirect <> "/many/1999", []).status == 301
+  // nor any other action on every matching rule
+  let disable =
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "disable"),
+      #("all_matching", "on"),
+      #("filter_q", "/many/"),
+      #("return_to", "/rules"),
+    ])
+  assert disable.status == 409
   assert get(env.redirect <> "/many/1999", []).status == 301
   let resp = post_form(env, "/rules/bulk", cookie, confirm_fields(confirm.body))
   assert resp.status == 303
@@ -857,4 +870,12 @@ fn confirm_fields(page: String) -> List(#(String, String)) {
     use #(value, _) <- result.try(string.split_once(rest, "\""))
     Ok(#(name, value))
   })
+}
+
+/// The version of the rules the list page shows, as its bulk form carries
+/// it.
+fn list_version(env: Env, cookie: String) -> String {
+  let page = get(env.admin <> "/rules", [#("cookie", cookie)]).body
+  let assert Ok(#(_, form)) = string.split_once(page, "id=\"bulk\"")
+  hidden_value(form, "version")
 }

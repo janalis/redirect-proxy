@@ -149,11 +149,16 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
   let back = form_value(form, "return_to")
   let version = form_version(form.values)
   let #(rules, current) = store.versioned(ctx.store)
+  let all_matching = form_value(form, "all_matching") == "on"
+  // the filters select the rules the page showed only under its version,
+  // which the list and the confirmation always carry
   use <- bool.lazy_guard(
-    option.map(version, fn(v) { v != current }) |> option.unwrap(False),
+    case version {
+      Some(v) -> v != current
+      None -> all_matching
+    },
     fn() { stale_bulk(ctx, s) },
   )
-  let all_matching = form_value(form, "all_matching") == "on"
   let selected = case all_matching {
     True -> {
       let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
@@ -170,9 +175,6 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
     Ok(_), [] -> wisp.redirect(return_to(back, []))
     Ok(store.Remove), ids ->
       case form_value(form, "confirm") {
-        // the filters select the rules confirmed only under the version
-        // the confirmation showed, which it always carries
-        "yes" if version == None && all_matching -> stale_bulk(ctx, s)
         "yes" -> apply_bulk(ctx, s, ids, store.Remove, current, back)
         _ -> {
           let wanted = set.from_list(ids)
