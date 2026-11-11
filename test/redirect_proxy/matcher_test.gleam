@@ -617,6 +617,41 @@ pub fn explain_follows_queries_test() {
   assert !explained.loops
 }
 
+/// The tester reports a rule whose substitution would leave its target's
+/// host as refused, not as shadowing the rule that applies instead.
+pub fn explain_reports_refused_targets_test() {
+  let rules = [
+    r("go", "*", rule.Prefix, "/go", "https://example.com$1"),
+    Rule(
+      ..r("u", "*.test", rule.Regex, "^/u/(.*)$", "https://$1.example.com/"),
+      enabled: False,
+    ),
+    r("sub", "*.test", rule.Prefix, "/s", "https://${sub}.example.com/p$1"),
+    r("all", "*", rule.Prefix, "/", "/home"),
+  ]
+  let m = matcher.build(rules)
+  let verdicts = fn(url) {
+    let assert Ok(explained) = explain.explain(m, rules, url, False)
+    list.map(explained.candidates, fn(c) { #(c.rule.id, c.verdict) })
+  }
+  assert verdicts("http://h.test/go.evil.com")
+    == [#("go", explain.Refused), #("all", explain.Applied)]
+  assert verdicts("http://h.test/go/page")
+    == [#("go", explain.Applied), #("all", explain.Shadowed)]
+  // refused whether enabled or not: enabling it would not help
+  assert verdicts("http://h.test/u/evil.com/x")
+    == [#("u", explain.Refused), #("all", explain.Applied)]
+  assert verdicts("http://h.test/u/blog")
+    == [#("u", explain.Disabled), #("all", explain.Applied)]
+  // `${sub}` is what the `*` of the rule's host stands for, as when serving
+  assert verdicts("http://a.test/s/x")
+    == [#("sub", explain.Applied), #("all", explain.Shadowed)]
+  assert location(m, "a.test", "/s/x") == Ok("https://a.example.com/p/x")
+  assert verdicts("http://a.h.test/s/x")
+    == [#("sub", explain.Applied), #("all", explain.Shadowed)]
+  assert location(m, "a.h.test", "/s/x") == Ok("https://a.h.example.com/p/x")
+}
+
 pub fn hit_records_test() {
   let m = matcher.build([r("a", "*", rule.Exact, "/a", "/x")])
   assert matcher.last_hit(m, "a") == 0

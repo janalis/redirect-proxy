@@ -25,6 +25,10 @@ pub type Verdict {
   Disabled
   /// Enabled and matching, but outside its `starts_at`/`expires_at` window.
   OutOfSchedule
+  /// Matches the path, but its substitution would leave its target's host
+  /// (open redirect guard): the request goes to the next rule, whether this
+  /// one is enabled or not.
+  Refused
 }
 
 pub type Candidate {
@@ -85,11 +89,15 @@ pub fn explain(
     |> list.map(fn(r) {
       Candidate(r, case r.id == applied_id, r.enabled {
         True, _ -> Applied
-        False, False -> Disabled
-        False, True ->
-          case rule.is_active(r, now) {
-            True -> Shadowed
-            False -> OutOfSchedule
+        False, enabled ->
+          case matcher.target_allowed(r, host, path), enabled {
+            False, _ -> Refused
+            True, False -> Disabled
+            True, True ->
+              case rule.is_active(r, now) {
+                True -> Shadowed
+                False -> OutOfSchedule
+              }
           }
       })
     })
