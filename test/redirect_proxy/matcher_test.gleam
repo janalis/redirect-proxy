@@ -499,6 +499,29 @@ pub fn regex_budget_is_per_request_test() {
   assert location(three, "x.test", path) == Error(Nil)
 }
 
+/// A request that exhausts a host's regex budget is a miss: it does not go
+/// on to the rules of `*.parent` hosts or `*`, which a crafted path could
+/// otherwise reach past the host's own regex rules.
+pub fn regex_budget_stops_the_lookup_test() {
+  let path = "/" <> string.repeat("a", 30) <> "!"
+  let expensive = fn(id) { r(id, "x.test", rule.Regex, "^/(a+)+$", "/x") }
+  let catch_all = fn(host) { r("all", host, rule.Prefix, "/", "/caught") }
+  let rules = [expensive("1"), expensive("2"), expensive("3")]
+  assert location(matcher.build([catch_all("*"), ..rules]), "x.test", path)
+    == Error(Nil)
+  assert location(matcher.build([catch_all("*.test"), ..rules]), "x.test", path)
+    == Error(Nil)
+  assert matcher.lookup_tolerant(
+      matcher.build([catch_all("*"), ..rules]),
+      "x.test",
+      path,
+    )
+    == Error(Nil)
+  // a path the regexes refuse cheaply still reaches the broader rules
+  assert location(matcher.build([catch_all("*"), ..rules]), "x.test", "/b")
+    == Ok("/caught")
+}
+
 /// Substitutions apply to prefix and regex rules only: an exact rule's
 /// target is used as written.
 pub fn exact_targets_are_literal_test() {

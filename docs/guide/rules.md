@@ -169,8 +169,10 @@ adds or changes, so such a file can also be imported again as it is.
 At request time, each regex match also has a fixed backtracking budget,
 and the regex rules of a host have a budget for the whole request: a path
 crafted to make every unindexed regex work hard is answered as a miss once
-it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). Real
-rules come nowhere near it.
+it is spent (counted in `redirect_proxy_regex_limit_exceeded_total`). The
+lookup stops there: the rules of `*.parent` hosts and `*` are not tried,
+nor the trailing slash retry, so such a path cannot reach them past the
+host's own regex rules. Real rules come nowhere near it.
 
 ## Substitutions cannot leave the target's host
 
