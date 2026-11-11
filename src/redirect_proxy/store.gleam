@@ -305,10 +305,12 @@ type State {
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
     stamp: ffi.FileStamp,
-    /// The fingerprint of the content the watcher last found invalid, or
-    /// the stamp of the file it could not read: it is reported once, not at
-    /// every tick that reads it again.
+    /// The fingerprint of the content the watcher last found invalid: it is
+    /// reported once, not at every tick that reads it again.
     rejected: String,
+    /// The stamp of the file the watcher last could not read, for the same
+    /// reason.
+    unreadable: String,
     /// When the hit counts were last saved.
     hits_saved_at: Int,
     /// Whether they were saved since draining began.
@@ -350,6 +352,7 @@ fn initial_state(
     fingerprint:,
     stamp:,
     rejected: "",
+    unreadable: "",
     hits_saved_at: ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
@@ -967,7 +970,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             // recent for a few ticks, read again at each)
             Error(e) -> {
               let unreadable = "unreadable " <> string.inspect(stamp)
-              case state.rejected == unreadable {
+              case state.unreadable == unreadable {
                 True -> Nil
                 False ->
                   log.error(
@@ -975,7 +978,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                     <> simplifile.describe_error(e),
                   )
               }
-              actor.continue(State(..state, stamp:, rejected: unreadable))
+              actor.continue(State(..state, stamp:, unreadable:))
             }
           }
         }

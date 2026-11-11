@@ -822,6 +822,22 @@ pub fn unreadable_watched_file_is_reported_once_test() {
   assert list.count(logs, string.contains(_, "cannot be read")) == 1
 }
 
+/// A file that could not be read for a moment, invalid before and after,
+/// is still reported once.
+pub fn invalid_watched_file_unreadable_for_a_moment_is_reported_once_test() {
+  let dir = support.temp_dir()
+  let s = store.Settings(..settings(dir, 0), watch_interval: 20)
+  let _ = start(s)
+  process.sleep(50)
+  let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
+  support.wait_until(fn() { reload_failures(dir) == 1 }, 2000)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o200)
+  process.sleep(100)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(s.rules_path, 0o600)
+  process.sleep(300)
+  assert reload_failures(dir) == 1
+}
+
 fn audit_actions(dir: String, action: String) -> Int {
   case simplifile.read(dir <> "/audit.jsonl") {
     Ok(content) ->
