@@ -2,7 +2,7 @@
 -module(test_net_ffi).
 -export([free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, upload/4, parse_outcome/1,
-         trickle/3, open/1, send/2, read/2, close/1, connection_process/1, poke/1,
+         trickle/3, open/1, send/2, read/2, read_until/3, close/1, connection_process/1, poke/1,
          start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1,
          shrink_warned/0, warned_size/0]).
 
@@ -159,6 +159,25 @@ send(S, Data) ->
 %% Returns {Received, Closed}.
 read(S, WaitMs) ->
     read_until_closed(S, <<>>, WaitMs).
+
+%% Reads until what was received ends with Suffix, the connection closes,
+%% or WaitMs pass without a byte. Returns {Received, Closed}: unlike read/2,
+%% it does not wait for a silence once the awaited bytes came, so a test
+%% can allow a loaded machine plenty of time at no cost.
+read_until(S, Suffix, WaitMs) ->
+    read_until(S, Suffix, WaitMs, <<>>).
+
+read_until(S, Suffix, WaitMs, Acc) ->
+    N = byte_size(Suffix),
+    case byte_size(Acc) >= N andalso binary:part(Acc, byte_size(Acc) - N, N) =:= Suffix of
+        true -> {Acc, false};
+        false ->
+            case gen_tcp:recv(S, 0, WaitMs) of
+                {ok, Data} -> read_until(S, Suffix, WaitMs, <<Acc/binary, Data/binary>>);
+                {error, closed} -> {Acc, true};
+                {error, _} -> {Acc, false}
+            end
+    end.
 
 close(S) ->
     gen_tcp:close(S),

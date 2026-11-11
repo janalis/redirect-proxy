@@ -201,11 +201,13 @@ pub fn idle_connections_are_closed_test() {
 }
 
 pub fn idle_connections_hibernate_then_serve_test() {
-  // 200 ms between the requests: the connection hibernates after half of
-  // its 300 ms idle timeout, then answers the next one, then is closed
+  // 700 ms between the requests: the connection hibernates after half of
+  // its 1 s idle timeout, then answers the next one, then is closed (200 ms
+  // past the hibernation, 300 ms before the timeout: room for a loaded
+  // machine)
   let #(received, closed) =
     paced_session(
-      start(),
+      start_with_idle_timeout(1000),
       list.map(
         [
           "GET /1 HTTP/1.1\r\nhost: a\r\n\r\n",
@@ -213,8 +215,8 @@ pub fn idle_connections_hibernate_then_serve_test() {
         ],
         bit_array.from_string,
       ),
-      200,
-      1000,
+      700,
+      2000,
     )
   let assert Ok(text) = bit_array.to_string(received)
   assert responses(text) == 2
@@ -479,6 +481,13 @@ fn upload(
 @external(erlang, "test_net_ffi", "open")
 fn open(port: Int) -> Socket
 
+@external(erlang, "test_net_ffi", "read_until")
+fn read_until(
+  socket: Socket,
+  suffix: BitArray,
+  wait_ms: Int,
+) -> #(BitArray, Bool)
+
 @external(erlang, "test_net_ffi", "send")
 fn send(socket: Socket, data: BitArray) -> Nil
 
@@ -628,17 +637,42 @@ pub fn connections_over_the_cap_are_closed_test() {
   let port = start_capped(echo_handler, 2)
   let first = open(port)
   let second = open(port)
-  assert string.starts_with(get(first, 100).0, "HTTP/1.1 200 OK\r\n")
-  assert string.starts_with(get(second, 100).0, "HTTP/1.1 200 OK\r\n")
+  assert string.starts_with(answer(first), "HTTP/1.1 200 OK\r\n")
+  assert string.starts_with(answer(second), "HTTP/1.1 200 OK\r\n")
   let third = open(port)
-  assert get(third, 500) == #("", True)
+  assert get(third, 2000) == #("", True)
   close(third)
   close(first)
-  process.sleep(100)
-  let fourth = open(port)
-  assert string.starts_with(get(fourth, 100).0, "HTTP/1.1 200 OK\r\n")
+  // the slot is freed once the server sees the close: retried until then
+  let fourth = served_once_freed(port, 20)
+  assert string.starts_with(answer(fourth), "HTTP/1.1 200 OK\r\n")
   close(second)
   close(fourth)
+}
+
+/// The response to a `GET /` of the echo handler (whose body is `hello`),
+/// as soon as it is complete.
+fn answer(socket: Socket) -> String {
+  send(socket, <<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(received, _) = read_until(socket, <<"hello":utf8>>, 2000)
+  let assert Ok(text) = bit_array.to_string(received)
+  text
+}
+
+/// A connection the capped server keeps: one closed at once (over the cap)
+/// is retried every 100 ms, `tries` times at most.
+fn served_once_freed(port: Int, tries: Int) -> Socket {
+  let socket = open(port)
+  send(socket, <<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  case read_until(socket, <<"hello":utf8>>, 2000) {
+    #(_, False) -> socket
+    #(_, True) if tries > 1 -> {
+      close(socket)
+      process.sleep(100)
+      served_once_freed(port, tries - 1)
+    }
+    #(_, True) -> socket
+  }
 }
 
 /// A connection that gets an answer, retried every 25 ms.
