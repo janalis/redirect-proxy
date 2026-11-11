@@ -4,7 +4,7 @@
     snapshot_put/2, snapshot_get/1, snapshot_or_init/2,
     regex_compile/2, regex_run/2, regex_limit_init/0, regex_limit_count/0,
     count_regex_limit/0, reductions/0,
-    atomic_write/2, atomic_write_private/2, copy_file_as/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1,
+    atomic_write/2, atomic_write_private/2, copy_file_as/2, append_line/2, memo_file/2, file_stamp/1, stamp_is_recent/1, same_write/2,
     pbkdf2_sha256/4, secure_compare/2,
     ets_new/1, ets_put/3, ets_get/2, ets_delete/2, ets_to_list/1, ets_size/1,
     ets_delete_older/2, ets_insert_new/3,
@@ -261,6 +261,12 @@ file_stamp(Path) ->
             {Inode, MTime, Size};
         {error, _} -> missing
     end.
+
+%% Whether two stamps are of one write of the file: the same file (inode)
+%% and size, its time moved by a second at most (a write in place may set
+%% it again after the content).
+same_write({Inode, MTimeA, Size}, {Inode, MTimeB, Size}) -> abs(MTimeA - MTimeB) =< 1;
+same_write(_, _) -> false.
 
 %% Whether a stamp's modification time is within the last two seconds:
 %% another write in that same second would leave the stamp as it is (the

@@ -485,6 +485,12 @@ pub fn file_stamp(path: String) -> FileStamp
 @external(erlang, "redirect_proxy_ffi", "stamp_is_recent")
 pub fn stamp_is_recent(stamp: FileStamp) -> Bool
 
+/// Whether two stamps are of one write of the file: the same file and
+/// size, its time moved by a second at most (a write in place may set it
+/// again after the content).
+@external(erlang, "redirect_proxy_ffi", "same_write")
+pub fn same_write(a: FileStamp, b: FileStamp) -> Bool
+
 /// Whether a (lower-case) host holds only letters, digits, `-`, `_` and `.`.
 @external(erlang, "redirect_proxy_ffi", "is_host_name")
 pub fn is_host_name(host: String) -> Bool

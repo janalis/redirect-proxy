@@ -952,12 +952,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           case content {
             Ok(content) if content != <<>> -> {
               let found = store_file.fingerprint(content)
-              // the same content: of the write refused, or of one whose
-              // stamp moved while recent (an in-place write can move its
-              // time a second later), not of a write made since
+              // the same content, of the write refused (its time may have
+              // moved since), not of a write made since
               let skipped = case state.rejected {
                 Some(#(at, refused)) ->
-                  refused == found && { at == stamp || ffi.stamp_is_recent(at) }
+                  refused == found && ffi.same_write(at, stamp)
                 None -> False
               }
               case found == state.fingerprint || skipped {
@@ -1004,6 +1003,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
                       actor.continue(
                         State(
                           ..reloaded,
+                          busy: None,
                           // the write and content the load read, which may
                           // be newer than this tick's (else this tick's)
                           rejected: Some(case failure {
@@ -1077,8 +1077,9 @@ fn in_effect(state: State, rules: List(Rule), fingerprint: String) -> State {
 }
 
 /// `reload_file`, saying why it failed (`store_file.LoadFailure`). Without
-/// `report_busy`, a lock held by another process is not reported: the
-/// watcher tries again at its next tick.
+/// `report_busy`, a lock held by another process is left to the caller to
+/// report (the watcher says it once per write, and tries again at its next
+/// tick).
 fn reload_file_or_busy(
   state: State,
   actor_name: String,

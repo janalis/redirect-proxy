@@ -42,6 +42,9 @@ type Later {
     /// Past the matchers kept: one of every rule not expired, schedules
     /// aside (see `follow_loop`), built once.
     beyond: Option(matcher.Matcher),
+    /// The last matcher built to confirm a loop found there, by time: the
+    /// other rules of the change starting then reuse it.
+    confirmed: Option(#(Int, matcher.Matcher)),
   )
 }
 
@@ -70,7 +73,7 @@ fn later(rules: List(Rule)) -> Later {
       }
     })
     |> list.sort(fn(a, b) { int.compare(a.at, b.at) })
-  Later(changes:, matchers: dict.new(), beyond: None)
+  Later(changes:, matchers: dict.new(), beyond: None, confirmed: None)
 }
 
 /// The most times to come a rule is followed at, the nearest (see
@@ -138,8 +141,20 @@ fn follow_loop(
                   }
                   let later = Later(..later, beyond: Some(beyond))
                   case found(beyond) {
-                    // not kept: the kept matchers are bounded
-                    Ok(_) -> follow(matcher.build_at(rules, at), later)
+                    // not among the kept ones, which are bounded: only
+                    // the last is
+                    Ok(_) ->
+                      case later.confirmed {
+                        Some(#(time, matcher)) if time == at ->
+                          follow(matcher, later)
+                        _ -> {
+                          let matcher = matcher.build_at(rules, at)
+                          follow(
+                            matcher,
+                            Later(..later, confirmed: Some(#(at, matcher))),
+                          )
+                        }
+                      }
                     Error(Nil) -> list.Continue(#(Ok(Nil), later))
                   }
                 }
