@@ -311,6 +311,24 @@ pub fn set_changes_check_the_rules_they_change_test() {
     == Ok(1)
 }
 
+/// A file that loaded with a reserved id imports again: only new ids are
+/// refused.
+pub fn loaded_reserved_ids_import_again_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let export = Rule(..new_rule("/e", "/t"), id: "export")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/redirects.json", store_rules.export([export]))
+  let assert Ok(_) = store.reload(s, by: "t")
+  assert store.import_rules(s, [export], store.Replace, by: "t") == Ok(1)
+  assert store.import_rules(s, [export], store.Merge, by: "t") == Ok(1)
+  let assert Ok(_) = store.preview_import(s, [export], store.Merge, by: "t")
+  let bulk = Rule(..new_rule("/b", "/t"), id: "bulk")
+  let assert Error([error]) =
+    store.import_rules(s, [bulk], store.Merge, by: "t")
+  assert string.contains(error, "reserved")
+}
+
 /// A rule that starts later would loop once it starts: the loop is
 /// followed with the rules active at its start.
 pub fn scheduled_loops_are_refused_test() {

@@ -297,22 +297,13 @@ pub fn prepare_import(
       updated_by: actor_name,
     )
   })
-  |> fn(rules) {
-    case list.filter(rules, fn(r) { rule.is_reserved_id(r.id) }) {
-      [] -> validate_all(rules)
-      reserved ->
-        Error(
-          list.map(reserved, fn(r) {
-            "id: " <> r.id <> " is reserved (it names a page or an operation)"
-          }),
-        )
-    }
-  }
+  // ids are checked against the current rules: `check_new_ids`
+  |> validate_all
 }
 
-/// Refuses imported rules that would add an id that is not URL-safe
-/// (`rule.is_valid_id`). The ids of current rules are kept: a file that
-/// loaded with them can be imported again.
+/// Refuses imported rules that would add an id that is not URL-safe or is
+/// reserved (`rule.is_valid_id`). The ids of current rules are kept: a file
+/// that loaded with them can be imported again.
 pub fn check_new_ids(
   existing: List(Rule),
   rules: List(Rule),
@@ -327,7 +318,11 @@ pub fn check_new_ids(
     invalid ->
       Error(
         list.map(invalid, fn(r) {
-          "id: " <> r.id <> ": " <> rule.valid_id_hint()
+          case rule.is_reserved_id(r.id) {
+            True ->
+              "id: " <> r.id <> " is reserved (it names a page or an operation)"
+            False -> "id: " <> r.id <> ": " <> rule.valid_id_hint()
+          }
         }),
       )
   }
