@@ -464,8 +464,8 @@ fn client_delete(
 // --- rules ------------------------------------------------------------------
 
 /// Validates the rules file of the server, as loading does, or a file to
-/// import, as `rules import` does (but for the current rules it may
-/// conflict with).
+/// import, as `rules import` does (but for the conflicts with the current
+/// rules a merge may have).
 fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   use path <- result.try(case file {
     "" -> load(config_path) |> result.map(config.rules_path)
@@ -483,13 +483,27 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   use valid <- result.try(
     case file {
       "" -> store_rules.validate_all(rules)
-      _ -> {
-        let ignore_trailing_slash =
-          load(config_path)
-          |> result.map(config.ignore_trailing_slash)
-          |> result.unwrap(False)
-        store_rules.check_import(rules, ignore_trailing_slash)
-      }
+      _ ->
+        // the configuration of the server it is for, if any (without one,
+        // the defaults): its trailing slash setting, and its current rules,
+        // whose ids are kept
+        case load(config_path) {
+          Error(reason) -> Error([reason])
+          Ok(cfg) -> {
+            let current =
+              simplifile.read(config.rules_path(cfg))
+              |> result.replace_error(Nil)
+              |> result.try(fn(content) {
+                rule.file_from_string(content) |> result.replace_error(Nil)
+              })
+              |> result.unwrap([])
+            store_rules.check_import(
+              rules,
+              current,
+              config.ignore_trailing_slash(cfg),
+            )
+          }
+        }
     }
     |> result.map_error(string.join(_, "\n")),
   )

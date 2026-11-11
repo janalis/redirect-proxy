@@ -348,19 +348,21 @@ pub fn prepare_import(
   |> validate_all
 }
 
-/// The checks of an import of `incoming` into an empty rule set: the
+/// The checks of an import of `incoming` that replaces `current`: the
 /// prepared rules, or every problem found.
 pub fn check_import(
   incoming: List(Rule),
+  current: List(Rule),
   ignore_trailing_slash: Bool,
 ) -> Result(List(Rule), List(String)) {
   use rules <- result.try(prepare_import(incoming, "cli"))
-  use Nil <- result.try(check_new_ids([], rules))
+  use Nil <- result.try(check_new_ids(current, rules))
   use Nil <- result.try(check_conflicts(rules))
+  // as an import, the rules it leaves as they are are not checked again
   use Nil <- result.try(check_changed(
     matcher.build(rules),
     rules,
-    rules,
+    changed_rules(current, rules),
     ignore_trailing_slash,
   ))
   Ok(rules)

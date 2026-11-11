@@ -119,6 +119,35 @@ pub fn rules_commands_test() {
     let assert Ok(Nil) = simplifile.write(import_file, content)
     let assert Error(_) = redirect_proxy.run(["rules", "validate", import_file])
   })
+  // the ids of the server's current rules are kept, as an import keeps
+  // them
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/data/redirects.json",
+      "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      import_file,
+      "[{\"id\": \"export\", \"source\": \"/e\", \"target\": \"/f\"}]",
+    )
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "rules",
+      "validate",
+      import_file,
+      "--config",
+      config_path,
+    ])
+  // a configuration given that cannot be read is an error
+  let assert Error(_) =
+    redirect_proxy.run([
+      "rules",
+      "validate",
+      import_file,
+      "--config",
+      dir <> "/missing.toml",
+    ])
   let _ = config.default()
 }
 
