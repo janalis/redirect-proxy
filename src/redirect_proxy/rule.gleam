@@ -557,7 +557,8 @@ pub fn window(rule: Rule) -> #(Int, Int) {
 
 const min_time = -1_000_000_000_000
 
-const max_time = 1_000_000_000_000
+/// The end of the window of a rule that never expires (`window`).
+pub const max_time = 1_000_000_000_000
 
 /// Enabled, and `now` is within its window.
 pub fn is_active(rule: Rule, now: Int) -> Bool {
