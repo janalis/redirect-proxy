@@ -138,17 +138,8 @@ fn follow_loop(
                   }
                   let later = Later(..later, beyond: Some(beyond))
                   case found(beyond) {
-                    // kept too: other rules of the change may start then
-                    Ok(_) -> {
-                      let matcher = matcher.build_at(rules, at)
-                      follow(
-                        matcher,
-                        Later(
-                          ..later,
-                          matchers: dict.insert(later.matchers, at, matcher),
-                        ),
-                      )
-                    }
+                    // not kept: the kept matchers are bounded
+                    Ok(_) -> follow(matcher.build_at(rules, at), later)
                     Error(Nil) -> list.Continue(#(Ok(Nil), later))
                   }
                 }

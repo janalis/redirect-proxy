@@ -956,8 +956,9 @@ pub fn watched_content_written_again_unchanged_is_tried_again_test() {
   process.sleep(300)
   assert !loaded()
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  // a write of its own: another second (stamps count whole seconds)
-  process.sleep(1100)
+  // a write of its own, past the seconds a write may still move its
+  // stamp
+  process.sleep(3500)
   assert !loaded()
   let assert Ok(Nil) = simplifile.write(s.rules_path, content)
   support.wait_until(loaded, 2000)

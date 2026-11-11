@@ -37,21 +37,35 @@ pub fn load_locked(
   mode: LoadMode,
   wait: Int,
 ) -> Result(#(List(Rule), String), String) {
-  load_locked_or_busy(files, mode, wait)
-  |> result.map_error(fn(failure) { failure.reason })
+  load_locked_or_busy(files, mode, wait) |> result.map_error(reason)
 }
 
-/// Why a load failed. `read` is the fingerprint of the content refused.
+/// Why a load of the file locked failed.
 pub type LoadFailure {
   /// Another process held the lock: trying again soon may succeed.
   LockHeld(reason: String)
   /// The lock could not be created (a full disk): the content was not read.
   LockNotCreated(reason: String)
+  /// The content was refused.
+  Content(ContentFailure)
+}
+
+/// Why the content of the file was refused. `read` is its fingerprint ("" if
+/// it could not be read).
+pub type ContentFailure {
   /// The content is invalid.
   Invalid(reason: String, read: String)
   /// The content is valid, but the ids of its rules without one could not
   /// be written (a full disk, a read-only volume).
   IdsNotWritten(reason: String, read: String)
+}
+
+/// What went wrong, for the log and the audit trail.
+pub fn reason(failure: LoadFailure) -> String {
+  case failure {
+    LockHeld(reason) | LockNotCreated(reason) -> reason
+    Content(content) -> content.reason
+  }
 }
 
 /// `load_locked`, saying why it failed (`LoadFailure`).
@@ -67,7 +81,7 @@ pub fn load_locked_or_busy(
   {
     Error(ffi.Held(message)) -> Error(LockHeld(message))
     Error(ffi.CannotCreate(message)) -> Error(LockNotCreated(message))
-    Ok(loaded) -> loaded
+    Ok(loaded) -> result.map_error(loaded, Content)
   }
 }
 
@@ -81,11 +95,11 @@ pub fn load(
   load_failing(files, mode) |> result.map_error(fn(failure) { failure.reason })
 }
 
-/// `load`, saying why it failed (`Invalid` or `IdsNotWritten`).
+/// `load`, saying why it failed.
 pub fn load_failing(
   files: Files,
   mode: LoadMode,
-) -> Result(#(List(Rule), String), LoadFailure) {
+) -> Result(#(List(Rule), String), ContentFailure) {
   load_reading(files, mode)
   |> result.map_error(fn(failure) {
     case failure {
