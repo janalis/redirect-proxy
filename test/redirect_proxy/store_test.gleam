@@ -426,6 +426,30 @@ pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
     )
 }
 
+/// Rules that take turns on one path do not hide each other: the loop is
+/// followed at each time the rules in effect change.
+pub fn loops_through_rules_taking_turns_are_refused_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/a", "/b"), id: "a1", expires_at: "2999-01-01T00:00:00Z"),
+      by: "t",
+    )
+  let assert Ok(_) =
+    store.create(
+      s,
+      Rule(..new_rule("/a", "/x"), id: "a2", starts_at: "2999-01-01T00:00:00Z"),
+      by: "t",
+    )
+  let x = Rule(..new_rule("/x", "/a"), id: "x")
+  let assert Error(errors) = store.create(s, x, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+  let assert Error(errors) = store.import_rules(s, [x], store.Merge, by: "t")
+  assert list.any(errors, string.contains(_, "redirect loop"))
+}
+
 /// Every check applies to disabled rules too, one at a time or in sets,
 /// but for disabling a rule that loaded with a problem: it then still
 /// imports again unchanged.

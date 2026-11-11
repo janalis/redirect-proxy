@@ -1,7 +1,8 @@
 //// Checks and transformations of rule sets, independent of the store
 //// actor: validation, conflicts, redirect loops, imports and export.
 
-import gleam/dict
+import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/json
 import gleam/list
@@ -19,111 +20,84 @@ import redirect_proxy/matcher/loop as matcher_loop
 import redirect_proxy/rule.{type Rule}
 
 /// Refuses a change when a request to the changed rule would be redirected
-/// back to it: now (`built`, the matcher of `rules`), or once a rule that
-/// starts later does (see `Later`).
+/// back to it: now (`built`, the matcher of `rules`), or at a later time
+/// within its window when the rules in effect change (a rule starts or
+/// expires).
 pub fn check_loop(
   built: matcher.Matcher,
   rules: List(Rule),
   changed: Rule,
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
-  let #(result, _) =
-    follow_loop(built, Unbuilt(rules), changed, ignore_trailing_slash)
-  result
+  follow_loop(built, rules, dict.new(), changed, ignore_trailing_slash).0
 }
 
-/// The matcher of the rules not expired yet, starting later or not, built
-/// when a check needs it (once per check of a set of rules): `None` when
-/// no rule starts later (the matcher of now then says it all).
-type Later {
-  Unbuilt(rules: List(Rule))
-  /// with the rules by id, their schedules kept
-  Built(Option(#(matcher.Matcher, dict.Dict(String, Rule))))
-}
-
-fn later_matcher(
-  later: Later,
-) -> #(Option(#(matcher.Matcher, dict.Dict(String, Rule))), Later) {
-  case later {
-    Built(built) -> #(built, later)
-    Unbuilt(rules) -> {
-      let now = ffi.now_seconds()
-      // usually none: then nothing is allocated (the store checks every
-      // change of 50 000 rules)
-      let built = case
-        list.any(rules, fn(r) {
-          r.enabled && r.starts_at != "" && rule.window(r).0 > now
-        })
-      {
-        False -> None
-        True -> {
-          let pending =
-            list.filter(rules, fn(r) { r.enabled && rule.window(r).1 > now })
-          Some(#(
-            pending
-              |> list.map(fn(r) {
-                rule.Rule(..r, starts_at: "", expires_at: "")
-              })
-              |> matcher.build,
-            list.map(pending, fn(r) { #(r.id, r) }) |> dict.from_list,
-          ))
-        }
-      }
-      #(built, Built(built))
-    }
-  }
-}
+/// The matchers of later times, by time, built once per check.
+type Later =
+  Dict(Int, matcher.Matcher)
 
 fn follow_loop(
   built: matcher.Matcher,
+  rules: List(Rule),
   later: Later,
   changed: Rule,
   ignore_trailing_slash: Bool,
 ) -> #(Result(Nil, List(String)), Later) {
+  use <- bool.guard(!changed.enabled, #(Ok(Nil), later))
+  let found = fn(matcher) {
+    matcher_loop.redirect_loop(matcher, changed, ignore_trailing_slash)
+  }
   let refused = fn(cycle) {
     Error(["target: redirect loop: " <> describe_cycle(cycle)])
   }
-  case changed.enabled {
-    False -> #(Ok(Nil), later)
-    True ->
-      case matcher_loop.redirect_loop(built, changed, ignore_trailing_slash) {
-        Ok(cycle) -> #(refused(cycle), later)
-        Error(Nil) -> {
-          let #(found, later) = later_matcher(later)
-          let found = {
-            use #(matcher, by_id) <- result.try(option.to_result(found, Nil))
-            use cycle <- result.map(matcher_loop.redirect_loop(
-              matcher,
-              changed,
-              ignore_trailing_slash,
-            ))
-            #(cycle, list.filter_map(cycle, fn(r) { dict.get(by_id, r.id) }))
+  case found(built) {
+    Ok(cycle) -> #(refused(cycle), later)
+    Error(Nil) ->
+      list.fold_until(
+        changes_ahead(rules, changed),
+        #(Ok(Nil), later),
+        fn(acc, at) {
+          let matcher = case dict.get(acc.1, at) {
+            Ok(matcher) -> matcher
+            Error(Nil) -> matcher.build_at(rules, at)
           }
-          case found {
-            // its rules all apply at some time to come
-            Ok(#(cycle, scheduled)) ->
-              case at_once(scheduled) {
-                True -> #(refused(cycle), later)
-                False -> #(Ok(Nil), later)
-              }
-            Error(Nil) -> #(Ok(Nil), later)
+          let later = dict.insert(acc.1, at, matcher)
+          case found(matcher) {
+            Ok(cycle) -> list.Stop(#(refused(cycle), later))
+            Error(Nil) -> list.Continue(#(Ok(Nil), later))
           }
-        }
-      }
+        },
+      )
   }
 }
 
-/// Whether the rules (of a cycle) all apply together at some time from now.
-fn at_once(rules: List(Rule)) -> Bool {
-  let #(from, until) =
-    list.fold(rules, #(ffi.now_seconds(), max_window_end), fn(acc, r) {
-      let #(from, until) = rule.window(r)
-      #(int.max(acc.0, from), int.min(acc.1, until))
-    })
-  from < until
+/// The times to come, within the window of `changed`, at which the rules
+/// in effect change: its start, and the starts and expiries of the other
+/// rules. None, the usual case, when no rule has a schedule.
+fn changes_ahead(rules: List(Rule), changed: Rule) -> List(Int) {
+  let now = ffi.now_seconds()
+  let #(from, until) = rule.window(changed)
+  let ahead = fn(at) { at > now && at >= from && at < until }
+  rules
+  |> list.fold([], fn(acc, r) {
+    case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
+      False -> acc
+      True -> {
+        let #(starts, expires) = rule.window(r)
+        let acc = case ahead(starts) {
+          True -> [starts, ..acc]
+          False -> acc
+        }
+        case ahead(expires) && r.id != changed.id {
+          True -> [expires, ..acc]
+          False -> acc
+        }
+      }
+    }
+  })
+  |> list.unique
+  |> list.sort(int.compare)
 }
-
-const max_window_end = 1_000_000_000_000
 
 /// Refuses a change to a rule that could never apply as written.
 pub fn check_lint(changed: Rule) -> Result(Nil, List(String)) {
@@ -152,9 +126,10 @@ pub fn check_changed(
   ignore_trailing_slash: Bool,
 ) -> Result(Nil, List(String)) {
   let #(errors, _) =
-    list.fold(changed, #([], Unbuilt(rules)), fn(acc, r) {
+    list.fold(changed, #([], dict.new()), fn(acc, r) {
       let #(errors, later) = acc
-      let #(loop, later) = follow_loop(built, later, r, ignore_trailing_slash)
+      let #(loop, later) =
+        follow_loop(built, rules, later, r, ignore_trailing_slash)
       let loop = case loop {
         Ok(Nil) -> []
         Error(errors) -> errors
