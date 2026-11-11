@@ -30,6 +30,16 @@ fn start(s: store.Settings) -> store.Store {
   started.data
 }
 
+/// A store watching its file, then stopped once `run` returns: it would
+/// try a file it could not load again later, during another test, and
+/// publish its rules over that test's.
+fn with_watching_store(s: store.Settings, run: fn(store.Store) -> Nil) -> Nil {
+  let assert Ok(started) = store.start(s, process.new_name("store_test"))
+  run(started.data)
+  process.unlink(started.pid)
+  process.kill(started.pid)
+}
+
 fn new_rule(source: String, target: String) -> rule.Rule {
   Rule(..rule.blank(), source:, target:)
 }
@@ -879,7 +889,7 @@ pub fn invalid_watched_file_unreadable_for_a_moment_is_reported_once_test() {
 pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
-  let _ = start(s)
+  use _ <- with_watching_store(s)
   process.sleep(50)
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   capture_logs()
@@ -897,7 +907,12 @@ pub fn watched_valid_file_that_failed_to_load_is_tried_again_test() {
   ffi.set_tunable("rejected_retry_seconds", 1)
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
-  let _ = start(s)
+  use st <- with_watching_store(s)
+  // this store's rules (the stores of other tests, still watching, may
+  // publish theirs)
+  let loaded = fn() {
+    list.any(store.all(st), fn(r: rule.Rule) { r.source == "/later" })
+  }
   process.sleep(50)
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   let assert Ok(Nil) =
@@ -906,12 +921,11 @@ pub fn watched_valid_file_that_failed_to_load_is_tried_again_test() {
       "[{\"source\": \"/later\", \"target\": \"/y\"}]",
     )
   process.sleep(300)
-  assert redirect("/later") == Error(Nil)
+  assert !loaded()
   // the disk has room again
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  support.wait_until(fn() { redirect("/later") == Ok("/y") }, 4000)
+  support.wait_until(loaded, 4000)
   ffi.clear_tunable("rejected_retry_seconds")
-  assert redirect("/later") == Ok("/y")
 }
 
 fn audit_actions(dir: String, action: String) -> Int {
