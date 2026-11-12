@@ -1,5 +1,7 @@
+import gleam/erlang/process
 import gleam/list
 import redirect_proxy/admin/auth/session
+import redirect_proxy/ffi
 import redirect_proxy/role
 import redirect_proxy/users
 
@@ -64,4 +66,69 @@ pub fn tokens_are_not_kept_test() {
   assert found.token == s.token
   session.destroy(s.token)
   assert session.get(s.token, 0) == Error(Nil)
+}
+
+pub fn every_successful_request_refreshes_idle_deadline_test() {
+  session.init()
+  let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
+  let assert Ok(at29) = session.get_at(s.token, 60, s.last_seen + 29)
+  assert at29.last_seen == s.last_seen + 29
+  let assert Ok(at60) = session.get_at(s.token, 60, s.last_seen + 60)
+  assert at60.last_seen == s.last_seen + 60
+  // Exactly the idle timeout expires; absolute lifetime still applies.
+  assert session.get_at(s.token, 60, s.last_seen + 120) == Error(Nil)
+  let s = session.create("alice", session.Local, 60, "fp", role.Admin)
+  let assert Ok(_) = session.get_at(s.token, 0, s.last_seen + 59)
+  assert session.get_at(s.token, 0, s.expires_at) == Error(Nil)
+}
+
+pub fn older_requests_never_move_activity_backwards_test() {
+  session.init()
+  let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
+  let assert Ok(_) = session.get_at(s.token, 60, s.last_seen + 29)
+  let assert Ok(older) = session.get_at(s.token, 60, s.last_seen + 10)
+  assert older.last_seen == s.last_seen + 29
+  let assert Ok(_) = session.get_at(s.token, 60, s.last_seen + 88)
+}
+
+pub fn concurrent_activity_keeps_latest_timestamp_test() {
+  session.init()
+  let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
+  let done = process.new_subject()
+  list.each(
+    list.index_map(list.repeat(Nil, 29), fn(_, i) { i + 1 }),
+    fn(offset) {
+      process.spawn(fn() {
+        process.send(done, session.get_at(s.token, 60, s.last_seen + offset))
+      })
+    },
+  )
+  list.each(list.index_map(list.repeat(Nil, 29), fn(_, i) { i + 1 }), fn(_) {
+    let assert Ok(Ok(_)) = process.receive(done, 5000)
+  })
+  let assert Ok(latest) = session.get_at(s.token, 60, s.last_seen)
+  assert latest.last_seen == s.last_seen + 29
+  session.destroy(s.token)
+  assert session.get_at(s.token, 0, s.last_seen + 30) == Error(Nil)
+}
+
+/// Deterministic stale-read interleavings underlying activity and expiry.
+pub fn stale_activity_cannot_restore_or_delete_sessions_test() {
+  session.init()
+  let table = "redirect_proxy_session_cas_test"
+  ffi.ets_new(table)
+  let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
+  let old = #(s.expires_at, s)
+  let updated = #(
+    s.expires_at,
+    session.Session(..s, last_seen: s.last_seen + 29),
+  )
+  ffi.ets_put(table, "key", old)
+  assert ffi.ets_replace_if(table, "key", old, updated)
+  assert !ffi.ets_replace_if(table, "key", old, old)
+  assert !ffi.ets_delete_if(table, "key", old)
+  ffi.ets_delete(table, "key")
+  assert !ffi.ets_replace_if(table, "key", updated, old)
+  let result: Result(#(Int, session.Session), Nil) = ffi.ets_get(table, "key")
+  assert result == Error(Nil)
 }

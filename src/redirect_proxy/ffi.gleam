@@ -119,6 +119,14 @@ pub fn ets_find(table: String, key: k) -> Result(v, Nil)
 @external(erlang, "redirect_proxy_ets_ffi", "ets_delete")
 pub fn ets_delete(table: String, key: k) -> Nil
 
+/// Replaces a row only while it still holds the exact value read.
+@external(erlang, "redirect_proxy_ets_ffi", "ets_replace_if")
+pub fn ets_replace_if(table: String, key: String, old: a, new: a) -> Bool
+
+/// Deletes a row only while it still holds the exact value read.
+@external(erlang, "redirect_proxy_ets_ffi", "ets_delete_if")
+pub fn ets_delete_if(table: String, key: String, old: a) -> Bool
+
 /// Number of entries in a table.
 @external(erlang, "redirect_proxy_ets_ffi", "ets_size")
 pub fn ets_size(table: String) -> Int

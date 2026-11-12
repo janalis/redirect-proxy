@@ -6,6 +6,7 @@
     counter_add/3, counter_get/2, counter_new/1, counter_put/3,
     counter_size/1, ets_delete/2, ets_delete_older/2, ets_find/2,
     ets_get/2, ets_insert_new/3, ets_new/1, ets_put/3,
+    ets_replace_if/4, ets_delete_if/3,
     ets_size/1, ets_to_list/1, password_check_slots/0, window_forgive/2,
     window_get/2, window_purge/2, window_record/4, window_take/5,
     with_slot/4
@@ -49,6 +50,19 @@ ets_find(Table, Key) ->
 ets_delete(Table, Key) ->
     ets:delete(binary_to_existing_atom(Table), Key),
     nil.
+
+%% Compare against the exact value read by a caller. Constants prevent
+%% stored values from being interpreted as match-spec syntax.
+ets_replace_if(Table, Key, Old, New) ->
+    ets:select_replace(binary_to_existing_atom(Table),
+        [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},
+                         {'=:=', '$2', {const, Old}}],
+          [{{'$1', {const, New}}}]}]) =:= 1.
+
+ets_delete_if(Table, Key, Old) ->
+    ets:select_delete(binary_to_existing_atom(Table),
+        [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},
+                         {'=:=', '$2', {const, Old}}], [true]}]) =:= 1.
 
 ets_to_list(Table) ->
     ets:tab2list(binary_to_existing_atom(Table)).

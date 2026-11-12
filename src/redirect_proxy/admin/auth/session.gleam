@@ -5,6 +5,7 @@
 
 import gleam/bit_array
 import gleam/crypto
+import gleam/int
 import gleam/list
 import redirect_proxy/ffi
 import redirect_proxy/id
@@ -41,10 +42,6 @@ pub type Session {
     last_seen: Int,
   )
 }
-
-/// `last_seen` is only written back when older than this, to avoid an ETS
-/// write on every request.
-const touch_interval = 30
 
 /// Creates the ETS table. Must be called from a long lived process.
 pub fn init() -> Nil {
@@ -98,27 +95,36 @@ pub fn get_at(
   idle_timeout: Int,
   now: Int,
 ) -> Result(Session, Nil) {
-  let key = key(token)
+  get_for_key(token, key(token), idle_timeout, now)
+}
+
+fn get_for_key(
+  token: String,
+  key: String,
+  idle_timeout: Int,
+  now: Int,
+) -> Result(Session, Nil) {
   case ffi.ets_get(table, key) {
     Ok(#(expires_at, session)) -> {
       let session: Session = session
+      let old = #(expires_at, session)
       let idle = idle_timeout > 0 && now - session.last_seen >= idle_timeout
       case expires_at > now && !idle {
         True -> {
-          case now - session.last_seen >= touch_interval {
-            True ->
-              ffi.ets_put(table, key, #(
-                expires_at,
-                Session(..session, last_seen: now),
-              ))
-            False -> Nil
+          // Record every use, without restoring a revoked session or
+          // overwriting a concurrent request's later activity.
+          let updated =
+            Session(..session, last_seen: int.max(now, session.last_seen))
+          case ffi.ets_replace_if(table, key, old, #(expires_at, updated)) {
+            True -> Ok(Session(..updated, token:))
+            False -> get_for_key(token, key, idle_timeout, now)
           }
-          Ok(Session(..session, token:))
         }
-        False -> {
-          ffi.ets_delete(table, key)
-          Error(Nil)
-        }
+        False ->
+          case ffi.ets_delete_if(table, key, old) {
+            True -> Error(Nil)
+            False -> get_for_key(token, key, idle_timeout, now)
+          }
       }
     }
     Error(Nil) -> Error(Nil)
