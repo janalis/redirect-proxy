@@ -351,11 +351,6 @@ fn build_host(rules: List(Rule)) -> HostRules {
   let prefix =
     rules
     |> list.filter(fn(r) { r.kind == Prefix })
-    |> list.sort(fn(a, b) {
-      // in bytes, like the index: longest first
-      int.compare(string.byte_size(b.source), string.byte_size(a.source))
-      |> order.break_tie(int.compare(a.priority, b.priority))
-    })
     |> list.index_map(fn(r, rank) {
       PrefixRule(
         rank:,
@@ -903,10 +898,19 @@ fn match_prefix(
     [] -> Error(Nil)
     [only] -> prefix_location(only, path, vars)
     _ ->
-      // in rank order: a rule refused by its guard leaves the request to
-      // the next one, as for regex rules
+      // Shortest remainder means the longest prefix consumed from this
+      // request. Unicode lower-casing can change source byte lengths, so
+      // original source lengths cannot rank mixed matching modes.
+      // A refused target leaves the request to the next candidate.
       found
-      |> list.sort(fn(a, b) { int.compare({ a.0 }.rank, { b.0 }.rank) })
+      |> list.sort(fn(a, b) {
+        int.compare(string.byte_size(a.1), string.byte_size(b.1))
+        |> order.break_tie(int.compare(
+          { a.0 }.rule.priority,
+          { b.0 }.rule.priority,
+        ))
+        |> order.break_tie(int.compare({ a.0 }.rank, { b.0 }.rank))
+      })
       |> list.find_map(prefix_location(_, path, vars))
   }
 }

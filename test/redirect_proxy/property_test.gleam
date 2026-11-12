@@ -164,7 +164,18 @@ pub fn every_exact_rule_is_reachable_test() {
 
 fn mixed_segment() -> qcheck.Generator(String) {
   qcheck.non_empty_string_from(
-    qcheck.codepoint_from_strings("a", ["b", "A", "B", "é", "É", "-", "1"]),
+    qcheck.codepoint_from_strings("a", [
+      "b",
+      "A",
+      "B",
+      "é",
+      "É",
+      "k",
+      "K",
+      "K",
+      "-",
+      "1",
+    ]),
   )
 }
 

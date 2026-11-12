@@ -972,3 +972,64 @@ pub fn mixed_case_query_rules_keep_file_order_test() {
     ])
     == "/folded"
 }
+
+pub fn unicode_prefix_precedence_uses_consumed_path_test() {
+  let prefix = fn(id, source, case_insensitive, priority) {
+    Rule(
+      ..r(id, "*", rule.Prefix, source, "/" <> id <> "/$1"),
+      case_insensitive:,
+      priority:,
+    )
+  }
+  let check_orders = fn(rules, path, expected) {
+    list.each([rules, list.reverse(rules)], fn(ordered) {
+      assert location(matcher.build(ordered), "h", path) == Ok(expected)
+    })
+  }
+  // Kelvin sign lower-cases from three UTF-8 bytes to one ASCII byte.
+  // Both insensitive: longer consumed prefix wins despite source lengths.
+  check_orders(
+    [
+      prefix("short", "/K", True, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/kkXYZ",
+    "/long/XYZ",
+  )
+  // A sensitive Unicode source must not outrank a longer insensitive one.
+  check_orders(
+    [
+      prefix("short", "/K", False, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/KkXYZ",
+    "/long/XYZ",
+  )
+  // The insensitive Unicode source must not outrank a longer sensitive one.
+  check_orders(
+    [
+      prefix("short", "/K", True, 1),
+      prefix("long", "/kk", False, 999),
+    ],
+    "/kkXYZ",
+    "/long/XYZ",
+  )
+  // Encoded requests and sources are normalized before precedence is decided.
+  check_orders(
+    [
+      prefix("short", "/%E2%84%AA", False, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/%E2%84%AAkXYZ",
+    "/long/XYZ",
+  )
+  // Equal consumed prefixes use priority, then original file order.
+  let unicode = prefix("unicode", "/K", True, 100)
+  let ascii = prefix("ascii", "/k", False, 100)
+  assert location(matcher.build([unicode, ascii]), "h", "/kXYZ")
+    == Ok("/unicode/XYZ")
+  assert location(matcher.build([ascii, unicode]), "h", "/kXYZ")
+    == Ok("/ascii/XYZ")
+  check_orders([Rule(..unicode, priority: 1), ascii], "/kXYZ", "/unicode/XYZ")
+  check_orders([unicode, Rule(..ascii, priority: 1)], "/kXYZ", "/ascii/XYZ")
+}
