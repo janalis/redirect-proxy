@@ -164,8 +164,25 @@ pub fn window_take(
   limit: Int,
 ) -> Result(Nil, Int)
 
+@external(erlang, "redirect_proxy_ets_ffi", "window_take_receipt")
+pub fn window_take_receipt(
+  table: String,
+  key: String,
+  now: Int,
+  window: Int,
+  limit: Int,
+) -> Result(Int, Int)
+
+@external(erlang, "redirect_proxy_ets_ffi", "window_record_receipt")
+pub fn window_record_receipt(
+  table: String,
+  key: String,
+  now: Int,
+  window: Int,
+) -> Result(Int, Int)
+
 @external(erlang, "redirect_proxy_ets_ffi", "window_forgive")
-pub fn window_forgive(table: String, key: String) -> Nil
+pub fn window_forgive(table: String, key: String, generation: Int) -> Nil
 
 @external(erlang, "redirect_proxy_ets_ffi", "with_slot")
 pub fn with_slot(

@@ -4,6 +4,7 @@ import gleam/list
 import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/oidc/provider as oidc_provider
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/config
 import redirect_proxy/ffi
 import support
@@ -282,4 +283,18 @@ pub fn oauth_discovery_with_issuer_paths_test() {
     assert discovered.issuer == issuer
     assert discovered.jwks_uri == issuer <> "/jwks"
   })
+}
+
+pub fn oidc_flow_preserves_original_refund_receipt_test() {
+  oidc.init()
+  ratelimit.init()
+  let #(issuer, _) = support.start_fake_authorization_server()
+  let config = config.OidcConfig(..config.default().oidc, issuer:)
+  let receipt = ratelimit.record("sso-original-address", 900)
+  let assert Ok(#(_, flow)) =
+    oidc.begin_with_receipt(config, "http://localhost", "/rules", receipt)
+  assert oidc.start_receipt(flow) == Ok(receipt)
+  let assert Ok(#(_, legacy_flow)) =
+    oidc.begin(config, "http://localhost", "/rules")
+  assert oidc.start_receipt(legacy_flow) == Ok(ratelimit.Receipt("", 0))
 }

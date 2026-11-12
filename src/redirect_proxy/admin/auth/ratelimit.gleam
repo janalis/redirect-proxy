@@ -10,6 +10,17 @@ const table = "redirect_proxy_ratelimit"
 /// Slots of work that runs a bounded number of times at once.
 const slots = "redirect_proxy_slots"
 
+pub type Receipt {
+  Receipt(key: String, generation: Int)
+}
+
+/// Records an attempt that may later be refunded.
+pub fn record(key: String, window: Int) -> Receipt {
+  let assert Ok(generation) =
+    ffi.window_record_receipt(table, key, ffi.now_seconds(), window)
+  Receipt(key, generation)
+}
+
 pub fn init() -> Nil {
   ffi.ets_new(table)
   ffi.ets_new(slots)
@@ -54,7 +65,10 @@ pub fn take(key: String, limit: Int, window: Int) -> Bool {
 /// the uses already counted are taken back and the longest wait is returned
 /// (for a `Retry-After` header). Counting before the work, not after it
 /// failed, is what keeps concurrent attempts within the limits.
-pub fn take_all(checks: List(#(String, Int)), window: Int) -> Result(Nil, Int) {
+pub fn take_all(
+  checks: List(#(String, Int)),
+  window: Int,
+) -> Result(List(Receipt), Int) {
   do_take_all(checks, window, ffi.now_seconds(), [])
 }
 
@@ -62,13 +76,14 @@ fn do_take_all(
   checks: List(#(String, Int)),
   window: Int,
   now: Int,
-  taken: List(String),
-) -> Result(Nil, Int) {
+  taken: List(Receipt),
+) -> Result(List(Receipt), Int) {
   case checks {
-    [] -> Ok(Nil)
+    [] -> Ok(list.reverse(taken))
     [#(key, limit), ..rest] ->
-      case ffi.window_take(table, key, now, window, limit) {
-        Ok(Nil) -> do_take_all(rest, window, now, [key, ..taken])
+      case ffi.window_take_receipt(table, key, now, window, limit) {
+        Ok(generation) ->
+          do_take_all(rest, window, now, [Receipt(key, generation), ..taken])
         Error(seconds) -> {
           list.each(taken, forgive)
           Error(
@@ -81,10 +96,10 @@ fn do_take_all(
   }
 }
 
-/// Takes back one use of `key` counted by `take`, `take_all` or
-/// `record_failure`.
-pub fn forgive(key: String) -> Nil {
-  ffi.window_forgive(table, key)
+/// Takes back a use counted by `take_all` or `record`, only while the
+/// receipt's original window still exists.
+pub fn forgive(receipt: Receipt) -> Nil {
+  ffi.window_forgive(table, receipt.key, receipt.generation)
 }
 
 /// Runs `work` unless `max` runs of the `name` work are already under way:
