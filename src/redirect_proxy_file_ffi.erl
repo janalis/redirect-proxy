@@ -31,8 +31,10 @@ atomic_write(Path, Content, NewMode) ->
             {ok, Fd} ->
                 %% before the content is written: a secret is never readable
                 %% by others, not even for a moment
-                set_mode(Path, Tmp, NewMode),
-                Written = write_and_sync(Fd, Content),
+                Written = case set_mode(Path, Tmp, NewMode) of
+                    ok -> write_and_sync(Fd, Content);
+                    ModeError -> ModeError
+                end,
                 Closed = file:close(Fd),
                 WrittenResult = case {Written, Closed} of
                     {ok, ok} ->
@@ -64,12 +66,11 @@ atomic_write(Path, Content, NewMode) ->
 %% given access on purpose, the rest of the system never is.
 set_mode(Path, Tmp, NewMode) ->
     case {file:read_file_info(Path), NewMode} of
-        {{ok, #file_info{mode = Mode}}, default} -> _ = file:change_mode(Tmp, Mode band 8#7777);
-        {{ok, #file_info{mode = Mode}}, _} -> _ = file:change_mode(Tmp, Mode band 8#7770);
+        {{ok, #file_info{mode = Mode}}, default} -> file:change_mode(Tmp, Mode band 8#7777);
+        {{ok, #file_info{mode = Mode}}, _} -> file:change_mode(Tmp, Mode band 8#7770);
         {{error, _}, default} -> ok;
-        {{error, _}, _} -> _ = file:change_mode(Tmp, NewMode)
-    end,
-    ok.
+        {{error, _}, _} -> file:change_mode(Tmp, NewMode)
+    end.
 
 %% Copies Source to a new file Dest that has Source's permissions before it
 %% holds any of its bytes (a copy then a chmod leaves the copy readable with
@@ -83,8 +84,10 @@ copy_file_as(Source, Dest) ->
                         %% written through the open descriptor: a mode
                         %% without the owner's write bit (a read-only
                         %% rules file) does not apply to it
-                        _ = file:change_mode(Dest, Mode band 8#7777),
-                        Copied = file:copy(Source, Fd),
+                        Copied = case file:change_mode(Dest, Mode band 8#7777) of
+                            ok -> file:copy(Source, Fd);
+                            ModeError -> ModeError
+                        end,
                         Closed = file:close(Fd),
                         case {Copied, Closed} of
                             {{ok, _}, ok} ->
