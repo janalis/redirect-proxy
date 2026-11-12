@@ -917,3 +917,58 @@ pub fn query_conditions_as_documented_test() {
   // the path keeps ignoring case
   assert matcher.lookup_query(m, "h", "/P", "a=2") |> result.is_ok
 }
+
+pub fn mixed_case_query_rules_keep_file_order_test() {
+  let sensitive =
+    Rule(
+      ..r("sensitive", "*", rule.Exact, "/Page", "/sensitive"),
+      query: "id=42",
+    )
+  let folded =
+    Rule(
+      ..r("folded", "*", rule.Exact, "/page", "/folded"),
+      query: "id=42",
+      case_insensitive: True,
+    )
+  let target = fn(rules) {
+    let assert Ok(found) =
+      matcher.lookup_query(
+        matcher.build(rules),
+        "x.test",
+        "/Page",
+        "id=42&lang=fr",
+      )
+    found.location
+  }
+  // The rules come from different index groups for this mixed-case path.
+  assert target([folded, sensitive]) == "/folded"
+  assert target([sensitive, folded]) == "/sensitive"
+  // Equal index keys must preserve the same order.
+  let sensitive = Rule(..sensitive, source: "/page")
+  let target = fn(rules) {
+    let assert Ok(found) =
+      matcher.lookup_query(
+        matcher.build(rules),
+        "x.test",
+        "/page",
+        "id=42&lang=fr",
+      )
+    found.location
+  }
+  assert target([folded, sensitive]) == "/folded"
+  assert target([sensitive, folded]) == "/sensitive"
+  // Priority wins over file order in either matching mode.
+  assert target([folded, Rule(..sensitive, priority: 1)]) == "/sensitive"
+  assert target([sensitive, Rule(..folded, priority: 1)]) == "/folded"
+  // Specificity wins over both priority and file order.
+  assert target([
+      Rule(..folded, priority: 1),
+      Rule(..sensitive, query: "id=42&lang=fr", priority: 999),
+    ])
+    == "/sensitive"
+  assert target([
+      Rule(..sensitive, priority: 1),
+      Rule(..folded, query: "id=42&lang=fr", priority: 999),
+    ])
+    == "/folded"
+}

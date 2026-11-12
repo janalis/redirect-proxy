@@ -98,7 +98,7 @@ type Index(a) {
 const leaf_lengths = 4
 
 type QueryRule {
-  QueryRule(rule: Rule, conditions: List(#(String, String)))
+  QueryRule(rule: Rule, conditions: List(#(String, String)), file_rank: Int)
 }
 
 /// The query rules of one path, most conditions first, then priority, then
@@ -315,12 +315,10 @@ fn build_host(rules: List(Rule)) -> HostRules {
     list.partition(rules, fn(r) { r.kind == Exact && r.query != "" })
   let exact_query =
     with_query
-    |> list.map(fn(r) { QueryRule(r, rule.query_conditions(r)) })
-    // more conditions are more specific, then priority, then file order
-    |> list.sort(fn(a, b) {
-      int.compare(list.length(b.conditions), list.length(a.conditions))
-      |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+    |> list.index_map(fn(r, file_rank) {
+      QueryRule(r, rule.query_conditions(r), file_rank)
     })
+    |> list.sort(compare_query_rules)
     |> list.reverse
     |> list.fold(dict.new(), fn(acc, q) {
       let key = case q.rule.case_insensitive {
@@ -770,6 +768,14 @@ fn match_rules(
   }
 }
 
+/// Keep the original file order even when case-sensitive and folded
+/// candidates came from different index groups.
+fn compare_query_rules(a: QueryRule, b: QueryRule) -> order.Order {
+  int.compare(list.length(b.conditions), list.length(a.conditions))
+  |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+  |> order.break_tie(int.compare(a.file_rank, b.file_rank))
+}
+
 fn query_group(rules: List(QueryRule)) -> QueryGroup {
   let numbered = list.index_map(rules, fn(q, position) { #(position, q) })
   let #(always, conditional) =
@@ -842,13 +848,7 @@ fn match_query(
             [], found | found, [] -> found
             _, _ ->
               list.append(exact, folded)
-              |> list.sort(fn(a, b) {
-                int.compare(
-                  list.length(b.conditions),
-                  list.length(a.conditions),
-                )
-                |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
-              })
+              |> list.sort(compare_query_rules)
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })

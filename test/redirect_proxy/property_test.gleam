@@ -775,8 +775,8 @@ pub fn compiled_template_expands_like_expand_with_test() {
 
 /// Exact rules with query conditions, against a reference: the rules for
 /// the path (or its case, for case-insensitive ones) whose conditions the
-/// request has, most conditions first, then priority, then case-sensitive
-/// ones, then file order.
+/// request has, most conditions first, then priority, then original file
+/// order, regardless of whether the matching source was case-insensitive.
 pub fn query_rules_match_like_the_reference_test() {
   let subset =
     qcheck.generic_list(
@@ -849,7 +849,6 @@ pub fn query_rules_match_like_the_reference_test() {
           list.length(rule.query_conditions(a)),
         )
         |> order.break_tie(int.compare(a.priority, b.priority))
-        |> order.break_tie(bool_order(a.case_insensitive, b.case_insensitive))
         |> order.break_tie(int.compare(ai, bi))
       })
       |> list.first
@@ -859,14 +858,6 @@ pub fn query_rules_match_like_the_reference_test() {
       |> result.map(fn(m) { m.rule.id })
     assert found == expected
   })
-}
-
-fn bool_order(a: Bool, b: Bool) -> order.Order {
-  case a, b {
-    False, True -> order.Lt
-    True, False -> order.Gt
-    _, _ -> order.Eq
-  }
 }
 
 /// The next boundary tells the same as `crosses_boundary`: a rule starts or
