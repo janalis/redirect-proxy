@@ -141,14 +141,22 @@ pub fn memo_file_test() {
   assert ffi.memo_file(path, parse) == Error("missing")
   let assert Ok(Nil) = ffi.atomic_write(path, "ok:one")
   assert ffi.memo_file(path, parse) == Ok("one")
-  // cached: not recomputed while the file is unchanged
-  assert ffi.memo_file(path, fn() { Error("not called") }) == Ok("one")
+  set_mtime(path, 10)
+  assert ffi.memo_file(path, parse) == Ok("one")
+  // cached: not recomputed while the mature file is unchanged
+  assert ffi.memo_file(path, fn() {
+      panic as "unchanged mature file was recomputed"
+    })
+    == Ok("one")
   // a write within the same second, of the same size, is still seen
   let assert Ok(Nil) = ffi.atomic_write(path, "ok:two")
   assert ffi.memo_file(path, parse) == Ok("two")
+  // In-place edits can retain the inode, size and second-resolution mtime.
+  let assert Ok(Nil) = simplifile.write(path, "ok:six")
+  assert ffi.memo_file(path, parse) == Ok("six")
   // a broken file keeps the last good value
   let assert Ok(Nil) = ffi.atomic_write(path, "garbage")
-  assert ffi.memo_file(path, parse) == Ok("two")
+  assert ffi.memo_file(path, parse) == Ok("six")
 }
 
 pub fn json_log_lines_test() {

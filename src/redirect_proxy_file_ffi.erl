@@ -158,8 +158,9 @@ memo_file(Path, Fun) ->
     Stamp = file_stamp(Path),
     Table = memo_table(),
     Cached = try ets:lookup(Table, Path) catch error:badarg -> [] end,
+    Recent = stamp_is_recent(Stamp),
     case Cached of
-        [{_, Stamp, Value}] -> Value;
+        [{_, Stamp, Value}] when not Recent -> Value;
         _ ->
             case Fun() of
                 {ok, _} = Ok ->

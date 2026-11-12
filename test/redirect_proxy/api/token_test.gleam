@@ -264,3 +264,27 @@ pub fn clients_wait_for_another_process_test() {
   let assert Ok(_) = clients.rotate(s, client.client_id, by: "test")
   assert process.receive(released, 0) == Ok(Nil)
 }
+
+pub fn client_in_place_edit_is_seen_test() {
+  let path = support.temp_dir() <> "/clients.json"
+  let settings = clients.Settings(path:, audit_path: path <> ".audit")
+  let assert Ok(#(client, _)) =
+    clients.create(settings, "test", [scope.Read], by: "test")
+  assert clients.get(settings, client.client_id) == Ok(client)
+  let assert Ok(content) = simplifile.read(path)
+  let changed =
+    content
+    |> string.replace(client.secret_hash, string.repeat("0", 64))
+
+  let assert Ok(Nil) = simplifile.write(path, changed)
+  let assert Ok(updated) = clients.get(settings, client.client_id)
+  assert updated.secret_hash == string.repeat("0", 64)
+  assert updated.scopes == [scope.Read]
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      string.replace(changed, "redirects:read", "redirects:ops"),
+    )
+  let assert Ok(updated) = clients.get(settings, client.client_id)
+  assert updated.scopes == [scope.Ops]
+}
