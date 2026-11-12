@@ -88,6 +88,15 @@ pub fn next_request(
   host: String,
   location: String,
 ) -> Result(#(String, String, String), Nil) {
+  let location = browser_slashes(location)
+  let without_fragment = case string.split_once(location, "#") {
+    Ok(#(before, _)) -> before
+    Error(Nil) -> location
+  }
+  let #(location, query) = case string.split_once(without_fragment, "?") {
+    Ok(#(before, query)) -> #(before, query)
+    Error(Nil) -> #(without_fragment, "")
+  }
   let lower = string.lowercase(location)
   case
     string.starts_with(lower, "http://")
@@ -96,31 +105,35 @@ pub fn next_request(
   {
     True ->
       case uri.parse(location) {
-        Ok(uri.Uri(host: option.Some(next_host), path:, query:, ..)) ->
+        Ok(uri.Uri(host: option.Some(next_host), path:, ..)) ->
           Ok(#(
             next_host,
             case path {
               "" -> "/"
               p -> p
             },
-            option.unwrap(query, ""),
+            query,
           ))
         _ -> Error(Nil)
       }
     False ->
       case string.starts_with(location, "/") {
-        True -> {
-          let without_fragment = case string.split_once(location, "#") {
-            Ok(#(before, _)) -> before
-            Error(Nil) -> location
-          }
-          let #(path, query) = case string.split_once(without_fragment, "?") {
-            Ok(#(path, query)) -> #(path, query)
-            Error(Nil) -> #(without_fragment, "")
-          }
-          Ok(#(host, path, query))
-        }
+        True -> Ok(#(host, location, query))
         False -> Error(Nil)
       }
   }
+}
+
+/// HTTP URLs interpret literal backslashes as slashes before the query or
+/// fragment. Escaped backslashes and query/fragment data stay unchanged.
+fn browser_slashes(location: String) -> String {
+  let #(before_fragment, fragment) = case string.split_once(location, "#") {
+    Ok(#(before, after)) -> #(before, "#" <> after)
+    Error(Nil) -> #(location, "")
+  }
+  let #(before_query, query) = case string.split_once(before_fragment, "?") {
+    Ok(#(before, after)) -> #(before, "?" <> after)
+    Error(Nil) -> #(before_fragment, "")
+  }
+  string.replace(before_query, "\\", "/") <> query <> fragment
 }

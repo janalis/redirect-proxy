@@ -946,8 +946,9 @@ pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
   }
 }
 
-/// The rest of `path` after the source of prefix rule `r`.
-fn prefix_remainder(r: Rule, path: String) -> String {
+/// The rest of a normalized path after the normalized source of a matching
+/// prefix rule. Shared with explanations to preserve Unicode boundaries.
+pub fn prefix_remainder(r: Rule, path: String) -> String {
   case r.case_insensitive {
     False -> ffi.byte_drop(path, string.byte_size(r.source))
     // cut where the lower-cased prefix ends, in bytes, like the index

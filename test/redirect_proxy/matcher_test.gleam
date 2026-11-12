@@ -1033,3 +1033,65 @@ pub fn unicode_prefix_precedence_uses_consumed_path_test() {
   check_orders([Rule(..unicode, priority: 1), ascii], "/kXYZ", "/unicode/XYZ")
   check_orders([unicode, Rule(..ascii, priority: 1)], "/kXYZ", "/ascii/XYZ")
 }
+
+pub fn redirect_destinations_use_browser_backslashes_test() {
+  list.each(
+    [
+      "/x\\..\\a",
+      "http://h/x\\..\\a",
+      "//h/x\\..\\a",
+      "/\\h/x\\..\\a",
+    ],
+    fn(target) {
+      let r = r("loop", "*", rule.Exact, "/a", target)
+      let assert Ok(r) = rule.validate(r)
+      let m = matcher.build([r])
+      let assert Ok(chain) = matcher_loop.redirect_loop(m, r, False)
+      assert list.map(chain, fn(r) { r.id }) == ["loop", "loop"]
+      let assert Ok(explained) = explain.explain(m, [r], "http://h/a", False)
+      assert explained.loops
+    },
+  )
+}
+
+pub fn redirect_destination_slashes_preserve_query_data_test() {
+  assert matcher_loop.next_request("h", "/x\\a?q=one\\two#frag\\data")
+    == Ok(#("h", "/x/a", "q=one\\two"))
+  assert matcher_loop.next_request("h", "/x%5Ca?q=%5C")
+    == Ok(#("h", "/x%5Ca", "q=%5C"))
+  assert matcher_loop.next_request("h", "https://other/x\\a?q=one\\two")
+    == Ok(#("other", "/x/a", "q=one\\two"))
+  assert matcher_loop.next_request("h", "/\\other/x\\a")
+    == Ok(#("other", "/x/a", ""))
+  assert matcher_loop.next_request("h", "/x\\a#frag?query\\data")
+    == Ok(#("h", "/x/a", ""))
+}
+
+pub fn explanation_prefix_order_matches_consumed_path_test() {
+  let short =
+    Rule(..r("short", "*", rule.Prefix, "/K", "/short"), case_insensitive: True)
+  let long =
+    Rule(..r("long", "*", rule.Prefix, "/kk", "/long"), case_insensitive: True)
+  let order = fn(rules, url) {
+    let m = matcher.build(rules)
+    let assert Ok(e) = explain.explain(m, rules, url, False)
+    list.map(e.candidates, fn(c) { #(c.rule.id, c.verdict) })
+  }
+  list.each([[short, long], [long, short]], fn(rules) {
+    assert order(rules, "http://h/kkXYZ")
+      == [#("long", explain.Applied), #("short", explain.Shadowed)]
+  })
+  assert order(
+      [Rule(..short, case_insensitive: False), long],
+      "http://h/%E2%84%AAkXYZ",
+    )
+    == [#("long", explain.Applied), #("short", explain.Shadowed)]
+  let same = Rule(..r("same", "*", rule.Prefix, "/k", "/same"), priority: 1)
+  assert order([short, same], "http://h/kXYZ")
+    == [#("same", explain.Applied), #("short", explain.Shadowed)]
+  let same = Rule(..same, priority: 100)
+  assert order([short, same], "http://h/kXYZ")
+    == [#("short", explain.Applied), #("same", explain.Shadowed)]
+  assert order([same, short], "http://h/kXYZ")
+    == [#("same", explain.Applied), #("short", explain.Shadowed)]
+}
