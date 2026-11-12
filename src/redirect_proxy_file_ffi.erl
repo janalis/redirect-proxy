@@ -3,7 +3,7 @@
 -module(redirect_proxy_file_ffi).
 
 -export([
-    append_line/2, atomic_write/2, atomic_write_private/2, clear_tunable/1,
+    append_line/2, atomic_write/2, atomic_write_private/2, atomic_write_as/3, clear_tunable/1,
     copy_file_as/2, data_dir_owner_mismatch/1, file_stamp/1, memo_file/2,
     probe_writable_file/1,
     same_write/2, set_tunable/2, stamp_is_recent/1, tunable/2,
@@ -38,6 +38,11 @@ atomic_write(Path, Content) -> atomic_write(Path, Content, default).
 %% For files holding secrets (password hashes, client secret hashes, the
 %% cookie signing key): created 0600 instead of the umask default.
 atomic_write_private(Path, Content) -> atomic_write(Path, Content, 8#600).
+
+%% Exact permissions of a source archive, regardless of the destination's
+%% previous permissions (or a symlink there). Set before writing bytes.
+atomic_write_as(Path, Content, Mode) ->
+    atomic_write(Path, Content, {exact, Mode band 8#7777}).
 
 atomic_write(Path, Content, NewMode) ->
     _ = filelib:ensure_dir(Path),
@@ -82,6 +87,8 @@ atomic_write(Path, Content, NewMode) ->
 %% default. A new file gets NewMode, or the umask default. A private file
 %% (with a NewMode) is never readable by others: its group may have been
 %% given access on purpose, the rest of the system never is.
+set_mode(_, Tmp, {exact, Mode}) ->
+    file:change_mode(Tmp, Mode);
 set_mode(Path, Tmp, NewMode) ->
     case {file:read_file_info(Path), NewMode} of
         {{ok, #file_info{mode = Mode}}, default} -> file:change_mode(Tmp, Mode band 8#7777);

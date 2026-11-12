@@ -272,12 +272,16 @@ archive_name(Path, N, false) -> Path ++ "." ++ integer_to_list(N);
 archive_name(Path, N, true) -> archive_name(Path, N, false) ++ ".gz".
 
 compress_file(Path) ->
-    case file:read_file(Path) of
-        {ok, Data} ->
-            case file:write_file(Path ++ ".gz", zlib:gzip(Data)) of
-                ok -> _ = file:delete(Path), ok;
-                _ -> ok
-            end;
-        _ ->
+    Result = case {file:read_file(Path), file:read_file_info(Path)} of
+        {{ok, Data}, {ok, #file_info{mode = Mode}}} ->
+            redirect_proxy_file_ffi:atomic_write_as(
+                unicode:characters_to_binary(Path ++ ".gz"), zlib:gzip(Data), Mode);
+        {{error, Reason}, _} -> {error, Reason};
+        {_, {error, Reason}} -> {error, Reason}
+    end,
+    case Result of
+        {ok, nil} -> _ = file:delete(Path), ok;
+        {error, Reason1} ->
+            logger:warning("access log ~ts: compression failed: ~p", [Path, Reason1]),
             ok
     end.

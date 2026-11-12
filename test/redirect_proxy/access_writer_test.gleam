@@ -70,6 +70,10 @@ pub fn rotated_files_are_compressed_test() {
   assert simplifile.is_file(path <> ".0.gz") == Ok(True)
   assert simplifile.is_file(path <> ".1.gz") == Ok(True)
   assert simplifile.is_file(path <> ".0") == Ok(False)
+  let assert Ok(newest) = simplifile.read_bits(path <> ".0.gz")
+  let assert Ok(older) = simplifile.read_bits(path <> ".1.gz")
+  assert gunzip(newest) == <<"line 004\nline 005\nline 006\n":utf8>>
+  assert gunzip(older) == <<"line 001\nline 002\nline 003\n":utf8>>
 }
 
 /// logrotate renames the file: lines go to a new file of the name within a
@@ -114,4 +118,44 @@ pub fn unwritable_outputs_are_refused_test() {
       False,
     )
   assert string.starts_with(message, "cannot open access log")
+}
+
+@external(erlang, "zlib", "gunzip")
+fn gunzip(data: BitArray) -> BitArray
+
+pub fn compressed_archives_preserve_modes_and_replace_symlinks_test() {
+  list.each([0o600, 0o640], fn(mode) {
+    let dir = support.temp_dir()
+    let path = dir <> "/access.log"
+    let sentinel = dir <> "/sentinel"
+    let assert Ok(Nil) = simplifile.write(path, "")
+    let assert Ok(Nil) = simplifile.set_permissions_octal(path, mode)
+    let assert Ok(Nil) = simplifile.write(sentinel, "untouched")
+    let assert Ok(Nil) =
+      simplifile.create_symlink(to: sentinel, from: path <> ".0.gz")
+    let assert Ok(Nil) =
+      ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 1, True)
+    emit(1, 3)
+    ffi.access_log_stop()
+    assert simplifile.read(sentinel) == Ok("untouched")
+    assert simplifile.is_symlink(path <> ".0.gz") == Ok(False)
+    let assert Ok(info) = simplifile.file_info(path <> ".0.gz")
+    assert simplifile.file_info_permissions_octal(info) == mode
+    let assert Ok(bits) = simplifile.read_bits(path <> ".0.gz")
+    assert gunzip(bits) == <<"line 001\nline 002\nline 003\n":utf8>>
+  })
+}
+
+pub fn failed_compression_keeps_raw_archive_and_cleans_temp_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/access.log"
+  let assert Ok(Nil) = simplifile.create_directory_all(path <> ".0.gz")
+  let assert Ok(Nil) =
+    ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 1, True)
+  emit(1, 3)
+  ffi.access_log_stop()
+  assert lines(path <> ".0") == ["line 001", "line 002", "line 003"]
+  assert simplifile.is_directory(path <> ".0.gz") == Ok(True)
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert !list.any(files, string.contains(_, ".tmp."))
 }
