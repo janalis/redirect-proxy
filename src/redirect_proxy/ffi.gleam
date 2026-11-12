@@ -64,6 +64,11 @@ pub fn regex_limit_count() -> Int
 @external(erlang, "redirect_proxy_file_ffi", "memo_file")
 pub fn memo_file(path: String, compute: fn() -> Result(a, e)) -> Result(a, e)
 
+/// Exclusively creates, closes and removes an empty probe. Existing paths
+/// are never modified or removed.
+@external(erlang, "redirect_proxy_file_ffi", "probe_writable_file")
+pub fn probe_writable_file(path: String) -> Result(Nil, String)
+
 @external(erlang, "redirect_proxy_file_ffi", "atomic_write")
 pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 

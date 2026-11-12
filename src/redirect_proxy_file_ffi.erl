@@ -5,6 +5,7 @@
 -export([
     append_line/2, atomic_write/2, atomic_write_private/2, clear_tunable/1,
     copy_file_as/2, data_dir_owner_mismatch/1, file_stamp/1, memo_file/2,
+    probe_writable_file/1,
     same_write/2, set_tunable/2, stamp_is_recent/1, tunable/2,
     with_file_lock/3, with_file_lock_detailed/3, with_lock/2
 ]).
@@ -14,6 +15,23 @@
 %% ---------------------------------------------------------------------------
 %% Files
 %% ---------------------------------------------------------------------------
+
+%% Tests creating a file without following or deleting an occupied path.
+probe_writable_file(Path) ->
+    Result = case file:open(Path, [write, exclusive, raw, binary]) of
+        {ok, Fd} ->
+            Closed = file:close(Fd),
+            Deleted = file:delete(Path),
+            case Closed of
+                ok -> Deleted;
+                Error -> Error
+            end;
+        Error -> Error
+    end,
+    case Result of
+        ok -> {ok, nil};
+        {error, Reason} -> {error, atom_to_binary_safe(Reason)}
+    end.
 
 atomic_write(Path, Content) -> atomic_write(Path, Content, default).
 

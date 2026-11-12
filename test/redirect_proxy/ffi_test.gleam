@@ -328,3 +328,24 @@ pub fn same_write_test() {
   assert !same_write(#(7, 100, 10), #(8, 100, 10))
   assert !same_write(#(7, 100, 10), #(7, 100, 11))
 }
+
+pub fn writable_probe_keeps_existing_entries_test() {
+  let dir = support.temp_dir()
+  let probe = dir <> "/probe"
+  assert ffi.probe_writable_file(probe) == Ok(Nil)
+  assert simplifile.is_file(probe) == Ok(False)
+  let assert Ok(Nil) = simplifile.write(probe, "existing")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(probe, 0o640)
+  let assert Error(_) = ffi.probe_writable_file(probe)
+  assert simplifile.read(probe) == Ok("existing")
+  assert mode(probe) == 0o640
+  let assert Ok(Nil) = simplifile.delete(probe)
+  let target = dir <> "/target"
+  let assert Ok(Nil) = simplifile.write(target, "untouched")
+  let assert Ok(Nil) = simplifile.create_symlink(to: target, from: probe)
+  let assert Error(_) = ffi.probe_writable_file(probe)
+  assert simplifile.is_symlink(probe) == Ok(True)
+  assert simplifile.read(target) == Ok("untouched")
+  let assert Error(_) = ffi.probe_writable_file(dir <> "/missing/probe")
+  assert simplifile.is_directory(dir <> "/missing") == Ok(False)
+}

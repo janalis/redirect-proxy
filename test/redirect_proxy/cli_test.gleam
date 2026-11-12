@@ -43,6 +43,16 @@ pub fn check_config_test() {
     redirect_proxy.run(["check-config", "--config", dir <> "/missing.toml"])
 }
 
+pub fn check_config_unwritable_data_is_a_warning_test() {
+  let #(dir, config_path) = setup()
+  // A file where the directory should be makes the probe fail. Validation
+  // still succeeds and leaves the occupied path alone.
+  let assert Ok(Nil) = simplifile.write(dir <> "/data", "untouched")
+  assert redirect_proxy.run(["check-config", "--config", config_path])
+    == Ok(Nil)
+  assert simplifile.read(dir <> "/data") == Ok("untouched")
+}
+
 pub fn user_commands_test() {
   let #(dir, config_path) = setup()
   envoy.set("RP_PASSWORD", "cli-password-123")
