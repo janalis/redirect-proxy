@@ -272,3 +272,14 @@ pub fn provider_outage_uses_the_last_good_metadata_test() {
   ))
   let assert Error(_) = oidc_provider.discover_issuer(old)
 }
+
+/// OAuth metadata goes before the issuer path; the port must survive too.
+pub fn oauth_discovery_with_issuer_paths_test() {
+  ffi.ets_new(oidc_provider.table)
+  list.each(["", "/", "/tenant", "/tenant/nested", "/tenant/nested/"], fn(path) {
+    let #(issuer, _) = support.start_fake_authorization_server_at(path)
+    let assert Ok(discovered) = oidc_provider.discover_issuer(issuer)
+    assert discovered.issuer == issuer
+    assert discovered.jwks_uri == issuer <> "/jwks"
+  })
+}
