@@ -100,6 +100,18 @@ def main():
         assert compressed.read_text() == "previous archive"
         assert not access.exists(), "failed active-log recreation leaked a file"
         assert not any(".tmp." in p.name for p in directory.iterdir())
+        race = directory / "fallback-race"
+        race.mkdir()
+        (race / "access.log").write_text("")
+        (race / "access.log").chmod(0o600)
+        (race / "access.log.replacement").write_text("")
+        (race / "access.log.replacement").chmod(0o640)
+        erlang(
+            f'nil = test_access_writer_ffi:denied_reopen_race({binary(race)})',
+            deny_mode=True,
+            umask=0o022,
+        )
+        assert (race / "access.log").read_bytes() == b""
         print("permission-denial regression passed")
     finally:
         shutil.rmtree(directory)

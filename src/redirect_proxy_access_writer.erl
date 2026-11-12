@@ -35,6 +35,7 @@
     inode = none,
     %% Last active file permissions, retained when recreation must retry.
     mode = none,
+    mode_pending = false,
     size = 0,
     max_bytes,
     max_files,
@@ -200,27 +201,42 @@ report_dropped(#w{counter = Counter, output = Output}) ->
 
 %% --- files ------------------------------------------------------------------
 
-open(#w{type = {file, Path}, mode = Mode} = W) ->
+open(#w{type = {file, Path}, mode = Mode, mode_pending = Pending} = W) ->
     %% Exclusive creation distinguishes our new file from an operator's
     %% replacement. Existing files keep the mode they were given.
     _ = filelib:ensure_dir(Path),
     case open_file(Path) of
-        {ok, Fd, Created} ->
-            Prepared = case {Created, Mode} of
-                {true, M} when is_integer(M) -> file:change_mode(Path, M);
-                _ -> ok
+        {ok, Fd, Kind} ->
+            Desired = case {Kind, Mode, Pending} of
+                {existing, _, false} -> none;
+                {_, M, _} when is_integer(M) -> M;
+                {uncertain, _, _} -> 8#600;
+                _ -> none
+            end,
+            Prepared = case Desired of
+                none -> ok;
+                M2 -> file:change_mode(Path, M2)
             end,
             Info = case Prepared of
                 ok -> file:read_file_info(Fd, [raw]);
                 Error -> Error
             end,
             case Info of
-                {ok, #file_info{inode = I, size = S, mode = M1}} ->
-                    {ok, W#w{fd = Fd, inode = I, size = S, mode = M1 band 8#7777}};
-                {error, Reason} ->
+                {ok, #file_info{inode = I, size = S, mode = M1}}
+                  when Desired =:= none; M1 band 8#7777 =:= Desired ->
+                    {ok, W#w{fd = Fd, inode = I, size = S,
+                             mode = M1 band 8#7777, mode_pending = false}};
+                Failure ->
                     _ = file:close(Fd),
-                    case Created of true -> _ = file:delete(Path); false -> ok end,
-                    {error, Reason}
+                    case Kind of owned -> _ = file:delete(Path); _ -> ok end,
+                    Reason = case Failure of
+                        {error, R} -> R;
+                        _ -> changed_during_open
+                    end,
+                    case Desired of
+                        none -> {error, Reason};
+                        _ -> {error, {prepare_mode, Desired, Reason}}
+                    end
             end;
         {error, Reason} ->
             {error, Reason}
@@ -230,14 +246,33 @@ open(W) ->
 
 open_file(Path) ->
     case file:open(Path, [append, exclusive, raw, binary]) of
-        {ok, Fd} -> {ok, Fd, true};
+        {ok, Fd} -> {ok, Fd, owned};
         {error, eexist} ->
+            Before = file:read_file_info(Path, [raw]),
+            %% Tests can interleave a real path replacement at this boundary.
+            case persistent_term:get({?MODULE, open_collision_hook}, none) of
+                Hook when is_function(Hook, 1) -> Hook(Path);
+                none -> ok
+            end,
             case file:open(Path, [append, raw, binary]) of
-                {ok, Fd} -> {ok, Fd, false};
+                {ok, Fd} ->
+                    Kind = case {Before, file:read_file_info(Fd, [raw])} of
+                        {{ok, #file_info{inode = I, major_device = Major, minor_device = Minor}},
+                         {ok, #file_info{inode = I, major_device = Major, minor_device = Minor}}} ->
+                            existing;
+                        _ -> uncertain
+                    end,
+                    {ok, Fd, Kind};
                 Error -> Error
             end;
         Error -> Error
     end.
+
+%% A failed uncertain open must not be reclassified as an operator-managed
+%% file on retry: the fallback may have created that still-unprepared file.
+remember_failed_mode({prepare_mode, Mode, _}, W) ->
+    W#w{mode = Mode, mode_pending = true};
+remember_failed_mode(_, W) -> W.
 
 %% Include permission changes made while the file was open.
 remember_mode(#w{fd = none} = W) -> W;
@@ -261,7 +296,9 @@ reopen_if_moved(#w{type = {file, Path}, inode = Inode} = W) ->
             close(W),
             case open(Remembered#w{fd = none}) of
                 {ok, W1} -> W1;
-                {error, _} -> Remembered#w{fd = none, inode = none}
+                {error, Reason} ->
+                    Failed = remember_failed_mode(Reason, Remembered),
+                    Failed#w{fd = none, inode = none}
             end
     end;
 reopen_if_moved(W) ->
@@ -284,7 +321,9 @@ rotate(#w{type = {file, Path}, max_files = Count, compress = Compress} = W) ->
     end,
     case open(Remembered#w{fd = none, size = 0}) of
         {ok, W1} -> W1;
-        {error, _} -> Remembered#w{fd = none, inode = none, size = 0}
+        {error, Reason2} ->
+            Failed = remember_failed_mode(Reason2, Remembered),
+            Failed#w{fd = none, inode = none, size = 0}
     end.
 
 %% Path.(Count - 2) -> Path.(Count - 1), ..., Path -> Path.0 (then gzipped

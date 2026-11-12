@@ -209,3 +209,11 @@ pub fn external_replacement_keeps_operator_mode_test() {
   assert lines(path) == ["operator", "line 002"]
   assert lines(path <> ".old") == ["line 001"]
 }
+
+@external(erlang, "test_access_writer_ffi", "reopen_race")
+fn reopen_race(dir: String, replace: Bool) -> Nil
+
+pub fn vanished_or_changed_fallback_files_get_safe_mode_test() {
+  reopen_race(support.temp_dir(), False)
+  reopen_race(support.temp_dir(), True)
+}
