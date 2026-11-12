@@ -158,3 +158,24 @@ pub fn a_killed_holder_gives_its_slot_back_test() {
   support_wait(fn() { !process.is_alive(holder) })
   assert ratelimit.bounded(name, 1, fn() { 7 }) == Ok(7)
 }
+
+@external(erlang, "test_net_ffi", "window_reset_regression")
+fn window_reset_regression() -> Int
+
+pub fn concurrent_resets_never_crash_admission_test() {
+  assert window_reset_regression() == 0
+}
+
+pub fn admission_preserves_rejected_counts_and_window_boundaries_test() {
+  let table = "redirect_proxy_window_boundary_test"
+  ffi.ets_new(table)
+  assert ffi.window_take(table, "key", 100, 60, 2) == Ok(Nil)
+  assert ffi.window_take(table, "key", 159, 60, 2) == Ok(Nil)
+  assert ffi.window_take(table, "key", 159, 60, 2) == Error(1)
+  assert ffi.window_get(table, "key") == Ok(#(160, 2))
+  // Exact expiry starts a fresh window and its first admitted use.
+  assert ffi.window_take(table, "key", 160, 60, 2) == Ok(Nil)
+  assert ffi.window_get(table, "key") == Ok(#(220, 1))
+  assert ffi.window_take(table, "zero", 100, 60, 0) == Error(60)
+  assert ffi.window_get(table, "zero") == Error(Nil)
+}

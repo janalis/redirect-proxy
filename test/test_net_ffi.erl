@@ -1,6 +1,6 @@
 %% Test helper: an unused TCP port on the loopback interface.
 -module(test_net_ffi).
--export([cas_regression/0, free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
+-export([window_reset_regression/0, cas_regression/0, free_port/0, set_mtime_ago/2, counting_server/0, accepted/1, format_json_log/2,
          raw_exchange/2, session/3, paced_session/4, half_closed/3, reset_after/3, upload/4, parse_outcome/1,
          trickle/3, open/1, send/2, read/2, read_until/3, close/1, connection_process/1, poke/1,
          start_capped/2, hibernated/1, reductions/1, suspend/1, resume/1, queued/1,
@@ -279,3 +279,35 @@ cas_reductions(Table, Size) ->
     end, lists:seq(1, 100)),
     {reductions, After} = process_info(self(), reductions),
     After - Before.
+
+
+%% Repeated admission racing the same reset performed after a login succeeds.
+window_reset_regression() ->
+    Table = <<"redirect_proxy_window_reset_test">>,
+    Key = <<"key">>,
+    redirect_proxy_ets_ffi:ets_new(Table),
+    Parent = self(),
+    Now = erlang:system_time(second),
+    Resetter = spawn(fun Reset() ->
+        redirect_proxy_ets_ffi:ets_delete(Table, Key),
+        receive stop -> ok after 0 -> Reset() end
+    end),
+    Workers = [spawn(fun() ->
+        Errors = lists:foldl(fun(_, N) ->
+            try redirect_proxy_ets_ffi:window_take(Table, Key, Now, 900, 10) of
+                {ok, nil} -> N;
+                {error, Wait} when Wait > 0 -> N
+            catch _:_ -> N + 1
+            end
+        end, 0, lists:seq(1, 20000)),
+        Parent ! {window_reset_done, self(), Errors}
+    end) || _ <- lists:seq(1, 8)],
+    try
+        lists:sum([receive
+            {window_reset_done, Pid, Errors} -> Errors
+        after 10000 -> error(window_reset_test_timeout)
+        end || Pid <- Workers])
+    after
+        exit(Resetter, kill),
+        [exit(Pid, kill) || Pid <- Workers]
+    end.

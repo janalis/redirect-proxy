@@ -108,18 +108,35 @@ window_record(Table, Key, Now, Window) ->
 %% Checking and counting in one step: concurrent attempts cannot all pass a
 %% check made before any of them is counted.
 window_take(Table, Key, Now, Window, Limit) ->
-    T = binary_to_existing_atom(Table),
-    _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
-    case ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}) of
-        Count when Count > Limit ->
-            _ = ets:update_counter(T, Key, {3, -1, 0, 0}),
-            %% the entry may have been purged since (an ended window)
-            WindowEnd = case ets:lookup(T, Key) of
-                [{_, End, _}] -> End;
-                [] -> Now + Window
-            end,
-            {error, max(1, WindowEnd - Now)};
-        _ -> {ok, nil}
+    window_take_retry(binary_to_existing_atom(Table), Key, Now, Window, Limit).
+
+window_take_retry(T, Key, Now, Window, Limit) ->
+    case ets:lookup(T, Key) of
+        [{Key, End, _} = Old] when End =< Now ->
+            %% Delete only the exact expired row we read, never a new
+            %% window another caller has inserted since.
+            true = ets:delete_object(T, Old),
+            window_take_retry(T, Key, Now, Window, Limit);
+        [{Key, End, Count}] when Count >= Limit ->
+            %% Rejection does not increment then refund: a concurrent reset
+            %% cannot remove the row between those operations.
+            {error, max(1, End - Now)};
+        [{Key, End, Count}] ->
+            Replaced = ets:select_replace(T,
+                [{{Key, '$1', '$2'},
+                  [{'=:=', '$1', End}, {'=:=', '$2', Count}],
+                  [{const, {Key, End, Count + 1}}]}]),
+            case Replaced of
+                1 -> {ok, nil};
+                0 -> window_take_retry(T, Key, Now, Window, Limit)
+            end;
+        [] when Limit > 0 ->
+            case ets:insert_new(T, {Key, Now + Window, 1}) of
+                true -> {ok, nil};
+                false -> window_take_retry(T, Key, Now, Window, Limit)
+            end;
+        [] ->
+            {error, max(1, Window)}
     end.
 
 %% Takes back one counted use of Key (never below zero).
