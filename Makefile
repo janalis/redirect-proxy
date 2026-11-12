@@ -39,6 +39,7 @@ dev: ## Run with a throwaway admin (admin / change-me-please) in ./data
 
 test: ## Run the test suite
 	gleam test
+	escript scripts/atomic-write-test.escript
 
 coverage: build ## Run tests with coverage (fails under COVERAGE_MIN %)
 	escript scripts/coverage.escript $(COVERAGE_MIN)

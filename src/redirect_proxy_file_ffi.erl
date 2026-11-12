@@ -27,14 +27,14 @@ atomic_write(Path, Content, NewMode) ->
     %% Every step returns {error, _} instead of raising, so that a full or
     %% failing disk is reported to the caller and the temp file is removed.
     Result =
-        case file:open(Tmp, [write, raw, binary]) of
+        case file:open(Tmp, [write, exclusive, raw, binary]) of
             {ok, Fd} ->
                 %% before the content is written: a secret is never readable
                 %% by others, not even for a moment
                 set_mode(Path, Tmp, NewMode),
                 Written = write_and_sync(Fd, Content),
                 Closed = file:close(Fd),
-                case {Written, Closed} of
+                WrittenResult = case {Written, Closed} of
                     {ok, ok} ->
                         case file:rename(Tmp, Path) of
                             ok -> sync_dir(filename:dirname(Path));
@@ -42,13 +42,18 @@ atomic_write(Path, Content, NewMode) ->
                         end;
                     {ok, CloseError} -> CloseError;
                     {WriteError, _} -> WriteError
+                end,
+                %% Only this successful exclusive open owns Tmp. Never
+                %% remove a conflicting file or symlink on open failure.
+                case WrittenResult of
+                    ok -> ok;
+                    _ -> _ = file:delete(Tmp), WrittenResult
                 end;
             Error -> Error
         end,
     case Result of
         ok -> {ok, nil};
         {error, Reason} ->
-            _ = file:delete(Tmp),
             {error, atom_to_binary_safe(Reason)}
     end.
 
