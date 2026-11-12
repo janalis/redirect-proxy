@@ -558,6 +558,18 @@ pub fn the_upstream_date_is_kept_test() {
   assert string.contains(text, "\r\nDate: Mon, 01 Jan 2024 00:00:00 GMT\r\n")
 }
 
+pub fn connection_nominated_dates_are_replaced_test() {
+  list.each(["/conn-date", "/date-conn"], fn(path) {
+    let proxy = start()
+    let #(text, _) =
+      exchange(proxy, ["GET " <> path <> " HTTP/1.1\r\nhost: a\r\n\r\n"])
+    assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
+    assert count(string.lowercase(text), "\r\ndate: ") == 1
+    assert !string.contains(text, "Mon, 01 Jan 2024 00:00:00 GMT")
+    assert string.ends_with(text, "\r\n\r\nok")
+  })
+}
+
 pub fn interim_responses_are_relayed_test() {
   let proxy = start()
   let #(text, _) =
