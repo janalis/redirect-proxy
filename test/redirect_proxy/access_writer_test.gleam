@@ -159,3 +159,53 @@ pub fn failed_compression_keeps_raw_archive_and_cleans_temp_test() {
   let assert Ok(files) = simplifile.read_directory(dir)
   assert !list.any(files, string.contains(_, ".tmp."))
 }
+
+pub fn recreated_active_logs_preserve_modes_test() {
+  list.each([0o600, 0o640], fn(mode) {
+    list.each([#(False, 0), #(False, 2), #(True, 2)], fn(rotation) {
+      let path = support.temp_dir() <> "/access.log"
+      let assert Ok(Nil) = simplifile.write(path, "")
+      let assert Ok(Nil) = simplifile.set_permissions_octal(path, mode)
+      let assert Ok(Nil) =
+        ffi.access_log_start(
+          [#(path, [listener.RedirectListener])],
+          20,
+          rotation.1,
+          rotation.0,
+        )
+      emit(1, 3)
+      ffi.access_log_sync()
+      let assert Ok(info) = simplifile.file_info(path)
+      assert simplifile.file_info_permissions_octal(info) == mode
+      emit(4, 4)
+      ffi.access_log_sync()
+      assert lines(path) == ["line 004"]
+      // A second rotation must keep the mode too.
+      emit(5, 7)
+      ffi.access_log_sync()
+      let assert Ok(info) = simplifile.file_info(path)
+      assert simplifile.file_info_permissions_octal(info) == mode
+      ffi.access_log_stop()
+    })
+  })
+}
+
+pub fn external_replacement_keeps_operator_mode_test() {
+  let path = support.temp_dir() <> "/access.log"
+  let assert Ok(Nil) = simplifile.write(path, "")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
+  let assert Ok(Nil) =
+    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 2, False)
+  emit(1, 1)
+  ffi.access_log_sync()
+  let assert Ok(Nil) = simplifile.rename(path, path <> ".old")
+  let assert Ok(Nil) = simplifile.write(path, "operator\n")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
+  process.sleep(1300)
+  emit(2, 2)
+  ffi.access_log_stop()
+  let assert Ok(info) = simplifile.file_info(path)
+  assert simplifile.file_info_permissions_octal(info) == 0o640
+  assert lines(path) == ["operator", "line 002"]
+  assert lines(path <> ".old") == ["line 001"]
+}

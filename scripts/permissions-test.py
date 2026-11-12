@@ -8,13 +8,13 @@ import sys
 import tempfile
 
 
-def erlang(code, deny_mode=False):
+def erlang(code, deny_mode=False, umask=-1):
     command = ["erl", "-noshell", "-pa", "build/dev/erlang/redirect_proxy/ebin",
                "-eval", code + ", halt()."]
     if deny_mode:
         command = ["/usr/bin/sandbox-exec", "-p",
                    "(version 1)(allow default)(deny file-write-mode)"] + command
-    subprocess.run(command, check=True, timeout=30)
+    subprocess.run(command, check=True, timeout=30, umask=umask)
 
 
 def binary(path):
@@ -66,6 +66,14 @@ def main():
         assert ordinary.read_text() == "changed" and backup.read_text() == "original"
         assert mode(absent) == mode(backup) == 0o600
         assert mode(private) == mode(ordinary) == 0o640
+        # A first-ever active log has no inherited mode: honor the umask.
+        first = directory / "first.log"
+        erlang(
+            f'{{ok, W}} = redirect_proxy_access_writer:start({binary(first)}, 0, 1, false), '
+            'ok = redirect_proxy_access_writer:stop(W)',
+            umask=0o027,
+        )
+        assert mode(first) == 0o640
         # Compression must preserve the raw archive and the old gzip file
         # when setting the new archive's permissions is denied.
         access = directory / "access.log"
@@ -77,6 +85,12 @@ def main():
             f'{{ok, W}} = redirect_proxy_access_writer:start({binary(access)}, 65536, 1, true), '
             'ok = redirect_proxy_access_writer:send(W, binary:copy(<<"x">>, 70000)), '
             'ok = redirect_proxy_access_writer:sync(W), '
+            # Force multiple ordinary retry checks. A lost remembered mode
+            # would recreate the active file under the umask and leak bytes.
+            'lists:foreach(fun(_) -> element(1, W) ! check, '
+            'ok = redirect_proxy_access_writer:sync(W), '
+            'ok = redirect_proxy_access_writer:send(W, <<"must not leak">>), '
+            'ok = redirect_proxy_access_writer:sync(W) end, lists:seq(1, 3)), '
             'ok = redirect_proxy_access_writer:stop(W)',
             deny_mode=True,
         )
@@ -84,6 +98,7 @@ def main():
         assert raw.read_bytes() == b"x" * 70000 + b"\n"
         assert mode(raw) == 0o600
         assert compressed.read_text() == "previous archive"
+        assert not access.exists(), "failed active-log recreation leaked a file"
         assert not any(".tmp." in p.name for p in directory.iterdir())
         print("permission-denial regression passed")
     finally:

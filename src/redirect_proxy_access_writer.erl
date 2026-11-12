@@ -33,6 +33,8 @@
     type,
     fd = none,
     inode = none,
+    %% Last active file permissions, retained when recreation must retry.
+    mode = none,
     size = 0,
     max_bytes,
     max_files,
@@ -198,21 +200,52 @@ report_dropped(#w{counter = Counter, output = Output}) ->
 
 %% --- files ------------------------------------------------------------------
 
-open(#w{type = {file, Path}} = W) ->
-    %% the directory too may have been removed
+open(#w{type = {file, Path}, mode = Mode} = W) ->
+    %% Exclusive creation distinguishes our new file from an operator's
+    %% replacement. Existing files keep the mode they were given.
     _ = filelib:ensure_dir(Path),
-    case file:open(Path, [append, raw, binary]) of
-        {ok, Fd} ->
-            {Inode, Size} = case file:read_file_info(Path, [raw]) of
-                {ok, #file_info{inode = I, size = S}} -> {I, S};
-                _ -> {none, 0}
+    case open_file(Path) of
+        {ok, Fd, Created} ->
+            Prepared = case {Created, Mode} of
+                {true, M} when is_integer(M) -> file:change_mode(Path, M);
+                _ -> ok
             end,
-            {ok, W#w{fd = Fd, inode = Inode, size = Size}};
+            Info = case Prepared of
+                ok -> file:read_file_info(Fd, [raw]);
+                Error -> Error
+            end,
+            case Info of
+                {ok, #file_info{inode = I, size = S, mode = M1}} ->
+                    {ok, W#w{fd = Fd, inode = I, size = S, mode = M1 band 8#7777}};
+                {error, Reason} ->
+                    _ = file:close(Fd),
+                    case Created of true -> _ = file:delete(Path); false -> ok end,
+                    {error, Reason}
+            end;
         {error, Reason} ->
             {error, Reason}
     end;
 open(W) ->
     {ok, W}.
+
+open_file(Path) ->
+    case file:open(Path, [append, exclusive, raw, binary]) of
+        {ok, Fd} -> {ok, Fd, true};
+        {error, eexist} ->
+            case file:open(Path, [append, raw, binary]) of
+                {ok, Fd} -> {ok, Fd, false};
+                Error -> Error
+            end;
+        Error -> Error
+    end.
+
+%% Include permission changes made while the file was open.
+remember_mode(#w{fd = none} = W) -> W;
+remember_mode(#w{fd = Fd} = W) ->
+    case file:read_file_info(Fd, [raw]) of
+        {ok, #file_info{mode = Mode}} -> W#w{mode = Mode band 8#7777};
+        _ -> W
+    end.
 
 close(#w{fd = none}) -> ok;
 close(#w{fd = Fd}) -> _ = file:close(Fd), ok.
@@ -224,10 +257,11 @@ reopen_if_moved(#w{type = {file, Path}, inode = Inode} = W) ->
         {ok, #file_info{inode = Inode}} when W#w.fd =/= none ->
             W;
         _ ->
+            Remembered = remember_mode(W),
             close(W),
-            case open(W#w{fd = none}) of
+            case open(Remembered#w{fd = none}) of
                 {ok, W1} -> W1;
-                {error, _} -> W#w{fd = none, inode = none}
+                {error, _} -> Remembered#w{fd = none, inode = none}
             end
     end;
 reopen_if_moved(W) ->
@@ -239,6 +273,7 @@ maybe_rotate(W) ->
     W.
 
 rotate(#w{type = {file, Path}, max_files = Count, compress = Compress} = W) ->
+    Remembered = remember_mode(W),
     close(W),
     try
         rotate_files(Path, Count, Compress)
@@ -247,9 +282,9 @@ rotate(#w{type = {file, Path}, max_files = Count, compress = Compress} = W) ->
             logger:warning("access log ~ts: rotation failed: ~p",
                            [W#w.output, {Class, Reason}])
     end,
-    case open(W#w{fd = none, size = 0}) of
+    case open(Remembered#w{fd = none, size = 0}) of
         {ok, W1} -> W1;
-        {error, _} -> W#w{fd = none, inode = none, size = 0}
+        {error, _} -> Remembered#w{fd = none, inode = none, size = 0}
     end.
 
 %% Path.(Count - 2) -> Path.(Count - 1), ..., Path -> Path.0 (then gzipped
