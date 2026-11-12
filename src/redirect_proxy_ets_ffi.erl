@@ -53,12 +53,19 @@ ets_delete(Table, Key) ->
 
 %% Compare against the exact value read by a caller. Constants prevent
 %% stored values from being interpreted as match-spec syntax.
+ets_replace_if(Table, Key, Old, New) when is_binary(Key) ->
+    ets:select_replace(binary_to_existing_atom(Table),
+        [{{Key, '$1'}, [{'=:=', '$1', {const, Old}}],
+          [{{Key, {const, New}}}]}]) =:= 1;
 ets_replace_if(Table, Key, Old, New) ->
     ets:select_replace(binary_to_existing_atom(Table),
         [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},
                          {'=:=', '$2', {const, Old}}],
           [{{'$1', {const, New}}}]}]) =:= 1.
 
+ets_delete_if(Table, Key, Old) when is_binary(Key) ->
+    ets:select_delete(binary_to_existing_atom(Table),
+        [{{Key, '$1'}, [{'=:=', '$1', {const, Old}}], [true]}]) =:= 1;
 ets_delete_if(Table, Key, Old) ->
     ets:select_delete(binary_to_existing_atom(Table),
         [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},

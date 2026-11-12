@@ -132,3 +132,10 @@ pub fn stale_activity_cannot_restore_or_delete_sessions_test() {
   let result: Result(#(Int, session.Session), Nil) = ffi.ets_get(table, "key")
   assert result == Error(Nil)
 }
+
+@external(erlang, "test_net_ffi", "cas_regression")
+fn cas_regression() -> Nil
+
+pub fn cas_exact_keys_and_constant_work_test() {
+  cas_regression()
+}
