@@ -65,14 +65,7 @@ atomic_write(Path, Content, NewMode, BeforeRename) ->
                 Closed = file:close(Fd),
                 WrittenResult = case {Written, Closed} of
                     {ok, ok} ->
-                        case BeforeRename() of
-                            ok ->
-                                case file:rename(Tmp, Path) of
-                                    ok -> sync_dir(filename:dirname(Path));
-                                    RenameError -> RenameError
-                                end;
-                            BeforeError -> BeforeError
-                        end;
+                        publish_prepared(Tmp, Path, BeforeRename);
                     {ok, CloseError} -> CloseError;
                     {WriteError, _} -> WriteError
                 end,
@@ -98,28 +91,124 @@ audit_rotate(Path, Line, Mode, Keep) ->
         audit_backups(Path, Keep)
     end).
 
+%% A prepared audit transaction retains originals until publication. Its
+%% rollback runs on rename failure; other atomic writes have no transaction.
+publish_prepared(Tmp, Path, BeforeRename) ->
+    case BeforeRename() of
+        ok -> publish_file(Tmp, Path);
+        {ready, Commit, Rollback} ->
+            case publish_file(Tmp, Path) of
+                ok -> Commit(), ok;
+                {error, Reason} -> audit_rolled_back(Reason, Rollback())
+            end;
+        BeforeError -> BeforeError
+    end.
+
+publish_file(Tmp, Path) ->
+    case file:rename(Tmp, Path) of
+        ok -> sync_dir(filename:dirname(Path));
+        Error -> Error
+    end.
+
 audit_backups(_, 0) -> ok;
 audit_backups(Path, Keep) ->
-    case optional_file_result(file:delete(audit_archive(Path, Keep))) of
+    Dir = <<Path/binary, ".rotate.", (list_to_binary(os:getpid()))/binary, ".",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    case file:make_dir(Dir) of
         ok ->
-            case audit_shift(Path, Keep - 1) of
-                ok ->
-                    case copy_file_as(Path, audit_archive(Path, 1)) of
-                        {ok, nil} -> ok;
-                        {error, Reason} -> {error, Reason}
-                    end;
-                Error -> Error
+            case file:change_mode(Dir, 8#700) of
+                ok -> audit_stage(Path, Keep, 1, Dir, []);
+                Error -> _ = file:del_dir(Dir), Error
             end;
         Error -> Error
     end.
 
-audit_shift(_, 0) -> ok;
-audit_shift(Path, N) ->
-    case optional_file_result(file:rename(audit_archive(Path, N),
-                                          audit_archive(Path, N + 1))) of
-        ok -> audit_shift(Path, N - 1);
-        Error -> Error
+audit_stage(Path, Keep, N, Dir, Staged) when N > Keep ->
+    case audit_install(Path, Keep, Dir, Staged, []) of
+        {ok, Installed} ->
+            {ready,
+             fun() -> audit_commit(Dir, Staged) end,
+             fun() -> audit_rollback(Path, Dir, Staged, Installed) end};
+        {error, Reason, Installed} ->
+            audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, Installed))
+    end;
+audit_stage(Path, Keep, N, Dir, Staged) ->
+    Archive = audit_archive(Path, N),
+    case file:read_link_info(Archive) of
+        {ok, #file_info{type = Type}} when Type =:= regular; Type =:= symlink ->
+            case file:rename(Archive, audit_staged(Dir, N)) of
+                ok -> audit_stage(Path, Keep, N + 1, Dir, [{N, Type} | Staged]);
+                {error, Reason} ->
+                    audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, []))
+            end;
+        {error, enoent} -> audit_stage(Path, Keep, N + 1, Dir, Staged);
+        Failure ->
+            Reason = case Failure of {error, R} -> R; _ -> invalid_archive_type end,
+            audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, []))
     end.
+
+%% Copy from staging instead of moving: rollback keeps every original.
+audit_install(Path, Keep, Dir, Staged, []) ->
+    Newest = audit_archive(Path, 1),
+    case copy_file_as(Path, Newest) of
+        {ok, nil} -> audit_install_older(Path, Keep, Dir, Staged, [Newest]);
+        {error, Reason} -> {error, Reason, []}
+    end.
+
+audit_install_older(_, _, _, [], Installed) -> {ok, Installed};
+audit_install_older(Path, Keep, Dir, [{N, _} | Rest], Installed) when N >= Keep ->
+    audit_install_older(Path, Keep, Dir, Rest, Installed);
+audit_install_older(Path, Keep, Dir, [{N, Type} | Rest], Installed) ->
+    Dest = audit_archive(Path, N + 1),
+    Source = audit_staged(Dir, N),
+    Result = case Type of
+        regular -> copy_file_as(Source, Dest);
+        symlink ->
+            case file:read_link(Source) of
+                {ok, Target} ->
+                    case file:make_symlink(Target, Dest) of
+                        ok -> {ok, nil};
+                        Error -> Error
+                    end;
+                Error -> Error
+            end
+    end,
+    case Result of
+        {ok, nil} -> audit_install_older(Path, Keep, Dir, Rest, [Dest | Installed]);
+        {error, Reason} -> {error, Reason, Installed}
+    end.
+
+audit_rollback(Path, Dir, Staged, Installed) ->
+    DeleteErrors = [E || Dest <- Installed,
+                        E <- [optional_file_result(file:delete(Dest))], E =/= ok],
+    RestoreErrors = lists:filtermap(fun({N, _}) ->
+        Dest = audit_archive(Path, N),
+        Result = case file:read_link_info(Dest) of
+            {error, enoent} -> file:rename(audit_staged(Dir, N), Dest);
+            _ -> {error, destination_occupied}
+        end,
+        case Result of ok -> false; Error -> {true, {Dest, Error}} end
+    end, Staged),
+    case DeleteErrors ++ RestoreErrors of
+        [] -> file:del_dir(Dir);
+        Errors -> {error, {recover_archives_from, Dir, Errors}}
+    end.
+
+audit_rolled_back(Reason, ok) -> {error, Reason};
+audit_rolled_back(Reason, {error, Recovery}) ->
+    {error, {audit_rotation_failed, Reason, rollback_failed, Recovery}}.
+
+audit_commit(Dir, Staged) ->
+    Errors = [E || {N, _} <- Staged,
+                   E <- [file:delete(audit_staged(Dir, N))], E =/= ok],
+    case {Errors, file:del_dir(Dir)} of
+        {[], ok} -> ok;
+        Failure ->
+            logger:error("audit rotation published; could not clean staging ~ts: ~p",
+                         [Dir, Failure])
+    end.
+
+audit_staged(Dir, N) -> filename:join(Dir, integer_to_binary(N)).
 
 audit_archive(Path, N) ->
     <<Path/binary, ".", (integer_to_binary(N))/binary>>.

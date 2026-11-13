@@ -187,4 +187,23 @@ pub fn archive_failure_keeps_active_audit_and_cleans_replacement_test() {
   assert simplifile.file_info_permissions_octal(info) == 0o600
   let assert Ok(files) = simplifile.read_directory(dir)
   assert !list.any(files, string.contains(_, ".tmp."))
+  assert !list.any(files, string.contains(_, ".rotate."))
+}
+
+pub fn rotation_preserves_archived_symlink_entries_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/audit.jsonl"
+  let sentinel = dir <> "/sentinel"
+  let assert Ok(Nil) = simplifile.write(sentinel, "untouched")
+  let assert Ok(Nil) = simplifile.write(path, "current")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: sentinel, from: path <> ".1")
+  audit.configure(1, 2)
+  audit.record(path, "actor", "test", "new", option.None, option.None)
+  audit.configure(audit.default_max_bytes, audit.default_files)
+  assert simplifile.read(path <> ".1") == Ok("current")
+  assert simplifile.is_symlink(path <> ".2") == Ok(True)
+  assert simplifile.read(sentinel) == Ok("untouched")
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert !list.any(files, string.contains(_, ".rotate."))
 }

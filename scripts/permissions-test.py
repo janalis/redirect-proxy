@@ -8,13 +8,19 @@ import sys
 import tempfile
 
 
-def erlang(code, deny_mode=False, umask=-1):
+def erlang(code, deny_mode=False, umask=-1, deny_path=None, deny_create_path=None):
     ebins = sorted(str(path) for path in Path("build/dev/erlang").glob("*/ebin"))
     command = ["erl", "-noshell", "-pa", *ebins,
                "-eval", code + ", halt()."]
-    if deny_mode:
-        command = ["/usr/bin/sandbox-exec", "-p",
-                   "(version 1)(allow default)(deny file-write-mode)"] + command
+    if deny_mode or deny_path is not None or deny_create_path is not None:
+        policy = "(version 1)(allow default)"
+        if deny_mode:
+            policy += "(deny file-write-mode)"
+        if deny_path is not None:
+            policy += "(deny file-write* (literal " + json.dumps(str(deny_path.resolve())) + "))"
+        if deny_create_path is not None:
+            policy += "(deny file-write-create (literal " + json.dumps(str(deny_create_path.resolve())) + "))"
+        command = ["/usr/bin/sandbox-exec", "-p", policy] + command
     subprocess.run(command, check=True, timeout=30, umask=umask)
 
 
@@ -135,6 +141,55 @@ def main():
             assert mode(audit_path) == 0o600
             assert previous.read_text() == "previous archive"
             assert sorted(p.name for p in audit_dir.iterdir()) == ["audit.jsonl", "audit.jsonl.1"]
+        # Publication alone fails after preparation and archive installation.
+        # Multiple retries must restore the complete original archive chain.
+        rollback_dir = directory / "audit-rollback"
+        rollback_dir.mkdir()
+        active = rollback_dir / "audit.jsonl"
+        active.write_bytes(b"A" * 70000)
+        active.chmod(0o600)
+        older = rollback_dir / "audit.jsonl.1"
+        oldest = rollback_dir / "audit.jsonl.2"
+        older.write_bytes(b"B")
+        older.chmod(0o600)
+        oldest.write_bytes(b"C")
+        oldest.chmod(0o640)
+        erlang(
+            'lists:foreach(fun(_) -> '
+            f'{{error, _}} = redirect_proxy_file_ffi:audit_rotate({binary(active)}, '
+            '<<"new entry">>, 8#600, 2) end, lists:seq(1, 3))',
+            deny_path=active,
+            umask=0o022,
+        )
+        assert active.read_bytes() == b"A" * 70000
+        assert older.read_bytes() == b"B" and mode(older) == 0o600
+        assert oldest.read_bytes() == b"C" and mode(oldest) == 0o640
+        assert sorted(p.name for p in rollback_dir.iterdir()) == ["audit.jsonl", "audit.jsonl.1", "audit.jsonl.2"]
+        # If the OS denies restoring an original archive too, retain its
+        # staged inode and return a diagnostic naming the recovery directory.
+        recovery_dir = directory / "audit-recovery"
+        recovery_dir.mkdir()
+        current = recovery_dir / "audit.jsonl"
+        current.write_bytes(b"A" * 70000)
+        first_archive = recovery_dir / "audit.jsonl.1"
+        first_archive.write_bytes(b"B")
+        first_archive.chmod(0o600)
+        second_archive = recovery_dir / "audit.jsonl.2"
+        second_archive.write_bytes(b"C")
+        erlang(
+            f'{{error, Message}} = redirect_proxy_file_ffi:audit_rotate({binary(current)}, '
+            '<<"new entry">>, 8#600, 2), '
+            '{_, _} = binary:match(Message, <<"rollback_failed">>), '
+            '{_, _} = binary:match(Message, <<"recover_archives_from">>)',
+            deny_create_path=first_archive,
+        )
+        assert current.read_bytes() == b"A" * 70000
+        assert second_archive.read_bytes() == b"C"
+        staged = list(recovery_dir.glob("audit.jsonl.rotate.*"))
+        assert len(staged) == 1 and staged[0].is_dir()
+        assert (staged[0] / "1").read_bytes() == b"B"
+        assert mode(staged[0] / "1") == 0o600
+        assert mode(staged[0]) == 0o700
         print("permission-denial regression passed")
     finally:
         shutil.rmtree(directory)
