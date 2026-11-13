@@ -10,6 +10,7 @@
 %% - /not-modified: a 304
 %% - /hop: hop-by-hop headers in the response
 %% - /date: a response with its own `date`
+%% - /conn-date, /date-conn: Date removed by Connection, in either order
 %% - /conn-length: `Connection` naming the framing headers
 %% - /bad-reason, /ctl-header: control characters in the head
 %% - /gzip-chunked, /gzip-close: transfer codings other than chunked
@@ -172,6 +173,12 @@ respond(Socket, N, Method, Target, Path, Headers, Framing, Body, Rest) ->
             serve(Socket, N, Rest);
         <<"/date">> ->
             send(Socket, <<"HTTP/1.1 200 OK\r\nDate: Mon, 01 Jan 2024 00:00:00 GMT\r\ncontent-length: 2\r\n\r\nok">>),
+            serve(Socket, N, Rest);
+        <<"/conn-date">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nConnection: DaTe\r\nDate: Mon, 01 Jan 2024 00:00:00 GMT\r\ncontent-length: 2\r\n\r\nok">>),
+            serve(Socket, N, Rest);
+        <<"/date-conn">> ->
+            send(Socket, <<"HTTP/1.1 200 OK\r\nDate: Mon, 01 Jan 2024 00:00:00 GMT\r\nConnection: dAtE\r\ncontent-length: 2\r\n\r\nok">>),
             serve(Socket, N, Rest);
         <<"/early-hints">> ->
             send(Socket, <<"HTTP/1.1 103 Early Hints\r\nlink: </a.css>\r\n\r\n">>),

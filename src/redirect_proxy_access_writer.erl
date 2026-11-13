@@ -33,6 +33,9 @@
     type,
     fd = none,
     inode = none,
+    %% Last active file permissions, retained when recreation must retry.
+    mode = none,
+    mode_pending = false,
     size = 0,
     max_bytes,
     max_files,
@@ -198,21 +201,86 @@ report_dropped(#w{counter = Counter, output = Output}) ->
 
 %% --- files ------------------------------------------------------------------
 
-open(#w{type = {file, Path}} = W) ->
-    %% the directory too may have been removed
+open(#w{type = {file, Path}, mode = Mode, mode_pending = Pending} = W) ->
+    %% Exclusive creation distinguishes our new file from an operator's
+    %% replacement. Existing files keep the mode they were given.
     _ = filelib:ensure_dir(Path),
-    case file:open(Path, [append, raw, binary]) of
-        {ok, Fd} ->
-            {Inode, Size} = case file:read_file_info(Path, [raw]) of
-                {ok, #file_info{inode = I, size = S}} -> {I, S};
-                _ -> {none, 0}
+    case open_file(Path) of
+        {ok, Fd, Kind} ->
+            Desired = case {Kind, Mode, Pending} of
+                {existing, _, false} -> none;
+                {_, M, _} when is_integer(M) -> M;
+                {uncertain, _, _} -> 8#600;
+                _ -> none
             end,
-            {ok, W#w{fd = Fd, inode = Inode, size = Size}};
+            Prepared = case Desired of
+                none -> ok;
+                M2 -> file:change_mode(Path, M2)
+            end,
+            Info = case Prepared of
+                ok -> file:read_file_info(Fd, [raw]);
+                Error -> Error
+            end,
+            case Info of
+                {ok, #file_info{inode = I, size = S, mode = M1}}
+                  when Desired =:= none; M1 band 8#7777 =:= Desired ->
+                    {ok, W#w{fd = Fd, inode = I, size = S,
+                             mode = M1 band 8#7777, mode_pending = false}};
+                Failure ->
+                    _ = file:close(Fd),
+                    case Kind of owned -> _ = file:delete(Path); _ -> ok end,
+                    Reason = case Failure of
+                        {error, R} -> R;
+                        _ -> changed_during_open
+                    end,
+                    case Desired of
+                        none -> {error, Reason};
+                        _ -> {error, {prepare_mode, Desired, Reason}}
+                    end
+            end;
         {error, Reason} ->
             {error, Reason}
     end;
 open(W) ->
     {ok, W}.
+
+open_file(Path) ->
+    case file:open(Path, [append, exclusive, raw, binary]) of
+        {ok, Fd} -> {ok, Fd, owned};
+        {error, eexist} ->
+            Before = file:read_file_info(Path, [raw]),
+            %% Tests can interleave a real path replacement at this boundary.
+            case persistent_term:get({?MODULE, open_collision_hook}, none) of
+                Hook when is_function(Hook, 1) -> Hook(Path);
+                none -> ok
+            end,
+            case file:open(Path, [append, raw, binary]) of
+                {ok, Fd} ->
+                    Kind = case {Before, file:read_file_info(Fd, [raw])} of
+                        {{ok, #file_info{inode = I, major_device = Major, minor_device = Minor}},
+                         {ok, #file_info{inode = I, major_device = Major, minor_device = Minor}}} ->
+                            existing;
+                        _ -> uncertain
+                    end,
+                    {ok, Fd, Kind};
+                Error -> Error
+            end;
+        Error -> Error
+    end.
+
+%% A failed uncertain open must not be reclassified as an operator-managed
+%% file on retry: the fallback may have created that still-unprepared file.
+remember_failed_mode({prepare_mode, Mode, _}, W) ->
+    W#w{mode = Mode, mode_pending = true};
+remember_failed_mode(_, W) -> W.
+
+%% Include permission changes made while the file was open.
+remember_mode(#w{fd = none} = W) -> W;
+remember_mode(#w{fd = Fd} = W) ->
+    case file:read_file_info(Fd, [raw]) of
+        {ok, #file_info{mode = Mode}} -> W#w{mode = Mode band 8#7777};
+        _ -> W
+    end.
 
 close(#w{fd = none}) -> ok;
 close(#w{fd = Fd}) -> _ = file:close(Fd), ok.
@@ -224,10 +292,13 @@ reopen_if_moved(#w{type = {file, Path}, inode = Inode} = W) ->
         {ok, #file_info{inode = Inode}} when W#w.fd =/= none ->
             W;
         _ ->
+            Remembered = remember_mode(W),
             close(W),
-            case open(W#w{fd = none}) of
+            case open(Remembered#w{fd = none}) of
                 {ok, W1} -> W1;
-                {error, _} -> W#w{fd = none, inode = none}
+                {error, Reason} ->
+                    Failed = remember_failed_mode(Reason, Remembered),
+                    Failed#w{fd = none, inode = none}
             end
     end;
 reopen_if_moved(W) ->
@@ -239,6 +310,7 @@ maybe_rotate(W) ->
     W.
 
 rotate(#w{type = {file, Path}, max_files = Count, compress = Compress} = W) ->
+    Remembered = remember_mode(W),
     close(W),
     try
         rotate_files(Path, Count, Compress)
@@ -247,9 +319,11 @@ rotate(#w{type = {file, Path}, max_files = Count, compress = Compress} = W) ->
             logger:warning("access log ~ts: rotation failed: ~p",
                            [W#w.output, {Class, Reason}])
     end,
-    case open(W#w{fd = none, size = 0}) of
+    case open(Remembered#w{fd = none, size = 0}) of
         {ok, W1} -> W1;
-        {error, _} -> W#w{fd = none, inode = none, size = 0}
+        {error, Reason2} ->
+            Failed = remember_failed_mode(Reason2, Remembered),
+            Failed#w{fd = none, inode = none, size = 0}
     end.
 
 %% Path.(Count - 2) -> Path.(Count - 1), ..., Path -> Path.0 (then gzipped
@@ -272,12 +346,16 @@ archive_name(Path, N, false) -> Path ++ "." ++ integer_to_list(N);
 archive_name(Path, N, true) -> archive_name(Path, N, false) ++ ".gz".
 
 compress_file(Path) ->
-    case file:read_file(Path) of
-        {ok, Data} ->
-            case file:write_file(Path ++ ".gz", zlib:gzip(Data)) of
-                ok -> _ = file:delete(Path), ok;
-                _ -> ok
-            end;
-        _ ->
+    Result = case {file:read_file(Path), file:read_file_info(Path)} of
+        {{ok, Data}, {ok, #file_info{mode = Mode}}} ->
+            redirect_proxy_file_ffi:atomic_write_as(
+                unicode:characters_to_binary(Path ++ ".gz"), zlib:gzip(Data), Mode);
+        {{error, Reason}, _} -> {error, Reason};
+        {_, {error, Reason}} -> {error, Reason}
+    end,
+    case Result of
+        {ok, nil} -> _ = file:delete(Path), ok;
+        {error, Reason1} ->
+            logger:warning("access log ~ts: compression failed: ~p", [Path, Reason1]),
             ok
     end.

@@ -367,7 +367,9 @@ pub fn redirect_loop_test() {
     }
   }
   // /a/x -> /a/b/x -> /a/b/b/x ...
-  assert ids(matcher_loop.redirect_loop(m, prefix, False)) == Ok(["p", "p"])
+  let assert Ok(growing) = matcher_loop.redirect_loop(m, prefix, False)
+  assert list.length(growing) == 21
+  assert list.all(growing, fn(r) { r.id == "p" })
   // across hosts
   assert ids(matcher_loop.redirect_loop(m, to_c, False)) == Ok(["1", "2", "1"])
   assert matcher_loop.redirect_loop(m, plain, False) == Error(Nil)
@@ -509,9 +511,9 @@ pub fn redirect_loop_through_trailing_slash_retry_test() {
   let slash = r("s", "*", rule.Exact, "/docs/", "/docs")
   let m = matcher.build([slash])
   assert matcher_loop.redirect_loop(m, slash, False) == Error(Nil)
-  let assert Ok([first, second]) = matcher_loop.redirect_loop(m, slash, True)
-  assert first.id == "s"
-  assert second.id == "s"
+  let assert Ok(chain) = matcher_loop.redirect_loop(m, slash, True)
+  // /docs/ -> /docs -> /docs: the URL repeats only after the second hop.
+  assert list.map(chain, fn(r) { r.id }) == ["s", "s", "s"]
 }
 
 /// Each regex run is capped; after a few capped runs the request stops
@@ -881,6 +883,9 @@ pub fn explain_reports_endless_chains_test() {
     explain.explain(matcher.build(rules), rules, "http://h.test/a/x", False)
   assert explained.loops
   assert list.length(explained.chain) == 21
+  let assert Ok(checked) =
+    matcher_loop.redirect_loop(matcher.build(rules), growing, False)
+  assert list.length(checked) == list.length(explained.chain)
   // a chain of 15 redirects that ends is not one
   let ends =
     int.range(from: 1, to: 16, with: [], run: list.prepend)
@@ -892,6 +897,9 @@ pub fn explain_reports_endless_chains_test() {
     explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
   assert !explained.loops
   assert list.length(explained.chain) == 15
+  let assert Ok(first) = list.find(ends, fn(r) { r.source == "/1" })
+  assert matcher_loop.redirect_loop(matcher.build(ends), first, False)
+    == Error(Nil)
 }
 
 /// Query conditions, as documented: a parameter sent several times matches
@@ -916,4 +924,253 @@ pub fn query_conditions_as_documented_test() {
   assert !found("a=1")
   // the path keeps ignoring case
   assert matcher.lookup_query(m, "h", "/P", "a=2") |> result.is_ok
+}
+
+pub fn mixed_case_query_rules_keep_file_order_test() {
+  let sensitive =
+    Rule(
+      ..r("sensitive", "*", rule.Exact, "/Page", "/sensitive"),
+      query: "id=42",
+    )
+  let folded =
+    Rule(
+      ..r("folded", "*", rule.Exact, "/page", "/folded"),
+      query: "id=42",
+      case_insensitive: True,
+    )
+  let target = fn(rules) {
+    let assert Ok(found) =
+      matcher.lookup_query(
+        matcher.build(rules),
+        "x.test",
+        "/Page",
+        "id=42&lang=fr",
+      )
+    found.location
+  }
+  // The rules come from different index groups for this mixed-case path.
+  assert target([folded, sensitive]) == "/folded"
+  assert target([sensitive, folded]) == "/sensitive"
+  // Equal index keys must preserve the same order.
+  let sensitive = Rule(..sensitive, source: "/page")
+  let target = fn(rules) {
+    let assert Ok(found) =
+      matcher.lookup_query(
+        matcher.build(rules),
+        "x.test",
+        "/page",
+        "id=42&lang=fr",
+      )
+    found.location
+  }
+  assert target([folded, sensitive]) == "/folded"
+  assert target([sensitive, folded]) == "/sensitive"
+  // Priority wins over file order in either matching mode.
+  assert target([folded, Rule(..sensitive, priority: 1)]) == "/sensitive"
+  assert target([sensitive, Rule(..folded, priority: 1)]) == "/folded"
+  // Specificity wins over both priority and file order.
+  assert target([
+      Rule(..folded, priority: 1),
+      Rule(..sensitive, query: "id=42&lang=fr", priority: 999),
+    ])
+    == "/sensitive"
+  assert target([
+      Rule(..sensitive, priority: 1),
+      Rule(..folded, query: "id=42&lang=fr", priority: 999),
+    ])
+    == "/folded"
+}
+
+pub fn unicode_prefix_precedence_uses_consumed_path_test() {
+  let prefix = fn(id, source, case_insensitive, priority) {
+    Rule(
+      ..r(id, "*", rule.Prefix, source, "/" <> id <> "/$1"),
+      case_insensitive:,
+      priority:,
+    )
+  }
+  let check_orders = fn(rules, path, expected) {
+    list.each([rules, list.reverse(rules)], fn(ordered) {
+      assert location(matcher.build(ordered), "h", path) == Ok(expected)
+    })
+  }
+  // Kelvin sign lower-cases from three UTF-8 bytes to one ASCII byte.
+  // Both insensitive: longer consumed prefix wins despite source lengths.
+  check_orders(
+    [
+      prefix("short", "/K", True, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/kkXYZ",
+    "/long/XYZ",
+  )
+  // A sensitive Unicode source must not outrank a longer insensitive one.
+  check_orders(
+    [
+      prefix("short", "/K", False, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/KkXYZ",
+    "/long/XYZ",
+  )
+  // The insensitive Unicode source must not outrank a longer sensitive one.
+  check_orders(
+    [
+      prefix("short", "/K", True, 1),
+      prefix("long", "/kk", False, 999),
+    ],
+    "/kkXYZ",
+    "/long/XYZ",
+  )
+  // Encoded requests and sources are normalized before precedence is decided.
+  check_orders(
+    [
+      prefix("short", "/%E2%84%AA", False, 1),
+      prefix("long", "/kk", True, 999),
+    ],
+    "/%E2%84%AAkXYZ",
+    "/long/XYZ",
+  )
+  // Equal consumed prefixes use priority, then original file order.
+  let unicode = prefix("unicode", "/K", True, 100)
+  let ascii = prefix("ascii", "/k", False, 100)
+  assert location(matcher.build([unicode, ascii]), "h", "/kXYZ")
+    == Ok("/unicode/XYZ")
+  assert location(matcher.build([ascii, unicode]), "h", "/kXYZ")
+    == Ok("/ascii/XYZ")
+  check_orders([Rule(..unicode, priority: 1), ascii], "/kXYZ", "/unicode/XYZ")
+  check_orders([unicode, Rule(..ascii, priority: 1)], "/kXYZ", "/ascii/XYZ")
+}
+
+pub fn redirect_destinations_use_browser_backslashes_test() {
+  list.each(
+    [
+      "/x\\..\\a",
+      "http://h/x\\..\\a",
+      "//h/x\\..\\a",
+      "/\\h/x\\..\\a",
+    ],
+    fn(target) {
+      let r = r("loop", "h", rule.Exact, "/a", target)
+      let assert Ok(r) = rule.validate(r)
+      let m = matcher.build([r])
+      let assert Ok(chain) = matcher_loop.redirect_loop(m, r, False)
+      assert list.map(chain, fn(r) { r.id }) == ["loop", "loop"]
+      let assert Ok(explained) = explain.explain(m, [r], "http://h/a", False)
+      assert explained.loops
+    },
+  )
+}
+
+pub fn redirect_destination_slashes_preserve_query_data_test() {
+  assert matcher_loop.next_request("h", "/x\\a?q=one\\two#frag\\data")
+    == Ok(#("h", "/x/a", "q=one\\two"))
+  assert matcher_loop.next_request("h", "/x%5Ca?q=%5C")
+    == Ok(#("h", "/x%5Ca", "q=%5C"))
+  assert matcher_loop.next_request("h", "https://other/x\\a?q=one\\two")
+    == Ok(#("other", "/x/a", "q=one\\two"))
+  assert matcher_loop.next_request("h", "/\\other/x\\a")
+    == Ok(#("other", "/x/a", ""))
+  assert matcher_loop.next_request("h", "/x\\a#frag?query\\data")
+    == Ok(#("h", "/x/a", ""))
+}
+
+pub fn explanation_prefix_order_matches_consumed_path_test() {
+  let short =
+    Rule(..r("short", "*", rule.Prefix, "/K", "/short"), case_insensitive: True)
+  let long =
+    Rule(..r("long", "*", rule.Prefix, "/kk", "/long"), case_insensitive: True)
+  let order = fn(rules, url) {
+    let m = matcher.build(rules)
+    let assert Ok(e) = explain.explain(m, rules, url, False)
+    list.map(e.candidates, fn(c) { #(c.rule.id, c.verdict) })
+  }
+  list.each([[short, long], [long, short]], fn(rules) {
+    assert order(rules, "http://h/kkXYZ")
+      == [#("long", explain.Applied), #("short", explain.Shadowed)]
+  })
+  assert order(
+      [Rule(..short, case_insensitive: False), long],
+      "http://h/%E2%84%AAkXYZ",
+    )
+    == [#("long", explain.Applied), #("short", explain.Shadowed)]
+  let same = Rule(..r("same", "*", rule.Prefix, "/k", "/same"), priority: 1)
+  assert order([short, same], "http://h/kXYZ")
+    == [#("same", explain.Applied), #("short", explain.Shadowed)]
+  let same = Rule(..same, priority: 100)
+  assert order([short, same], "http://h/kXYZ")
+    == [#("short", explain.Applied), #("same", explain.Shadowed)]
+  assert order([same, short], "http://h/kXYZ")
+    == [#("same", explain.Applied), #("short", explain.Shadowed)]
+}
+
+pub fn explanation_exact_order_matches_runtime_test() {
+  let plain = r("plain", "*", rule.Exact, "/Page", "/plain")
+  let one = Rule(..r("one", "*", rule.Exact, "/Page", "/one"), query: "id=42")
+  let two =
+    Rule(
+      ..r("two", "*", rule.Exact, "/Page", "/two"),
+      query: "id=42&lang=fr",
+      priority: 999,
+    )
+  let folded =
+    Rule(
+      ..r("folded", "*", rule.Exact, "/page", "/folded"),
+      query: "id=42",
+      case_insensitive: True,
+    )
+  let ordered = fn(rules) {
+    let m = matcher.build(rules)
+    let assert Ok(found) =
+      matcher.lookup_query(m, "h.test", "/Page", "id=42&lang=fr")
+    let assert Ok(e) =
+      explain.explain(m, rules, "http://h.test/Page?id=42&lang=fr", False)
+    let assert [first, ..] = e.candidates
+    assert first.rule.id == found.rule.id
+    assert first.verdict == explain.Applied
+    list.map(e.candidates, fn(c) { c.rule.id })
+  }
+  assert ordered([plain, one, two]) == ["two", "one", "plain"]
+  assert ordered([plain, folded, one]) == ["folded", "one", "plain"]
+  assert ordered([plain, one, folded]) == ["one", "folded", "plain"]
+  assert ordered([plain, folded, Rule(..one, priority: 1)])
+    == ["one", "folded", "plain"]
+  assert ordered([plain, one, Rule(..folded, priority: 1)])
+    == ["folded", "one", "plain"]
+  let plain_folded = Rule(..folded, query: "", priority: 1)
+  // Plain exact matching gives sensitive rules precedence, ignoring priority.
+  assert ordered([plain_folded, plain]) == ["plain", "folded"]
+  // Host precedence wins even when the wildcard query is more specific.
+  assert ordered([two, Rule(..plain, host: "h.test")]) == ["plain", "two"]
+}
+
+pub fn repeated_rules_with_new_urls_can_terminate_test() {
+  let grow = r("grow", "*", rule.Prefix, "/a", "/ab$1")
+  let exit = r("exit", "*", rule.Prefix, "/abb", "/done")
+  let rules = [grow, exit]
+  let m = matcher.build(rules)
+  assert matcher_loop.redirect_loop(m, grow, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, rules, "http://h/aloop-check", False)
+  assert !e.loops
+  assert list.map(e.chain, fn(hop) { hop.rule_id }) == ["grow", "grow", "exit"]
+  let assert Ok(grow) = rule.validate(grow)
+  let assert Ok(exit) = rule.validate(exit)
+  assert matcher_loop.redirect_loop(matcher.build([grow, exit]), grow, False)
+    == Error(Nil)
+}
+
+pub fn redirect_loop_states_include_host_and_query_test() {
+  let cross = r("cross", "*", rule.Exact, "/a", "http://b.test/a")
+  let exit = r("exit", "b.test", rule.Exact, "/a", "/done")
+  let m = matcher.build([cross, exit])
+  assert matcher_loop.redirect_loop(m, cross, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, [cross, exit], "http://a.test/a", False)
+  assert !e.loops
+  let first = r("query", "*", rule.Exact, "/a", "/a?x=1")
+  let second = Rule(..r("exit", "*", rule.Exact, "/a", "/done"), query: "x=1")
+  let rules = [first, second]
+  let m = matcher.build(rules)
+  assert matcher_loop.redirect_loop(m, first, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, rules, "http://h/a", False)
+  assert !e.loops
 }

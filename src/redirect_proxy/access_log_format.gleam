@@ -311,15 +311,16 @@ fn header(e: Entry, name: String) -> String {
 pub fn strip_query(log_query: Bool, url: String) -> String {
   case log_query {
     True -> url
-    False ->
-      case string.split_once(url, "?") {
+    False -> {
+      let without_fragment = case string.split_once(url, "#") {
         Ok(#(base, _)) -> base
-        Error(Nil) ->
-          case string.split_once(url, "#") {
-            Ok(#(base, _)) -> base
-            Error(Nil) -> url
-          }
+        Error(Nil) -> url
       }
+      case string.split_once(without_fragment, "?") {
+        Ok(#(base, _)) -> base
+        Error(Nil) -> without_fragment
+      }
+    }
   }
 }
 

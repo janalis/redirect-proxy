@@ -6,7 +6,8 @@
     counter_add/3, counter_get/2, counter_new/1, counter_put/3,
     counter_size/1, ets_delete/2, ets_delete_older/2, ets_find/2,
     ets_get/2, ets_insert_new/3, ets_new/1, ets_put/3,
-    ets_size/1, ets_to_list/1, password_check_slots/0, window_forgive/2,
+    ets_replace_if/4, ets_delete_if/3,
+    ets_size/1, ets_to_list/1, password_check_slots/0, window_forgive/3, window_take_receipt/5, window_record_receipt/4,
     window_get/2, window_purge/2, window_record/4, window_take/5,
     with_slot/4
 ]).
@@ -50,6 +51,26 @@ ets_delete(Table, Key) ->
     ets:delete(binary_to_existing_atom(Table), Key),
     nil.
 
+%% Compare against the exact value read by a caller. Constants prevent
+%% stored values from being interpreted as match-spec syntax.
+ets_replace_if(Table, Key, Old, New) when is_binary(Key) ->
+    ets:select_replace(binary_to_existing_atom(Table),
+        [{{Key, '$1'}, [{'=:=', '$1', {const, Old}}],
+          [{{Key, {const, New}}}]}]) =:= 1;
+ets_replace_if(Table, Key, Old, New) ->
+    ets:select_replace(binary_to_existing_atom(Table),
+        [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},
+                         {'=:=', '$2', {const, Old}}],
+          [{{'$1', {const, New}}}]}]) =:= 1.
+
+ets_delete_if(Table, Key, Old) when is_binary(Key) ->
+    ets:select_delete(binary_to_existing_atom(Table),
+        [{{Key, '$1'}, [{'=:=', '$1', {const, Old}}], [true]}]) =:= 1;
+ets_delete_if(Table, Key, Old) ->
+    ets:select_delete(binary_to_existing_atom(Table),
+        [{{'$1', '$2'}, [{'=:=', '$1', {const, Key}},
+                         {'=:=', '$2', {const, Old}}], [true]}]) =:= 1.
+
 ets_to_list(Table) ->
     ets:tab2list(binary_to_existing_atom(Table)).
 
@@ -70,43 +91,71 @@ ets_delete_older(Table, Now) ->
                            [true]}]).
 
 %% ---------------------------------------------------------------------------
-%% Failure windows (login throttling): rows are {Key, WindowEnd, Count} so
-%% that concurrent failures are counted atomically (ets:update_counter).
+%% Failure windows: {Key, WindowEnd, Count, Generation}. Admission and
+%% refunds compare the exact generation, even across resets and restarts.
 %% ---------------------------------------------------------------------------
 
 window_record(Table, Key, Now, Window) ->
-    T = binary_to_existing_atom(Table),
-    %% an ended window starts over (each call is atomic on its own; two
-    %% failures racing here both count in the new window)
-    _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
-    _ = ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}),
+    {ok, _} = window_record_receipt(Table, Key, Now, Window),
     nil.
 
-%% Counts one use of Key, atomically, when it stays within Limit in the
-%% current window: {ok, nil}, or {error, SecondsLeft} with nothing counted.
-%% Checking and counting in one step: concurrent attempts cannot all pass a
-%% check made before any of them is counted.
+window_record_receipt(Table, Key, Now, Window) ->
+    window_take_receipt(Table, Key, Now, Window, infinity).
+
 window_take(Table, Key, Now, Window, Limit) ->
-    T = binary_to_existing_atom(Table),
-    _ = ets:select_delete(T, [{{Key, '$1', '_'}, [{'=<', '$1', Now}], [true]}]),
-    case ets:update_counter(T, Key, {3, 1}, {Key, Now + Window, 0}) of
-        Count when Count > Limit ->
-            _ = ets:update_counter(T, Key, {3, -1, 0, 0}),
-            %% the entry may have been purged since (an ended window)
-            WindowEnd = case ets:lookup(T, Key) of
-                [{_, End, _}] -> End;
-                [] -> Now + Window
-            end,
-            {error, max(1, WindowEnd - Now)};
-        _ -> {ok, nil}
+    case window_take_receipt(Table, Key, Now, Window, Limit) of
+        {ok, _} -> {ok, nil};
+        Error -> Error
     end.
 
-%% Takes back one counted use of Key (never below zero).
-window_forgive(Table, Key) ->
-    try ets:update_counter(binary_to_existing_atom(Table), Key, {3, -1, 0, 0}) of
+window_take_receipt(Table, Key, Now, Window, Limit) ->
+    window_take_retry(binary_to_existing_atom(Table), Key, Now, Window, Limit).
+
+window_take_retry(T, Key, Now, Window, Limit) ->
+    case ets:lookup(T, Key) of
+        [{Key, End, _, _} = Old] when End =< Now ->
+            true = ets:delete_object(T, Old),
+            window_take_retry(T, Key, Now, Window, Limit);
+        [{Key, End, Count, _}] when Count >= Limit ->
+            {error, max(1, End - Now)};
+        [{Key, End, Count, Generation}] ->
+            Replaced = ets:select_replace(T,
+                [{{Key, '$1', '$2', '$3'},
+                  [{'=:=', '$1', End}, {'=:=', '$2', Count},
+                   {'=:=', '$3', Generation}],
+                  [{const, {Key, End, Count + 1, Generation}}]}]),
+            case Replaced of
+                1 -> {ok, Generation};
+                0 -> window_take_retry(T, Key, Now, Window, Limit)
+            end;
+        [] when Limit > 0 ->
+            %% Browser-held SSO receipts can outlive a VM restart: do not
+            %% reuse a generation when the process-local sequence restarts.
+            Generation = binary:decode_unsigned(crypto:strong_rand_bytes(16)),
+            case ets:insert_new(T, {Key, Now + Window, 1, Generation}) of
+                true -> {ok, Generation};
+                false -> window_take_retry(T, Key, Now, Window, Limit)
+            end;
+        [] ->
+            {error, max(1, Window)}
+    end.
+
+%% Refund only the window that admitted the work, even when a reset and
+%% replacement happen in the same second with the same expiry.
+window_forgive(Table, Key, Generation) ->
+    T = binary_to_existing_atom(Table),
+    case ets:lookup(T, Key) of
+        [{Key, End, Count, Generation}] when Count > 0 ->
+            Changed = ets:select_replace(T,
+                [{{Key, '$1', '$2', '$3'},
+                  [{'=:=', '$1', End}, {'=:=', '$2', Count},
+                   {'=:=', '$3', Generation}],
+                  [{const, {Key, End, Count - 1, Generation}}]}]),
+            case Changed of
+                1 -> nil;
+                0 -> window_forgive(Table, Key, Generation)
+            end;
         _ -> nil
-    catch
-        error:badarg -> nil
     end.
 
 %% Runs Fun when fewer than Max live processes hold a Key slot: {ok, Result},
@@ -148,13 +197,13 @@ password_check_slots() ->
 
 window_get(Table, Key) ->
     case ets:lookup(binary_to_existing_atom(Table), Key) of
-        [{_, WindowEnd, Count}] -> {ok, {WindowEnd, Count}};
+        [{_, WindowEnd, Count, _}] -> {ok, {WindowEnd, Count}};
         [] -> {error, nil}
     end.
 
 window_purge(Table, Now) ->
     ets:select_delete(binary_to_existing_atom(Table),
-                      [{{'_', '$1', '_'}, [{'=<', '$1', Now}], [true]}]).
+                      [{{'_', '$1', '_', '_'}, [{'=<', '$1', Now}], [true]}]).
 
 %% ---------------------------------------------------------------------------
 %% Atomic counters (metrics)

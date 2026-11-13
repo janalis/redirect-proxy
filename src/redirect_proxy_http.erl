@@ -1420,7 +1420,9 @@ relay(Socket, Status, Reason, Minor, Headers, Buffer, Rest, BodyDone, F, C) ->
                 andalso not lists:member(<<"close">>, Tokens)
                 andalso (Minor =:= 1 orelse lists:member(<<"keep-alive">>, Tokens))
                 andalso not (Codings =/= [] andalso Lengths =/= []),
-            {Date, C1} = case HasDate of
+            %% A Date nominated by Connection is removed below, so it
+            %% cannot suppress the locally generated replacement.
+            {Date, C1} = case HasDate andalso not lists:member(<<"date">>, Tokens) of
                 true -> {[], C};
                 false ->
                     {D, Cd} = date(C),

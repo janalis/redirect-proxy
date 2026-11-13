@@ -17,6 +17,7 @@ import redirect_proxy/admin/auth/oidc/provider.{
   type Provider, discover, dispatch, purge_expired as purge_provider_cache,
   table, trim_trailing_slash, verify_signature,
 } as _
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
 import redirect_proxy/id
@@ -89,6 +90,15 @@ pub fn begin(
   public_url: String,
   next: String,
 ) -> Result(#(String, String), String) {
+  begin_with_receipt(cfg, public_url, next, ratelimit.Receipt("", 0))
+}
+
+pub fn begin_with_receipt(
+  cfg: OidcConfig,
+  public_url: String,
+  next: String,
+  receipt: ratelimit.Receipt,
+) -> Result(#(String, String), String) {
   use provider <- result.try(discover(cfg))
   let state = id.token(24)
   let verifier = id.token(48)
@@ -103,6 +113,7 @@ pub fn begin(
       nonce:,
       next:,
       expires_at: ffi.now_seconds() + flow_ttl,
+      receipt:,
     )
   let query =
     uri.query_to_string([
@@ -130,6 +141,7 @@ type Flow {
     nonce: String,
     next: String,
     expires_at: Int,
+    receipt: ratelimit.Receipt,
   )
 }
 
@@ -140,6 +152,8 @@ fn encode_flow(flow: Flow) -> String {
     #("nonce", json.string(flow.nonce)),
     #("next", json.string(flow.next)),
     #("expires_at", json.int(flow.expires_at)),
+    #("receipt_key", json.string(flow.receipt.key)),
+    #("receipt_generation", json.int(flow.receipt.generation)),
   ])
   |> json.to_string
 }
@@ -151,9 +165,27 @@ fn decode_flow(value: String) -> Result(Flow, Nil) {
     use nonce <- decode.field("nonce", decode.string)
     use next <- decode.field("next", decode.string)
     use expires_at <- decode.field("expires_at", decode.int)
-    decode.success(Flow(state:, verifier:, nonce:, next:, expires_at:))
+    use receipt_key <- decode.optional_field("receipt_key", "", decode.string)
+    use receipt_generation <- decode.optional_field(
+      "receipt_generation",
+      0,
+      decode.int,
+    )
+    decode.success(Flow(
+      state:,
+      verifier:,
+      nonce:,
+      next:,
+      expires_at:,
+      receipt: ratelimit.Receipt(receipt_key, receipt_generation),
+    ))
   }
   json.parse(value, decoder) |> result.replace_error(Nil)
+}
+
+/// The refund receipt is read only after the signed browser flow completes.
+pub fn start_receipt(flow: String) -> Result(ratelimit.Receipt, Nil) {
+  decode_flow(flow) |> result.map(fn(flow) { flow.receipt })
 }
 
 /// Completes the flow: checks that `state` is the one started in this browser

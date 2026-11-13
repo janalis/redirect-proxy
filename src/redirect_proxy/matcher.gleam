@@ -98,7 +98,7 @@ type Index(a) {
 const leaf_lengths = 4
 
 type QueryRule {
-  QueryRule(rule: Rule, conditions: List(#(String, String)))
+  QueryRule(rule: Rule, conditions: List(#(String, String)), file_rank: Int)
 }
 
 /// The query rules of one path, most conditions first, then priority, then
@@ -315,12 +315,10 @@ fn build_host(rules: List(Rule)) -> HostRules {
     list.partition(rules, fn(r) { r.kind == Exact && r.query != "" })
   let exact_query =
     with_query
-    |> list.map(fn(r) { QueryRule(r, rule.query_conditions(r)) })
-    // more conditions are more specific, then priority, then file order
-    |> list.sort(fn(a, b) {
-      int.compare(list.length(b.conditions), list.length(a.conditions))
-      |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+    |> list.index_map(fn(r, file_rank) {
+      QueryRule(r, rule.query_conditions(r), file_rank)
     })
+    |> list.sort(compare_query_rules)
     |> list.reverse
     |> list.fold(dict.new(), fn(acc, q) {
       let key = case q.rule.case_insensitive {
@@ -353,11 +351,6 @@ fn build_host(rules: List(Rule)) -> HostRules {
   let prefix =
     rules
     |> list.filter(fn(r) { r.kind == Prefix })
-    |> list.sort(fn(a, b) {
-      // in bytes, like the index: longest first
-      int.compare(string.byte_size(b.source), string.byte_size(a.source))
-      |> order.break_tie(int.compare(a.priority, b.priority))
-    })
     |> list.index_map(fn(r, rank) {
       PrefixRule(
         rank:,
@@ -770,6 +763,14 @@ fn match_rules(
   }
 }
 
+/// Keep the original file order even when case-sensitive and folded
+/// candidates came from different index groups.
+fn compare_query_rules(a: QueryRule, b: QueryRule) -> order.Order {
+  int.compare(list.length(b.conditions), list.length(a.conditions))
+  |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+  |> order.break_tie(int.compare(a.file_rank, b.file_rank))
+}
+
 fn query_group(rules: List(QueryRule)) -> QueryGroup {
   let numbered = list.index_map(rules, fn(q, position) { #(position, q) })
   let #(always, conditional) =
@@ -842,13 +843,7 @@ fn match_query(
             [], found | found, [] -> found
             _, _ ->
               list.append(exact, folded)
-              |> list.sort(fn(a, b) {
-                int.compare(
-                  list.length(b.conditions),
-                  list.length(a.conditions),
-                )
-                |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
-              })
+              |> list.sort(compare_query_rules)
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
@@ -903,10 +898,19 @@ fn match_prefix(
     [] -> Error(Nil)
     [only] -> prefix_location(only, path, vars)
     _ ->
-      // in rank order: a rule refused by its guard leaves the request to
-      // the next one, as for regex rules
+      // Shortest remainder means the longest prefix consumed from this
+      // request. Unicode lower-casing can change source byte lengths, so
+      // original source lengths cannot rank mixed matching modes.
+      // A refused target leaves the request to the next candidate.
       found
-      |> list.sort(fn(a, b) { int.compare({ a.0 }.rank, { b.0 }.rank) })
+      |> list.sort(fn(a, b) {
+        int.compare(string.byte_size(a.1), string.byte_size(b.1))
+        |> order.break_tie(int.compare(
+          { a.0 }.rule.priority,
+          { b.0 }.rule.priority,
+        ))
+        |> order.break_tie(int.compare({ a.0 }.rank, { b.0 }.rank))
+      })
       |> list.find_map(prefix_location(_, path, vars))
   }
 }
@@ -942,8 +946,9 @@ pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
   }
 }
 
-/// The rest of `path` after the source of prefix rule `r`.
-fn prefix_remainder(r: Rule, path: String) -> String {
+/// The rest of a normalized path after the normalized source of a matching
+/// prefix rule. Shared with explanations to preserve Unicode boundaries.
+pub fn prefix_remainder(r: Rule, path: String) -> String {
   case r.case_insensitive {
     False -> ffi.byte_drop(path, string.byte_size(r.source))
     // cut where the lower-cased prefix ends, in bytes, like the index

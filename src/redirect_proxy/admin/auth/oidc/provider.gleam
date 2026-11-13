@@ -8,8 +8,10 @@ import gleam/http/request
 import gleam/http/response
 import gleam/httpc
 import gleam/json
+import gleam/option.{Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
 import redirect_proxy/log
@@ -137,7 +139,28 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
   use #(url, body) <- result.try(case http_get(url) {
     Ok(body) -> Ok(#(url, body))
     Error(first_error) -> {
-      let fallback = base <> "/.well-known/oauth-authorization-server"
+      // RFC 8414 inserts the well-known suffix before the issuer path,
+      // unlike OpenID Connect discovery, which appends its suffix.
+      use issuer <- result.try(
+        uri.parse(base) |> result.replace_error("invalid URL " <> base),
+      )
+      // uri.parse removes IPv6 brackets; to_string does not restore them.
+      let host = case issuer.host {
+        Some(host) ->
+          case string.contains(host, ":") {
+            True -> Some("[" <> host <> "]")
+            False -> Some(host)
+          }
+        host -> host
+      }
+      let fallback =
+        uri.to_string(
+          uri.Uri(
+            ..issuer,
+            host:,
+            path: "/.well-known/oauth-authorization-server" <> issuer.path,
+          ),
+        )
       http_get(fallback)
       |> result.map(fn(body) { #(fallback, body) })
       |> result.replace_error(first_error)

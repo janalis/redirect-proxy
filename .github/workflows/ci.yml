@@ -96,7 +96,7 @@ jobs:
             build/dev
           key: gleam-build-${{ runner.arch }}-otp-${{ matrix.otp == 'tool-versions' && env.OTP_VERSION || matrix.otp }}-gleam-${{ env.GLEAM_VERSION }}-${{ hashFiles('manifest.toml') }}
       - run: gleam deps download
-      - run: gleam test
+      - run: make test
       # reductions differ between OTP releases: the baseline is for the one
       # of .tool-versions
       - name: Matcher benchmark (reductions per request vs the baseline)

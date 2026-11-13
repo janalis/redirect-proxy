@@ -205,19 +205,22 @@ pub fn start_password_check(
   req: Request,
   ctx: Context,
   username: String,
-) -> Result(Nil, Int) {
+) -> Result(List(ratelimit.Receipt), Int) {
   let known = known_device(req, ctx, username)
-  use Nil <- result.try(ratelimit.take_all(
+  use receipts <- result.try(ratelimit.take_all(
     login_checks(ctx.client_ip, username, known),
     login_window,
   ))
   // a known device is not held back by the account's limit, but its
   // failures count towards it
-  case known {
-    True -> ratelimit.record_failure(login_user_check(username).0, login_window)
-    False -> Nil
+  let receipts = case known {
+    True -> [
+      ratelimit.record(login_user_check(username).0, login_window),
+      ..receipts
+    ]
+    False -> receipts
   }
-  Ok(Nil)
+  Ok(receipts)
 }
 
 pub type PasswordCheck {
@@ -233,17 +236,18 @@ pub type PasswordCheck {
 pub fn end_password_check(
   ctx: Context,
   username: String,
+  receipts: List(ratelimit.Receipt),
   outcome: PasswordCheck,
 ) -> Nil {
   let pair_key = login_pair_key(ctx.client_ip, username)
-  let others = [login_ip_key(ctx.client_ip), login_user_check(username).0]
+  let others = list.filter(receipts, fn(receipt) { receipt.key != pair_key })
   case outcome {
     Failed -> metrics.incr(metrics.LoginFailures)
     Passed -> {
       ratelimit.reset(pair_key)
       list.each(others, ratelimit.forgive)
     }
-    NotRun -> list.each([pair_key, ..others], ratelimit.forgive)
+    NotRun -> list.each(receipts, ratelimit.forgive)
   }
 }
 
@@ -255,11 +259,16 @@ pub fn hashing_password(work: fn() -> a) -> Result(a, Nil) {
   ratelimit.bounded("password", ffi.password_check_slots(), work)
 }
 
-pub fn record_password_check(ctx: Context, username: String, ok: Bool) -> Nil {
+pub fn record_password_check(
+  ctx: Context,
+  username: String,
+  receipts: List(ratelimit.Receipt),
+  ok: Bool,
+) -> Nil {
   case ok {
-    True -> end_password_check(ctx, username, Passed)
+    True -> end_password_check(ctx, username, receipts, Passed)
     False -> {
-      end_password_check(ctx, username, Failed)
+      end_password_check(ctx, username, receipts, Failed)
       // a stolen session guessing the password: audited like a failed
       // sign-in, within the same budget
       audit.record_failure(
@@ -350,7 +359,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
       )
       |> wisp.set_header("retry-after", int.to_string(seconds))
     }
-    Ok(Nil) -> {
+    Ok(receipts) -> {
       let checked =
         hashing_password(fn() {
           case users.get(ctx.users, username) {
@@ -376,13 +385,13 @@ pub fn login(req: Request, ctx: Context) -> Response {
         })
       case checked {
         Error(Nil) -> {
-          end_password_check(ctx, username, NotRun)
+          end_password_check(ctx, username, receipts, NotRun)
           log.warning("login refused, too many password checks running")
           fail("The server is busy. Try again in a moment.", 503, username)
           |> wisp.set_header("retry-after", "1")
         }
         Ok(Ok(user)) -> {
-          end_password_check(ctx, username, Passed)
+          end_password_check(ctx, username, receipts, Passed)
           log.info("login: " <> who)
           audit_auth(ctx, username, "auth.login", "local")
           let user = rehash_if_needed(ctx, user, pass)
@@ -400,7 +409,7 @@ pub fn login(req: Request, ctx: Context) -> Response {
           |> set_device_cookie(req, ctx, user.username)
         }
         Ok(Error(Nil)) -> {
-          end_password_check(ctx, username, Failed)
+          end_password_check(ctx, username, receipts, Failed)
           log.warning("failed login for user=" <> who)
           audit_login_failure(
             ctx,
@@ -571,9 +580,16 @@ pub fn oidc_start(req: Request, ctx: Context) -> Response {
   use <- navigation_only(req)
   let start_key = sso_start_key(ctx)
   use <- sso_throttle(ctx, start_key, sso_start_ip_limit)
-  ratelimit.record_failure(start_key, login_window)
+  let receipt = ratelimit.record(start_key, login_window)
   let next = safe_next(list.key_find(wisp.get_query(req), "next"))
-  case oidc.begin(ctx.config.oidc, ctx.config.admin.public_url, next) {
+  case
+    oidc.begin_with_receipt(
+      ctx.config.oidc,
+      ctx.config.admin.public_url,
+      next,
+      receipt,
+    )
+  {
     Ok(#(url, flow)) ->
       wisp.redirect(url)
       |> wisp.set_cookie(
@@ -616,12 +632,14 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- navigation_only(req)
   let failure_key = "sso-callback-ip:" <> ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
+  let browser_flow =
+    wisp.get_cookie(req, oidc_state_cookie_name(req, ctx), wisp.Signed)
   let outcome =
     oidc.complete(
       ctx.config.oidc,
       ctx.config.admin.public_url,
       wisp.get_query(req),
-      wisp.get_cookie(req, oidc_state_cookie_name(req, ctx), wisp.Signed),
+      browser_flow,
     )
   let clear_state = wisp.set_cookie(
     _,
@@ -635,7 +653,10 @@ pub fn oidc_callback(req: Request, ctx: Context) -> Response {
     Ok(#(identity, next)) -> {
       // a completed login does not count against its address's starts:
       // many people signing in behind one address are not throttled
-      ratelimit.forgive(sso_start_key(ctx))
+      case browser_flow |> result.try(oidc.start_receipt) {
+        Ok(receipt) -> ratelimit.forgive(receipt)
+        Error(Nil) -> Nil
+      }
       log.info(
         "SSO login: "
         <> log_value(identity.username)

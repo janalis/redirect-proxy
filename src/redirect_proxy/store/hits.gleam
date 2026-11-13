@@ -108,8 +108,8 @@ pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
 
 fn decoder() -> decode.Decoder(List(matcher.HitRecord)) {
   let record = {
-    use count <- decode.field("count", decode.int)
-    use last <- decode.optional_field("last", 0, decode.int)
+    use count <- decode.field("count", counter_value())
+    use last <- decode.optional_field("last", 0, counter_value())
     decode.success(#(count, last))
   }
   use hits <- decode.field("hits", decode.dict(decode.string, record))
@@ -120,4 +120,14 @@ fn decoder() -> decode.Decoder(List(matcher.HitRecord)) {
       matcher.HitRecord(rule_id:, count:, last:)
     }),
   )
+}
+
+// Native counters hold signed 64-bit integers. Validate every record before
+// seeding any counters, so an invalid file follows the quarantine path.
+fn counter_value() -> decode.Decoder(Int) {
+  use value <- decode.then(decode.int)
+  case value >= 0 && value <= 9_223_372_036_854_775_807 {
+    True -> decode.success(value)
+    False -> decode.failure(0, "an integer between 0 and 9223372036854775807")
+  }
 }
