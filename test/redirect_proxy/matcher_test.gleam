@@ -367,7 +367,9 @@ pub fn redirect_loop_test() {
     }
   }
   // /a/x -> /a/b/x -> /a/b/b/x ...
-  assert ids(matcher_loop.redirect_loop(m, prefix, False)) == Ok(["p", "p"])
+  let assert Ok(growing) = matcher_loop.redirect_loop(m, prefix, False)
+  assert list.length(growing) == 21
+  assert list.all(growing, fn(r) { r.id == "p" })
   // across hosts
   assert ids(matcher_loop.redirect_loop(m, to_c, False)) == Ok(["1", "2", "1"])
   assert matcher_loop.redirect_loop(m, plain, False) == Error(Nil)
@@ -509,9 +511,9 @@ pub fn redirect_loop_through_trailing_slash_retry_test() {
   let slash = r("s", "*", rule.Exact, "/docs/", "/docs")
   let m = matcher.build([slash])
   assert matcher_loop.redirect_loop(m, slash, False) == Error(Nil)
-  let assert Ok([first, second]) = matcher_loop.redirect_loop(m, slash, True)
-  assert first.id == "s"
-  assert second.id == "s"
+  let assert Ok(chain) = matcher_loop.redirect_loop(m, slash, True)
+  // /docs/ -> /docs -> /docs: the URL repeats only after the second hop.
+  assert list.map(chain, fn(r) { r.id }) == ["s", "s", "s"]
 }
 
 /// Each regex run is capped; after a few capped runs the request stops
@@ -881,6 +883,9 @@ pub fn explain_reports_endless_chains_test() {
     explain.explain(matcher.build(rules), rules, "http://h.test/a/x", False)
   assert explained.loops
   assert list.length(explained.chain) == 21
+  let assert Ok(checked) =
+    matcher_loop.redirect_loop(matcher.build(rules), growing, False)
+  assert list.length(checked) == list.length(explained.chain)
   // a chain of 15 redirects that ends is not one
   let ends =
     int.range(from: 1, to: 16, with: [], run: list.prepend)
@@ -892,6 +897,9 @@ pub fn explain_reports_endless_chains_test() {
     explain.explain(matcher.build(ends), ends, "http://h.test/1", False)
   assert !explained.loops
   assert list.length(explained.chain) == 15
+  let assert Ok(first) = list.find(ends, fn(r) { r.source == "/1" })
+  assert matcher_loop.redirect_loop(matcher.build(ends), first, False)
+    == Error(Nil)
 }
 
 /// Query conditions, as documented: a parameter sent several times matches
@@ -1043,7 +1051,7 @@ pub fn redirect_destinations_use_browser_backslashes_test() {
       "/\\h/x\\..\\a",
     ],
     fn(target) {
-      let r = r("loop", "*", rule.Exact, "/a", target)
+      let r = r("loop", "h", rule.Exact, "/a", target)
       let assert Ok(r) = rule.validate(r)
       let m = matcher.build([r])
       let assert Ok(chain) = matcher_loop.redirect_loop(m, r, False)
@@ -1134,4 +1142,35 @@ pub fn explanation_exact_order_matches_runtime_test() {
   assert ordered([plain_folded, plain]) == ["plain", "folded"]
   // Host precedence wins even when the wildcard query is more specific.
   assert ordered([two, Rule(..plain, host: "h.test")]) == ["plain", "two"]
+}
+
+pub fn repeated_rules_with_new_urls_can_terminate_test() {
+  let grow = r("grow", "*", rule.Prefix, "/a", "/ab$1")
+  let exit = r("exit", "*", rule.Prefix, "/abb", "/done")
+  let rules = [grow, exit]
+  let m = matcher.build(rules)
+  assert matcher_loop.redirect_loop(m, grow, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, rules, "http://h/aloop-check", False)
+  assert !e.loops
+  assert list.map(e.chain, fn(hop) { hop.rule_id }) == ["grow", "grow", "exit"]
+  let assert Ok(grow) = rule.validate(grow)
+  let assert Ok(exit) = rule.validate(exit)
+  assert matcher_loop.redirect_loop(matcher.build([grow, exit]), grow, False)
+    == Error(Nil)
+}
+
+pub fn redirect_loop_states_include_host_and_query_test() {
+  let cross = r("cross", "*", rule.Exact, "/a", "http://b.test/a")
+  let exit = r("exit", "b.test", rule.Exact, "/a", "/done")
+  let m = matcher.build([cross, exit])
+  assert matcher_loop.redirect_loop(m, cross, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, [cross, exit], "http://a.test/a", False)
+  assert !e.loops
+  let first = r("query", "*", rule.Exact, "/a", "/a?x=1")
+  let second = Rule(..r("exit", "*", rule.Exact, "/a", "/done"), query: "x=1")
+  let rules = [first, second]
+  let m = matcher.build(rules)
+  assert matcher_loop.redirect_loop(m, first, False) == Error(Nil)
+  let assert Ok(e) = explain.explain(m, rules, "http://h/a", False)
+  assert !e.loops
 }
