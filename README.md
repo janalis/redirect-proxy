@@ -51,16 +51,16 @@ metrics and access logs.
 ## Performance
 
 <!-- benchmark:start -->
-Requests per second on a GitHub Actions Linux runner (4 vCPUs, 2 for the server) with 10,000 exact, 1,000 prefix and 500 regex rules, measured on 2026-11-11:
+Requests per second on a GitHub Actions Linux runner (4 vCPUs, 2 for the server) with 10,000 exact, 1,000 prefix and 500 regex rules, measured on 2026-11-13:
 
 | Server | Version | Exact | Prefix | Regex | Miss | Memory |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| redirect-proxy | 0.7.10 | 131.6 k | 117.2 k | 103.8 k | 133.0 k | 66 MiB |
-| nginx | 1.30.6 | 200.0 k | 197.5 k | 36.6 k | 43.4 k | 24 MiB |
-| HAProxy | 3.4.7 | 215.1 k | 206.8 k | 67.6 k | 69.3 k | 24 MiB |
-| Caddy | 2.11.9 | 10.1 k | 3.8 k | 8.8 k | 3.9 k | 134 MiB |
-| Traefik | 3.7.18 | 3.7 k | 15.4 k | 46.1 k | 2.5 k | 181 MiB |
-| Apache httpd | 2.4.70 | 92.2 k | 15.3 k | 12.0 k | 11.2 k | 27 MiB |
+| redirect-proxy | 0.7.11 | 71.2 k | 61.8 k | 54.5 k | 68.4 k | 74 MiB |
+| nginx | 1.30.6 | 102.1 k | 102.1 k | 23.1 k | 26.8 k | 24 MiB |
+| HAProxy | 3.4.7 | 106.3 k | 100.0 k | 29.8 k | 32.6 k | 24 MiB |
+| Caddy | 2.11.9 | 5.8 k | 2.2 k | 5.2 k | 2.3 k | 134 MiB |
+| Traefik | 3.7.18 | 4.9 k | 7.7 k | 23.9 k | 2.0 k | 184 MiB |
+| Apache httpd | 2.4.71 | 39.1 k | 9.0 k | 7.1 k | 6.6 k | 27 MiB |
 
 Updated every week from the *Benchmark* workflow. See [Performance](https://janalis.github.io/redirect-proxy/guide/performance#compared-with-other-servers) for the method, latencies and configurations.
 <!-- benchmark:end -->
