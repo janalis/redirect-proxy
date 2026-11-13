@@ -9,7 +9,8 @@ import tempfile
 
 
 def erlang(code, deny_mode=False, umask=-1):
-    command = ["erl", "-noshell", "-pa", "build/dev/erlang/redirect_proxy/ebin",
+    ebins = sorted(str(path) for path in Path("build/dev/erlang").glob("*/ebin"))
+    command = ["erl", "-noshell", "-pa", *ebins,
                "-eval", code + ", halt()."]
     if deny_mode:
         command = ["/usr/bin/sandbox-exec", "-p",
@@ -112,6 +113,28 @@ def main():
             umask=0o022,
         )
         assert (race / "access.log").read_bytes() == b""
+        # Audit rotation prepares the replacement before changing archives
+        # and keeps the original active file if permissions cannot be set.
+        for kept in (0, 2):
+            audit_dir = directory / f"audit-{kept}"
+            audit_dir.mkdir()
+            audit_path = audit_dir / "audit.jsonl"
+            original = b"original audit record\n" * 4000
+            audit_path.write_bytes(original)
+            audit_path.chmod(0o600)
+            previous = audit_dir / "audit.jsonl.1"
+            previous.write_text("previous archive")
+            erlang(
+                f'redirect_proxy@audit:configure(65536, {kept}), '
+                f'nil = redirect_proxy@audit:record({binary(audit_path)}, '
+                '<<"actor">>, <<"test">>, <<"new">>, none, none)',
+                deny_mode=True,
+                umask=0o022,
+            )
+            assert audit_path.read_bytes() == original
+            assert mode(audit_path) == 0o600
+            assert previous.read_text() == "previous archive"
+            assert sorted(p.name for p in audit_dir.iterdir()) == ["audit.jsonl", "audit.jsonl.1"]
         print("permission-denial regression passed")
     finally:
         shutil.rmtree(directory)

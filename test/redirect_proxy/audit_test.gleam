@@ -129,3 +129,62 @@ pub fn failures_have_a_budget_test() {
   ratelimit.reset("audit-failures")
   ratelimit.reset("audit-failures-noted")
 }
+
+pub fn rotation_keeps_active_and_archive_modes_test() {
+  list.each([0o600, 0o640], fn(mode) {
+    list.each([0, 2], fn(kept) {
+      let dir = support.temp_dir()
+      let path = dir <> "/audit.jsonl"
+      let assert Ok(Nil) = simplifile.write(path, "initial\n")
+      let assert Ok(Nil) = simplifile.set_permissions_octal(path, mode)
+      audit.configure(1, kept)
+      list.each(["first", "second", "third"], fn(target) {
+        let assert Ok(previous) = simplifile.read(path)
+        audit.record(path, "actor", "test", target, option.None, option.None)
+        let assert Ok(info) = simplifile.file_info(path)
+        assert simplifile.file_info_permissions_octal(info) == mode
+        let assert [entry] = audit.tail(path, 1)
+        assert entry.target == target
+        case kept {
+          0 -> {
+            assert simplifile.is_file(path <> ".1") == Ok(False)
+          }
+          _ -> {
+            assert simplifile.read(path <> ".1") == Ok(previous)
+            let assert Ok(info) = simplifile.file_info(path <> ".1")
+            assert simplifile.file_info_permissions_octal(info) == mode
+          }
+        }
+      })
+      case kept {
+        0 -> Nil
+        _ -> {
+          assert simplifile.is_file(path <> ".2") == Ok(True)
+          assert simplifile.is_file(path <> ".3") == Ok(False)
+          let all = audit.tail(path, 10) |> list.map(fn(e) { e.target })
+          assert all == ["third", "second", "first"]
+        }
+      }
+      audit.configure(audit.default_max_bytes, audit.default_files)
+    })
+  })
+}
+
+pub fn archive_failure_keeps_active_audit_and_cleans_replacement_test() {
+  let dir = support.temp_dir()
+  let path = dir <> "/audit.jsonl"
+  let assert Ok(Nil) = simplifile.write(path, "original\n")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
+  let assert Ok(Nil) = simplifile.write(path <> ".1", "previous archive")
+  let assert Ok(Nil) = simplifile.create_directory_all(path <> ".2")
+  audit.configure(1, 2)
+  // Recording failures are logged, without failing the administrative action.
+  audit.record(path, "actor", "test", "new", option.None, option.None)
+  audit.configure(audit.default_max_bytes, audit.default_files)
+  assert simplifile.read(path) == Ok("original\n")
+  assert simplifile.read(path <> ".1") == Ok("previous archive")
+  let assert Ok(info) = simplifile.file_info(path)
+  assert simplifile.file_info_permissions_octal(info) == 0o600
+  let assert Ok(files) = simplifile.read_directory(dir)
+  assert !list.any(files, string.contains(_, ".tmp."))
+}

@@ -80,6 +80,16 @@ pub fn atomic_write_private(
   content: String,
 ) -> Result(Nil, String)
 
+/// Rotates a full audit log after preparing its replacement with the
+/// original permissions. On success the new active file holds only `line`.
+@external(erlang, "redirect_proxy_file_ffi", "audit_rotate")
+pub fn audit_rotate(
+  path: String,
+  line: String,
+  mode: Int,
+  keep: Int,
+) -> Result(Nil, String)
+
 /// Copies `source` to a new file `dest` created with the permissions of
 /// `source` (never more readable, not even while it is written).
 @external(erlang, "redirect_proxy_file_ffi", "copy_file_as")

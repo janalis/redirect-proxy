@@ -3,7 +3,7 @@
 -module(redirect_proxy_file_ffi).
 
 -export([
-    append_line/2, atomic_write/2, atomic_write_private/2, atomic_write_as/3, clear_tunable/1,
+    append_line/2, audit_rotate/4, atomic_write/2, atomic_write_private/2, atomic_write_as/3, clear_tunable/1,
     copy_file_as/2, data_dir_owner_mismatch/1, file_stamp/1, memo_file/2,
     probe_writable_file/1,
     same_write/2, set_tunable/2, stamp_is_recent/1, tunable/2,
@@ -45,6 +45,10 @@ atomic_write_as(Path, Content, Mode) ->
     atomic_write(Path, Content, {exact, Mode band 8#7777}).
 
 atomic_write(Path, Content, NewMode) ->
+    atomic_write(Path, Content, NewMode, fun() -> ok end).
+
+%% Preparation (including chmod and fsync) happens before BeforeRename.
+atomic_write(Path, Content, NewMode, BeforeRename) ->
     _ = filelib:ensure_dir(Path),
     Tmp = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     %% Every step returns {error, _} instead of raising, so that a full or
@@ -61,9 +65,13 @@ atomic_write(Path, Content, NewMode) ->
                 Closed = file:close(Fd),
                 WrittenResult = case {Written, Closed} of
                     {ok, ok} ->
-                        case file:rename(Tmp, Path) of
-                            ok -> sync_dir(filename:dirname(Path));
-                            RenameError -> RenameError
+                        case BeforeRename() of
+                            ok ->
+                                case file:rename(Tmp, Path) of
+                                    ok -> sync_dir(filename:dirname(Path));
+                                    RenameError -> RenameError
+                                end;
+                            BeforeError -> BeforeError
                         end;
                     {ok, CloseError} -> CloseError;
                     {WriteError, _} -> WriteError
@@ -81,6 +89,43 @@ atomic_write(Path, Content, NewMode) ->
         {error, Reason} ->
             {error, atom_to_binary_safe(Reason)}
     end.
+
+%% Prepare the next audit entry without retiring the current active file.
+%% Archive it only after the replacement is ready, and then replace it
+%% atomically: failures never leave an absent active file with a lost mode.
+audit_rotate(Path, Line, Mode, Keep) ->
+    atomic_write(Path, [Line, $\n], {exact, Mode band 8#7777}, fun() ->
+        audit_backups(Path, Keep)
+    end).
+
+audit_backups(_, 0) -> ok;
+audit_backups(Path, Keep) ->
+    case optional_file_result(file:delete(audit_archive(Path, Keep))) of
+        ok ->
+            case audit_shift(Path, Keep - 1) of
+                ok ->
+                    case copy_file_as(Path, audit_archive(Path, 1)) of
+                        {ok, nil} -> ok;
+                        {error, Reason} -> {error, Reason}
+                    end;
+                Error -> Error
+            end;
+        Error -> Error
+    end.
+
+audit_shift(_, 0) -> ok;
+audit_shift(Path, N) ->
+    case optional_file_result(file:rename(audit_archive(Path, N),
+                                          audit_archive(Path, N + 1))) of
+        ok -> audit_shift(Path, N - 1);
+        Error -> Error
+    end.
+
+audit_archive(Path, N) ->
+    <<Path/binary, ".", (integer_to_binary(N))/binary>>.
+
+optional_file_result({error, enoent}) -> ok;
+optional_file_result(Result) -> Result.
 
 %% The new file replaces the old one: give it the old one's permissions
 %% (e.g. 0640 for a group-readable redirections file) instead of the umask
