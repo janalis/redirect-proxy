@@ -1095,3 +1095,43 @@ pub fn explanation_prefix_order_matches_consumed_path_test() {
   assert order([same, short], "http://h/kXYZ")
     == [#("same", explain.Applied), #("short", explain.Shadowed)]
 }
+
+pub fn explanation_exact_order_matches_runtime_test() {
+  let plain = r("plain", "*", rule.Exact, "/Page", "/plain")
+  let one = Rule(..r("one", "*", rule.Exact, "/Page", "/one"), query: "id=42")
+  let two =
+    Rule(
+      ..r("two", "*", rule.Exact, "/Page", "/two"),
+      query: "id=42&lang=fr",
+      priority: 999,
+    )
+  let folded =
+    Rule(
+      ..r("folded", "*", rule.Exact, "/page", "/folded"),
+      query: "id=42",
+      case_insensitive: True,
+    )
+  let ordered = fn(rules) {
+    let m = matcher.build(rules)
+    let assert Ok(found) =
+      matcher.lookup_query(m, "h.test", "/Page", "id=42&lang=fr")
+    let assert Ok(e) =
+      explain.explain(m, rules, "http://h.test/Page?id=42&lang=fr", False)
+    let assert [first, ..] = e.candidates
+    assert first.rule.id == found.rule.id
+    assert first.verdict == explain.Applied
+    list.map(e.candidates, fn(c) { c.rule.id })
+  }
+  assert ordered([plain, one, two]) == ["two", "one", "plain"]
+  assert ordered([plain, folded, one]) == ["folded", "one", "plain"]
+  assert ordered([plain, one, folded]) == ["one", "folded", "plain"]
+  assert ordered([plain, folded, Rule(..one, priority: 1)])
+    == ["one", "folded", "plain"]
+  assert ordered([plain, one, Rule(..folded, priority: 1)])
+    == ["folded", "one", "plain"]
+  let plain_folded = Rule(..folded, query: "", priority: 1)
+  // Plain exact matching gives sensitive rules precedence, ignoring priority.
+  assert ordered([plain_folded, plain]) == ["plain", "folded"]
+  // Host precedence wins even when the wildcard query is more specific.
+  assert ordered([two, Rule(..plain, host: "h.test")]) == ["plain", "two"]
+}

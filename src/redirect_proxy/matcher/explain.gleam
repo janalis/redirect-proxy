@@ -157,7 +157,7 @@ fn parents(name: String) -> List(String) {
 fn resolution_order(rules: List(Rule), path: String) -> List(Rule) {
   let of = fn(kind) { list.filter(rules, fn(r) { r.kind == kind }) }
   list.flatten([
-    of(Exact),
+    exact_order(of(Exact)),
     of(Prefix)
       |> list.map(fn(r) { #(r, string.byte_size(prefix_remainder(r, path))) })
       |> list.sort(fn(a, b) {
@@ -166,6 +166,25 @@ fn resolution_order(rules: List(Rule), path: String) -> List(Rule) {
       })
       |> list.map(fn(entry) { entry.0 }),
     of(Regex) |> list.sort(fn(a, b) { int_compare(a.priority, b.priority) }),
+  ])
+}
+
+/// Query-conditioned exact rules precede plain exact rules. Stable sorting
+/// retains file order on specificity/priority ties, across matching modes.
+fn exact_order(rules: List(Rule)) -> List(Rule) {
+  let #(conditional, plain) = list.partition(rules, fn(r) { r.query != "" })
+  let #(sensitive, folded) =
+    list.partition(plain, fn(r) { !r.case_insensitive })
+  list.flatten([
+    conditional
+      |> list.map(fn(r) { #(r, list.length(rule.query_conditions(r))) })
+      |> list.sort(fn(a, b) {
+        int_compare(b.1, a.1)
+        |> order.break_tie(int_compare({ a.0 }.priority, { b.0 }.priority))
+      })
+      |> list.map(fn(entry) { entry.0 }),
+    sensitive,
+    folded,
   ])
 }
 
