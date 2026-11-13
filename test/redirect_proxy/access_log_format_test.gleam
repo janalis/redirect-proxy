@@ -260,3 +260,32 @@ pub fn address_headers_are_anonymised_test() {
   let assert Ok(combined) = fmt.parse("combined", "default")
   assert fmt.logged_address_headers(combined) == []
 }
+
+pub fn url_redaction_uses_the_first_separator_test() {
+  list.each(
+    [
+      #(
+        "https://example.com/path?secret=1#fragment",
+        "https://example.com/path",
+      ),
+      #("https://example.com/path#secret?debug=1", "https://example.com/path"),
+      #("https://example.com/path?secret=1", "https://example.com/path"),
+      #("https://example.com/path#secret", "https://example.com/path"),
+      #("https://example.com/path", "https://example.com/path"),
+      #("https://example.com/a%3Fb%23c", "https://example.com/a%3Fb%23c"),
+      #(
+        "https://example.com/a%3Fb%23c#secret?debug=1",
+        "https://example.com/a%3Fb%23c",
+      ),
+    ],
+    fn(pair) {
+      let #(url, redacted) = pair
+      assert fmt.strip_query(False, url) == redacted
+      assert fmt.strip_query(True, url) == url
+      let assert Ok(format) = fmt.parse("$http_referer|$location", "none")
+      let e = Entry(..entry(), headers: [#("referer", url)], location: url)
+      assert fmt.render(format, False, e) == redacted <> "|" <> redacted
+      assert fmt.render(format, True, e) == url <> "|" <> url
+    },
+  )
+}

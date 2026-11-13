@@ -3,8 +3,9 @@
 -module(redirect_proxy_file_ffi).
 
 -export([
-    append_line/2, atomic_write/2, atomic_write_private/2, clear_tunable/1,
+    append_line/2, audit_rotate/4, atomic_write/2, atomic_write_private/2, atomic_write_as/3, clear_tunable/1,
     copy_file_as/2, data_dir_owner_mismatch/1, file_stamp/1, memo_file/2,
+    probe_writable_file/1,
     same_write/2, set_tunable/2, stamp_is_recent/1, tunable/2,
     with_file_lock/3, with_file_lock_detailed/3, with_lock/2
 ]).
@@ -15,56 +16,220 @@
 %% Files
 %% ---------------------------------------------------------------------------
 
+%% Tests creating a file without following or deleting an occupied path.
+probe_writable_file(Path) ->
+    Result = case file:open(Path, [write, exclusive, raw, binary]) of
+        {ok, Fd} ->
+            Closed = file:close(Fd),
+            Deleted = file:delete(Path),
+            case Closed of
+                ok -> Deleted;
+                Error -> Error
+            end;
+        Error -> Error
+    end,
+    case Result of
+        ok -> {ok, nil};
+        {error, Reason} -> {error, atom_to_binary_safe(Reason)}
+    end.
+
 atomic_write(Path, Content) -> atomic_write(Path, Content, default).
 
 %% For files holding secrets (password hashes, client secret hashes, the
 %% cookie signing key): created 0600 instead of the umask default.
 atomic_write_private(Path, Content) -> atomic_write(Path, Content, 8#600).
 
+%% Exact permissions of a source archive, regardless of the destination's
+%% previous permissions (or a symlink there). Set before writing bytes.
+atomic_write_as(Path, Content, Mode) ->
+    atomic_write(Path, Content, {exact, Mode band 8#7777}).
+
 atomic_write(Path, Content, NewMode) ->
+    atomic_write(Path, Content, NewMode, fun() -> ok end).
+
+%% Preparation (including chmod and fsync) happens before BeforeRename.
+atomic_write(Path, Content, NewMode, BeforeRename) ->
     _ = filelib:ensure_dir(Path),
     Tmp = <<Path/binary, ".tmp.", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
     %% Every step returns {error, _} instead of raising, so that a full or
     %% failing disk is reported to the caller and the temp file is removed.
     Result =
-        case file:open(Tmp, [write, raw, binary]) of
+        case file:open(Tmp, [write, exclusive, raw, binary]) of
             {ok, Fd} ->
                 %% before the content is written: a secret is never readable
                 %% by others, not even for a moment
-                set_mode(Path, Tmp, NewMode),
-                Written = write_and_sync(Fd, Content),
+                Written = case set_mode(Path, Tmp, NewMode) of
+                    ok -> write_and_sync(Fd, Content);
+                    ModeError -> ModeError
+                end,
                 Closed = file:close(Fd),
-                case {Written, Closed} of
+                WrittenResult = case {Written, Closed} of
                     {ok, ok} ->
-                        case file:rename(Tmp, Path) of
-                            ok -> sync_dir(filename:dirname(Path));
-                            RenameError -> RenameError
-                        end;
+                        publish_prepared(Tmp, Path, BeforeRename);
                     {ok, CloseError} -> CloseError;
                     {WriteError, _} -> WriteError
+                end,
+                %% Only this successful exclusive open owns Tmp. Never
+                %% remove a conflicting file or symlink on open failure.
+                case WrittenResult of
+                    ok -> ok;
+                    _ -> _ = file:delete(Tmp), WrittenResult
                 end;
             Error -> Error
         end,
     case Result of
         ok -> {ok, nil};
         {error, Reason} ->
-            _ = file:delete(Tmp),
             {error, atom_to_binary_safe(Reason)}
     end.
+
+%% Prepare the next audit entry without retiring the current active file.
+%% Archive it only after the replacement is ready, and then replace it
+%% atomically: failures never leave an absent active file with a lost mode.
+audit_rotate(Path, Line, Mode, Keep) ->
+    atomic_write(Path, [Line, $\n], {exact, Mode band 8#7777}, fun() ->
+        audit_backups(Path, Keep)
+    end).
+
+%% A prepared audit transaction retains originals until publication. Its
+%% rollback runs on rename failure; other atomic writes have no transaction.
+publish_prepared(Tmp, Path, BeforeRename) ->
+    case BeforeRename() of
+        ok -> publish_file(Tmp, Path);
+        {ready, Commit, Rollback} ->
+            case publish_file(Tmp, Path) of
+                ok -> Commit(), ok;
+                {error, Reason} -> audit_rolled_back(Reason, Rollback())
+            end;
+        BeforeError -> BeforeError
+    end.
+
+publish_file(Tmp, Path) ->
+    case file:rename(Tmp, Path) of
+        ok -> sync_dir(filename:dirname(Path));
+        Error -> Error
+    end.
+
+audit_backups(_, 0) -> ok;
+audit_backups(Path, Keep) ->
+    Dir = <<Path/binary, ".rotate.", (list_to_binary(os:getpid()))/binary, ".",
+            (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    case file:make_dir(Dir) of
+        ok ->
+            case file:change_mode(Dir, 8#700) of
+                ok -> audit_stage(Path, Keep, 1, Dir, []);
+                Error -> _ = file:del_dir(Dir), Error
+            end;
+        Error -> Error
+    end.
+
+audit_stage(Path, Keep, N, Dir, Staged) when N > Keep ->
+    case audit_install(Path, Keep, Dir, Staged, []) of
+        {ok, Installed} ->
+            {ready,
+             fun() -> audit_commit(Dir, Staged) end,
+             fun() -> audit_rollback(Path, Dir, Staged, Installed) end};
+        {error, Reason, Installed} ->
+            audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, Installed))
+    end;
+audit_stage(Path, Keep, N, Dir, Staged) ->
+    Archive = audit_archive(Path, N),
+    case file:read_link_info(Archive) of
+        {ok, #file_info{type = Type}} when Type =:= regular; Type =:= symlink ->
+            case file:rename(Archive, audit_staged(Dir, N)) of
+                ok -> audit_stage(Path, Keep, N + 1, Dir, [{N, Type} | Staged]);
+                {error, Reason} ->
+                    audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, []))
+            end;
+        {error, enoent} -> audit_stage(Path, Keep, N + 1, Dir, Staged);
+        Failure ->
+            Reason = case Failure of {error, R} -> R; _ -> invalid_archive_type end,
+            audit_rolled_back(Reason, audit_rollback(Path, Dir, Staged, []))
+    end.
+
+%% Copy from staging instead of moving: rollback keeps every original.
+audit_install(Path, Keep, Dir, Staged, []) ->
+    Newest = audit_archive(Path, 1),
+    case copy_file_as(Path, Newest) of
+        {ok, nil} -> audit_install_older(Path, Keep, Dir, Staged, [Newest]);
+        {error, Reason} -> {error, Reason, []}
+    end.
+
+audit_install_older(_, _, _, [], Installed) -> {ok, Installed};
+audit_install_older(Path, Keep, Dir, [{N, _} | Rest], Installed) when N >= Keep ->
+    audit_install_older(Path, Keep, Dir, Rest, Installed);
+audit_install_older(Path, Keep, Dir, [{N, Type} | Rest], Installed) ->
+    Dest = audit_archive(Path, N + 1),
+    Source = audit_staged(Dir, N),
+    Result = case Type of
+        regular -> copy_file_as(Source, Dest);
+        symlink ->
+            case file:read_link(Source) of
+                {ok, Target} ->
+                    case file:make_symlink(Target, Dest) of
+                        ok -> {ok, nil};
+                        Error -> Error
+                    end;
+                Error -> Error
+            end
+    end,
+    case Result of
+        {ok, nil} -> audit_install_older(Path, Keep, Dir, Rest, [Dest | Installed]);
+        {error, Reason} -> {error, Reason, Installed}
+    end.
+
+audit_rollback(Path, Dir, Staged, Installed) ->
+    DeleteErrors = [E || Dest <- Installed,
+                        E <- [optional_file_result(file:delete(Dest))], E =/= ok],
+    RestoreErrors = lists:filtermap(fun({N, _}) ->
+        Dest = audit_archive(Path, N),
+        Result = case file:read_link_info(Dest) of
+            {error, enoent} -> file:rename(audit_staged(Dir, N), Dest);
+            _ -> {error, destination_occupied}
+        end,
+        case Result of ok -> false; Error -> {true, {Dest, Error}} end
+    end, Staged),
+    case DeleteErrors ++ RestoreErrors of
+        [] -> file:del_dir(Dir);
+        Errors -> {error, {recover_archives_from, Dir, Errors}}
+    end.
+
+audit_rolled_back(Reason, ok) -> {error, Reason};
+audit_rolled_back(Reason, {error, Recovery}) ->
+    {error, {audit_rotation_failed, Reason, rollback_failed, Recovery}}.
+
+audit_commit(Dir, Staged) ->
+    Errors = [E || {N, _} <- Staged,
+                   E <- [file:delete(audit_staged(Dir, N))], E =/= ok],
+    case {Errors, file:del_dir(Dir)} of
+        {[], ok} -> ok;
+        Failure ->
+            logger:error("audit rotation published; could not clean staging ~ts: ~p",
+                         [Dir, Failure])
+    end.
+
+audit_staged(Dir, N) -> filename:join(Dir, integer_to_binary(N)).
+
+audit_archive(Path, N) ->
+    <<Path/binary, ".", (integer_to_binary(N))/binary>>.
+
+optional_file_result({error, enoent}) -> ok;
+optional_file_result(Result) -> Result.
 
 %% The new file replaces the old one: give it the old one's permissions
 %% (e.g. 0640 for a group-readable redirections file) instead of the umask
 %% default. A new file gets NewMode, or the umask default. A private file
 %% (with a NewMode) is never readable by others: its group may have been
 %% given access on purpose, the rest of the system never is.
+set_mode(_, Tmp, {exact, Mode}) ->
+    file:change_mode(Tmp, Mode);
 set_mode(Path, Tmp, NewMode) ->
     case {file:read_file_info(Path), NewMode} of
-        {{ok, #file_info{mode = Mode}}, default} -> _ = file:change_mode(Tmp, Mode band 8#7777);
-        {{ok, #file_info{mode = Mode}}, _} -> _ = file:change_mode(Tmp, Mode band 8#7770);
+        {{ok, #file_info{mode = Mode}}, default} -> file:change_mode(Tmp, Mode band 8#7777);
+        {{ok, #file_info{mode = Mode}}, _} -> file:change_mode(Tmp, Mode band 8#7770);
         {{error, _}, default} -> ok;
-        {{error, _}, _} -> _ = file:change_mode(Tmp, NewMode)
-    end,
-    ok.
+        {{error, _}, _} -> file:change_mode(Tmp, NewMode)
+    end.
 
 %% Copies Source to a new file Dest that has Source's permissions before it
 %% holds any of its bytes (a copy then a chmod leaves the copy readable with
@@ -78,8 +243,10 @@ copy_file_as(Source, Dest) ->
                         %% written through the open descriptor: a mode
                         %% without the owner's write bit (a read-only
                         %% rules file) does not apply to it
-                        _ = file:change_mode(Dest, Mode band 8#7777),
-                        Copied = file:copy(Source, Fd),
+                        Copied = case file:change_mode(Dest, Mode band 8#7777) of
+                            ok -> file:copy(Source, Fd);
+                            ModeError -> ModeError
+                        end,
                         Closed = file:close(Fd),
                         case {Copied, Closed} of
                             {{ok, _}, ok} ->
@@ -158,8 +325,9 @@ memo_file(Path, Fun) ->
     Stamp = file_stamp(Path),
     Table = memo_table(),
     Cached = try ets:lookup(Table, Path) catch error:badarg -> [] end,
+    Recent = stamp_is_recent(Stamp),
     case Cached of
-        [{_, Stamp, Value}] -> Value;
+        [{_, Stamp, Value}] when not Recent -> Value;
         _ ->
             case Fun() of
                 {ok, _} = Ok ->

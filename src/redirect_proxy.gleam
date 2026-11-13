@@ -257,14 +257,11 @@ fn data_dir_writable(dir: String) -> Result(Nil, String) {
   let probe = dir <> "/.check-config-" <> int.to_string(ffi.now_millis())
   let written =
     simplifile.create_directory_all(dir)
-    |> result.try(fn(_) { simplifile.write(probe, "") })
-  let _ = simplifile.delete(probe)
+    |> result.map_error(simplifile.describe_error)
+    |> result.try(fn(_) { ffi.probe_writable_file(probe) })
   written
-  |> result.map_error(fn(e) {
-    "the data directory "
-    <> dir
-    <> " is not writable: "
-    <> simplifile.describe_error(e)
+  |> result.map_error(fn(reason) {
+    "the data directory " <> dir <> " is not writable: " <> reason
   })
 }
 

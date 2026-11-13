@@ -825,3 +825,30 @@ pub fn upstream_checks_test() {
       ),
     )
 }
+
+/// Only one trailing line ending is removed; all secret bytes remain intact.
+pub fn secret_files_preserve_content_before_line_endings_test() {
+  let path = support.temp_dir() <> "/secret"
+  list.each(
+    [
+      #("", ""),
+      #("secret", "secret"),
+      #("secret\n", "secret"),
+      #("secret\r\n", "secret"),
+      #("\n", ""),
+      #("\r\n", ""),
+      #("secré\r\n", "secré"),
+      #("secret👩‍💻\r\n", "secret👩‍💻"),
+      #("secré\n", "secré"),
+      #(" secret \r\n", " secret "),
+      #("secret\r", "secret\r"),
+      #("secret\n\n", "secret\n"),
+      #("secret\r\n\r\n", "secret\r\n"),
+      #("secret\n ", "secret\n "),
+    ],
+    fn(pair) {
+      let assert Ok(Nil) = simplifile.write(path, pair.0)
+      assert config_env.read_secret_file(path) == Ok(pair.1)
+    },
+  )
+}

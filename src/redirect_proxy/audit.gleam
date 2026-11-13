@@ -92,8 +92,11 @@ pub fn record(
   // rotation must not race another one or a write
   let written =
     ffi.locked_file(path, lock_timeout, fn() {
-      rotate_if_full(path)
-      ffi.append_line(path, line)
+      use rotated <- result.try(rotate_if_full(path, line))
+      case rotated {
+        True -> Ok(Nil)
+        False -> ffi.append_line(path, line)
+      }
     })
   case written {
     Ok(Nil) -> Nil
@@ -128,29 +131,18 @@ fn rotation() -> #(Int, Int) {
 
 /// `audit.jsonl` becomes `audit.jsonl.1` (and `.1` becomes `.2`...) once it
 /// reaches the size limit; the oldest file beyond the number kept goes.
-fn rotate_if_full(path: String) -> Nil {
+fn rotate_if_full(path: String, line: String) -> Result(Bool, String) {
   let #(max_bytes, files) = rotation()
   case max_bytes > 0, simplifile.file_info(path) {
-    True, Ok(info) if info.size >= max_bytes -> {
-      let numbered = fn(n) { path <> "." <> int.to_string(n) }
-      let _ = simplifile.delete(numbered(files))
-      list.reverse(numbers(1, files - 1))
-      |> list.each(fn(n) {
-        let _ = simplifile.rename(numbered(n), numbered(n + 1))
-        Nil
-      })
-      case files > 0 {
-        True -> {
-          let _ = simplifile.rename(path, numbered(1))
-          Nil
-        }
-        False -> {
-          let _ = simplifile.delete(path)
-          Nil
-        }
-      }
-    }
-    _, _ -> Nil
+    True, Ok(info) if info.size >= max_bytes ->
+      ffi.audit_rotate(
+        path,
+        line,
+        simplifile.file_info_permissions_octal(info),
+        files,
+      )
+      |> result.map(fn(_) { True })
+    _, _ -> Ok(False)
   }
 }
 

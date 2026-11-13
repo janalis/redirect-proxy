@@ -141,14 +141,22 @@ pub fn memo_file_test() {
   assert ffi.memo_file(path, parse) == Error("missing")
   let assert Ok(Nil) = ffi.atomic_write(path, "ok:one")
   assert ffi.memo_file(path, parse) == Ok("one")
-  // cached: not recomputed while the file is unchanged
-  assert ffi.memo_file(path, fn() { Error("not called") }) == Ok("one")
+  set_mtime(path, 10)
+  assert ffi.memo_file(path, parse) == Ok("one")
+  // cached: not recomputed while the mature file is unchanged
+  assert ffi.memo_file(path, fn() {
+      panic as "unchanged mature file was recomputed"
+    })
+    == Ok("one")
   // a write within the same second, of the same size, is still seen
   let assert Ok(Nil) = ffi.atomic_write(path, "ok:two")
   assert ffi.memo_file(path, parse) == Ok("two")
+  // In-place edits can retain the inode, size and second-resolution mtime.
+  let assert Ok(Nil) = simplifile.write(path, "ok:six")
+  assert ffi.memo_file(path, parse) == Ok("six")
   // a broken file keeps the last good value
   let assert Ok(Nil) = ffi.atomic_write(path, "garbage")
-  assert ffi.memo_file(path, parse) == Ok("two")
+  assert ffi.memo_file(path, parse) == Ok("six")
 }
 
 pub fn json_log_lines_test() {
@@ -319,4 +327,25 @@ pub fn same_write_test() {
   assert !same_write(#(7, 100, 10), #(7, 99, 10))
   assert !same_write(#(7, 100, 10), #(8, 100, 10))
   assert !same_write(#(7, 100, 10), #(7, 100, 11))
+}
+
+pub fn writable_probe_keeps_existing_entries_test() {
+  let dir = support.temp_dir()
+  let probe = dir <> "/probe"
+  assert ffi.probe_writable_file(probe) == Ok(Nil)
+  assert simplifile.is_file(probe) == Ok(False)
+  let assert Ok(Nil) = simplifile.write(probe, "existing")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(probe, 0o640)
+  let assert Error(_) = ffi.probe_writable_file(probe)
+  assert simplifile.read(probe) == Ok("existing")
+  assert mode(probe) == 0o640
+  let assert Ok(Nil) = simplifile.delete(probe)
+  let target = dir <> "/target"
+  let assert Ok(Nil) = simplifile.write(target, "untouched")
+  let assert Ok(Nil) = simplifile.create_symlink(to: target, from: probe)
+  let assert Error(_) = ffi.probe_writable_file(probe)
+  assert simplifile.is_symlink(probe) == Ok(True)
+  assert simplifile.read(target) == Ok("untouched")
+  let assert Error(_) = ffi.probe_writable_file(dir <> "/missing/probe")
+  assert simplifile.is_directory(dir <> "/missing") == Ok(False)
 }

@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None}
 import gleam/result
 import gleam/uri
+import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/routes/auth
 import redirect_proxy/admin/views/layout
@@ -150,10 +151,10 @@ fn throttled(
   req: Request,
   ctx: Context,
   s: Session,
-  next: fn() -> Response,
+  next: fn(List(ratelimit.Receipt)) -> Response,
 ) -> Response {
   case auth.start_password_check(req, ctx, s.username) {
-    Ok(Nil) -> next()
+    Ok(receipts) -> next(receipts)
     Error(seconds) ->
       error_page(
         ctx,
@@ -170,13 +171,14 @@ fn throttled(
 fn busy_or(
   ctx: Context,
   s: Session,
+  receipts: List(ratelimit.Receipt),
   checked: Result(Bool, Nil),
   next: fn(Bool) -> Response,
 ) -> Response {
   case checked {
     Ok(ok) -> next(ok)
     Error(Nil) -> {
-      auth.end_password_check(ctx, s.username, auth.NotRun)
+      auth.end_password_check(ctx, s.username, receipts, auth.NotRun)
       error_page(
         ctx,
         s,
@@ -227,7 +229,7 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
       False -> html(422, users_view.account(s, features(ctx), None, [reason]))
     }
   }
-  use <- throttled(req, ctx, s)
+  use receipts <- throttled(req, ctx, s)
   let checked =
     auth.hashing_password(fn() {
       case users.get(ctx.users, s.username) {
@@ -239,8 +241,8 @@ pub fn change_password(req: Request, ctx: Context, s: Session) -> Response {
         Error(Nil) -> False
       }
     })
-  use current_ok <- busy_or(ctx, s, checked)
-  auth.record_password_check(ctx, s.username, current_ok)
+  use current_ok <- busy_or(ctx, s, receipts, checked)
+  auth.record_password_check(ctx, s.username, receipts, current_ok)
   let result = {
     use <- bool.guard(
       !current_ok,

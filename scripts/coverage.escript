@@ -21,8 +21,8 @@ main(Args) ->
     Ebin = filename:join([Root, "redirect_proxy", "ebin"]),
     Artefacts = filename:join([Root, "redirect_proxy", "_gleam_artefacts"]),
     {ok, _} = cover:start(),
-    AllModules = [list_to_atom(filename:basename(F, ".beam"))
-                  || F <- filelib:wildcard(filename:join(Ebin, "*.beam"))],
+    %% Build directories can retain modules whose sources were removed.
+    AllModules = lists:usort(source_modules("src") ++ source_modules("test")),
     {Tests, App} = lists:partition(fun is_test_module/1, AllModules),
     [ok = compile(Mod, Ebin) || Mod <- App],
     _ = application:ensure_all_started(redirect_proxy),
@@ -56,9 +56,20 @@ compile(Mod, Ebin) ->
     case cover:compile_beam(filename:join(Ebin, atom_to_list(Mod) ++ ".beam")) of
         {ok, _} -> ok;
         {error, Reason} ->
-            io:format("cannot instrument ~p: ~p~n", [Mod, Reason]),
-            ok
+            erlang:error({cannot_instrument, Mod, Reason})
     end.
+
+source_modules(Root) ->
+    filelib:fold_files(Root, "\\.(gleam|erl)$", true, fun(Path, Acc) ->
+        Extension = filename:extension(Path),
+        Name = case Extension of
+            ".erl" -> filename:basename(Path, Extension);
+            ".gleam" ->
+                Relative = lists:nthtail(length(Root) + 1, filename:rootname(Path)),
+                lists:flatten(lists:join("@", filename:split(Relative)))
+        end,
+        [list_to_atom(Name) | Acc]
+    end, []).
 
 %% Test modules, the generated entry point and modules made only of
 %% `@external` declarations are not measured.

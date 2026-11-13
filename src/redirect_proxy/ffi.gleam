@@ -64,6 +64,11 @@ pub fn regex_limit_count() -> Int
 @external(erlang, "redirect_proxy_file_ffi", "memo_file")
 pub fn memo_file(path: String, compute: fn() -> Result(a, e)) -> Result(a, e)
 
+/// Exclusively creates, closes and removes an empty probe. Existing paths
+/// are never modified or removed.
+@external(erlang, "redirect_proxy_file_ffi", "probe_writable_file")
+pub fn probe_writable_file(path: String) -> Result(Nil, String)
+
 @external(erlang, "redirect_proxy_file_ffi", "atomic_write")
 pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 
@@ -73,6 +78,16 @@ pub fn atomic_write(path: String, content: String) -> Result(Nil, String)
 pub fn atomic_write_private(
   path: String,
   content: String,
+) -> Result(Nil, String)
+
+/// Rotates a full audit log after preparing its replacement with the
+/// original permissions. On success the new active file holds only `line`.
+@external(erlang, "redirect_proxy_file_ffi", "audit_rotate")
+pub fn audit_rotate(
+  path: String,
+  line: String,
+  mode: Int,
+  keep: Int,
 ) -> Result(Nil, String)
 
 /// Copies `source` to a new file `dest` created with the permissions of
@@ -119,6 +134,14 @@ pub fn ets_find(table: String, key: k) -> Result(v, Nil)
 @external(erlang, "redirect_proxy_ets_ffi", "ets_delete")
 pub fn ets_delete(table: String, key: k) -> Nil
 
+/// Replaces a row only while it still holds the exact value read.
+@external(erlang, "redirect_proxy_ets_ffi", "ets_replace_if")
+pub fn ets_replace_if(table: String, key: String, old: a, new: a) -> Bool
+
+/// Deletes a row only while it still holds the exact value read.
+@external(erlang, "redirect_proxy_ets_ffi", "ets_delete_if")
+pub fn ets_delete_if(table: String, key: String, old: a) -> Bool
+
 /// Number of entries in a table.
 @external(erlang, "redirect_proxy_ets_ffi", "ets_size")
 pub fn ets_size(table: String) -> Int
@@ -151,8 +174,25 @@ pub fn window_take(
   limit: Int,
 ) -> Result(Nil, Int)
 
+@external(erlang, "redirect_proxy_ets_ffi", "window_take_receipt")
+pub fn window_take_receipt(
+  table: String,
+  key: String,
+  now: Int,
+  window: Int,
+  limit: Int,
+) -> Result(Int, Int)
+
+@external(erlang, "redirect_proxy_ets_ffi", "window_record_receipt")
+pub fn window_record_receipt(
+  table: String,
+  key: String,
+  now: Int,
+  window: Int,
+) -> Result(Int, Int)
+
 @external(erlang, "redirect_proxy_ets_ffi", "window_forgive")
-pub fn window_forgive(table: String, key: String) -> Nil
+pub fn window_forgive(table: String, key: String, generation: Int) -> Nil
 
 @external(erlang, "redirect_proxy_ets_ffi", "with_slot")
 pub fn with_slot(

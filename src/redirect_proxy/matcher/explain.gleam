@@ -86,8 +86,8 @@ pub fn explain(
     |> list.flat_map(fn(h) {
       rules
       |> list.filter(fn(r) { matcher.normalise_request_host(r.host) == h })
-      |> resolution_order
       |> list.filter(matches(_, path, request_query))
+      |> resolution_order(path)
     })
     |> list.map(fn(r) {
       Candidate(r, case r.id == applied_id, r.enabled {
@@ -151,20 +151,40 @@ fn parents(name: String) -> List(String) {
   }
 }
 
-/// Exact rules, then prefix rules (longest in bytes first, then priority),
+/// Exact rules, then prefix rules (longest consumed path first, then priority),
 /// then regex rules (by priority); file order breaks ties, as in the
 /// matcher.
-fn resolution_order(rules: List(Rule)) -> List(Rule) {
+fn resolution_order(rules: List(Rule), path: String) -> List(Rule) {
   let of = fn(kind) { list.filter(rules, fn(r) { r.kind == kind }) }
   list.flatten([
-    of(Exact),
+    exact_order(of(Exact)),
     of(Prefix)
+      |> list.map(fn(r) { #(r, string.byte_size(prefix_remainder(r, path))) })
       |> list.sort(fn(a, b) {
-        string.byte_size(b.source)
-        |> int_compare(string.byte_size(a.source))
-        |> order.break_tie(int_compare(a.priority, b.priority))
-      }),
+        int_compare(a.1, b.1)
+        |> order.break_tie(int_compare({ a.0 }.priority, { b.0 }.priority))
+      })
+      |> list.map(fn(entry) { entry.0 }),
     of(Regex) |> list.sort(fn(a, b) { int_compare(a.priority, b.priority) }),
+  ])
+}
+
+/// Query-conditioned exact rules precede plain exact rules. Stable sorting
+/// retains file order on specificity/priority ties, across matching modes.
+fn exact_order(rules: List(Rule)) -> List(Rule) {
+  let #(conditional, plain) = list.partition(rules, fn(r) { r.query != "" })
+  let #(sensitive, folded) =
+    list.partition(plain, fn(r) { !r.case_insensitive })
+  list.flatten([
+    conditional
+      |> list.map(fn(r) { #(r, list.length(rule.query_conditions(r))) })
+      |> list.sort(fn(a, b) {
+        int_compare(b.1, a.1)
+        |> order.break_tie(int_compare({ a.0 }.priority, { b.0 }.priority))
+      })
+      |> list.map(fn(entry) { entry.0 }),
+    sensitive,
+    folded,
   ])
 }
 
@@ -174,6 +194,13 @@ fn int_compare(a: Int, b: Int) -> order.Order {
     _, True -> order.Gt
     _, _ -> order.Eq
   }
+}
+
+fn prefix_remainder(r: Rule, path: String) -> String {
+  matcher.prefix_remainder(
+    rule.Rule(..r, source: ffi.normalise_path(r.source)),
+    path,
+  )
 }
 
 fn matches(r: Rule, path: String, query: String) -> Bool {
@@ -192,16 +219,10 @@ fn matches_path(r: Rule, path: String) -> Bool {
     Exact -> fold(ffi.normalise_path(r.source)) == fold(path)
     Prefix -> {
       let source = fold(ffi.normalise_path(r.source))
-      let path = fold(path)
-      string.starts_with(path, source)
+      string.starts_with(fold(path), source)
       && case r.whole_segments {
         False -> True
-        True ->
-          rule.on_segment_boundary(
-            source,
-            // in bytes, like the matcher
-            ffi.byte_drop(path, string.byte_size(source)),
-          )
+        True -> rule.on_segment_boundary(source, prefix_remainder(r, path))
       }
     }
     Regex ->

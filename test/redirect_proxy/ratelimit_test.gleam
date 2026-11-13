@@ -105,14 +105,14 @@ pub fn take_all_counts_nothing_when_one_is_spent_test() {
   let assert Error(wait) = ratelimit.take_all([#(open, 5), #(spent, 1)], 60)
   assert wait > 0 && wait <= 60
   assert !ratelimit.is_blocked(open, 1)
-  assert ratelimit.take_all([#(open, 1)], 60) == Ok(Nil)
+  let assert Ok([receipt]) = ratelimit.take_all([#(open, 1)], 60)
   assert ratelimit.is_blocked(open, 1)
-  ratelimit.forgive(open)
+  ratelimit.forgive(receipt)
   assert !ratelimit.is_blocked(open, 1)
   // never below zero
-  ratelimit.forgive(open)
-  ratelimit.forgive(key("missing"))
-  assert ratelimit.take_all([#(open, 1)], 60) == Ok(Nil)
+  ratelimit.forgive(receipt)
+  ratelimit.forgive(ratelimit.Receipt(key("missing"), 0))
+  let assert Ok(_) = ratelimit.take_all([#(open, 1)], 60)
 }
 
 pub fn bounded_work_refuses_beyond_the_limit_test() {
@@ -157,4 +157,48 @@ pub fn a_killed_holder_gives_its_slot_back_test() {
   process.kill(holder)
   support_wait(fn() { !process.is_alive(holder) })
   assert ratelimit.bounded(name, 1, fn() { 7 }) == Ok(7)
+}
+
+@external(erlang, "test_net_ffi", "window_reset_regression")
+fn window_reset_regression() -> Int
+
+pub fn concurrent_resets_never_crash_admission_test() {
+  assert window_reset_regression() == 0
+}
+
+pub fn admission_preserves_rejected_counts_and_window_boundaries_test() {
+  let table = "redirect_proxy_window_boundary_test"
+  ffi.ets_new(table)
+  assert ffi.window_take(table, "key", 100, 60, 2) == Ok(Nil)
+  assert ffi.window_take(table, "key", 159, 60, 2) == Ok(Nil)
+  assert ffi.window_take(table, "key", 159, 60, 2) == Error(1)
+  assert ffi.window_get(table, "key") == Ok(#(160, 2))
+  // Exact expiry starts a fresh window and its first admitted use.
+  assert ffi.window_take(table, "key", 160, 60, 2) == Ok(Nil)
+  assert ffi.window_get(table, "key") == Ok(#(220, 1))
+  assert ffi.window_take(table, "zero", 100, 60, 0) == Error(60)
+  assert ffi.window_get(table, "zero") == Error(Nil)
+}
+
+pub fn refunds_never_change_replacement_windows_test() {
+  let table = "redirect_proxy_receipt_test"
+  ffi.ets_new(table)
+  let assert Ok(old) = ffi.window_take_receipt(table, "key", 100, 60, 2)
+  let assert Ok(_) = ffi.window_take_receipt(table, "key", 159, 60, 2)
+  let assert Ok(new) = ffi.window_take_receipt(table, "key", 160, 60, 2)
+  let assert Ok(_) = ffi.window_take_receipt(table, "key", 160, 60, 2)
+  assert new != old
+  ffi.window_forgive(table, "key", old)
+  assert ffi.window_get(table, "key") == Ok(#(220, 2))
+  assert ffi.window_take(table, "key", 160, 60, 2) == Error(60)
+  // Reset/recreation can give exactly the same expiry but a new generation.
+  ffi.ets_delete(table, "key")
+  let assert Ok(recreated) = ffi.window_take_receipt(table, "key", 160, 60, 2)
+  assert recreated != new
+  ffi.window_forgive(table, "key", new)
+  assert ffi.window_get(table, "key") == Ok(#(220, 1))
+  ffi.window_forgive(table, "key", recreated)
+  assert ffi.window_get(table, "key") == Ok(#(220, 0))
+  ffi.window_forgive(table, "key", recreated)
+  assert ffi.window_get(table, "key") == Ok(#(220, 0))
 }

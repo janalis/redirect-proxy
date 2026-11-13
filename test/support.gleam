@@ -114,14 +114,22 @@ pub fn sign_typed(key: Key, typ: String, claims: String) -> String
 /// Starts an authorization server publishing RFC 8414 metadata and a JWKS.
 /// Returns its issuer URL and the signing key.
 pub fn start_fake_authorization_server() -> #(String, Key) {
+  start_fake_authorization_server_at("")
+}
+
+/// An RFC 8414 issuer with an optional path, including a trailing slash.
+pub fn start_fake_authorization_server_at(path: String) -> #(String, Key) {
+  let issuer_path = provider.trim_trailing_slash(path)
+  let metadata_path = "/.well-known/oauth-authorization-server" <> issuer_path
   let #(jwks, key) = keypair()
   let port_key = "fake_as_port_" <> id.token(6)
   let handler = fn(req: request.Request(mist.Connection)) {
     let issuer =
       "http://127.0.0.1:"
       <> int.to_string(ffi.snapshot_get(port_key) |> result.unwrap(0))
+      <> path
     let body = case req.path {
-      "/.well-known/oauth-authorization-server" ->
+      requested if requested == metadata_path ->
         Ok(
           json.object([
             #("issuer", json.string(issuer)),
@@ -153,7 +161,7 @@ pub fn start_fake_authorization_server() -> #(String, Key) {
     })
     |> mist.start
   let assert Ok(port) = process.receive(ready, 5000)
-  let issuer = "http://127.0.0.1:" <> int.to_string(port)
+  let issuer = "http://127.0.0.1:" <> int.to_string(port) <> path
   forget_provider(issuer)
   #(issuer, key)
 }
