@@ -418,11 +418,21 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 "query",
                 // the fields the list really sorts by, each also descending
                 enum_schema(
-                  list.flat_map(store_rules.sort_fields, fn(field) {
-                    [field, "-" <> field]
-                  }),
+                  list.flat_map(
+                    list.append(
+                      store_rules.sort_fields,
+                      list.map(store_rules.sort_aliases, fn(alias) { alias.0 }),
+                    ),
+                    fn(field) { [field, "-" <> field] },
+                  ),
                 ),
-                "Sort field; - for descending. File order by default.",
+                "Sort field; - for descending. File order by default."
+                  <> deprecated_values_note(
+                  registry,
+                  "get",
+                  "/api/redirects",
+                  "sort",
+                ),
               ),
               param("page", "query", int_schema(), "Page number (from 1)."),
               param("per_page", "query", int_schema(), "Page size (max 500)."),
@@ -1474,6 +1484,30 @@ fn rule_properties(read_only: Bool) -> List(#(String, Json)) {
           ),
         ],
       ])
+  }
+}
+
+/// " Deprecated: a (use b), …." for the deprecated values of a query
+/// parameter, "" without any.
+fn deprecated_values_note(
+  registry: List(Deprecation),
+  method: String,
+  path: String,
+  parameter: String,
+) -> String {
+  case deprecation.deprecated_values(registry, method, path, parameter) {
+    [] -> ""
+    values ->
+      " Deprecated: "
+      <> list.filter_map(values, fn(d) {
+        case d.target {
+          deprecation.QueryValue(value:, ..) ->
+            Ok(value <> " (use " <> d.replacement <> ")")
+          _ -> Error(Nil)
+        }
+      })
+      |> string.join(", ")
+      <> "."
   }
 }
 

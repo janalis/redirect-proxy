@@ -204,8 +204,8 @@ fn filters_form(filters: Filters) -> Element(Nil) {
         layout.select_option("host", "Host", filters.sort),
         layout.select_option("-hits", "Most hits", filters.sort),
         layout.select_option("hits", "Fewest hits", filters.sort),
-        layout.select_option("last_hit", "Least recently hit", filters.sort),
-        layout.select_option("-updated", "Recently updated", filters.sort),
+        layout.select_option("last_hit_at", "Least recently hit", filters.sort),
+        layout.select_option("-updated_at", "Recently updated", filters.sort),
       ]),
     ]),
     h.div([a.class("col-12 md:col-auto")], [

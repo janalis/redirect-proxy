@@ -312,6 +312,39 @@ pub fn list_sort_links_and_invalid_filters_test() {
   assert api(env, Get, "/api/redirects?sort=colour", token, "").status == 400
 }
 
+/// The sort fields are named as in the JSON of a rule; their earlier names
+/// still work, announced as deprecated.
+pub fn list_sorts_by_the_json_field_names_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [
+    #("b", "/b", True),
+    #("c", "/c", True),
+    #("a", "/a", True),
+  ])
+  // c is the only rule hit
+  assert support.send(Get, env.redirect <> "/c", [], "").status == 301
+  let ids = fn(resp: response.Response(String)) {
+    field(resp.body, ["data"], decode.list(decode.at(["id"], decode.string)))
+  }
+  let current = api(env, Get, "/api/redirects?sort=-last_hit_at", token, "")
+  assert current.status == 200
+  assert list.first(ids(current)) == Ok("c")
+  assert header(current, "deprecation") == ""
+  let earlier = api(env, Get, "/api/redirects?sort=-last_hit", token, "")
+  assert ids(earlier) == ids(current)
+  assert header(earlier, "deprecation") == "@1794873600"
+  let updated = api(env, Get, "/api/redirects?sort=updated_at", token, "")
+  assert updated.status == 200
+  assert header(updated, "deprecation") == ""
+  let earlier = api(env, Get, "/api/redirects?sort=-updated", token, "")
+  assert earlier.status == 200
+  assert header(earlier, "deprecation") == "@1794873600"
+  // the error names the current fields
+  let refused = api(env, Get, "/api/redirects?sort=colour", token, "")
+  assert string.contains(refused.body, "last_hit_at, updated_at")
+}
+
 pub fn bulk_changes_test() {
   let env = support.boot(config.default())
   let token = access_token(env, [scope.Write])

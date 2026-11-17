@@ -9,13 +9,17 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 
 pub type Target {
   /// A property of a JSON schema (`schema` is the OpenAPI component name).
   Field(schema: String, name: String)
   /// An operation, e.g. `Route("get", "/api/test")`.
   Route(method: String, path: String)
+  /// A value of a query parameter of an operation, e.g.
+  /// `QueryValue("get", "/api/redirects", "sort", "updated")`. A value
+  /// prefixed with `-` (descending) counts as the value.
+  QueryValue(method: String, path: String, parameter: String, value: String)
 }
 
 pub type Deprecation {
@@ -30,9 +34,25 @@ pub type Deprecation {
   )
 }
 
-/// The current registry. Empty: nothing is deprecated yet.
+/// 2026-11-17, when the sort fields took the names of the JSON fields.
+const sort_renamed = 1_794_873_600
+
+/// The current registry.
 pub fn registry() -> List(Deprecation) {
-  []
+  [
+    Deprecation(
+      target: QueryValue("get", "/api/redirects", "sort", "last_hit"),
+      since: sort_renamed,
+      sunset: None,
+      replacement: "last_hit_at",
+    ),
+    Deprecation(
+      target: QueryValue("get", "/api/redirects", "sort", "updated"),
+      since: sort_renamed,
+      sunset: None,
+      replacement: "updated_at",
+    ),
+  ]
 }
 
 pub fn for_route(
@@ -51,7 +71,40 @@ pub fn for_fields(
   list.filter(registry, fn(d) {
     case d.target {
       Field(s, name) -> s == schema && list.contains(used, name)
-      Route(..) -> False
+      Route(..) | QueryValue(..) -> False
+    }
+  })
+}
+
+/// The deprecations of `value` of the query `parameter` of an operation
+/// (`-value` included).
+pub fn for_query_value(
+  registry: List(Deprecation),
+  method: String,
+  path: String,
+  parameter: String,
+  value: String,
+) -> List(Deprecation) {
+  let value = case value {
+    "-" <> rest -> rest
+    _ -> value
+  }
+  list.filter(registry, fn(d) {
+    d.target == QueryValue(method, path, parameter, value)
+  })
+}
+
+/// The deprecated values of the query `parameter` of an operation.
+pub fn deprecated_values(
+  registry: List(Deprecation),
+  method: String,
+  path: String,
+  parameter: String,
+) -> List(Deprecation) {
+  list.filter(registry, fn(d) {
+    case d.target {
+      QueryValue(m, p, name, _) -> m == method && p == path && name == parameter
+      Field(..) | Route(..) -> False
     }
   })
 }

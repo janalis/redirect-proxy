@@ -247,6 +247,15 @@ pub fn admin_forms_and_exports_test() {
     list,
     "name=\"filter_enabled\" type=\"hidden\" value=\"true\"",
   )
+  // the sort fields are named as in the JSON of a rule; links with their
+  // earlier names show the same choice
+  let selected = fn(body, value) {
+    string.contains(body, "<option selected value=\"" <> value <> "\">")
+    || string.contains(body, "value=\"" <> value <> "\" selected")
+  }
+  assert selected(page("/rules?sort=-updated_at").body, "-updated_at")
+  assert selected(page("/rules?sort=-updated").body, "-updated_at")
+  assert selected(page("/rules?sort=last_hit").body, "last_hit_at")
 }
 
 pub fn rule_crud_test() {

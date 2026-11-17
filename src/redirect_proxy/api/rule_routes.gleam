@@ -109,6 +109,16 @@ pub fn list_rules(req: Request, ctx: Context) -> Response {
   // larger pages are capped rather than refused
   let per_page = int.min(per_page, params.max_per_page)
   use #(matching, version) <- params.result_or_response(filtered_rules(ctx, get))
+  // `last_hit` and `updated`: the earlier names of `last_hit_at` and
+  // `updated_at`
+  let deprecated =
+    deprecation.for_query_value(
+      ctx.deprecations,
+      "get",
+      "/api/redirects",
+      "sort",
+      get("sort"),
+    )
   case store_rules.sort(matching, get("sort"), metrics.hits, metrics.last_hit) {
     Error(Nil) ->
       problem.bad_request(
@@ -168,6 +178,7 @@ pub fn list_rules(req: Request, ctx: Context) -> Response {
         [] -> resp
         _ -> wisp.set_header(resp, "link", string.join(links, ", "))
       }
+      |> params.add_deprecation_headers(deprecated)
     }
   }
 }

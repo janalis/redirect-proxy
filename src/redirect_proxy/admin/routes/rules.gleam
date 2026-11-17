@@ -31,9 +31,10 @@ import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
 import wisp.{type Request, type Response}
 
-/// The list filters, named as in the API (`match`, `enabled=true|false`).
-/// The names of earlier versions (`kind`, `status=enabled|disabled`) are
-/// still read, so that saved links keep working.
+/// The list filters, named as in the API (`match`, `enabled=true|false`,
+/// `sort=last_hit_at`). The names of earlier versions (`kind`,
+/// `status=enabled|disabled`, `sort=last_hit`) are still read, so that
+/// saved links keep working.
 fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
   let either = fn(name, old) {
     case get(name) {
@@ -50,7 +51,9 @@ fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
       "disabled" -> "false"
       value -> value
     },
-    sort: get("sort"),
+    // `last_hit` and `updated`: the earlier names of `last_hit_at` and
+    // `updated_at`
+    sort: store_rules.current_sort(get("sort")),
     tag: string.trim(get("tag")),
     page: int.parse(get("page")) |> result.unwrap(1),
   )

@@ -601,7 +601,6 @@ pub fn diff_to_json(d: Diff) -> List(#(String, json.Json)) {
   ])
 }
 
-/// The fields rules can be sorted by; `-field` sorts in descending order.
 /// The filters of the rules list, in the admin and the API.
 pub type Filter {
   Filter(
@@ -643,11 +642,32 @@ pub fn filter(rules: List(Rule), f: Filter) -> List(Rule) {
   })
 }
 
-pub const sort_fields = ["source", "host", "hits", "last_hit", "updated"]
+/// The fields rules can be sorted by, named as in the JSON of a rule;
+/// `-field` sorts in descending order.
+pub const sort_fields = ["source", "host", "hits", "last_hit_at", "updated_at"]
 
-/// Sorts rules by `by` (one of `sort_fields`, optionally prefixed with `-`;
-/// "" keeps the file order). Hit counts come from `hits`, last hit times
-/// from `last_hit`.
+/// Earlier names of sort fields, still accepted: `#(old, current)`.
+pub const sort_aliases = [
+  #("last_hit", "last_hit_at"),
+  #("updated", "updated_at"),
+]
+
+/// `by` with an earlier field name replaced by the current one
+/// (`-updated` is `-updated_at`).
+pub fn current_sort(by: String) -> String {
+  let #(sign, field) = case by {
+    "-" <> field -> #("-", field)
+    field -> #("", field)
+  }
+  case list.key_find(sort_aliases, field) {
+    Ok(current) -> sign <> current
+    Error(Nil) -> by
+  }
+}
+
+/// Sorts rules by `by` (one of `sort_fields` or `sort_aliases`, optionally
+/// prefixed with `-`; "" keeps the file order). Hit counts come from
+/// `hits`, last hit times from `last_hit`.
 pub fn sort(
   rules: List(Rule),
   by: String,
@@ -658,14 +678,15 @@ pub fn sort(
     "-" <> field -> #(field, True)
     field -> #(field, False)
   }
+  let field = list.key_find(sort_aliases, field) |> result.unwrap(field)
   let compare = case field {
     "" -> Ok(fn(_, _) { order.Eq })
     "source" -> Ok(fn(a: Rule, b: Rule) { string.compare(a.source, b.source) })
     "host" -> Ok(fn(a: Rule, b: Rule) { string.compare(a.host, b.host) })
-    "updated" ->
+    "updated_at" ->
       Ok(fn(a: Rule, b: Rule) { string.compare(a.updated_at, b.updated_at) })
     "hits" -> Ok(fn(a: Rule, b: Rule) { int.compare(hits(a.id), hits(b.id)) })
-    "last_hit" ->
+    "last_hit_at" ->
       Ok(fn(a: Rule, b: Rule) { int.compare(last_hit(a.id), last_hit(b.id)) })
     _ -> Error(Nil)
   }

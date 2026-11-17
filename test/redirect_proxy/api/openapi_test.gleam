@@ -142,8 +142,49 @@ pub fn deprecations_are_announced_test() {
     ["paths", "/api/redirects", "get", "deprecated"],
     decode.bool,
   )
-  // the production registry is empty: nothing is deprecated yet
-  assert deprecation.registry() == []
+  // the earlier names of the sort fields
+  assert list.map(deprecation.registry(), fn(d) { d.target })
+    == [
+      deprecation.QueryValue("get", "/api/redirects", "sort", "last_hit"),
+      deprecation.QueryValue("get", "/api/redirects", "sort", "updated"),
+    ]
+  assert deprecation.for_query_value(
+      deprecation.registry(),
+      "get",
+      "/api/redirects",
+      "sort",
+      "-updated",
+    )
+    != []
+  let doc = openapi.document(deprecation.registry(), config.default().api.oauth)
+  let sort =
+    field(
+      doc,
+      ["paths", "/api/redirects", "get", "parameters"],
+      decode.list(decode.dynamic),
+    )
+    |> list.filter_map(fn(p) {
+      decode.run(p, {
+        use name <- decode.field("name", decode.string)
+        use description <- decode.field("description", decode.string)
+        use values <- decode.subfield(
+          ["schema", "enum"],
+          decode.list(decode.string),
+        )
+        case name {
+          "sort" -> decode.success(#(description, values))
+          _ -> decode.failure(#("", []), "sort")
+        }
+      })
+    })
+  let assert [#(description, values)] = sort
+  assert list.contains(values, "-last_hit_at")
+  assert list.contains(values, "updated_at")
+  assert list.contains(values, "updated")
+  assert string.contains(
+    description,
+    "Deprecated: last_hit (use last_hit_at), updated (use updated_at).",
+  )
 }
 
 /// The Rule schema of the OpenAPI document lists the fields the API sends,
