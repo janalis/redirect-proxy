@@ -126,6 +126,8 @@ pub fn handler_with_identity(
   let trusted = cidr.compile(trusted_proxies)
   fn(req: Request(proxy_http.Peer)) {
     let started = ffi.monotonic_micros()
+    // one read of the counters for every metric of the request
+    let counts = metrics.current()
     let peer_trusted =
       trusted_listed && cidr.contains_peer_result(trusted, req.body)
     let routed = case
@@ -141,6 +143,7 @@ pub fn handler_with_identity(
           req,
           not_found_body,
           permanent_cache,
+          counts,
         )
     }
     case routed {
@@ -154,7 +157,7 @@ pub fn handler_with_identity(
         }
         let finished = ffi.monotonic_micros()
         metrics.observe(listener.RedirectListener, finished - started)
-        metrics.response(resp.status)
+        metrics.count_response(counts, resp.status)
         case access {
           option.None -> Nil
           option.Some(settings) -> {
@@ -330,11 +333,12 @@ fn route(
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
+  counts: ffi.Counters,
 ) -> Routed {
   case config.health_path != "" && req.path == config.health_path {
     True -> Answered(health(), "")
     False -> {
-      metrics.incr(metrics.Requests)
+      metrics.count(counts, metrics.Requests)
       case string.byte_size(req.path) > config.max_path_bytes {
         True -> Answered(empty(414), "")
         False ->
@@ -342,7 +346,7 @@ fn route(
             config.https_redirect
             && !forwarded_https(req, trusted_listed, peer_trusted)
           {
-            True -> Answered(to_https(req, permanent_cache), "")
+            True -> Answered(to_https(req, permanent_cache, counts), "")
             False ->
               route_rules(
                 config,
@@ -350,6 +354,7 @@ fn route(
                 req,
                 not_found_body,
                 permanent_cache,
+                counts,
               )
           }
       }
@@ -428,6 +433,7 @@ fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
 fn to_https(
   req: Request(proxy_http.Peer),
   permanent_cache: String,
+  counts: ffi.Counters,
 ) -> Response(BytesTree) {
   let host =
     list.key_find(req.headers, "host")
@@ -444,7 +450,7 @@ fn to_https(
         http.Get | http.Head -> 301
         _ -> 308
       }
-      metrics.incr(metrics.Redirects)
+      metrics.count(counts, metrics.Redirects)
       redirect(status, "https://" <> host <> req.path <> query, permanent_cache)
     }
   }
@@ -462,6 +468,7 @@ fn route_rules(
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
+  counts: ffi.Counters,
 ) -> Routed {
   // the listener has checked the Host header and split its port off
   let host = req.host
@@ -471,7 +478,7 @@ fn route_rules(
       let current = snapshot.current()
       case find(current, config, host, req.path, option.unwrap(req.query, "")) {
         Ok(m) -> {
-          metrics.incr(metrics.Redirects)
+          metrics.count(counts, metrics.Redirects)
           matcher.record_hit(current, m.rule.id)
           Answered(
             redirect(
@@ -483,7 +490,7 @@ fn route_rules(
           )
         }
         Error(Nil) if upstream -> Unanswered
-        Error(Nil) -> Answered(unmatched(config, not_found_body), "")
+        Error(Nil) -> Answered(unmatched(config, not_found_body, counts), "")
       }
     }
     _ if upstream -> Unanswered
@@ -530,10 +537,11 @@ fn redirect(
 fn unmatched(
   config: ServerConfig,
   not_found_body: BytesTree,
+  counts: ffi.Counters,
 ) -> Response(BytesTree) {
   case config.fallback_url {
     "" -> {
-      metrics.incr(metrics.NotFound)
+      metrics.count(counts, metrics.NotFound)
       Response(
         404,
         [
@@ -544,7 +552,7 @@ fn unmatched(
       )
     }
     url -> {
-      metrics.incr(metrics.FallbackRedirects)
+      metrics.count(counts, metrics.FallbackRedirects)
       Response(
         302,
         [#("location", url), #("cache-control", "no-store")],

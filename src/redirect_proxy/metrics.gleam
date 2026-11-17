@@ -89,7 +89,7 @@ fn index(metric: Metric) -> Int {
 /// version counts (by an older version, in a VM where the application
 /// restarts after a hot upgrade) are replaced: counting in them would fail.
 pub fn init() -> Nil {
-  fit(key, counters(), new_counters)
+  fit(key, current(), new_counters)
   fit(latency_key, latency(), new_latency)
   ffi.regex_limit_init()
 }
@@ -135,40 +135,63 @@ pub fn observe_upstream(duration_us: Int) -> Nil {
 
 fn observe_at(base: Int, duration_us: Int) -> Nil {
   let c = latency()
-  ffi.counter_add(c, base + bucket(buckets_us, duration_us, 1), 1)
+  ffi.counter_add(c, base + bucket(duration_us), 1)
   ffi.counter_add(c, base + latency_slots - 1, duration_us)
   ffi.counter_add(c, base + latency_slots, 1)
 }
 
-fn bucket(bounds: List(Int), duration_us: Int, slot: Int) -> Int {
-  case bounds {
-    [] -> slot
-    [bound, ..rest] ->
-      case duration_us <= bound {
-        True -> slot
-        False -> bucket(rest, duration_us, slot + 1)
-      }
+/// The slot of a duration's bucket (1 to 18, `buckets_us` then +Inf), by
+/// comparisons rather than a walk of the list: a redirect is in the first
+/// buckets, so they are compared first. In step with `buckets_us`.
+fn bucket(d: Int) -> Int {
+  case d {
+    _ if d <= 5 -> 1
+    _ if d <= 10 -> 2
+    _ if d <= 25 -> 3
+    _ if d <= 50 -> 4
+    _ if d <= 100 -> 5
+    _ if d <= 250 -> 6
+    _ if d <= 500 -> 7
+    _ if d <= 1000 -> 8
+    _ if d <= 2500 -> 9
+    _ if d <= 5000 -> 10
+    _ if d <= 10_000 -> 11
+    _ if d <= 25_000 -> 12
+    _ if d <= 50_000 -> 13
+    _ if d <= 100_000 -> 14
+    _ if d <= 250_000 -> 15
+    _ if d <= 500_000 -> 16
+    _ if d <= 1_000_000 -> 17
+    _ -> 18
   }
 }
 
 /// Counts a response of the redirect listener by status class.
 pub fn response(status: Int) -> Nil {
+  count_response(current(), status)
+}
+
+/// `response` in counters from `current`.
+pub fn count_response(counts: ffi.Counters, status: Int) -> Nil {
   case status / 100 {
-    2 -> incr(Responses2xx)
-    3 -> incr(Responses3xx)
-    4 -> incr(Responses4xx)
-    5 -> incr(Responses5xx)
+    2 -> count(counts, Responses2xx)
+    3 -> count(counts, Responses3xx)
+    4 -> count(counts, Responses4xx)
+    5 -> count(counts, Responses5xx)
     _ -> Nil
   }
 }
 
 /// Records a successful load of the redirections file.
 pub fn reloaded(duration_us: Int) -> Nil {
-  ffi.counter_put(counters(), index(LastReloadTimestamp), ffi.now_seconds())
-  ffi.counter_put(counters(), index(ReloadDurationMicros), duration_us)
+  ffi.counter_put(current(), index(LastReloadTimestamp), ffi.now_seconds())
+  ffi.counter_put(current(), index(ReloadDurationMicros), duration_us)
 }
 
-fn counters() -> ffi.Counters {
+/// The counters, for a caller counting several metrics (the redirect
+/// listener, on every request): one read of the published counters
+/// instead of one per metric.
+pub fn current() -> ffi.Counters {
   ffi.snapshot_or_init(key, new_counters)
 }
 
@@ -177,11 +200,16 @@ fn new_counters() -> ffi.Counters {
 }
 
 pub fn incr(metric: Metric) -> Nil {
-  ffi.counter_add(counters(), index(metric), 1)
+  count(current(), metric)
+}
+
+/// `incr` in counters from `current`.
+pub fn count(counts: ffi.Counters, metric: Metric) -> Nil {
+  ffi.counter_add(counts, index(metric), 1)
 }
 
 pub fn get(metric: Metric) -> Int {
-  ffi.counter_get(counters(), index(metric))
+  ffi.counter_get(current(), index(metric))
 }
 
 pub fn hits(rule_id: String) -> Int {
