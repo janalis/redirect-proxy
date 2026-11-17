@@ -10,7 +10,10 @@ import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/diff
+import redirect_proxy/store/rules/imports
+import redirect_proxy/store/rules/listing
+import redirect_proxy/store/rules/validate
 import simplifile
 import store_support
 import support
@@ -337,7 +340,7 @@ pub fn set_changes_check_the_rules_they_change_test() {
   // a file that loaded with a problem imports again, unchanged
   let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
   let assert Ok(Nil) =
-    simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
+    simplifile.write(dir <> "/redirects.json", listing.export([legacy]))
   let assert Ok(_) = store.reload(s, by: "t")
   assert store_support.import_rules(s, [legacy], store.Replace, by: "t")
     == Ok(1)
@@ -352,7 +355,7 @@ pub fn rules_that_never_apply_can_be_disabled_test() {
   let s = start(settings(dir, 0))
   let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
   let assert Ok(Nil) =
-    simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
+    simplifile.write(dir <> "/redirects.json", listing.export([legacy]))
   let assert Ok(_) = store.reload(s, by: "t")
   let assert Ok(_) =
     store_support.update(s, Rule(..legacy, enabled: False), by: "t")
@@ -392,7 +395,7 @@ pub fn loaded_reserved_ids_import_again_test() {
   let s = start(settings(dir, 0))
   let export = Rule(..new_rule("/e", "/t"), id: "export")
   let assert Ok(Nil) =
-    simplifile.write(dir <> "/redirects.json", store_rules.export([export]))
+    simplifile.write(dir <> "/redirects.json", listing.export([export]))
   let assert Ok(_) = store.reload(s, by: "t")
   assert store_support.import_rules(s, [export], store.Replace, by: "t")
     == Ok(1)
@@ -412,7 +415,7 @@ pub fn loaded_ids_with_spaces_import_again_test() {
   let s = start(settings(dir, 0))
   let spaced = Rule(..new_rule("/s", "/t"), id: " a")
   let assert Ok(Nil) =
-    simplifile.write(dir <> "/redirects.json", store_rules.export([spaced]))
+    simplifile.write(dir <> "/redirects.json", listing.export([spaced]))
   let assert Ok(_) = store.reload(s, by: "t")
   let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
   assert store_support.import_rules(s, [spaced, fresh], store.Merge, by: "t")
@@ -630,14 +633,14 @@ pub fn keep_created_at_test() {
   }
   let existing = [at("a", "2020", "2021"), at("b", "", "2021")]
   let imported = [at("a", "", "2030"), at("b", "", "2030"), at("c", "", "2030")]
-  assert store_rules.keep_created_at(existing, imported)
+  assert imports.keep_created_at(existing, imported)
     |> list.map(fn(r) { r.created_at })
     == ["2020", "2030", "2030"]
 }
 
 pub fn validate_all_reports_rule_numbers_test() {
   let assert Error([error]) =
-    store_rules.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
+    validate.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
     |> store_support.messages
   assert string.starts_with(error, "rule #2")
 }
@@ -926,7 +929,7 @@ pub fn equivalent_exact_sources_conflict_test() {
   let a = Rule(..rule.blank(), id: "a", source: "/café", target: "/x")
   let b = Rule(..rule.blank(), id: "b", source: "/caf%C3%A9", target: "/y")
   let assert Error([reason]) =
-    store_rules.check_conflicts([a, b]) |> store_support.messages
+    validate.check_conflicts([a, b]) |> store_support.messages
   assert string.contains(reason, "already matches")
 }
 
@@ -937,19 +940,19 @@ pub fn equivalent_exact_hosts_conflict_test() {
     Rule(..rule.blank(), id:, host:, source: "/a", target: "/x")
   }
   let assert Error([reason]) =
-    store_rules.check_conflicts([
+    validate.check_conflicts([
       on("a", "example.com"),
       on("b", "Example.com:8080"),
     ])
     |> store_support.messages
   assert string.contains(reason, "already matches")
   let assert Error(_) =
-    store_rules.check_conflicts([
+    validate.check_conflicts([
       on("a", "example.com"),
       on("b", "example.com."),
     ])
     |> store_support.messages
-  assert store_rules.check_conflicts([
+  assert validate.check_conflicts([
       on("a", "example.com"),
       on("b", "other.com"),
     ])
@@ -993,7 +996,7 @@ pub fn diff_test() {
   let b = Rule(..new_rule("/b", "/x"), id: "b")
   let c = Rule(..new_rule("/c", "/x"), id: "c")
   let d =
-    store_rules.diff([a, b, c], [
+    diff.diff([a, b, c], [
       // only timestamps differ: unchanged
       Rule(..a, updated_at: "later", updated_by: "someone"),
       Rule(..b, target: "/y"),
@@ -1268,7 +1271,7 @@ pub fn import_preview_matches_the_import_test() {
   let assert Ok(3) =
     store_support.import_rules(s, incoming, store.Merge, by: "t")
   let after = store.all(s)
-  let applied = store_rules.diff(before, after)
+  let applied = diff.diff(before, after)
   assert applied.added == preview.added
   assert applied.changed == preview.changed
   assert applied.removed == preview.removed
@@ -1459,13 +1462,13 @@ pub fn filter_by_tag_test() {
     r("/b", ["campaign", "legacy"]),
     r("/c", []),
   ]
-  let ids = fn(f) { store_rules.filter(rules, f) |> list.map(fn(r) { r.id }) }
+  let ids = fn(f) { listing.filter(rules, f) |> list.map(fn(r) { r.id }) }
   let none =
-    store_rules.Filter(text: "", host: "", kind: "", enabled: None, tag: "")
-  assert ids(store_rules.Filter(..none, tag: "legacy")) == ["/b"]
-  assert ids(store_rules.Filter(..none, tag: "Campaign")) == ["/a", "/b"]
+    listing.Filter(text: "", host: "", kind: "", enabled: None, tag: "")
+  assert ids(listing.Filter(..none, tag: "legacy")) == ["/b"]
+  assert ids(listing.Filter(..none, tag: "Campaign")) == ["/a", "/b"]
   // the text search covers tags too
-  assert ids(store_rules.Filter(..none, text: "legac")) == ["/b"]
+  assert ids(listing.Filter(..none, text: "legac")) == ["/b"]
 }
 
 /// Deleting a rule saves the counts at once: a crash before the next save
@@ -1607,7 +1610,7 @@ pub fn a_lock_held_long_is_not_taken_over_test() {
         process.sleep(3000)
         let cli = Rule(..new_rule("/cli", "/t"), id: "cli")
         let assert Ok(Nil) =
-          simplifile.write(path, store_rules.export(list.append(rules, [cli])))
+          simplifile.write(path, listing.export(list.append(rules, [cli])))
         Nil
       })
     process.send(held, Nil)

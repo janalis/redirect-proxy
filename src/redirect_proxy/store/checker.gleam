@@ -10,7 +10,7 @@ import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
-import redirect_proxy/store/rules.{warn_loops, warn_problems}
+import redirect_proxy/store/rules/check.{warn_loops, warn_problems}
 
 /// The checker of each store, by rules path.
 const table = "redirect_proxy_store_checkers"

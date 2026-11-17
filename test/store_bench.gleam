@@ -10,7 +10,7 @@ import gleam/list
 import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/listing
 import simplifile
 import store_support
 import support
@@ -48,7 +48,7 @@ pub fn main() -> Nil {
   io.println(int.to_string(rule_count) <> " rules")
   let dir = support.temp_dir()
   let path = dir <> "/redirects.json"
-  let assert Ok(Nil) = simplifile.write(path, store_rules.export(rules()))
+  let assert Ok(Nil) = simplifile.write(path, listing.export(rules()))
   let settings =
     store.Settings(
       rules_path: path,

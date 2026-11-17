@@ -279,7 +279,7 @@ pub fn decoder() -> decode.Decoder(Rule) {
 /// Serialises a full redirections file, encoding again only the rules
 /// that changed since the calling process last wrote a file this way (the
 /// store: it rewrites the whole file after each change). The same text as
-/// encoding them all (`store/rules.export`).
+/// encoding them all (`store/rules/listing.export`).
 pub fn file_to_string_cached(rules: List(Rule)) -> String {
   "{\"version\":"
   <> int.to_string(file_format_version)

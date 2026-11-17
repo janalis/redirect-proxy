@@ -13,9 +13,8 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store/checker
 import redirect_proxy/store/file as store_file
-import redirect_proxy/store/rules.{
-  check_changed, check_conflicts, check_lint, check_loop,
-}
+import redirect_proxy/store/rules/check.{check_changed, check_lint, check_loop}
+import redirect_proxy/store/rules/validate.{check_conflicts}
 
 /// Why a change was not committed.
 pub type Refusal {

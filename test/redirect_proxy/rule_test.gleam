@@ -6,7 +6,7 @@ import redirect_proxy/ffi
 import redirect_proxy/field_error
 import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/rule/template
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/listing
 
 fn base() -> rule.Rule {
   Rule(..rule.blank(), source: "/old", target: "/new")
@@ -102,7 +102,7 @@ pub fn json_round_trip_test() {
       updated_at: "2026-01-02T00:00:00Z",
       updated_by: "admin",
     )
-  let assert Ok([decoded]) = rule.file_from_string(store_rules.export([r]))
+  let assert Ok([decoded]) = rule.file_from_string(listing.export([r]))
   assert decoded == r
 }
 
@@ -376,8 +376,8 @@ pub fn whole_segments_test() {
   let assert Error([reason]) = validate(Rule(..base(), whole_segments: True))
   assert string.starts_with(reason, "whole_segments:")
   // only written when set: existing files and rule versions do not change
-  assert !string.contains(store_rules.export([base()]), "whole_segments")
-  assert rule.file_from_string(store_rules.export([prefix])) == Ok([prefix])
+  assert !string.contains(listing.export([base()]), "whole_segments")
+  assert rule.file_from_string(listing.export([prefix])) == Ok([prefix])
   assert rule.version(prefix)
     != rule.version(Rule(..prefix, whole_segments: False))
 }
@@ -405,8 +405,8 @@ pub fn schedule_test() {
     validate(Rule(..timed, expires_at: "2026-11-30T00:00:00Z"))
   assert order == "expires_at: must be after starts_at"
   // written only when set
-  assert !string.contains(store_rules.export([base()]), "starts_at")
-  assert rule.file_from_string(store_rules.export([timed])) == Ok([timed])
+  assert !string.contains(listing.export([base()]), "starts_at")
+  assert rule.file_from_string(listing.export([timed])) == Ok([timed])
   // the next boundary: its start, then its expiry, then none
   assert rule.next_boundary([timed], from - 1) == from
   assert rule.next_boundary([timed], from) == until
@@ -439,8 +439,8 @@ pub fn query_validation_test() {
   assert kind == "query: only applies to exact rules"
   let assert Error([shape]) = validate(Rule(..base(), query: "=x"))
   assert string.starts_with(shape, "query: must be name=value pairs")
-  assert !string.contains(store_rules.export([base()]), "\"query\"")
-  assert rule.file_from_string(store_rules.export([r])) == Ok([r])
+  assert !string.contains(listing.export([base()]), "\"query\"")
+  assert rule.file_from_string(listing.export([r])) == Ok([r])
 }
 
 pub fn request_query_skips_malformed_parameters_test() {
@@ -495,7 +495,7 @@ pub fn tags_test() {
   let untagged = Rule(..rule.blank(), source: "/a", target: "/b")
   assert !string.contains(json.to_string(rule.to_json(untagged)), "tags")
   let assert Ok([back]) =
-    rule.file_from_string(store_rules.export([Rule(..untagged, tags: ["x"])]))
+    rule.file_from_string(listing.export([Rule(..untagged, tags: ["x"])]))
   assert back.tags == ["x"]
 }
 

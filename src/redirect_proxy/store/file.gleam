@@ -10,7 +10,7 @@ import redirect_proxy/ffi
 import redirect_proxy/field_error
 import redirect_proxy/id
 import redirect_proxy/rule.{type Rule}
-import redirect_proxy/store/rules.{validate_all}
+import redirect_proxy/store/rules/validate.{validate_all}
 import simplifile
 
 /// Where the rules file and its backups live.

@@ -28,7 +28,8 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
 import redirect_proxy/snapshot
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/diff
+import redirect_proxy/store/rules/listing
 import wisp.{type Request, type Response}
 
 import redirect_proxy/api/params
@@ -42,8 +43,7 @@ pub fn export(req: Request, ctx: Context) -> Response {
   use #(rules, version) <- params.result_or_response(filtered_rules(ctx, get))
   use #(content_type, body, version) <- params.result_or_response(
     case get("format") {
-      "" | "json" ->
-        Ok(#("application/json", store_rules.export(rules), version))
+      "" | "json" -> Ok(#("application/json", listing.export(rules), version))
       // the same ETag (the rule set's version), so that it can be sent
       // back in If-Match on an import; caches tell the formats apart by
       // their URL. The same CSV as the admin's, with a byte order mark.
@@ -126,11 +126,11 @@ pub fn list_rules(req: Request, ctx: Context) -> Response {
       "sort",
       get("sort"),
     )
-  case store_rules.sort(matching, get("sort"), metrics.hits, metrics.last_hit) {
+  case listing.sort(matching, get("sort"), metrics.hits, metrics.last_hit) {
     Error(Nil) ->
       problem.bad_request(
         "sort must be one of "
-        <> string.join(store_rules.sort_fields, ", ")
+        <> string.join(listing.sort_fields, ", ")
         <> ", optionally prefixed with - (descending).",
       )
     Ok(sorted) -> {
@@ -212,14 +212,14 @@ fn filtered_rules(
   })
   let #(rules, version) = store.versioned(ctx.store)
   let filter =
-    store_rules.Filter(
+    listing.Filter(
       text: get("q"),
       host: get("host"),
       kind:,
       enabled:,
       tag: get("tag"),
     )
-  Ok(#(store_rules.filter(rules, filter), version))
+  Ok(#(listing.filter(rules, filter), version))
 }
 
 /// With `api.require_if_match`, a write must say which version it changes:
@@ -583,10 +583,7 @@ pub fn import_rules(
         Ok(#(d, version)) ->
           problem.json_response(
             200,
-            json.object([
-              #("dry_run", json.bool(True)),
-              ..store_rules.diff_to_json(d)
-            ]),
+            json.object([#("dry_run", json.bool(True)), ..diff.to_json(d)]),
           )
           // send it back in If-Match to apply exactly this change
           |> wisp.set_header("etag", problem.etag(version))

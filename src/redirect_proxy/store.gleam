@@ -36,7 +36,10 @@ import redirect_proxy/store/checker
 import redirect_proxy/store/commit
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/hits
-import redirect_proxy/store/rules.{merge, prepare_import} as store_rules
+import redirect_proxy/store/rules/check
+import redirect_proxy/store/rules/diff
+import redirect_proxy/store/rules/imports
+import redirect_proxy/store/rules/validate
 import simplifile
 
 /// Milliseconds between checks for rules starting or expiring.
@@ -212,7 +215,7 @@ pub type ChangeError {
 /// rules it changes (done by the caller, not to block the store).
 type Preview {
   Preview(
-    diff: store_rules.Diff,
+    diff: diff.Diff,
     fingerprint: String,
     rules: List(Rule),
     ignore_trailing_slash: Bool,
@@ -546,7 +549,7 @@ pub fn import_into_file(
   by actor_name: String,
 ) -> Result(Int, ChangeError) {
   use prepared <- result.try(
-    prepare_import(rules, actor_name) |> result.map_error(Invalid),
+    imports.prepare_import(rules, actor_name) |> result.map_error(Invalid),
   )
   let files = files(settings)
   let locked =
@@ -571,7 +574,7 @@ pub fn import_into_file(
             commit.check_many(
               target(settings),
               rules,
-              store_rules.changed_rules(existing, rules),
+              diff.changed_rules(existing, rules),
               check_conflicts: True,
             )
             |> result.map_error(commit.Refused),
@@ -626,7 +629,7 @@ pub fn import_rules_versioned(
   // Validation is done here, in the caller's process, so that the store
   // does not hold the file lock (nor block other callers) while it runs.
   use prepared <- result.try(
-    prepare_import(rules, actor_name) |> result.map_error(Invalid),
+    imports.prepare_import(rules, actor_name) |> result.map_error(Invalid),
   )
   call(store, 60_000, Import(prepared, mode, expected, actor_name, _))
 }
@@ -640,14 +643,14 @@ pub fn preview_import(
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(#(store_rules.Diff, String), List(FieldError)) {
-  use prepared <- result.try(prepare_import(rules, actor_name))
+) -> Result(#(diff.Diff, String), List(FieldError)) {
+  use prepared <- result.try(imports.prepare_import(rules, actor_name))
   use preview <- result.try(
     read(store, 60_000, PreviewImport(prepared, mode, _)),
   )
   let changed_ids =
     set.from_list(list.append(preview.diff.added, preview.diff.changed))
-  use Nil <- result.try(store_rules.check_changed(
+  use Nil <- result.try(check.check_changed(
     matcher.build(preview.rules),
     preview.rules,
     list.filter(preview.rules, fn(r) { set.contains(changed_ids, r.id) }),
@@ -858,7 +861,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           commit.many(
             target(state.settings),
             rules,
-            changed: store_rules.changed_rules(state.rules, rules),
+            changed: diff.changed_rules(state.rules, rules),
             check_conflicts: True,
           )
         case outcome {
@@ -891,9 +894,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     PreviewImport(prepared, mode, reply) -> {
       process.send(reply, {
         use #(_, rules) <- result.try(imported(state.rules, prepared, mode))
-        use Nil <- result.try(store_rules.check_conflicts(rules))
+        use Nil <- result.try(validate.check_conflicts(rules))
         Ok(Preview(
-          diff: store_rules.diff(state.rules, rules),
+          diff: diff.diff(state.rules, rules),
           fingerprint: state.fingerprint,
           rules:,
           ignore_trailing_slash: state.settings.ignore_trailing_slash,
@@ -948,14 +951,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             target(state.settings),
             rules,
             changed: case action {
-              Enable -> store_rules.changed_rules(state.rules, rules)
+              Enable -> diff.changed_rules(state.rules, rules)
               Disable | Remove -> []
             },
             check_conflicts: True,
           )
           |> result.map_error(refused),
         )
-        let d = store_rules.diff(state.rules, rules)
+        let d = diff.diff(state.rules, rules)
         let count = list.length(d.removed) + list.length(d.changed)
         audit_rules_change(
           state,
@@ -1183,16 +1186,7 @@ fn imported(
   prepared: List(Rule),
   mode: ImportMode,
 ) -> Result(#(List(Rule), List(Rule)), List(FieldError)) {
-  let prepared = store_rules.resolve_ids(existing, prepared)
-  use Nil <- result.try(store_rules.check_new_ids(existing, prepared))
-  let rules =
-    case mode {
-      Replace -> prepared
-      Merge -> merge(existing, prepared)
-    }
-    |> store_rules.keep_created_at(existing, _)
-    |> store_rules.keep_unchanged(existing, _)
-  Ok(#(prepared, rules))
+  imports.apply(existing, prepared, replace: mode == Replace)
 }
 
 /// The rules in effect are now `rules`, from the file of `fingerprint`:
@@ -1299,7 +1293,7 @@ fn audit_rule_set(
     Some(
       json.object([
         #("fingerprint", json.string(fingerprint)),
-        ..store_rules.diff_to_json(store_rules.diff(before.0, rules))
+        ..diff.to_json(diff.diff(before.0, rules))
       ]),
     ),
   )

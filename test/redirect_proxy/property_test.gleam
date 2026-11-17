@@ -15,7 +15,7 @@ import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/rule/template
 import redirect_proxy/rule_csv
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/listing
 
 fn segment() -> qcheck.Generator(String) {
   qcheck.non_empty_string_from(
@@ -94,22 +94,22 @@ pub fn file_round_trip_test() {
         preserve_query: string.length(r.source) % 2 == 0,
       )
     })
-  assert rule.file_from_string(store_rules.export(rules)) == Ok(rules)
+  assert rule.file_from_string(listing.export(rules)) == Ok(rules)
 }
 
 /// The store's cached serialisation writes the same text, also after some
 /// rules changed, others were removed and the order moved.
 pub fn cached_file_text_is_the_same_test() {
   use rules <- check(rules())
-  assert rule.file_to_string_cached(rules) == store_rules.export(rules)
+  assert rule.file_to_string_cached(rules) == listing.export(rules)
   let changed =
     rules
     |> list.drop(1)
     |> list.map(fn(r) { Rule(..r, note: r.note <> "!") })
     |> list.append(list.take(rules, 1))
     |> list.reverse
-  assert rule.file_to_string_cached(changed) == store_rules.export(changed)
-  assert rule.file_to_string_cached(rules) == store_rules.export(rules)
+  assert rule.file_to_string_cached(changed) == listing.export(changed)
+  assert rule.file_to_string_cached(rules) == listing.export(rules)
 }
 
 /// The matcher agrees with a naive reference implementation for exact rules:
@@ -628,7 +628,7 @@ pub fn any_rule_file_round_trip_test() {
     elements_from: any_rule(),
     length_from: qcheck.bounded_int(0, 6),
   ))
-  assert rule.file_from_string(store_rules.export(rules)) == Ok(rules)
+  assert rule.file_from_string(listing.export(rules)) == Ok(rules)
 }
 
 /// `any_rule` with the fields it leaves at their defaults set too: whole

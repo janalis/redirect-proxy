@@ -29,7 +29,7 @@ import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
 import redirect_proxy/snapshot
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/listing
 import wisp.{type Request, type Response}
 
 /// The list filters, named as in the API (`match`, `enabled=true|false`,
@@ -63,13 +63,13 @@ fn filters_from(
   }
   // `last_hit` and `updated`: the earlier names of `last_hit_at` and
   // `updated_at`
-  let sort = store_rules.current_sort(get("sort"))
+  let sort = listing.current_sort(get("sort"))
   let #(sort, ignored_sort) = case
-    store_rules.sort([], sort, fn(_) { 0 }, fn(_) { 0 })
+    listing.sort([], sort, fn(_) { 0 }, fn(_) { 0 })
   {
     Ok(_) -> #(sort, [])
     Error(Nil) -> #("", [
-      Ignored("sort", sort, string.join(store_rules.sort_fields, ", ")),
+      Ignored("sort", sort, string.join(listing.sort_fields, ", ")),
     ])
   }
   let #(page, ignored_page) = case get("page") {
@@ -124,7 +124,7 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let #(all, version) = store.versioned(ctx.store)
   let found = matching(all, filters)
   let sorted =
-    store_rules.sort(found, filters.sort, metrics.hits, metrics.last_hit)
+    listing.sort(found, filters.sort, metrics.hits, metrics.last_hit)
     |> result.unwrap(found)
   let count = list.length(sorted)
   let pages =
@@ -188,9 +188,9 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
 }
 
 fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
-  store_rules.filter(
+  listing.filter(
     rules,
-    store_rules.Filter(
+    listing.Filter(
       text: f.query,
       host: f.host,
       kind: f.match,
@@ -698,11 +698,7 @@ pub fn export(req: Request, ctx: Context, s: Session) -> Response {
           "redirects.csv",
           rule_csv.to_spreadsheet_string(rules),
         )
-        False -> #(
-          "application/json",
-          "redirects.json",
-          store_rules.export(rules),
-        )
+        False -> #("application/json", "redirects.json", listing.export(rules))
       }
       wisp.ok()
       |> wisp.set_header("content-type", content_type)

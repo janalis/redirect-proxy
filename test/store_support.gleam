@@ -7,7 +7,7 @@ import gleam/result
 import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/diff
 
 pub fn create(
   s: store.Store,
@@ -47,7 +47,7 @@ pub fn preview_import(
   rules: List(Rule),
   mode: store.ImportMode,
   by actor: String,
-) -> Result(#(store_rules.Diff, String), List(String)) {
+) -> Result(#(diff.Diff, String), List(String)) {
   store.preview_import(s, rules, mode, actor) |> messages
 }
 

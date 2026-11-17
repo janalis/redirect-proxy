@@ -13,7 +13,7 @@ import redirect_proxy/api/routes
 import redirect_proxy/config.{type ApiOAuthConfig}
 import redirect_proxy/rule
 import redirect_proxy/scope.{type Scope}
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/listing
 
 /// `oauth`: tokens from an external authorization server may carry other
 /// scope names (`api.oauth.*_scope`), and the document says which.
@@ -433,8 +433,8 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 enum_schema(
                   list.flat_map(
                     list.append(
-                      store_rules.sort_fields,
-                      list.map(store_rules.sort_aliases, fn(alias) { alias.0 }),
+                      listing.sort_fields,
+                      list.map(listing.sort_aliases, fn(alias) { alias.0 }),
                     ),
                     fn(field) { [field, "-" <> field] },
                   ),

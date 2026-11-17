@@ -24,7 +24,9 @@ import redirect_proxy/rule
 import redirect_proxy/rule_csv
 import redirect_proxy/scope
 import redirect_proxy/store
-import redirect_proxy/store/rules as store_rules
+import redirect_proxy/store/rules/imports
+import redirect_proxy/store/rules/listing
+import redirect_proxy/store/rules/validate
 import redirect_proxy/users
 import simplifile
 
@@ -479,7 +481,7 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
   )
   use valid <- result.try(
     case file {
-      "" -> store_rules.validate_all(rules)
+      "" -> validate.validate_all(rules)
       _ -> {
         // the server it is for (its configuration, or the defaults when
         // none is given or installed): its trailing slash setting, and its
@@ -514,11 +516,7 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
                 without("the current rules, " <> path <> ", are invalid: " <> e)
             }
         }
-        store_rules.check_import(
-          rules,
-          current,
-          config.ignore_trailing_slash(cfg),
-        )
+        imports.check_import(rules, current, config.ignore_trailing_slash(cfg))
       }
     }
     |> result.map_error(fn(errors) {
@@ -538,7 +536,7 @@ fn rules_export(config_path: String) -> Result(Nil, String) {
     |> result.map_error(simplifile.describe_error),
   )
   use rules <- result.try(rule.file_from_string(content))
-  io.println(store_rules.export(rules))
+  io.println(listing.export(rules))
   Ok(Nil)
 }
 
