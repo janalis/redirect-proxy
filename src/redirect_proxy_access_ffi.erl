@@ -3,7 +3,7 @@
 -module(redirect_proxy_access_ffi).
 
 -export([
-    start/4, stop/0, sync/0, emit/2, set_levels/2,
+    start/4, stop/0, sync/0, emit/2, set_levels/2, header/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
     now_micros/0, monotonic_micros/0, time_cache_init/0
@@ -83,6 +83,14 @@ emit(Listener, Line) ->
         _ -> ok
     end,
     nil.
+
+%% The value of a header in a list of {Name, Value} pairs: list.key_find,
+%% in one BIF call rather than a closure call per pair.
+header(Headers, Name) ->
+    case lists:keyfind(Name, 1, Headers) of
+        {_, Value} -> {ok, Value};
+        false -> {error, nil}
+    end.
 
 %% Primary level and default (application log) handler level.
 set_levels(Primary, Default) ->

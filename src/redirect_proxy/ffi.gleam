@@ -488,6 +488,14 @@ pub fn access_log_stop() -> Nil
 @external(erlang, "redirect_proxy_access_ffi", "sync")
 pub fn access_log_sync() -> Nil
 
+/// `list.key_find` of a header list, in one call (names are compared
+/// as they are: lower case in requests and responses).
+@external(erlang, "redirect_proxy_access_ffi", "header")
+pub fn header(
+  headers: List(#(String, String)),
+  name: String,
+) -> Result(String, Nil)
+
 /// Sends a rendered line (without its line break) to the writer of
 /// `listener`'s log, unless it has none.
 @external(erlang, "redirect_proxy_access_ffi", "emit")

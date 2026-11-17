@@ -321,7 +321,7 @@ fn request_uri(log_query: Bool, e: Entry) -> String {
 }
 
 fn header(e: Entry, name: String) -> String {
-  case list.key_find(e.headers, name) {
+  case ffi.header(e.headers, name) {
     Ok(v) -> v
     Error(Nil) -> ""
   }

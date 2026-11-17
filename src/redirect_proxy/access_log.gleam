@@ -186,7 +186,7 @@ pub fn record(
       method: http.method_to_string(req.method),
       // header names are lower case (`request.get_header` lower-cases the
       // name it is given on every call)
-      host: list.key_find(req.headers, "host") |> result.unwrap(req.host),
+      host: ffi.header(req.headers, "host") |> result.unwrap(req.host),
       path: req.path,
       query: option.unwrap(req.query, ""),
       protocol: "HTTP/1.1",
@@ -205,7 +205,7 @@ pub fn record(
             }
           })
       },
-      location: list.key_find(resp.headers, "location") |> result.unwrap(""),
+      location: ffi.header(resp.headers, "location") |> result.unwrap(""),
       rule_id:,
       time_us:,
       duration_us:,
