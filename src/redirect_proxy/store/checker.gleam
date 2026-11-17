@@ -23,7 +23,8 @@ pub type Check {
   Problems
 }
 
-/// Creates the table of checkers. Called by the process starting the store.
+/// Creates the table of checkers: by the table owner (`tables`) in the
+/// application, by `store.start` otherwise.
 pub fn init() -> Nil {
   ffi.ets_new(table)
 }

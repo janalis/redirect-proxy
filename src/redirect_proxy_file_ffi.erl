@@ -5,12 +5,16 @@
 -export([
     append_line/2, audit_rotate/4, atomic_write/2, atomic_write_private/2, atomic_write_as/3, clear_tunable/1,
     copy_file_as/2, data_dir_owner_mismatch/1, file_stamp/1, memo_file/2,
+    memo_init/0,
     probe_writable_file/1,
     same_write/2, set_tunable/2, stamp_is_recent/1, tunable/2,
     with_file_lock/3, with_file_lock_detailed/3, with_lock/2
 ]).
 
 -include_lib("kernel/include/file.hrl").
+
+%% The values of `memo_file`, by path.
+-define(MEMO, redirect_proxy_memo).
 
 %% ---------------------------------------------------------------------------
 %% Files
@@ -323,15 +327,14 @@ stamp_is_recent(missing) -> false.
 
 memo_file(Path, Fun) ->
     Stamp = file_stamp(Path),
-    Table = memo_table(),
-    Cached = try ets:lookup(Table, Path) catch error:badarg -> [] end,
+    Cached = try ets:lookup(?MEMO, Path) catch error:badarg -> [] end,
     Recent = stamp_is_recent(Stamp),
     case Cached of
         [{_, Stamp, Value}] when not Recent -> Value;
         _ ->
             case Fun() of
                 {ok, _} = Ok ->
-                    try ets:insert(Table, {Path, Stamp, Ok})
+                    try ets:insert(?MEMO, {Path, Stamp, Ok})
                     catch error:badarg -> ok
                     end,
                     Ok;
@@ -343,22 +346,13 @@ memo_file(Path, Fun) ->
             end
     end.
 
-memo_table() ->
-    case ets:whereis(redirect_proxy_memo) of
-        undefined ->
-            Self = self(),
-            Owner = spawn(fun() ->
-                try ets:new(redirect_proxy_memo, [named_table, public, set,
-                                                  {read_concurrency, true}])
-                catch error:badarg -> ok  % created concurrently
-                end,
-                Self ! {redirect_proxy_memo, self()},
-                receive after infinity -> ok end
-            end),
-            receive {redirect_proxy_memo, Owner} -> ok after 1000 -> ok end;
-        _ -> ok
+%% Creates the table of `memo_file` in the calling process, which owns it
+%% (redirect_proxy_tables_ffi). Without it (a command), nothing is cached.
+memo_init() ->
+    try ets:new(?MEMO, [named_table, public, set, {read_concurrency, true}])
+    catch error:badarg -> ok  % it exists
     end,
-    redirect_proxy_memo.
+    nil.
 
 atom_to_binary_safe(A) when is_atom(A) -> atom_to_binary(A);
 atom_to_binary_safe(T) -> unicode:characters_to_binary(io_lib:format("~p", [T])).

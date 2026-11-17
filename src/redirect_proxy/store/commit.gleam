@@ -32,8 +32,9 @@ pub type Target {
 /// costs a change.
 const rules_table = "redirect_proxy_store_last_good"
 
-/// Creates the table of the rules in effect. Called by the process starting
-/// the store (the supervisor), so that it outlives the store process.
+/// Creates the table of the rules in effect, so that it outlives the store
+/// process: in the application, by the table owner (`tables`); `store.start`
+/// creates it otherwise (a store started alone, as in tests).
 pub fn init() -> Nil {
   ffi.ets_new(rules_table)
 }

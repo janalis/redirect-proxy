@@ -370,6 +370,8 @@ pub fn start(
   settings: Settings,
   name: Name(Message),
 ) -> Result(actor.Started(Store), actor.StartError) {
+  // for a store started alone: in the application, the table owner
+  // (`tables`) created them, and these do nothing
   commit.init()
   checker.init()
   actor.new_with_initialiser(30_000, fn(subject) {

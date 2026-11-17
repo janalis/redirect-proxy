@@ -215,9 +215,13 @@ pub fn anonymize_peer_matches_anonymize_test() {
   })
 }
 
+@external(erlang, "redirect_proxy_access_ffi", "time_cache_init")
+fn time_cache_init() -> Nil
+
 pub fn cached_time_follows_the_second_test() {
-  // creates the shared cache (no handler is installed)
-  let assert Ok(Nil) = ffi.access_log_start([], 0, 0, False)
+  // creates the shared cache, owned by this process (the application's
+  // table owner creates it otherwise)
+  time_cache_init()
   let seconds_of = fn(t) {
     let local = ffi.time_local(t)
     let iso = ffi.time_iso8601(t)
@@ -232,7 +236,6 @@ pub fn cached_time_follows_the_second_test() {
   // an older second (requests logged out of order) is rendered again
   assert seconds_of(time_us) == #("05", "05")
   assert ffi.time_local(time_us) != ffi.time_local(time_us + 1_000_000)
-  ffi.access_log_stop()
 }
 
 /// A 6to4 address holds the client's whole IPv4 address in its /48: it is

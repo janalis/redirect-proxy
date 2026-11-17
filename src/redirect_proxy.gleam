@@ -569,7 +569,6 @@ fn rules_import(
     simplifile.create_directory_all(cfg.storage.data_dir)
     |> result.map_error(simplifile.describe_error),
   )
-  app.init_tables()
   use started <- result.try(
     store.start(app.store_settings(cfg), process.new_name("rp_cli_store"))
     |> result.map_error(fn(e) {

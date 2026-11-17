@@ -33,11 +33,11 @@ import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/listener
 import redirect_proxy/log
-import redirect_proxy/metrics
 import redirect_proxy/password
 import redirect_proxy/proxy/http as proxy_http
 import redirect_proxy/proxy/server
 import redirect_proxy/store
+import redirect_proxy/tables
 import redirect_proxy/users
 import simplifile
 import wisp/wisp_mist
@@ -52,16 +52,6 @@ pub type Running {
     /// listener or is disabled).
     api_port: Int,
   )
-}
-
-/// Initialises the ETS tables and counters. Must run in a process that lives
-/// as long as the application (it owns the tables).
-pub fn init_tables() -> Nil {
-  metrics.init()
-  session.init()
-  ratelimit.init()
-  oidc.init()
-  token.init()
 }
 
 pub fn clients_settings(cfg: Config) -> clients.Settings {
@@ -100,7 +90,6 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       <> simplifile.describe_error(e)
     }),
   )
-  init_tables()
   audit.configure(cfg.storage.audit_max_bytes, cfg.storage.audit_files)
   use secret <- result.try(secret_key_base(cfg))
   bootstrap_admin(cfg)
@@ -242,8 +231,16 @@ pub fn start(cfg: Config) -> Result(Running, String) {
       )
   }
 
+  // The owner of the ETS tables comes first, then the services, under a
+  // supervisor of their own: a service restarts alone and the tables stay,
+  // while a restart of the owner (its tables are gone: sessions, the rules
+  // in effect) restarts every service after it (rest for one).
   use started <- result.try(
-    supervisor.start(builder)
+    supervisor.new(supervisor.RestForOne)
+    |> supervisor.restart_tolerance(intensity: 10, period: 60)
+    |> supervisor.add(tables.supervised())
+    |> supervisor.add(supervisor.supervised(builder))
+    |> supervisor.start
     |> result.map_error(describe_start_error),
   )
 

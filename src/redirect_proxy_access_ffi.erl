@@ -6,7 +6,7 @@
     start/4, stop/0, sync/0, emit/2, set_levels/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
-    now_micros/0, monotonic_micros/0
+    now_micros/0, monotonic_micros/0, time_cache_init/0
 ]).
 
 %% Rendered timestamps of the current second, shared by request processes.
@@ -25,7 +25,6 @@
 %% The writers of an earlier start are stopped once the new ones are in
 %% place, so that a reload loses no line (and keeps them on an error).
 start(Groups, MaxBytes, MaxFiles, Compress) ->
-    ensure_time_cache(),
     Previous = persistent_term:get(?WRITERS, #{}),
     case start_groups(Groups, MaxBytes, MaxFiles, Compress, #{}, []) of
         {ok, nil} ->
@@ -149,7 +148,8 @@ monotonic_micros() -> erlang:monotonic_time(microsecond).
 
 %% Formatting a timestamp (io_lib:format, local time conversion) costs a
 %% few microseconds: it is done once per second and kind, then read from the
-%% cache. Without the cache (it is created by start/4), it is done each time.
+%% cache. Without the cache (it is created by time_cache_init/0), it is done
+%% each time.
 time_local(Micros) ->
     cached(time_local, Micros div 1000000, fun render_time_local/1).
 
@@ -167,26 +167,17 @@ cached(Kind, Seconds, Render) ->
         error:badarg -> Render(Seconds)
     end.
 
-%% The table belongs to a process that never exits, so that it outlives the
-%% process that started the access log.
-ensure_time_cache() ->
-    case ets:whereis(?TIME_CACHE) of
-        undefined ->
-            Self = self(),
-            Owner = spawn(fun() ->
-                try
-                    _ = ets:new(?TIME_CACHE, [named_table, public, set,
-                                              {read_concurrency, true},
-                                              {write_concurrency, true}])
-                catch
-                    error:badarg -> ok  % created concurrently
-                end,
-                Self ! {?TIME_CACHE, self()},
-                receive after infinity -> ok end
-            end),
-            receive {?TIME_CACHE, Owner} -> ok after 1000 -> ok end;
-        _ -> ok
-    end.
+%% Creates the time cache in the calling process, which owns it
+%% (redirect_proxy_tables_ffi).
+time_cache_init() ->
+    try
+        _ = ets:new(?TIME_CACHE, [named_table, public, set,
+                                  {read_concurrency, true},
+                                  {write_concurrency, true}])
+    catch
+        error:badarg -> ok  % it exists
+    end,
+    nil.
 
 %% Common Log Format time: 06/Nov/2026:10:00:00 +0100
 render_time_local(Seconds) ->
