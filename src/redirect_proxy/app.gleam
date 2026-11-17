@@ -15,7 +15,6 @@ import mist
 import redirect_proxy/access_log
 import redirect_proxy/access_log_format
 import redirect_proxy/admin/auth/oidc
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
 import redirect_proxy/admin/web as admin_web
@@ -36,6 +35,7 @@ import redirect_proxy/log
 import redirect_proxy/password
 import redirect_proxy/proxy/http as proxy_http
 import redirect_proxy/proxy/server
+import redirect_proxy/ratelimit
 import redirect_proxy/store
 import redirect_proxy/tables
 import redirect_proxy/users

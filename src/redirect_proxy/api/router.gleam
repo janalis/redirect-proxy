@@ -12,7 +12,6 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/audit_routes
 import redirect_proxy/api/auth.{type Principal}
@@ -31,6 +30,7 @@ import redirect_proxy/health
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
+import redirect_proxy/ratelimit
 import wisp.{type Request, type Response}
 
 /// Entry point of the API's own listener (when `api.port` differs from

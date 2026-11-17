@@ -17,10 +17,10 @@ import redirect_proxy/admin/auth/oidc/provider.{
   type Provider, discover, dispatch, purge_expired as purge_provider_cache,
   table, trim_trailing_slash, verify_signature,
 } as _
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/ratelimit
 import redirect_proxy/role.{type Role}
 
 pub const flow_ttl = 600

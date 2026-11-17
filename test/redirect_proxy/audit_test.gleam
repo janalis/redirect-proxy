@@ -3,8 +3,8 @@ import gleam/json
 import gleam/list
 import gleam/option
 import gleam/string
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/audit
+import redirect_proxy/ratelimit
 import simplifile
 import support
 

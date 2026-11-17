@@ -10,7 +10,6 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/clients
 import redirect_proxy/api/problem
 import redirect_proxy/api/rule_json as _
@@ -22,6 +21,7 @@ import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
+import redirect_proxy/ratelimit
 import wisp.{type Request, type Response}
 
 /// Failed token requests allowed per window for one client id from one

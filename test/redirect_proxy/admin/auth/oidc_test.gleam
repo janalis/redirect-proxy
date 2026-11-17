@@ -4,9 +4,9 @@ import gleam/list
 import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/oidc/provider as oidc_provider
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/config
 import redirect_proxy/ffi
+import redirect_proxy/ratelimit
 import support
 
 fn cfg(domains: List(String), groups: List(String)) -> config.OidcConfig {

@@ -6,7 +6,6 @@ import gleam/list
 import gleam/option.{type Option, None}
 import gleam/result
 import gleam/uri
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/routes/auth
 import redirect_proxy/admin/views/layout
@@ -17,6 +16,7 @@ import redirect_proxy/admin/web.{
   not_found, require_csrf_form, set_session_cookie, show_users,
 } as _
 import redirect_proxy/password
+import redirect_proxy/ratelimit
 import redirect_proxy/role
 import redirect_proxy/users
 import wisp.{type Request, type Response}

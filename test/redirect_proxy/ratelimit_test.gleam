@@ -2,8 +2,8 @@ import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/ffi
+import redirect_proxy/ratelimit
 import support
 
 fn key(name: String) -> String {

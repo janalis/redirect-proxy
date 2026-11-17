@@ -13,11 +13,11 @@ import integration_support.{
   admin_password, boot, cookie_of, csrf_token, get, location, login,
   login_with_role, post_form, send, session_cookie,
 }
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/password
+import redirect_proxy/ratelimit
 import redirect_proxy/role
 import redirect_proxy/users
 import simplifile

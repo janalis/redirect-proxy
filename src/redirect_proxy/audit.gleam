@@ -10,9 +10,9 @@ import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/ffi
 import redirect_proxy/log
+import redirect_proxy/ratelimit
 import simplifile
 
 pub type Entry {

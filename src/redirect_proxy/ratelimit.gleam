@@ -1,4 +1,5 @@
-//// Fixed-window failure counters used to throttle login attempts.
+//// Fixed-window failure counters and bounded work slots, shared by the
+//// sign-in, API token and audit throttles.
 
 import gleam/int
 import gleam/list

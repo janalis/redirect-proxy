@@ -12,7 +12,6 @@ import gleam/string
 import gleam/uri
 import redirect_proxy/admin/auth/header
 import redirect_proxy/admin/auth/oidc
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/login as login_view
 import redirect_proxy/admin/web.{
@@ -26,6 +25,7 @@ import redirect_proxy/ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
+import redirect_proxy/ratelimit
 import redirect_proxy/role
 import redirect_proxy/users
 import wisp.{type Request, type Response}

@@ -7,11 +7,11 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/string
-import redirect_proxy/admin/auth/ratelimit
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/ffi
+import redirect_proxy/ratelimit
 import simplifile
 import support
 
