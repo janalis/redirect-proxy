@@ -178,6 +178,7 @@ pub fn redirect_uri_test() {
 pub fn provider_failures_are_remembered_test() {
   // while the provider is down, requests fail at once instead of each one
   // trying (and waiting for) it again
+  ffi.ets_new(oidc_provider.table)
   let #(port, counter) = counting_server()
   let issuer = "http://127.0.0.1:" <> int.to_string(port)
   let assert Error(_) = oidc_provider.discover_issuer(issuer)
