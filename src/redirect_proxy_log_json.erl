@@ -1,11 +1,18 @@
-%% logger formatter writing the application log as JSON lines:
+%% Application log setup: its levels, and a logger formatter writing it as
+%% JSON lines:
 %% {"time": RFC 3339 UTC, "level": ..., "msg": ..., "domain": "a.b"}.
-%% Used for the default handler with log.format = "json".
+%% The formatter is used for the default handler with log.format = "json".
 -module(redirect_proxy_log_json).
--export([format/2, use/0]).
+-export([format/2, set_levels/2, use/0]).
 
 use() ->
     _ = logger:set_handler_config(default, formatter, {?MODULE, #{}}),
+    nil.
+
+%% Primary level and default (application log) handler level.
+set_levels(Primary, Default) ->
+    logger:set_primary_config(level, Primary),
+    _ = logger:set_handler_config(default, level, Default),
     nil.
 
 format(#{level := Level, msg := Msg, meta := Meta}, _Config) ->

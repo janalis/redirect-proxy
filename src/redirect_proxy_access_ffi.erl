@@ -3,11 +3,11 @@
 -module(redirect_proxy_access_ffi).
 
 -export([
-    start/4, stop/0, sync/0, emit/2, set_levels/2, header/2,
+    start/4, stop/0, sync/0, emit/2, header/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
     peer_to_string/1,
-    now_micros/0, monotonic_micros/0, time_cache_init/0
+    time_cache_init/0
 ]).
 
 %% Rendered timestamps of the current second, shared by request processes.
@@ -93,12 +93,6 @@ header(Headers, Name) ->
         false -> {error, nil}
     end.
 
-%% Primary level and default (application log) handler level.
-set_levels(Primary, Default) ->
-    logger:set_primary_config(level, Primary),
-    _ = logger:set_handler_config(default, level, Default),
-    nil.
-
 %% ---------------------------------------------------------------------------
 %% Escaping
 %% ---------------------------------------------------------------------------
@@ -171,9 +165,6 @@ escape_newlines(Bin) ->
 %% ---------------------------------------------------------------------------
 %% Time
 %% ---------------------------------------------------------------------------
-
-now_micros() -> erlang:system_time(microsecond).
-monotonic_micros() -> erlang:monotonic_time(microsecond).
 
 %% Formatting a timestamp (io_lib:format, local time conversion) costs a
 %% few microseconds: it is done once per second and kind, then read from the

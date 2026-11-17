@@ -3,7 +3,8 @@
 
 -export([
     app_version/0, garbage_collect/0, halt/1, memory_bytes/0,
-    now_millis/0, now_seconds/0, on_sighup/1, parse_rfc3339/1,
+    monotonic_micros/0, now_micros/0, now_millis/0, now_seconds/0,
+    on_sighup/1, parse_rfc3339/1,
     plain_arguments/0, process_count/0, read_password/1, rescue/1,
     rescue_store_timeout/2, rfc3339/1, start_time_seconds/0, store_timeout/0
 ]).
@@ -14,6 +15,8 @@
 
 now_seconds() -> erlang:system_time(second).
 now_millis() -> erlang:system_time(millisecond).
+now_micros() -> erlang:system_time(microsecond).
+monotonic_micros() -> erlang:monotonic_time(microsecond).
 
 %% Seconds since the epoch of an RFC 3339 date-time with a time zone
 %% (`2026-12-01T00:00:00Z`, `2026-12-01T01:00:00+01:00`). The shape and the

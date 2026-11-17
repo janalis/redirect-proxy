@@ -34,7 +34,7 @@ pub fn configure_with(level: String, format: String) -> Nil {
 @external(erlang, "redirect_proxy_log_json", "use")
 fn use_json() -> Nil
 
-@external(erlang, "redirect_proxy_access_ffi", "set_levels")
+@external(erlang, "redirect_proxy_log_json", "set_levels")
 fn set_levels(primary: logging.LogLevel, default: logging.LogLevel) -> Nil
 
 pub fn info(message: String) -> Nil {

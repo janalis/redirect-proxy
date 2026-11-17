@@ -527,10 +527,10 @@ pub fn peer_to_string(ip: mist.IpAddress) -> String
 @external(erlang, "redirect_proxy_access_ffi", "anonymize_peer")
 pub fn anonymize_peer(ip: mist.IpAddress) -> String
 
-@external(erlang, "redirect_proxy_access_ffi", "now_micros")
+@external(erlang, "redirect_proxy_system_ffi", "now_micros")
 pub fn now_micros() -> Int
 
-@external(erlang, "redirect_proxy_access_ffi", "monotonic_micros")
+@external(erlang, "redirect_proxy_system_ffi", "monotonic_micros")
 pub fn monotonic_micros() -> Int
 
 /// Identifies a version of a file on disk: its inode, modification time and
