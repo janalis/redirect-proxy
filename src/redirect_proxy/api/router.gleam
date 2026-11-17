@@ -12,7 +12,6 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/audit_routes
 import redirect_proxy/api/auth.{type Principal}
 import redirect_proxy/api/deprecation
@@ -27,6 +26,7 @@ import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/health
+import redirect_proxy/http_security
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
@@ -50,16 +50,9 @@ pub fn handle_dedicated(req: Request, ctx: Context) -> Response {
       )
     _ -> handle(req, ctx)
   }
-  |> wisp.set_header("x-content-type-options", "nosniff")
-  |> wisp.set_header("x-frame-options", "DENY")
-  |> wisp.set_header("referrer-policy", "no-referrer")
-  |> fn(resp) {
-    // as the admin: clients must not fall back to HTTP once they used HTTPS
-    case admin_web.https_url(config.api_public_url(ctx.config)) {
-      True -> wisp.set_header(resp, "strict-transport-security", admin_web.hsts)
-      False -> resp
-    }
-  }
+  |> http_security.set(http_security.api)
+  // as the admin: clients must not fall back to HTTP once they used HTTPS
+  |> http_security.strict_transport_security(config.api_public_url(ctx.config))
 }
 
 const max_token_request_bytes = 65_536

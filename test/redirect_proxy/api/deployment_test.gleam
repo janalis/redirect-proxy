@@ -56,6 +56,10 @@ pub fn api_on_its_own_port_test() {
 
   let resp = support.send(Get, env.api <> "/healthz", [], "")
   assert header(resp, "x-content-type-options") == "nosniff"
+  assert header(resp, "x-frame-options") == "DENY"
+  assert header(resp, "referrer-policy") == "no-referrer"
+  assert header(resp, "content-security-policy") == ""
+  assert header(resp, "strict-transport-security") == ""
   assert support.send(Get, env.api <> "/readyz", [], "").body == "ready"
   // the metrics stay on the admin listener
   assert support.send(Get, env.api <> "/metrics", [], "").status != 200

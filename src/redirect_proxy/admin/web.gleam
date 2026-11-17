@@ -16,6 +16,7 @@ import redirect_proxy/admin/views/pages
 import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
+import redirect_proxy/http_security
 import redirect_proxy/log
 import redirect_proxy/store.{type Store}
 import redirect_proxy/users
@@ -136,15 +137,8 @@ fn origin(url: String) -> Result(String, Nil) {
   }
 }
 
-/// Whether `public_url` is HTTPS: its listener then sends HSTS.
-pub fn https_url(public_url: String) -> Bool {
-  string.starts_with(string.lowercase(public_url), "https://")
-}
-
-pub const hsts = "max-age=31536000"
-
 fn https_admin(ctx: Context) -> Bool {
-  https_url(ctx.config.admin.public_url)
+  http_security.https_url(ctx.config.admin.public_url)
 }
 
 pub type Context {
@@ -185,30 +179,13 @@ pub fn strict_transport_security(
   ctx: Context,
   next: fn() -> Response,
 ) -> Response {
-  case https_admin(ctx) {
-    True ->
-      next()
-      |> wisp.set_header("strict-transport-security", hsts)
-    False -> next()
-  }
+  next()
+  |> http_security.strict_transport_security(ctx.config.admin.public_url)
 }
 
 pub fn security_headers(ctx: Context, next: fn() -> Response) -> Response {
   next()
-  |> wisp.set_header(
-    "content-security-policy",
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-      <> "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-      <> provider_logout_origin(ctx),
-  )
-  |> wisp.set_header("x-frame-options", "DENY")
-  |> wisp.set_header("x-content-type-options", "nosniff")
-  |> wisp.set_header("referrer-policy", "same-origin")
-  |> wisp.set_header("cross-origin-opener-policy", "same-origin")
-  |> wisp.set_header(
-    "permissions-policy",
-    "camera=(), microphone=(), geolocation=()",
-  )
+  |> http_security.set(http_security.admin(provider_logout_origin(ctx)))
 }
 
 /// Sets the cookie of session `s`, ending the session the browser held

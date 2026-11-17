@@ -38,10 +38,20 @@ pub fn security_headers_test() {
   let env = boot(config.default())
   let resp = get(env.admin <> "/login", [])
   assert resp.status == 200
-  let assert Ok(csp) = response.get_header(resp, "content-security-policy")
-  assert string.contains(csp, "frame-ancestors 'none'")
+  assert response.get_header(resp, "content-security-policy")
+    == Ok(
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+      <> "font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    )
   assert response.get_header(resp, "x-frame-options") == Ok("DENY")
   assert response.get_header(resp, "x-content-type-options") == Ok("nosniff")
+  assert response.get_header(resp, "referrer-policy") == Ok("same-origin")
+  assert response.get_header(resp, "cross-origin-opener-policy")
+    == Ok("same-origin")
+  assert response.get_header(resp, "permissions-policy")
+    == Ok("camera=(), microphone=(), geolocation=()")
+  // over plain HTTP, no HSTS
+  assert response.get_header(resp, "strict-transport-security") == Error(Nil)
 }
 
 /// Failures from anywhere can block an account, but not in a browser where
