@@ -233,14 +233,20 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
       )
     },
   )
+  let #(filters, ignored) =
+    filters_from(fn(key) { form_value(form, "filter_" <> key) })
+  // an ignored match or enabled filter selects more rules than the page
+  // showed: refuse rather than act on them (sort and page do not change
+  // which rules match)
+  use <- bool.lazy_guard(
+    all_matching
+      && list.any(ignored, fn(i) { i.name == "match" || i.name == "enabled" }),
+    fn() { wisp.redirect(return_to(back, [#("flash", "invalid_filters")])) },
+  )
   let selected = case all_matching {
-    True -> {
-      // the filters of the page, which it only writes valid
-      let #(filters, _) =
-        filters_from(fn(key) { form_value(form, "filter_" <> key) })
+    True ->
       matching(rules, filters)
       |> list.map(fn(r) { r.id })
-    }
     False ->
       form.values
       |> list.filter(fn(kv) { kv.0 == "ids" })

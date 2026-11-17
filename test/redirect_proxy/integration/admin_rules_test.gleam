@@ -110,6 +110,33 @@ pub fn bulk_actions_refuse_a_changed_rule_set_test() {
   assert get(env.redirect <> "/added-meanwhile", []).status == 404
 }
 
+/// "Every matching rule" with an invalid match or enabled filter would
+/// select more rules than the page showed: it changes nothing.
+pub fn bulk_actions_refuse_invalid_selection_filters_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let version = list_version(env, cookie)
+  let disable_all = fn(filter) {
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "disable"),
+      #("all_matching", "on"),
+      filter,
+      #("version", version),
+      #("return_to", "/rules"),
+    ])
+  }
+  let resp = disable_all(#("filter_enabled", "bogus"))
+  assert resp.status == 303
+  assert string.contains(location(resp), "flash=invalid_filters")
+  let page = get(env.admin <> location(resp), [#("cookie", cookie)])
+  assert string.contains(page.body, "the filters of the selection are invalid")
+  let resp = disable_all(#("filter_match", "bogus"))
+  assert string.contains(location(resp), "flash=invalid_filters")
+  // nothing was disabled
+  assert get(env.redirect <> "/blog/1", []).status == 308
+}
+
 pub fn toggle_keeps_the_list_filters_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)

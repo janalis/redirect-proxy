@@ -325,6 +325,10 @@ pub fn flash_from_query(req: Request) -> Option(layout.Flash) {
           Error(Nil) -> "Unknown action."
         }),
       )
+    Ok("invalid_filters") ->
+      Some(layout.Failure(
+        "Nothing changed: the filters of the selection are invalid. Filter the list again, then apply the action.",
+      ))
     Ok("client_deleted") ->
       Some(layout.Success("API client deleted; its tokens are revoked."))
     _ -> None
