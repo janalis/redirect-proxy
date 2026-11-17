@@ -519,6 +519,10 @@ pub fn time_iso8601(micros: Int) -> String
 @external(erlang, "redirect_proxy_access_ffi", "anonymize_ip")
 pub fn anonymize_ip(ip: String) -> String
 
+/// `mist.ip_address_to_string`, IPv4 addresses without a list.
+@external(erlang, "redirect_proxy_access_ffi", "peer_to_string")
+pub fn peer_to_string(ip: mist.IpAddress) -> String
+
 /// `anonymize_ip` of a peer address, without the string round trip.
 @external(erlang, "redirect_proxy_access_ffi", "anonymize_peer")
 pub fn anonymize_peer(ip: mist.IpAddress) -> String

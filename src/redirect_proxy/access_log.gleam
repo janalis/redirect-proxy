@@ -168,10 +168,10 @@ pub fn record(
       case cidr.contains_peer(settings.trusted_proxies, ip) {
         // the peer is the client: anonymise its address without formatting it
         False if settings.anonymize_ip -> ffi.anonymize_peer(ip)
-        False -> mist.ip_address_to_string(ip)
+        False -> ffi.peer_to_string(ip)
         True ->
           fmt.forwarded_client_ip(
-            mist.ip_address_to_string(ip),
+            ffi.peer_to_string(ip),
             req.headers,
             settings.trusted_proxies,
           )

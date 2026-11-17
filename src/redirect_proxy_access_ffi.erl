@@ -6,6 +6,7 @@
     start/4, stop/0, sync/0, emit/2, set_levels/2, header/2,
     escape_default/1, escape_json/1, escape_newlines/1,
     time_local/1, time_iso8601/1, anonymize_ip/1, anonymize_peer/1,
+    peer_to_string/1,
     now_micros/0, monotonic_micros/0, time_cache_init/0
 ]).
 
@@ -233,10 +234,10 @@ month(M) ->
 anonymize_ip(Bin) ->
     case inet:parse_strict_address(binary_to_list(Bin)) of
         {ok, {A, B, C, _}} ->
-            list_to_binary(inet:ntoa({A, B, C, 0}));
+            ipv4_to_binary(A, B, C, 0);
         {ok, {0, 0, 0, 0, 0, 16#ffff, AB, CD}} ->
             %% IPv4-mapped IPv6 (dual stack sockets): log as IPv4
-            list_to_binary(inet:ntoa({AB bsr 8, AB band 255, CD bsr 8, 0}));
+            ipv4_to_binary(AB bsr 8, AB band 255, CD bsr 8, 0);
         {ok, {16#2002, B, C, _, _, _, _, _}} ->
             %% 6to4: the /48 holds the client's whole IPv4 address; keep its
             %% /24, as for IPv4
@@ -250,10 +251,21 @@ anonymize_ip(Bin) ->
 %% anonymize_ip/1 of a mist peer address ({ip_v4, ...} or {ip_v6, ...}),
 %% without formatting then parsing it.
 anonymize_peer({ip_v4, A, B, C, _}) ->
-    list_to_binary(inet:ntoa({A, B, C, 0}));
+    ipv4_to_binary(A, B, C, 0);
 anonymize_peer({ip_v6, 0, 0, 0, 0, 0, 16#ffff, AB, CD}) ->
-    list_to_binary(inet:ntoa({AB bsr 8, AB band 255, CD bsr 8, 0}));
+    ipv4_to_binary(AB bsr 8, AB band 255, CD bsr 8, 0);
 anonymize_peer({ip_v6, 16#2002, B, C, _, _, _, _, _}) ->
     list_to_binary(inet:ntoa({16#2002, B, C band 16#ff00, 0, 0, 0, 0, 0}));
 anonymize_peer({ip_v6, A, B, C, _, _, _, _, _}) ->
     list_to_binary(inet:ntoa({A, B, C, 0, 0, 0, 0, 0})).
+
+%% mist.ip_address_to_string/1 of a peer address. An IPv4 address, the
+%% usual one, is written in one binary rather than through a list of
+%% fields joined.
+peer_to_string({ip_v4, A, B, C, D}) -> ipv4_to_binary(A, B, C, D);
+peer_to_string(Ip) -> mist:ip_address_to_string(Ip).
+
+%% inet:ntoa/1 of an IPv4 address, as a binary.
+ipv4_to_binary(A, B, C, D) ->
+    <<(integer_to_binary(A))/binary, $., (integer_to_binary(B))/binary, $.,
+      (integer_to_binary(C))/binary, $., (integer_to_binary(D))/binary>>.
