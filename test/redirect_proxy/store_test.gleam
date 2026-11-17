@@ -1511,6 +1511,25 @@ pub fn deleting_a_rule_saves_the_counts_at_once_test() {
   assert !string.contains(saved, "\"promo\"")
 }
 
+/// The URL testers read the matcher with the rules it was built from: the
+/// published matcher carries the version of the rule set, and
+/// `store.published` returns rules of that version.
+pub fn published_matcher_and_rules_agree_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/a", "/b"), by: "t")
+  let #(current, rules) = store.published(s)
+  let #(_, version) = store.versioned(s)
+  assert matcher.version(current) == version
+  assert list.map(rules, fn(r) { r.id }) == [created.id]
+  let assert Ok(_) = store_support.delete(s, created.id, by: "t")
+  let #(current, rules) = store.published(s)
+  let #(_, version) = store.versioned(s)
+  assert matcher.version(current) == version
+  assert rules == []
+}
+
 /// Another process (a command line import) removed a rule from the file
 /// while this server, not watching it, still has it: the server's saves
 /// leave out its count, as the import did, until it reloads.

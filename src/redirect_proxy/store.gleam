@@ -38,6 +38,7 @@ import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
+import redirect_proxy/snapshot
 import redirect_proxy/store/audit_entries
 import redirect_proxy/store/call.{call, read, rescue_store_timeout}
 import redirect_proxy/store/checker
@@ -345,6 +346,28 @@ pub fn versioned(store: Store) -> #(List(Rule), String) {
   case view(store) {
     Ok(view) -> view
     Error(Nil) -> read(store, timeout, Versioned)
+  }
+}
+
+/// The published matcher and the rules it was built from (the URL
+/// testers: a match is shown with its rule, and explained from the same
+/// rules). Read again while a change is published between the two reads.
+pub fn published(store: Store) -> #(matcher.Matcher, List(Rule)) {
+  published_within(store, 5)
+}
+
+fn published_within(
+  store: Store,
+  tries: Int,
+) -> #(matcher.Matcher, List(Rule)) {
+  let current = snapshot.current()
+  let #(rules, version) = versioned(store)
+  case matcher.version(current) == version || tries <= 1 {
+    True -> #(current, rules)
+    False -> {
+      process.sleep(1)
+      published_within(store, tries - 1)
+    }
   }
 }
 

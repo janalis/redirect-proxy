@@ -27,7 +27,6 @@ import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
-import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/rules/listing
 import wisp.{type Request, type Response}
@@ -646,46 +645,31 @@ pub fn rule_from_form(
 
 pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
-  // one read of the published rules: the result and its explanation come
-  // from the same rule set, even if a change is published in between
-  let current = snapshot.current()
-  let resolution = case string.trim(url) {
-    "" -> None
-    url ->
-      Some(matcher.resolve_url(
-        current,
-        url,
-        config.ignore_trailing_slash(ctx.config),
-      ))
-  }
-  // the matched rule's other fields are the store's (read once: they are
-  // copied from its table)
-  let rules = case resolution {
-    Some(matcher.Redirected(..)) | Some(matcher.NotMatched) ->
-      store.all(ctx.store)
-    _ -> []
-  }
-  let result = case resolution {
-    None -> tester_view.NotTested
-    Some(matcher.Redirected(m, location)) ->
-      case matcher.rule_of(m, rules) {
-        Ok(r) -> tester_view.Matched(r, location)
-        // removed since the matcher was read
-        Error(Nil) -> tester_view.NoMatch
+  let tolerant = config.ignore_trailing_slash(ctx.config)
+  let #(result, explanation) = case string.trim(url) {
+    "" -> #(tester_view.NotTested, None)
+    url -> {
+      // the matcher and the rules it was built from: the result and its
+      // explanation agree even if a change is published meanwhile
+      let #(current, rules) = store.published(ctx.store)
+      let result = case matcher.resolve_url(current, url, tolerant) {
+        matcher.Redirected(m, location) ->
+          case matcher.rule_of(m, rules) {
+            Ok(r) -> tester_view.Matched(r, location)
+            // not among the rules it was built from: only when changes
+            // kept landing between the reads of `store.published`
+            Error(Nil) -> tester_view.NoMatch
+          }
+        matcher.NotMatched -> tester_view.NoMatch
+        matcher.BadUrl -> tester_view.InvalidUrl
       }
-    Some(matcher.NotMatched) -> tester_view.NoMatch
-    Some(matcher.BadUrl) -> tester_view.InvalidUrl
-  }
-  let explanation = case result {
-    tester_view.Matched(..) | tester_view.NoMatch ->
-      explain.explain(
-        current,
-        rules,
-        url,
-        config.ignore_trailing_slash(ctx.config),
-      )
-      |> option.from_result
-    _ -> None
+      let explanation = case result {
+        tester_view.Matched(..) | tester_view.NoMatch ->
+          explain.explain(current, rules, url, tolerant) |> option.from_result
+        _ -> None
+      }
+      #(result, explanation)
+    }
   }
   html(200, tester_view.test_url(s, features(ctx), url, result, explanation))
 }

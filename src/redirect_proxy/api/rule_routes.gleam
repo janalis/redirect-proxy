@@ -26,7 +26,6 @@ import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
-import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/rules/diff
 import redirect_proxy/store/rules/listing
@@ -627,15 +626,13 @@ pub fn test_url(req: Request, ctx: Context) -> Response {
   let url = list.key_find(wisp.get_query(req), "url") |> result.unwrap("")
   let tolerant = config.ignore_trailing_slash(ctx.config)
   // one read of the published rules for the result and its explanation
-  let current = snapshot.current()
+  let #(current, rules) = store.published(ctx.store)
   case matcher.resolve_url(current, url, tolerant) {
     matcher.BadUrl ->
       problem.bad_request(
         "url must be an absolute URL, e.g. https://host/path.",
       )
     resolution -> {
-      // the matched rule's other fields are the store's
-      let rules = store.all(ctx.store)
       let explanation = explain.explain(current, rules, url, tolerant)
       let details = case explanation {
         Ok(e) -> [
@@ -664,7 +661,8 @@ pub fn test_url(req: Request, ctx: Context) -> Response {
       }
       let matched = case resolution {
         matcher.Redirected(m, location) ->
-          // an error when removed since the matcher was read
+          // an error only when changes kept landing between the reads of
+          // `store.published`
           matcher.rule_of(m, rules)
           |> result.map(fn(r) { #(m, location, r) })
         _ -> Error(Nil)

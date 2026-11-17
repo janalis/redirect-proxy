@@ -60,6 +60,9 @@ pub opaque type Matcher {
     /// `hits` indexes `2n - 1` (count) and `2n` (last hit, in seconds).
     slots: Dict(String, Int),
     hits: ets_ffi.Counters,
+    /// The version of the rule set it was built from, once published
+    /// (`with_version`): "" until then.
+    version: String,
   )
 }
 
@@ -179,7 +182,19 @@ pub fn empty() -> Matcher {
     kinds: #(0, 0, 0),
     slots: dict.new(),
     hits: new_hits(0),
+    version: "",
   )
+}
+
+/// `matcher`, built from the rules of `version` (the store's version of
+/// the rule set): readers can then tell which rules it was built from.
+pub fn with_version(matcher: Matcher, version: String) -> Matcher {
+  Matcher(..matcher, version:)
+}
+
+/// The version given by `with_version`.
+pub fn version(matcher: Matcher) -> String {
+  matcher.version
 }
 
 fn new_hits(rules: Int) -> ets_ffi.Counters {
@@ -244,6 +259,7 @@ pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
     }),
     slots:,
     hits: new_hits(count),
+    version: "",
   )
 }
 

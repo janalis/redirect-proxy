@@ -79,6 +79,7 @@ pub fn publish(
 ) -> Nil {
   set_view(target.files.rules_path, rules, version)
   built
+  |> matcher.with_version(version)
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
