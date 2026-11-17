@@ -19,7 +19,8 @@ const latency_key = "metrics_latency"
 /// (5 µs to 1 s); one more bucket counts the slower requests. A redirect
 /// takes a few microseconds, admin pages and API calls milliseconds: the
 /// same buckets cover both.
-const buckets_us = [
+@internal
+pub const buckets_us = [
   5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000,
   100_000, 250_000, 500_000, 1_000_000,
 ]
@@ -149,8 +150,10 @@ fn observe_at(base: Int, duration_us: Int) -> Nil {
 
 /// The slot of a duration's bucket (1 to 18, `buckets_us` then +Inf), by
 /// comparisons rather than a walk of the list: a redirect is in the first
-/// buckets, so they are compared first. In step with `buckets_us`.
-fn bucket(d: Int) -> Int {
+/// buckets, so they are compared first. In step with `buckets_us`
+/// (`metrics_test` checks it).
+@internal
+pub fn bucket(d: Int) -> Int {
   case d {
     _ if d <= 5 -> 1
     _ if d <= 10 -> 2
