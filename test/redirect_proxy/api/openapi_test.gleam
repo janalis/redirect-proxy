@@ -16,6 +16,7 @@ import redirect_proxy/api/rule_json as api_rule_json
 import redirect_proxy/config
 import redirect_proxy/rule
 import redirect_proxy/scope
+import redirect_proxy/store/rules/listing
 import support
 
 pub fn openapi_document_test() {
@@ -349,4 +350,19 @@ pub fn openapi_names_external_scopes_test() {
       decode.string,
     )
   assert write == "Requires the `redirects:write` scope."
+}
+
+/// Every earlier sort name the API still accepts is announced as
+/// deprecated, with its replacement: adding an alias without its
+/// deprecation would accept it silently.
+pub fn sort_aliases_are_deprecated_test() {
+  let registry = deprecation.registry()
+  list.each(listing.sort_aliases, fn(alias) {
+    let #(old, current) = alias
+    let assert Ok(d) =
+      list.find(registry, fn(d) {
+        d.target == deprecation.QueryValue("get", "/api/redirects", "sort", old)
+      })
+    assert d.replacement == current
+  })
 }
