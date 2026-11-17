@@ -62,7 +62,8 @@ src/redirect_proxy/
 src/redirect_proxy_*_ffi.erl  Erlang helpers by area: snapshot (persistent_term), regex
                               (PCRE limits), file (atomic writes, locks), crypto (JWT),
                               ets, net, system, text (path normalisation)
-src/redirect_proxy_http.erl   redirect listener's HTTP/1.1 server and reverse proxy
+src/redirect_proxy_http.erl   redirect listener's HTTP/1.1 server (listener, parser,
+                              responses); its reverse proxy in redirect_proxy_upstream.erl
 packaging/                    launcher, systemd unit, Debian scripts, Homebrew formula
 scripts/                      bundle, .deb packaging, coverage, benchmark
 ```

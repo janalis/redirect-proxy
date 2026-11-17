@@ -1,7 +1,8 @@
 //// The HTTP/1.1 server of the redirect listener (`redirect_proxy_http.erl`):
 //// a minimal server for small requests and small responses, without the
 //// per-request costs of a general purpose one. With an upstream it also
-//// forwards the requests the handler does not answer (a reverse proxy).
+//// forwards the requests the handler does not answer (a reverse proxy,
+//// `redirect_proxy_upstream.erl`).
 
 import gleam/bytes_tree.{type BytesTree}
 import gleam/http/request.{type Request}
