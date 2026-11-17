@@ -24,7 +24,6 @@ pub fn reload(
   actor_name: String,
   report_busy report_busy: Bool,
 ) -> #(State, Result(Int, store_file.LoadFailure)) {
-  let started = system_ffi.monotonic_micros()
   case
     store_file.load_locked_or_busy(
       files(state.config),
@@ -32,7 +31,9 @@ pub fn reload(
       lock_timeout,
     )
   {
-    Ok(#(rules, fingerprint)) -> {
+    // timed from when the lock was taken: waiting for another process is
+    // not part of the load
+    Ok(#(rules, fingerprint, started)) -> {
       let reloaded = loaded(state, rules, fingerprint, actor_name, started)
       log.info("reloaded " <> int.to_string(list.length(rules)) <> " rule(s)")
       #(reloaded, Ok(list.length(rules)))
@@ -41,10 +42,15 @@ pub fn reload(
       state,
       Error(failure),
     )
+    // the file was not read: nothing was refused, the caller answers busy
+    Error(store_file.LockHeld(reason) as failure) -> {
+      log.warning("reload not done, the file is busy: " <> reason)
+      #(state, Error(failure))
+    }
     Error(failure) -> {
       let reason = store_file.reason(failure)
       metrics.incr(metrics.ReloadFailures)
-      log.error("reload rejected, keeping current rules: " <> reason)
+      log.error("reload failed, keeping current rules: " <> reason)
       audit_entries.reload_failed(state, actor_name, reason)
       #(state, Error(failure))
     }

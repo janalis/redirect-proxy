@@ -890,7 +890,13 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ]),
                 ),
               ),
-              ..store_errors([#("422", "The file is invalid; rules unchanged.")])
+              ..store_errors([
+                #("422", "The file is invalid; rules unchanged."),
+                #(
+                  "500",
+                  "The file is valid, but its lock could not be created or the ids given to its rules without one could not be written (permissions, a full disk) (code internal_error); rules unchanged.",
+                ),
+              ])
             ]),
           ),
         ]),

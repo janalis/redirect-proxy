@@ -569,6 +569,8 @@ pub fn reload(req: Request, ctx: Context, s: Session) -> Response {
     Ok(count) ->
       wisp.redirect("/rules?flash=reloaded&count=" <> int.to_string(count))
     Error(store.ReloadBusy(_)) -> busy_page(ctx, s, "Not reloaded")
+    Error(store.ReloadStorage(reason)) ->
+      storage_page(ctx, s, "Not reloaded", reason)
     Error(store.ReloadRejected(reason)) ->
       error_page(
         ctx,

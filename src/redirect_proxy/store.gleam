@@ -533,9 +533,13 @@ pub type ReloadError {
   /// Another process holds the lock of the redirections file past the
   /// wait: retrying soon may succeed.
   ReloadBusy(reason: String)
-  /// The file was refused (invalid, unreadable, or its new ids could not be
-  /// written): the current rules are kept.
+  /// The file was refused (invalid or unreadable): the current rules are
+  /// kept.
   ReloadRejected(reason: String)
+  /// The file is valid, but its lock could not be created or the ids given
+  /// to its rules without one could not be written (a full disk, missing
+  /// permissions): the current rules are kept.
+  ReloadStorage(reason: String)
 }
 
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, ReloadError) {
@@ -933,7 +937,11 @@ fn reload_file(
     result.map_error(outcome, fn(failure) {
       case failure {
         store_file.LockHeld(reason) -> ReloadBusy(reason)
-        _ -> ReloadRejected(store_file.reason(failure))
+        store_file.LockNotCreated(_)
+        | store_file.Content(store_file.IdsNotWritten(..)) ->
+          ReloadStorage(store_file.reason(failure))
+        store_file.Content(store_file.Invalid(..)) ->
+          ReloadRejected(store_file.reason(failure))
       }
     }),
   )

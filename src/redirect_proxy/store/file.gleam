@@ -39,7 +39,9 @@ pub fn load_locked(
   mode: LoadMode,
   wait: Int,
 ) -> Result(#(List(Rule), String), String) {
-  load_locked_or_busy(files, mode, wait) |> result.map_error(reason)
+  load_locked_or_busy(files, mode, wait)
+  |> result.map(fn(loaded) { #(loaded.0, loaded.1) })
+  |> result.map_error(reason)
 }
 
 /// Why a load of the file locked failed.
@@ -71,14 +73,19 @@ pub fn reason(failure: LoadFailure) -> String {
 }
 
 /// `load_locked`, saying why it failed (`LoadFailure`).
+///
+/// The third item is when the lock was taken (`monotonic_micros`), so that
+/// the time of a load leaves out the wait for the lock.
 pub fn load_locked_or_busy(
   files: Files,
   mode: LoadMode,
   wait: Int,
-) -> Result(#(List(Rule), String), LoadFailure) {
+) -> Result(#(List(Rule), String, Int), LoadFailure) {
   case
     file_ffi.with_file_lock_detailed(files.rules_path, wait, fn() {
+      let locked_at = system_ffi.monotonic_micros()
       load_failing(files, mode)
+      |> result.map(fn(loaded) { #(loaded.0, loaded.1, locked_at) })
     })
   {
     Error(file_ffi.Held(message)) -> Error(LockHeld(message))

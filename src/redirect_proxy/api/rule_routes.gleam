@@ -83,6 +83,14 @@ pub fn reload(ctx: Context, principal: Principal) -> Response {
       problem.json_response(200, json.object([#("rules", json.int(count))]))
     // another process holds the file lock: as for any other change
     Error(store.ReloadBusy(_)) -> store_busy()
+    // the file is valid: as a change that could not be written
+    Error(store.ReloadStorage(reason)) ->
+      problem.problem(
+        500,
+        "Internal Server Error",
+        "The redirections were not reloaded: " <> reason,
+        [],
+      )
     Error(store.ReloadRejected(reason)) ->
       problem.coded_problem(
         422,

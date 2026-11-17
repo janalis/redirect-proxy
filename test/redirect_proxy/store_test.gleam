@@ -878,6 +878,25 @@ pub fn reload_keeps_rules_when_the_file_is_missing_test() {
   assert simplifile.is_file(dir <> "/redirects.json") == Ok(False)
 }
 
+/// A valid file that cannot be locked or have its new ids written is not
+/// an invalid file: the reload is a storage failure, the rules are kept.
+pub fn unwritable_reloads_are_storage_failures_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(_) = store.create(s, new_rule("/kept", "/y"), by: "t")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      "{\"version\":1,\"rules\":[{\"source\":\"/n\",\"target\":\"/m\"}]}",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let reloaded = store.reload(s, by: "t")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Error(store.ReloadStorage(_)) = reloaded
+  let assert [kept] = store.all(s)
+  assert kept.source == "/kept"
+}
+
 pub fn reload_assigns_missing_ids_under_the_lock_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
@@ -1192,7 +1211,7 @@ pub fn watched_file_a_replica_cannot_load_is_reported_once_test() {
   process.sleep(500)
   let logs = captured_logs()
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  assert list.count(logs, string.contains(_, "reload rejected")) == 1
+  assert list.count(logs, string.contains(_, "reload failed")) == 1
 }
 
 fn audit_actions(dir: String, action: String) -> Int {

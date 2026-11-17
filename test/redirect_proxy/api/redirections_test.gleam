@@ -11,6 +11,7 @@ import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import gleam/uri
 import integration_support
@@ -1078,6 +1079,10 @@ pub fn a_reload_waiting_too_long_for_the_lock_answers_503_test() {
   assert string.starts_with(head, "http/1.1 503")
   assert string.contains(head, "\r\nretry-after: 1\r\n")
   assert field(resp_body, ["code"], decode.string) == "store_busy"
+  // the file was not read: nothing was refused, so nothing is audited as
+  // a failed reload
+  let audit = simplifile.read(env.dir <> "/audit.jsonl") |> result.unwrap("")
+  assert !string.contains(audit, "rules.reload_failed")
   // once the lock is released, the reload goes through
   assert api(env, Post, "/api/reload", token, "").status == 200
 }
