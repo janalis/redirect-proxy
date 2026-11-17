@@ -540,7 +540,37 @@ pub fn reload_from_disk_test() {
   let assert Ok(Nil) = simplifile.write(env.dir <> "/redirects.json", "[{]")
   let resp = post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
   assert resp.status == 422
+  // as the API says it
+  assert string.contains(
+    resp.body,
+    "The redirections file is invalid; the current redirections are kept.",
+  )
   assert location(get(env.redirect <> "/fresh", [])) == "/reloaded"
+}
+
+/// Deleting and enabling a rule answer a refused change alike, and as the
+/// API: 404 when the rule is gone, 422 when it cannot be written.
+pub fn rule_changes_fail_alike_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let assert Ok(content) = simplifile.read(env.dir <> "/redirects.json")
+  let id = find_id(content, "/old")
+  let change = fn(path) {
+    post_form(env, path, cookie, [
+      #("csrf_token", csrf),
+      #("return_to", "/rules"),
+    ])
+  }
+  assert change("/rules/missing/delete").status == 404
+  assert change("/rules/missing/toggle").status == 404
+  // a data directory that cannot be written
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o500)
+  let deleted = change("/rules/" <> id <> "/delete")
+  let toggled = change("/rules/" <> id <> "/toggle")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
+  assert deleted.status == 422
+  assert toggled.status == 422
+  assert get(env.redirect <> "/old", []).status == 301
 }
 
 pub fn api_clients_page_test() {

@@ -255,6 +255,14 @@ pub fn import_export_reload_and_tester_test() {
   assert resp.status == 200
   assert field(resp.body, ["rules"], decode.int) == 1
   assert support.send(Get, env.redirect <> "/disk", [], "").status == 301
+  // as the admin says it
+  let assert Ok(Nil) = ffi.atomic_write(env.dir <> "/redirects.json", "[{]")
+  let resp = api(env, Post, "/api/reload", token, "")
+  assert resp.status == 422
+  assert string.starts_with(
+    field(resp.body, ["detail"], decode.string),
+    "The redirections file is invalid; the current redirections are kept. ",
+  )
 }
 
 pub fn patch_decoder_unit_test() {

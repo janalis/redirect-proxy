@@ -445,22 +445,8 @@ pub fn delete_rule(
       wisp.redirect(
         return_to(form_value(form, "return_to"), [#("flash", "deleted")]),
       )
-    Error(store.Conflict(current)) ->
-      error_page(
-        ctx,
-        s,
-        409,
-        "Not deleted",
-        conflict_message(current) <> " Review it, then delete it again.",
-      )
     Error(error) ->
-      error_page(
-        ctx,
-        s,
-        404,
-        "Cannot delete",
-        string.join(store.describe_change_error(error), " "),
-      )
+      change_error_page(ctx, s, error, "Not deleted", "delete it again")
   }
 }
 
@@ -492,23 +478,35 @@ pub fn toggle_rule(
               #("id", r.id),
             ]),
           )
-        Error(store.Conflict(current)) ->
-          error_page(
-            ctx,
-            s,
-            409,
-            "Not changed",
-            conflict_message(current) <> " Review it, then try again.",
-          )
         Error(error) ->
-          error_page(
-            ctx,
-            s,
-            422,
-            "Cannot update",
-            string.join(store.describe_change_error(error), " "),
-          )
+          change_error_page(ctx, s, error, "Not changed", "try again")
       }
+  }
+}
+
+/// The page of a change of one rule the store refused, the same for every
+/// change, with the statuses of the API: 404 when the rule is gone, 409
+/// when it changed meanwhile (`retry` says what to do then), 422 when the
+/// change is invalid or could not be written.
+fn change_error_page(
+  ctx: Context,
+  s: Session,
+  error: store.ChangeError,
+  title: String,
+  retry: String,
+) -> Response {
+  case error {
+    store.NotFound -> not_found(ctx, s)
+    store.Conflict(current) ->
+      error_page(
+        ctx,
+        s,
+        409,
+        title,
+        conflict_message(current) <> " Review it, then " <> retry <> ".",
+      )
+    store.Invalid(errors) ->
+      error_page(ctx, s, 422, title, string.join(errors, " "))
   }
 }
 
@@ -539,8 +537,7 @@ pub fn reload(req: Request, ctx: Context, s: Session) -> Response {
         s,
         422,
         "Reload rejected",
-        "The file on disk is invalid; the current redirections are kept. "
-          <> reason,
+        store.reload_rejected <> " " <> reason,
       )
   }
 }

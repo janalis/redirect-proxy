@@ -84,8 +84,7 @@ pub fn reload(ctx: Context, principal: Principal) -> Response {
         422,
         "reload_rejected",
         "Reload Rejected",
-        "The redirections file is invalid; the current rules are kept. "
-          <> reason,
+        store.reload_rejected <> " " <> reason,
         [],
       )
   }

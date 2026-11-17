@@ -615,6 +615,11 @@ pub fn bulk_versioned(
   call(store, timeout, Bulk(list.unique(ids), action, expected, actor_name, _))
 }
 
+/// What the admin and the API say of a reload that failed, before its
+/// reason.
+pub const reload_rejected =
+  "The redirections file is invalid; the current redirections are kept."
+
 pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
   call(store, 60_000, Reload(actor_name, _))
 }
