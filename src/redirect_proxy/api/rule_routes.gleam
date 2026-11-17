@@ -81,7 +81,9 @@ pub fn reload(ctx: Context, principal: Principal) -> Response {
   case store.reload(ctx.store, principal.actor) {
     Ok(count) ->
       problem.json_response(200, json.object([#("rules", json.int(count))]))
-    Error(reason) ->
+    // another process holds the file lock: as for any other change
+    Error(store.ReloadBusy(_)) -> store_busy()
+    Error(store.ReloadRejected(reason)) ->
       problem.coded_problem(
         422,
         "reload_rejected",

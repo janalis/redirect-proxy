@@ -866,7 +866,7 @@ pub fn reload_keeps_rules_when_the_file_is_missing_test() {
   let assert Ok(_) = store_support.create(s, new_rule("/a", "/b"), by: "t")
   // e.g. an editor or a deploy replacing the file non-atomically
   let assert Ok(Nil) = simplifile.delete(dir <> "/redirects.json")
-  let assert Error(reason) = store.reload(s, by: "t")
+  let assert Error(store.ReloadRejected(reason)) = store.reload(s, by: "t")
   assert string.contains(reason, "not found")
   assert redirect("/a") == Ok("/b")
   assert list.length(store.all(s)) == 1

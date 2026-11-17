@@ -1046,6 +1046,41 @@ pub fn a_change_waiting_too_long_for_the_lock_answers_503_test() {
   assert field(resp_body, ["code"], decode.string) == "store_busy"
 }
 
+/// A reload waiting past the store's wait for the lock another process
+/// holds: 503 store_busy, as any other change, not a 422 reload_rejected
+/// (the file is not invalid).
+pub fn a_reload_waiting_too_long_for_the_lock_answers_503_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Ops])
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let assert [_, port] = string.split(env.api, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let #(raw, _) =
+    session(
+      port,
+      [
+        <<
+          "POST /api/reload HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n",
+          "authorization: Bearer ",
+          token:utf8,
+          "\r\ncontent-length: 0\r\n\r\n",
+        >>,
+      ],
+      15_000,
+    )
+  let assert Ok(Nil) = simplifile.delete(lock)
+
+  let assert Ok(raw) = bit_array.to_string(raw)
+  let assert Ok(#(head, resp_body)) = string.split_once(raw, "\r\n\r\n")
+  let head = string.lowercase(head)
+  assert string.starts_with(head, "http/1.1 503")
+  assert string.contains(head, "\r\nretry-after: 1\r\n")
+  assert field(resp_body, ["code"], decode.string) == "store_busy"
+  // once the lock is released, the reload goes through
+  assert api(env, Post, "/api/reload", token, "").status == 200
+}
+
 /// Sends `chunks` on one connection, then reads until the server closes it
 /// or `wait_ms` of silence.
 @external(erlang, "test_net_ffi", "session")

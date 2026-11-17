@@ -257,7 +257,7 @@ pub opaque type Message {
     actor: String,
     reply: Subject(Result(Int, ChangeError)),
   )
-  Reload(actor: String, reply: Subject(Result(Int, String)))
+  Reload(actor: String, reply: Subject(Result(Int, ReloadError)))
   ReloadInBackground(actor: String)
   /// `watch_interval` tick: reloads the file if it changed on disk.
   Watch(self: Subject(Message))
@@ -674,7 +674,17 @@ pub fn bulk_versioned(
 pub const reload_rejected =
   "The redirections file is invalid; the current redirections are kept."
 
-pub fn reload(store: Store, by actor_name: String) -> Result(Int, String) {
+/// Why a reload changed nothing.
+pub type ReloadError {
+  /// Another process holds the lock of the redirections file past the
+  /// wait: retrying soon may succeed.
+  ReloadBusy(reason: String)
+  /// The file was refused (invalid, unreadable, or its new ids could not be
+  /// written): the current rules are kept.
+  ReloadRejected(reason: String)
+}
+
+pub fn reload(store: Store, by actor_name: String) -> Result(Int, ReloadError) {
   call(store, 60_000, Reload(actor_name, _))
 }
 
@@ -1151,10 +1161,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 fn reload_file(
   state: State,
   actor_name: String,
-) -> #(State, Result(Int, String)) {
+) -> #(State, Result(Int, ReloadError)) {
   let #(state, outcome) =
     reload_file_or_busy(state, actor_name, report_busy: True)
-  #(state, result.map_error(outcome, store_file.reason))
+  #(
+    state,
+    result.map_error(outcome, fn(failure) {
+      case failure {
+        store_file.LockHeld(reason) -> ReloadBusy(reason)
+        _ -> ReloadRejected(store_file.reason(failure))
+      }
+    }),
+  )
 }
 
 /// The rules an import of `prepared` leaves, and `prepared` with its ids

@@ -548,6 +548,20 @@ pub fn reload_from_disk_test() {
   assert location(get(env.redirect <> "/fresh", [])) == "/reloaded"
 }
 
+/// A reload waiting past the store's wait for the lock another process
+/// holds: busy (503), as any other change, not an invalid file (422).
+pub fn reload_waiting_too_long_for_the_lock_is_busy_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let resp = post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
+  let assert Ok(Nil) = simplifile.delete(lock)
+  assert resp.status == 503
+  assert string.contains(resp.body, "busy with another change")
+  assert !string.contains(resp.body, "The redirections file is invalid")
+}
+
 /// Deleting and enabling a rule answer a refused change alike, and as the
 /// API: 404 when the rule is gone, 500 when it cannot be written (a failure
 /// of the server, not of the form).

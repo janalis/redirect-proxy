@@ -44,8 +44,8 @@ rules, users and API clients at the same time:
   by a crashed process. A process that is alive but stuck keeps its lock
   fresh, so the lock is never broken: stop that process to release it.
 
-- While the rules lock is held, or other changes are queued, a change that
-  cannot be made in time is not made. The API answers
+- While the rules lock is held, or other changes are queued, a change (or a
+  reload) that cannot be made in time is not made. The API answers
   `503 store_busy`, the admin pages a 503 page (both with
   `Retry-After: 1`), and `rules import` exits with status 1 and
   "the rules are busy". Retry once the other change is done.
