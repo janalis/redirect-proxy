@@ -1,9 +1,11 @@
 -module(handler_bench_ffi).
 -export([best_ns/3, reductions/2, parse/1, profile/1, start_access_log/0]).
 
-%% The access log's shared state (the timestamp cache), as when the server
-%% runs, without a handler: the lines are discarded.
+%% The access log's shared state (the timestamp cache, which the server's
+%% table owner creates), as when the server runs. Without ACCESS_LOG_FILE
+%% there is no writer: the lines are discarded.
 start_access_log() ->
+    redirect_proxy_access_ffi:time_cache_init(),
     Groups = case os:getenv("ACCESS_LOG_FILE") of
         false -> [];
         Path -> [{list_to_binary(Path), [redirect_listener]}]
