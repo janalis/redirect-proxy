@@ -13,9 +13,9 @@ import redirect_proxy/api/deprecation
 import redirect_proxy/api/openapi
 import redirect_proxy/api/routes
 import redirect_proxy/api/rule_json as api_rule_json
-import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/rule
+import redirect_proxy/scope
 import support
 
 pub fn openapi_document_test() {

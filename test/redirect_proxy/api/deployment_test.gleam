@@ -4,9 +4,9 @@
 import api_support.{access_token, api, header, own_port}
 import gleam/http.{Get, Post}
 import gleam/string
-import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/config/validate as config_validate
+import redirect_proxy/scope
 import support
 
 pub fn api_can_be_disabled_test() {

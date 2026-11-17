@@ -8,9 +8,9 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
-import redirect_proxy/api/scope
 import redirect_proxy/clients
 import redirect_proxy/field_error
+import redirect_proxy/scope
 
 // --- API clients ------------------------------------------------------------
 

@@ -15,10 +15,10 @@ import gleam/string
 import gleam/uri
 import integration_support
 import redirect_proxy/api/rule_json as api_rule_json
-import redirect_proxy/api/scope
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/rule
+import redirect_proxy/scope
 import simplifile
 import support
 

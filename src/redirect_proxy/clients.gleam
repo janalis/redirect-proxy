@@ -11,11 +11,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/audit
 import redirect_proxy/ffi
 import redirect_proxy/id
 import redirect_proxy/private_file
+import redirect_proxy/scope.{type Scope}
 
 pub type Client {
   Client(

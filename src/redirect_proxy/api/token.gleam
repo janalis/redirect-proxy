@@ -6,9 +6,9 @@
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
-import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/scope.{type Scope}
 
 const table = "redirect_proxy_api_tokens"
 

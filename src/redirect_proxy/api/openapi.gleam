@@ -10,9 +10,9 @@ import gleam/result
 import gleam/string
 import redirect_proxy/api/deprecation.{type Deprecation}
 import redirect_proxy/api/routes
-import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/config.{type ApiOAuthConfig}
 import redirect_proxy/rule
+import redirect_proxy/scope.{type Scope}
 import redirect_proxy/store/rules as store_rules
 
 /// `oauth`: tokens from an external authorization server may carry other

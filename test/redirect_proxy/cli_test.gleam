@@ -2,7 +2,6 @@ import envoy
 import gleam/list
 import gleam/string
 import redirect_proxy
-import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/clients
 import redirect_proxy/config
@@ -11,6 +10,7 @@ import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/rule
+import redirect_proxy/scope
 import redirect_proxy/users
 import simplifile
 import support

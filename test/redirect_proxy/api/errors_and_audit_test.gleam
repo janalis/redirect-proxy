@@ -7,8 +7,8 @@ import gleam/http/response
 import gleam/list
 import gleam/string
 import redirect_proxy/api/problem
-import redirect_proxy/api/scope
 import redirect_proxy/config
+import redirect_proxy/scope
 import support
 
 pub fn plain_errors_become_json_test() {

@@ -11,10 +11,10 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/clients
 import redirect_proxy/config
+import redirect_proxy/scope
 import support.{type App}
 
 pub fn new_client(env: App, scopes: List(scope.Scope)) -> #(String, String) {

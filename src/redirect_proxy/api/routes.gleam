@@ -8,7 +8,7 @@
 import gleam/http.{type Method, Delete, Get, Patch, Post, Put}
 import gleam/list
 import gleam/string
-import redirect_proxy/api/scope.{type Scope, Audit, Ops, Read, Write}
+import redirect_proxy/scope.{type Scope, Audit, Ops, Read, Write}
 
 pub type Operation {
   Operation(method: Method, template: String, scope: Scope)

@@ -20,7 +20,6 @@ import redirect_proxy/api/params
 import redirect_proxy/api/problem
 import redirect_proxy/api/routes
 import redirect_proxy/api/rule_routes
-import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
@@ -31,6 +30,7 @@ import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/metrics_endpoint
 import redirect_proxy/ratelimit
+import redirect_proxy/scope.{type Scope}
 import wisp.{type Request, type Response}
 
 /// Entry point of the API's own listener (when `api.port` differs from

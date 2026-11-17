@@ -8,7 +8,6 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/audit
 import redirect_proxy/clients
@@ -23,6 +22,7 @@ import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/rule
 import redirect_proxy/rule_csv
+import redirect_proxy/scope
 import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
 import redirect_proxy/users
