@@ -141,6 +141,18 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     )
 
   let trusted_proxies = cidr.compile(cfg.access_log.trusted_proxies)
+  let deprecations = deprecation.registry()
+  // the API's context, on its own listener or on the admin's
+  let api_context = fn(peer_ip, client_ip) {
+    api_web.Context(
+      config: cfg,
+      store: store_subject,
+      clients: clients_settings(cfg),
+      peer_ip:,
+      client_ip:,
+      deprecations:,
+    )
+  }
   let admin_handler = fn(req: request.Request(mist.Connection)) {
     let #(peer_ip, client_ip) = addresses(trusted_proxies, req)
     let ctx =
@@ -152,6 +164,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
         static_dir:,
         peer_ip:,
         client_ip:,
+        api: api_context(peer_ip, client_ip),
       )
     wisp_mist.handler(router.handle(_, ctx), secret)(req)
   }
@@ -166,15 +179,7 @@ pub fn start(cfg: Config) -> Result(Running, String) {
 
   let api_handler = fn(req: request.Request(mist.Connection)) {
     let #(peer_ip, client_ip) = addresses(trusted_proxies, req)
-    let ctx =
-      api_web.Context(
-        config: cfg,
-        store: store_subject,
-        clients: clients_settings(cfg),
-        peer_ip:,
-        client_ip:,
-        deprecations: deprecation.registry(),
-      )
+    let ctx = api_context(peer_ip, client_ip)
     wisp_mist.handler(api_router.handle_dedicated(_, ctx), secret)(req)
   }
   let api_handler =

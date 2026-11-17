@@ -13,6 +13,7 @@ import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
+import redirect_proxy/api/web as api_web
 import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
@@ -153,6 +154,8 @@ pub type Context {
     /// Client address, forwarded by a trusted proxy (`access_log.trusted_proxies`)
     /// or the peer address. Used for throttling.
     client_ip: String,
+    /// The API's context, for the API served on the admin listener.
+    api: api_web.Context,
   )
 }
 

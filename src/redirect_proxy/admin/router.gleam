@@ -27,9 +27,7 @@ import redirect_proxy/admin/web.{
   type Context, error_page, limit_body, not_found, security_headers,
   strict_transport_security,
 } as _
-import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
-import redirect_proxy/api/web as api_web
 import redirect_proxy/config
 import redirect_proxy/health
 import redirect_proxy/metrics
@@ -78,18 +76,7 @@ fn api_dispatch(
   next: fn() -> Response,
 ) -> Response {
   case config.api_on_admin(ctx.config), wisp.path_segments(req) {
-    True, ["api", ..] | True, ["oauth", ..] ->
-      api_router.handle(
-        req,
-        api_web.Context(
-          config: ctx.config,
-          store: ctx.store,
-          clients: ctx.clients,
-          peer_ip: ctx.peer_ip,
-          client_ip: ctx.client_ip,
-          deprecations: deprecation.registry(),
-        ),
-      )
+    True, ["api", ..] | True, ["oauth", ..] -> api_router.handle(req, ctx.api)
     _, _ -> next()
   }
 }
