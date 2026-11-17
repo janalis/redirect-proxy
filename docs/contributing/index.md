@@ -55,6 +55,8 @@ src/redirect_proxy/
   rule.gleam, matcher.gleam   rule model, validation, compiled matcher
   rule/template.gleam         target templates and their host guard
   store.gleam                 single writer actor: persistence, backups, audit, reload
+  store/                      its work (changes, reloads, file watcher, hit counts) and
+                              rule set checks, imports, diffs, listing and export
   proxy/server.gleam          redirect handler (hot path)
   admin/                      router, auth (local, OIDC, header, sessions), views
   api/                        REST API: router, handlers, token endpoint, clients, OpenAPI
