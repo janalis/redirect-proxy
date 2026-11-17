@@ -10,6 +10,7 @@ import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
 import redirect_proxy/api/clients
 import redirect_proxy/api/scope
+import redirect_proxy/field_error
 
 // --- API clients ------------------------------------------------------------
 
@@ -42,7 +43,7 @@ pub fn api_clients(
           [h.text("OpenAPI document")],
         ),
       ]),
-      layout.errors_view(errors),
+      layout.errors_view(list.map(errors, field_error.general)),
       case issued {
         None -> element.none()
         Some(IssuedSecret(client_id, secret)) ->

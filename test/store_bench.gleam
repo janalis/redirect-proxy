@@ -11,6 +11,7 @@ import redirect_proxy/ffi
 import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/store
 import simplifile
+import store_support
 import support
 
 const rule_count = 50_000
@@ -64,7 +65,7 @@ pub fn main() -> Nil {
     let n = int.to_string(i)
     let assert Ok(created) =
       time("create", fn() {
-        store.create(
+        store_support.create(
           s,
           Rule(
             ..rule.blank(),
@@ -77,9 +78,13 @@ pub fn main() -> Nil {
       })
     let assert Ok(_) =
       time("update", fn() {
-        store.update(s, Rule(..created, target: "/changed"), by: "bench")
+        store_support.update(
+          s,
+          Rule(..created, target: "/changed"),
+          by: "bench",
+        )
       })
     let assert Ok(_) =
-      time("delete", fn() { store.delete(s, created.id, by: "bench") })
+      time("delete", fn() { store_support.delete(s, created.id, by: "bench") })
   })
 }

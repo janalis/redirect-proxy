@@ -19,6 +19,7 @@ import redirect_proxy/api/problem
 import redirect_proxy/api/rule_json.{patch_decoder, rule_json} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
+import redirect_proxy/field_error.{FieldError}
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
@@ -252,10 +253,18 @@ fn collection_if_match(req: Request, ctx: Context) -> Option(String) {
   }
 }
 
-fn set_change_error(error: store.SetChangeError) -> Response {
+/// The problem of a change the store refused: of rule `id`, or of the
+/// whole rule set ("").
+fn change_problem(error: store.ChangeError, id: String) -> Response {
   case error {
+    store.NotFound -> rule_not_found(id)
+    store.AlreadyExists ->
+      problem.conflict("A redirection with this id already exists.")
+      |> wisp.set_header("location", "/api/redirects/" <> id)
+    store.Conflict(current) ->
+      problem.precondition_failed(rule.version(current))
     store.Stale(current) -> problem.precondition_failed(current)
-    store.Rejected(errors) -> problem.validation(errors)
+    store.Invalid(errors) -> problem.validation(errors)
   }
 }
 
@@ -293,11 +302,14 @@ pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
     decode.success(#(ids, action))
   }
   case json.parse(body, decoder) {
-    Error(e) -> problem.validation([rule.describe_json_error(e)])
+    Error(e) ->
+      problem.validation([field_error.general(rule.describe_json_error(e))])
     Ok(#(ids, action)) ->
       case store.bulk_action_from_string(action) {
         Error(Nil) ->
-          problem.validation(["action: must be enable, disable or delete"])
+          problem.validation([
+            FieldError("action", "must be enable, disable or delete"),
+          ])
         Ok(action) ->
           case
             store.bulk_versioned(
@@ -313,7 +325,7 @@ pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
                 200,
                 json.object([#("changed", json.int(count))]),
               )
-            Error(error) -> set_change_error(error)
+            Error(error) -> change_problem(error, "")
           }
       }
   }
@@ -390,13 +402,14 @@ pub fn create_rule(
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
-    Error(e) -> problem.validation([rule.describe_json_error(e)])
+    Error(e) ->
+      problem.validation([field_error.general(rule.describe_json_error(e))])
     Ok(input) -> {
       // an id chosen by the client makes a retry safe: the second request
       // gets 409 instead of creating a second rule
       let id = string.trim(input.id)
       case id == "" || rule.is_valid_id(id) {
-        False -> problem.validation(["id: " <> rule.valid_id_hint()])
+        False -> problem.validation([FieldError("id", rule.valid_id_hint())])
         True ->
           case
             store.create(ctx.store, rule.Rule(..input, id:), principal.actor)
@@ -404,10 +417,7 @@ pub fn create_rule(
             Ok(created) ->
               rule_response(201, created)
               |> wisp.set_header("location", "/api/redirects/" <> created.id)
-            Error(["id: already exists"]) ->
-              problem.conflict("A redirection with this id already exists.")
-              |> wisp.set_header("location", "/api/redirects/" <> id)
-            Error(errors) -> problem.validation(errors)
+            Error(error) -> change_problem(error, id)
           }
       }
     }
@@ -440,10 +450,7 @@ fn if_match_of(req: Request, current: String) -> Option(String) {
 fn change_response(result: Result(Rule, store.ChangeError), id: String) {
   case result {
     Ok(r) -> rule_response(200, r)
-    Error(store.NotFound) -> rule_not_found(id)
-    Error(store.Conflict(current)) ->
-      problem.precondition_failed(rule.version(current))
-    Error(store.Invalid(errors)) -> problem.validation(errors)
+    Error(error) -> change_problem(error, id)
   }
 }
 
@@ -458,7 +465,8 @@ pub fn replace_rule(
   use body, used <- require_json_object(req)
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
-    Error(e) -> problem.validation([rule.describe_json_error(e)])
+    Error(e) ->
+      problem.validation([field_error.general(rule.describe_json_error(e))])
     Ok(input) ->
       store.update_versioned(
         ctx.store,
@@ -483,7 +491,8 @@ pub fn patch_rule(
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case store.get(ctx.store, id), json.parse(body, patch_decoder()) {
     Error(Nil), _ -> rule_not_found(id)
-    _, Error(e) -> problem.validation([rule.describe_json_error(e)])
+    _, Error(e) ->
+      problem.validation([field_error.general(rule.describe_json_error(e))])
     Ok(existing), Ok(apply) -> {
       // The patch applies to `existing`: the update must expect that version
       // (also for `If-Match: *`, or without If-Match), else a concurrent
@@ -522,10 +531,7 @@ pub fn delete_rule(
     )
   {
     Ok(_) -> wisp.no_content()
-    Error(store.NotFound) -> rule_not_found(id)
-    Error(store.Conflict(current)) ->
-      problem.precondition_failed(rule.version(current))
-    Error(store.Invalid(errors)) -> problem.validation(errors)
+    Error(error) -> change_problem(error, id)
   }
 }
 
@@ -553,6 +559,8 @@ pub fn import_rules(
     Json -> rule.file_from_string(body) |> result.map_error(fn(e) { [e] })
     Sniffed -> rule_csv.parse_import(body)
   }
+  // errors of the document, not of a field
+  let incoming = result.map_error(incoming, list.map(_, field_error.general))
   case mode, dry_run, incoming {
     Error(Nil), _, _ -> problem.bad_request("mode must be merge or replace.")
     _, Error(Nil), _ -> problem.bad_request("dry_run must be true or false.")
@@ -590,7 +598,7 @@ pub fn import_rules(
               #("total", json.int(list.length(store.all(ctx.store)))),
             ]),
           )
-        Error(error) -> set_change_error(error)
+        Error(error) -> change_problem(error, "")
       }
     }
   }

@@ -21,6 +21,7 @@ import redirect_proxy/admin/web.{
   not_found, require_csrf_form, return_to,
 } as _
 import redirect_proxy/config
+import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
@@ -222,7 +223,15 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
       Some(v) -> v != current
       None -> all_matching
     },
-    fn() { stale_bulk(ctx, s) },
+    fn() {
+      change_error_page(
+        ctx,
+        s,
+        store.Stale(current),
+        "Not changed",
+        "apply the action again",
+      )
+    },
   )
   let selected = case all_matching {
     True -> {
@@ -294,20 +303,9 @@ fn apply_bulk(
       wisp.redirect(
         return_to(back, [#("flash", "bulk"), #("count", int.to_string(count))]),
       )
-    Error(store.Stale(_)) -> stale_bulk(ctx, s)
-    Error(store.Rejected(errors)) ->
-      error_page(ctx, s, 422, "Not changed", string.join(errors, " "))
+    Error(error) ->
+      change_error_page(ctx, s, error, "Not changed", "apply the action again")
   }
-}
-
-fn stale_bulk(ctx: Context, s: Session) -> Response {
-  error_page(
-    ctx,
-    s,
-    409,
-    "Not changed",
-    "The redirections were changed since this page was shown, so nothing was changed. Review the list and apply the action again.",
-  )
 }
 
 /// The form of a new rule, or of a copy of `?from=<id>` (Duplicate).
@@ -335,11 +333,13 @@ pub fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
-        Error(errors) ->
+        Error(store.Invalid(errors)) ->
           html(
             422,
             rule_form_view.form(s, features(ctx), r, errors, True, "", 0),
           )
+        Error(error) ->
+          change_error_page(ctx, s, error, "Not created", "try again")
       }
   }
 }
@@ -401,13 +401,17 @@ pub fn update_rule(
                 409,
                 r,
                 [
-                  conflict_message(current)
-                  <> " Your changes are shown below; saving again replaces theirs.",
+                  field_error.general(
+                    conflict_message(current)
+                    <> " Your changes are shown below; saving again replaces theirs.",
+                  ),
                 ],
                 rule.version(current),
               )
             Error(store.Invalid(errors)) ->
               render(422, r, errors, submitted_version)
+            Error(error) ->
+              change_error_page(ctx, s, error, "Not saved", "try again")
           }
       }
     }
@@ -484,10 +488,10 @@ pub fn toggle_rule(
   }
 }
 
-/// The page of a change of one rule the store refused, the same for every
-/// change, with the statuses of the API: 404 when the rule is gone, 409
-/// when it changed meanwhile (`retry` says what to do then), 422 when the
-/// change is invalid or could not be written.
+/// The page of a change the store refused, the same for every change,
+/// with the statuses of the API: 404 when the rule is gone, 409 when it
+/// (or the rule set) changed meanwhile (`retry` says what to do then), 422
+/// when the change is invalid or could not be written.
 fn change_error_page(
   ctx: Context,
   s: Session,
@@ -505,8 +509,32 @@ fn change_error_page(
         title,
         conflict_message(current) <> " Review it, then " <> retry <> ".",
       )
+    store.AlreadyExists ->
+      error_page(
+        ctx,
+        s,
+        409,
+        title,
+        "A redirection with this id already exists.",
+      )
+    store.Stale(_) ->
+      error_page(
+        ctx,
+        s,
+        409,
+        title,
+        "The redirections were changed since this page was shown, so nothing was changed. Review the list and "
+          <> retry
+          <> ".",
+      )
     store.Invalid(errors) ->
-      error_page(ctx, s, 422, title, string.join(errors, " "))
+      error_page(
+        ctx,
+        s,
+        422,
+        title,
+        string.join(field_error.to_strings(errors), " "),
+      )
   }
 }
 
@@ -546,7 +574,7 @@ pub fn reload(req: Request, ctx: Context, s: Session) -> Response {
 pub fn rule_from_form(
   values: List(#(String, String)),
   base: Rule,
-) -> Result(Rule, #(Rule, List(String))) {
+) -> Result(Rule, #(Rule, List(FieldError))) {
   let get = fn(key) { list.key_find(values, key) |> result.unwrap("") }
   let checked = fn(key) { get(key) == "on" || get(key) == "true" }
   let kind = rule.kind_from_string(get("match"))
@@ -583,15 +611,15 @@ pub fn rule_from_form(
     list.flatten([
       case kind {
         Ok(_) -> []
-        Error(_) -> ["match: must be exact, prefix or regex"]
+        Error(_) -> [FieldError("match", "must be exact, prefix or regex")]
       },
       case status {
         Ok(_) -> []
-        Error(_) -> ["status: must be a number"]
+        Error(_) -> [FieldError("status", "must be a number")]
       },
       case priority {
         Ok(_) -> []
-        Error(_) -> ["priority: must be a number"]
+        Error(_) -> [FieldError("priority", "must be a number")]
       },
     ])
   case errors {

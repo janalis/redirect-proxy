@@ -8,6 +8,7 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session} as auth_session
 import redirect_proxy/admin/views/layout.{type Flash}
+import redirect_proxy/field_error
 import redirect_proxy/role.{type Role}
 import redirect_proxy/users.{type User}
 
@@ -28,7 +29,7 @@ pub fn users(
     features:,
     content: [
       layout.heading("Local users", []),
-      layout.errors_view(errors),
+      layout.errors_view(list.map(errors, field_error.general)),
       h.div([a.class("row g-4")], [
         h.div([a.class("col-12 lg:col-7")], [
           h.div([a.class("table-responsive")], [
@@ -162,7 +163,7 @@ pub fn account(
     features:,
     content: [
       layout.heading("Account", []),
-      layout.errors_view(errors),
+      layout.errors_view(list.map(errors, field_error.general)),
       h.p([], [
         h.text(
           "Signed in as "

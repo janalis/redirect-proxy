@@ -13,6 +13,7 @@ import gleam/set
 import gleam/string
 import gleam/uri
 import redirect_proxy/ffi
+import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/id
 import redirect_proxy/log
 import redirect_proxy/matcher
@@ -28,7 +29,7 @@ pub fn check_loop(
   rules: List(Rule),
   changed: Rule,
   ignore_trailing_slash: Bool,
-) -> Result(Nil, List(String)) {
+) -> Result(Nil, List(FieldError)) {
   follow_loop(built, rules, later(rules), changed, ignore_trailing_slash).0
 }
 
@@ -89,13 +90,13 @@ fn follow_loop(
   later: Later,
   changed: Rule,
   ignore_trailing_slash: Bool,
-) -> #(Result(Nil, List(String)), Later) {
+) -> #(Result(Nil, List(FieldError)), Later) {
   use <- bool.guard(!changed.enabled, #(Ok(Nil), later))
   let found = fn(matcher) {
     matcher_loop.redirect_loop(matcher, changed, ignore_trailing_slash)
   }
   let refused = fn(cycle) {
-    Error(["target: redirect loop: " <> describe_cycle(cycle)])
+    Error([FieldError("target", "redirect loop: " <> describe_cycle(cycle))])
   }
   let #(starts, _) = rule.window(changed)
   case found(built) {
@@ -190,7 +191,7 @@ fn changes_ahead(changes: List(Change), changed: Rule) -> List(Int) {
 }
 
 /// Refuses a change to a rule that could never apply as written.
-pub fn check_lint(changed: Rule) -> Result(Nil, List(String)) {
+pub fn check_lint(changed: Rule) -> Result(Nil, List(FieldError)) {
   case rule.lint(changed) {
     [] -> Ok(Nil)
     errors -> Error(errors)
@@ -214,7 +215,7 @@ pub fn check_changed(
   rules: List(Rule),
   changed: List(Rule),
   ignore_trailing_slash: Bool,
-) -> Result(Nil, List(String)) {
+) -> Result(Nil, List(FieldError)) {
   let #(errors, _) =
     list.fold(changed, #([], later(rules)), fn(acc, r) {
       let #(errors, later) = acc
@@ -226,9 +227,10 @@ pub fn check_changed(
       }
       let found =
         list.append(rule.lint(r), loop)
-        |> list.map(fn(e) {
-          "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> e
-        })
+        |> list.map(field_error.about(
+          _,
+          "rule " <> r.id <> " (" <> r.host <> r.source <> ")",
+        ))
       #([found, ..errors], later)
     })
   let errors = list.reverse(errors) |> list.flatten
@@ -249,7 +251,13 @@ pub fn warn_problems(
   list.each(rules, fn(r) {
     list.each(rule.lint(r), fn(problem) {
       log.warning(
-        "rule " <> r.id <> " (" <> r.host <> r.source <> "): " <> problem,
+        "rule "
+        <> r.id
+        <> " ("
+        <> r.host
+        <> r.source
+        <> "): "
+        <> field_error.to_string(problem),
       )
     })
   })
@@ -296,21 +304,21 @@ fn describe_cycle(cycle: List(Rule)) -> String {
 }
 
 /// Validates every rule of a file and checks for conflicts.
-pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(String)) {
+pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(FieldError)) {
   let #(valid, errors) =
     rules
     |> list.index_map(fn(r, index) {
       rule.validate(r)
       |> result.map_error(fn(errors) {
-        list.map(errors, fn(e) {
+        list.map(errors, field_error.about(
+          _,
           "rule #"
-          <> int.to_string(index + 1)
-          <> " ("
-          <> r.host
-          <> r.source
-          <> "): "
-          <> e
-        })
+            <> int.to_string(index + 1)
+            <> " ("
+            <> r.host
+            <> r.source
+            <> ")",
+        ))
       })
     })
     |> result.partition
@@ -326,7 +334,7 @@ pub fn validate_all(rules: List(Rule)) -> Result(List(Rule), List(String)) {
 
 /// Rejects duplicate ids and duplicate exact sources on the same host, and
 /// exact rules redirecting to themselves.
-pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
+pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(FieldError)) {
   let duplicate_ids = duplicate_ids(rules)
 
   // in the form the matcher compares hosts and paths: example.com:8080 and
@@ -355,16 +363,22 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(String)) {
     })
     |> dict.keys
     |> list.map(fn(key) {
-      "source: another enabled exact rule already matches "
-      <> key
-      <> " (at the same time)"
+      FieldError(
+        "source",
+        "another enabled exact rule already matches "
+          <> key
+          <> " (at the same time)",
+      )
     })
 
   let loops =
     rules
     |> list.filter(fn(r) { r.kind == rule.Exact && r.enabled && is_loop(r) })
     |> list.map(fn(r) {
-      "target: rule " <> r.host <> r.source <> " redirects to itself"
+      FieldError(
+        "target",
+        "rule " <> r.host <> r.source <> " redirects to itself",
+      )
     })
 
   case list.flatten([duplicate_ids, duplicate_sources, loops]) {
@@ -393,7 +407,7 @@ fn is_loop(r: Rule) -> Bool {
 pub fn prepare_import(
   incoming: List(Rule),
   actor_name: String,
-) -> Result(List(Rule), List(String)) {
+) -> Result(List(Rule), List(FieldError)) {
   let now = ffi.now_rfc3339()
   incoming
   |> list.map(fn(r) {
@@ -420,7 +434,7 @@ pub fn check_import(
   incoming: List(Rule),
   current: List(Rule),
   ignore_trailing_slash: Bool,
-) -> Result(List(Rule), List(String)) {
+) -> Result(List(Rule), List(FieldError)) {
   use rules <- result.try(prepare_import(incoming, "cli"))
   let rules = resolve_ids(current, rules)
   // `prepare_import` checked the conflicts already (`validate_all`)
@@ -453,7 +467,7 @@ pub fn resolve_ids(existing: List(Rule), incoming: List(Rule)) -> List(Rule) {
 pub fn check_new_ids(
   existing: List(Rule),
   rules: List(Rule),
-) -> Result(Nil, List(String)) {
+) -> Result(Nil, List(FieldError)) {
   let known = list.map(existing, fn(r) { r.id }) |> set.from_list
   let invalid =
     list.filter(rules, fn(r) {
@@ -462,8 +476,11 @@ pub fn check_new_ids(
     |> list.map(fn(r) {
       case rule.is_reserved_id(r.id) {
         True ->
-          "id: " <> r.id <> " is reserved (it names a page or an operation)"
-        False -> "id: " <> r.id <> ": " <> rule.valid_id_hint()
+          FieldError(
+            "id",
+            r.id <> " is reserved (it names a page or an operation)",
+          )
+        False -> FieldError("id", r.id <> ": " <> rule.valid_id_hint())
       }
     })
   // ids trimmed by `resolve_ids` may now be the same
@@ -474,13 +491,13 @@ pub fn check_new_ids(
 }
 
 /// The ids that more than one rule has, as errors, in order.
-fn duplicate_ids(rules: List(Rule)) -> List(String) {
+fn duplicate_ids(rules: List(Rule)) -> List(FieldError) {
   rules
   |> list.group(fn(r) { r.id })
   |> dict.filter(fn(id, group) { id != "" && list.length(group) > 1 })
   |> dict.keys
   |> list.sort(string.compare)
-  |> list.map(fn(id) { "id: duplicate id " <> id })
+  |> list.map(fn(id) { FieldError("id", "duplicate id " <> id) })
 }
 
 /// Gives the imported rules without a creation date (a CSV file has none)

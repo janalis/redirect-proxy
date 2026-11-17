@@ -7,6 +7,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import redirect_proxy/ffi
+import redirect_proxy/field_error
 import redirect_proxy/id
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store/rules.{validate_all}
@@ -181,7 +182,11 @@ fn load_content(
   use rules <- result.try(
     validate_all(rules)
     |> result.map_error(fn(errors) {
-      invalid(files.rules_path <> ": " <> string.join(errors, "; "))
+      invalid(
+        files.rules_path
+        <> ": "
+        <> string.join(field_error.to_strings(errors), "; "),
+      )
     }),
   )
   case missing_ids {

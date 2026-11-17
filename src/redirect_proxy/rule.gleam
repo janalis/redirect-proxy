@@ -12,6 +12,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/ffi
+import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/rule/template
 
 pub type MatchKind {
@@ -355,9 +356,9 @@ pub fn on_segment_boundary(source: String, remainder: String) -> Bool {
 
 // --- validation -------------------------------------------------------------
 
-/// Normalises and validates a rule. Returns the normalised rule or a list of
-/// human readable errors (each prefixed with the field name and a colon).
-pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
+/// Normalises and validates a rule. Returns the normalised rule or the
+/// errors, by field.
+pub fn validate(rule: Rule) -> Result(Rule, List(FieldError)) {
   let host = normalise_host(rule.host)
   let source = trim(rule.source)
   let target = trim(rule.target)
@@ -392,35 +393,49 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
     []
     |> check(
       is_ascii(host),
-      "host: write international names in punycode (xn--...), e.g. xn--caf-dma.example for café.example",
+      "host",
+      "write international names in punycode (xn--...), e.g. xn--caf-dma.example for café.example",
     )
     |> check(
       !is_ascii(host) || valid_host(host),
-      "host: must be `*`, a host name or `*.` followed by a domain (*.example.com)",
+      "host",
+      "must be `*`, a host name or `*.` followed by a domain (*.example.com)",
     )
-    |> check(source != "", "source: is required")
-    |> check(string.length(source) <= max_source_length, "source: is too long")
-    |> check(no_control_chars(source), "source: contains control characters")
+    |> check(source != "", "source", "is required")
+    |> check(
+      string.length(source) <= max_source_length,
+      "source",
+      "is too long",
+    )
+    |> check(no_control_chars(source), "source", "contains control characters")
     |> check_source(rule)
-    |> check(target != "", "target: is required")
-    |> check(string.length(target) <= max_target_length, "target: is too long")
-    |> check(no_control_chars(target), "target: contains control characters")
+    |> check(target != "", "target", "is required")
+    |> check(
+      string.length(target) <= max_target_length,
+      "target",
+      "is too long",
+    )
+    |> check(no_control_chars(target), "target", "contains control characters")
     |> check(
       valid_target(target),
-      "target: must be an absolute http(s) URL, a protocol-relative URL (//host/...) or a path starting with /",
+      "target",
+      "must be an absolute http(s) URL, a protocol-relative URL (//host/...) or a path starting with /",
     )
     |> check(
       list.contains(allowed_statuses, rule.status),
-      "status: must be one of 301, 302, 303, 307, 308",
+      "status",
+      "must be one of 301, 302, 303, 307, 308",
     )
     |> check(
       rule.priority >= 0 && rule.priority <= 1_000_000,
-      "priority: must be between 0 and 1000000",
+      "priority",
+      "must be between 0 and 1000000",
     )
-    |> check(string.length(note) <= 1000, "note: is too long")
+    |> check(string.length(note) <= 1000, "note", "is too long")
     |> check(
       list.length(tags) <= max_tags,
-      "tags: at most " <> int.to_string(max_tags) <> " tags",
+      "tags",
+      "at most " <> int.to_string(max_tags) <> " tags",
     )
     |> check(
       list.all(tags, fn(t) {
@@ -428,17 +443,20 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
         && no_control_chars(t)
         && !string.contains(t, ",")
       }),
-      "tags: each tag is at most "
+      "tags",
+      "each tag is at most "
         <> int.to_string(max_tag_length)
         <> " characters, without commas",
     )
     |> check(
       !rule.whole_segments || rule.kind == Prefix,
-      "whole_segments: only applies to prefix rules",
+      "whole_segments",
+      "only applies to prefix rules",
     )
     |> check(
       query == "" || rule.kind == Exact,
-      "query: only applies to exact rules",
+      "query",
+      "only applies to exact rules",
     )
     |> check(
       query == ""
@@ -446,22 +464,26 @@ pub fn validate(rule: Rule) -> Result(Rule, List(String)) {
         Ok([_, ..] as pairs) -> list.all(pairs, fn(pair) { pair.0 != "" })
         _ -> False
       },
-      "query: must be name=value pairs separated by &, e.g. id=42&lang=fr",
+      "query",
+      "must be name=value pairs separated by &, e.g. id=42&lang=fr",
     )
     |> check(
       time(starts_at) == Ok(Nil),
-      "starts_at: must be an RFC 3339 date-time with a time zone, e.g. 2026-12-01T00:00:00Z",
+      "starts_at",
+      "must be an RFC 3339 date-time with a time zone, e.g. 2026-12-01T00:00:00Z",
     )
     |> check(
       time(expires_at) == Ok(Nil),
-      "expires_at: must be an RFC 3339 date-time with a time zone, e.g. 2026-12-31T23:59:59Z",
+      "expires_at",
+      "must be an RFC 3339 date-time with a time zone, e.g. 2026-12-31T23:59:59Z",
     )
     |> check(
       {
         let #(from, until) = window(rule)
         from < until
       },
-      "expires_at: must be after starts_at",
+      "expires_at",
+      "must be after starts_at",
     )
 
   case errors {
@@ -621,25 +643,29 @@ pub fn windows_overlap(a: Rule, b: Rule) -> Bool {
 /// Parts of a valid rule that can never apply as written. A file with them
 /// still loads (so that a file that loaded before keeps loading), but changes
 /// made in the admin or the API are refused.
-pub fn lint(rule: Rule) -> List(String) {
+pub fn lint(rule: Rule) -> List(FieldError) {
   let path_rule = rule.kind == Exact || rule.kind == Prefix
   []
   |> check(
     !path_rule || !string.contains(rule.source, "?"),
-    "source: cannot contain a query string (?): put the parameters in `query` (exact rules)",
+    "source",
+    "cannot contain a query string (?): put the parameters in `query` (exact rules)",
   )
   |> check(
     !path_rule || !string.contains(rule.source, "#"),
-    "source: cannot contain a fragment (#): browsers never send it",
+    "source",
+    "cannot contain a fragment (#): browsers never send it",
   )
   // the HTTP server reads `//a/b` as an authority (`a`) and a path (`/b`)
   |> check(
     !path_rule || !string.starts_with(rule.source, "//"),
-    "source: cannot start with //: such a request path is read as /<rest after the next />",
+    "source",
+    "cannot start with //: such a request path is read as /<rest after the next />",
   )
   |> check(
     !string.contains(rule.host, ":"),
-    "host: remove the port: requests are matched on the host name only",
+    "host",
+    "remove the port: requests are matched on the host name only",
   )
   |> check(
     rule.kind != Exact
@@ -647,11 +673,13 @@ pub fn lint(rule: Rule) -> List(String) {
       string.contains(rule.target, "${host}")
       || string.contains(rule.target, "${sub}")
     },
-    "target: ${host} and ${sub} only apply to prefix and regex rules: an exact rule's target is used as written",
+    "target",
+    "${host} and ${sub} only apply to prefix and regex rules: an exact rule's target is used as written",
   )
   |> check(
     rule.kind == Exact || template.target_guard(rule.target) != template.Unsafe,
-    "target: placeholders in the host never redirect: use ${host}, or placeholders before a fixed domain ($1.example.com, ${sub}.example.com)",
+    "target",
+    "placeholders in the host never redirect: use ${host}, or placeholders before a fixed domain ($1.example.com, ${sub}.example.com)",
   )
   |> list.reverse
   |> list.append(case rule.kind {
@@ -665,12 +693,16 @@ pub fn lint(rule: Rule) -> List(String) {
 /// class that normalisation decodes (unreserved characters, UTF-8) or
 /// writes in upper case, and whole dot segments (`/\\./`, `/\\.\\./`,
 /// or one before the closing `$`).
-fn regex_path_problems(source: String, case_insensitive: Bool) -> List(String) {
+fn regex_path_problems(
+  source: String,
+  case_insensitive: Bool,
+) -> List(FieldError) {
   scan_escapes(string.to_graphemes(source), False, "", [], case_insensitive)
   |> list.reverse
   |> check(
     !has_dot_segment(without_classes(string.to_graphemes(source), False, [])),
-    "source: dot segments (/\\./, /\\.\\./) never match: request paths are compared with them removed",
+    "source",
+    "dot segments (/\\./, /\\.\\./) never match: request paths are compared with them removed",
   )
 }
 
@@ -712,9 +744,9 @@ fn scan_escapes(
   rest: List(String),
   in_class: Bool,
   run: String,
-  problems: List(String),
+  problems: List(FieldError),
   case_insensitive: Bool,
-) -> List(String) {
+) -> List(FieldError) {
   let next = fn(rest, in_class, run, problems) {
     scan_escapes(rest, in_class, run, problems, case_insensitive)
   }
@@ -745,8 +777,8 @@ fn is_hex(c: String) -> Bool {
 fn escape_problem(
   run: String,
   case_insensitive: Bool,
-  problems: List(String),
-) -> List(String) {
+  problems: List(FieldError),
+) -> List(FieldError) {
   use <- bool.guard(run == "", problems)
   // after a segment, so that `%2E` is not taken for a dot segment
   let normalised = ffi.normalise_path("/x" <> run) |> string.drop_start(2)
@@ -757,34 +789,42 @@ fn escape_problem(
   case same {
     True -> problems
     False -> [
-      "source: "
-        <> run
-        <> " never matches: request paths are compared with unreserved characters and UTF-8 decoded, and other escapes in upper case: write "
-        <> string.replace(normalised, ".", "\\."),
+      FieldError(
+        "source",
+        run
+          <> " never matches: request paths are compared with unreserved characters and UTF-8 decoded, and other escapes in upper case: write "
+          <> string.replace(normalised, ".", "\\."),
+      ),
       ..problems
     ]
   }
 }
 
-fn check(errors: List(String), ok: Bool, message: String) -> List(String) {
+fn check(
+  errors: List(FieldError),
+  ok: Bool,
+  field: String,
+  message: String,
+) -> List(FieldError) {
   case ok {
     True -> errors
-    False -> [message, ..errors]
+    False -> [FieldError(field, message), ..errors]
   }
 }
 
-fn check_source(errors: List(String), rule: Rule) -> List(String) {
+fn check_source(errors: List(FieldError), rule: Rule) -> List(FieldError) {
   case rule.kind {
     Exact | Prefix ->
       check(
         errors,
         string.starts_with(rule.source, "/"),
-        "source: must start with /",
+        "source",
+        "must start with /",
       )
     Regex ->
       case compile(rule) {
         Ok(_) -> errors
-        Error(message) -> ["source: " <> message, ..errors]
+        Error(message) -> [FieldError("source", message), ..errors]
       }
   }
 }

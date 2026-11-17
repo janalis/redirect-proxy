@@ -143,10 +143,10 @@ pub fn problems_have_a_stable_code_test() {
   assert !field(page("2"), ["meta", "has_more"], decode.bool)
 }
 
-/// 422 responses name the invalid fields in `errors[].field`, taken from
-/// the `field: message` convention of rule validation (`problem.validation`):
-/// clients highlight form fields by these names. A message that names no
-/// field (a JSON type error) has an empty one.
+/// 422 responses name the invalid fields in `errors[].field`, the field of
+/// each error of rule validation (`problem.validation`): clients highlight
+/// form fields by these names. A message that names no field (a JSON type
+/// error) has an empty one.
 pub fn validation_errors_name_their_fields_test() {
   let env = support.boot(config.default())
   let token = access_token(env, [scope.Write])

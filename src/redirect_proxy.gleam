@@ -17,6 +17,7 @@ import redirect_proxy/config/file as config_file
 import redirect_proxy/config/loader as config_loader
 import redirect_proxy/config/validate as config_validate
 import redirect_proxy/ffi
+import redirect_proxy/field_error
 import redirect_proxy/log
 import redirect_proxy/password
 import redirect_proxy/role
@@ -483,7 +484,10 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
         // the server it is for (its configuration, or the defaults when
         // none is given or installed): its trailing slash setting, and its
         // current rules, whose ids are kept (none before its first start)
-        use cfg <- result.try(load(config_path) |> result.map_error(list.wrap))
+        use cfg <- result.try(
+          load(config_path)
+          |> result.map_error(fn(e) { [field_error.general(e)] }),
+        )
         let path = config.rules_path(cfg)
         // the file checked does not depend on them: without them (a CI
         // job that cannot read the server's file), only the ids an import
@@ -517,7 +521,9 @@ fn rules_validate(config_path: String, file: String) -> Result(Nil, String) {
         )
       }
     }
-    |> result.map_error(string.join(_, "\n")),
+    |> result.map_error(fn(errors) {
+      string.join(field_error.to_strings(errors), "\n")
+    }),
   )
   io.println(
     path <> ": " <> int.to_string(list.length(valid)) <> " valid rule(s)",
@@ -570,7 +576,9 @@ fn rules_import(
   )
   use count <- result.try(
     store.import_into_file(app.store_settings(cfg), incoming, mode, by: "cli")
-    |> result.map_error(fn(errors) { busy_or(string.join(errors, "\n")) }),
+    |> result.map_error(fn(errors) {
+      busy_or(string.join(field_error.to_strings(errors), "\n"))
+    }),
   )
   io.println(
     int.to_string(count)

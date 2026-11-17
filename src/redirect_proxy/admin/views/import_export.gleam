@@ -9,6 +9,7 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
+import redirect_proxy/field_error.{type FieldError}
 
 // --- import / export --------------------------------------------------------
 
@@ -16,7 +17,7 @@ pub fn import_export(
   session: Session,
   features: layout.Features,
   flash: Option(Flash),
-  errors: List(String),
+  errors: List(FieldError),
 ) -> String {
   layout.page(
     title: "Import / export",

@@ -7,6 +7,7 @@ import lustre/attribute as a
 import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
+import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/role
 
 pub const app_name = "Redirect Proxy"
@@ -192,9 +193,9 @@ pub fn alert(theme: String, message: String) -> Element(Nil) {
   h.div([a.class("alert mb-3 " <> theme), a.role("alert")], [h.text(message)])
 }
 
-/// The errors of a form. A message prefixed with a field name (`source:
-/// ...`) links to that field, where it is repeated (see `field_errors`).
-pub fn errors_view(errors: List(String)) -> Element(Nil) {
+/// The errors of a form. An error about a field (`source: ...`) links to
+/// it, where it is repeated (see `field_errors`).
+pub fn errors_view(errors: List(FieldError)) -> Element(Nil) {
   case errors {
     [] -> element.none()
     _ ->
@@ -210,14 +211,10 @@ pub fn errors_view(errors: List(String)) -> Element(Nil) {
           h.ul(
             [a.class("mb-0")],
             list.map(errors, fn(e) {
-              case string.split_once(e, ":") {
-                Ok(#(field, _)) if field != "" ->
-                  case string.contains(field, " ") {
-                    True -> h.li([], [h.text(e)])
-                    False ->
-                      h.li([], [h.a([a.href("#" <> field)], [h.text(e)])])
-                  }
-                _ -> h.li([], [h.text(e)])
+              let text = field_error.to_string(e)
+              case e.field {
+                "" -> h.li([], [h.text(text)])
+                field -> h.li([], [h.a([a.href("#" <> field)], [h.text(text)])])
               }
             }),
           ),
@@ -226,20 +223,20 @@ pub fn errors_view(errors: List(String)) -> Element(Nil) {
   }
 }
 
-/// The messages of `errors` about `field`, without the field prefix.
-pub fn field_errors(errors: List(String), field: String) -> List(String) {
+/// The messages of `errors` about `field`.
+pub fn field_errors(errors: List(FieldError), field: String) -> List(String) {
   errors
   |> list.filter_map(fn(e) {
-    case string.split_once(e, ":") {
-      Ok(#(f, message)) if f == field -> Ok(string.trim(message))
-      _ -> Error(Nil)
+    case e.field == field {
+      True -> Ok(e.message)
+      False -> Error(Nil)
     }
   })
 }
 
 /// Attributes of an input with errors: invalid, described by its messages.
 pub fn invalid_attributes(
-  errors: List(String),
+  errors: List(FieldError),
   field: String,
 ) -> List(a.Attribute(Nil)) {
   case field_errors(errors, field) {
@@ -261,7 +258,7 @@ pub fn select_option(
   h.option([a.value(value), a.selected(value == current)], label)
 }
 
-pub fn field_feedback(errors: List(String), field: String) -> Element(Nil) {
+pub fn field_feedback(errors: List(FieldError), field: String) -> Element(Nil) {
   case field_errors(errors, field) {
     [] -> element.none()
     messages ->

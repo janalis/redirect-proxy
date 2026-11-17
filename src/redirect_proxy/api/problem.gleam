@@ -3,6 +3,7 @@
 import gleam/json.{type Json}
 import gleam/list
 import gleam/string
+import redirect_proxy/field_error.{type FieldError}
 import wisp.{type Response}
 
 pub fn json_response(status: Int, body: Json) -> Response {
@@ -145,25 +146,20 @@ pub fn conflict(detail: String) -> Response {
   coded_problem(409, "already_exists", "Conflict", detail, [])
 }
 
-/// 422 with field errors built from the `"field: message"` strings produced
-/// by rule validation.
-pub fn validation(errors: List(String)) -> Response {
+/// 422 with the field errors, as `{field, message}` (`field` is "" for an
+/// error about no one field).
+pub fn validation(errors: List(FieldError)) -> Response {
   problem(422, "Unprocessable Content", "The request contains invalid values.", [
-    #("errors", json.array(list.map(errors, field_error), fn(j) { j })),
+    #(
+      "errors",
+      json.array(errors, fn(e: FieldError) {
+        json.object([
+          #("field", json.string(e.field)),
+          #("message", json.string(e.message)),
+        ])
+      }),
+    ),
   ])
-}
-
-fn field_error(message: String) -> Json {
-  let #(field, text) = case string.split_once(message, ": ") {
-    Ok(#(field, text)) ->
-      case string.contains(field, " ") {
-        // "rule #2 (...): source: ..." style messages keep their prefix
-        True -> #("", message)
-        False -> #(field, text)
-      }
-    Error(Nil) -> #("", message)
-  }
-  json.object([#("field", json.string(field)), #("message", json.string(text))])
 }
 
 /// 401 with a `WWW-Authenticate: Bearer` challenge (RFC 6750 §3).

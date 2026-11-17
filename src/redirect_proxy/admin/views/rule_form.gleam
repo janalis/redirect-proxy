@@ -11,6 +11,7 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
+import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/rule.{type Rule}
 
 /// `version` is the version of the stored rule the form edits ("" for a new
@@ -19,7 +20,7 @@ pub fn form(
   session: Session,
   features: layout.Features,
   r: Rule,
-  errors: List(String),
+  errors: List(FieldError),
   is_new: Bool,
   version: String,
   hits: Int,
@@ -361,8 +362,8 @@ fn checkbox(name: String, text: String, checked: Bool) -> Element(Nil) {
   ])
 }
 
-fn input_class(errors: List(String), field: String) -> String {
-  case list.any(errors, string.starts_with(_, field <> ":")) {
+fn input_class(errors: List(FieldError), field: String) -> String {
+  case list.any(errors, fn(e) { e.field == field }) {
     True -> "form-control is-invalid"
     False -> "form-control"
   }
@@ -428,7 +429,7 @@ pub fn confirm_delete(
 /// An optional RFC 3339 date-time (`starts_at`, `expires_at`). A text field:
 /// `datetime-local` has no time zone.
 fn time_field(
-  errors: List(String),
+  errors: List(FieldError),
   name: String,
   text: String,
   value: String,

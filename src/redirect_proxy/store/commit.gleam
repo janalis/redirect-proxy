@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, Some}
 import gleam/result
 import redirect_proxy/ffi
+import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -100,7 +101,7 @@ pub fn one(
   previous: Option(Rule),
   rules: List(Rule),
   uncovers uncovers: Bool,
-) -> Result(String, List(String)) {
+) -> Result(String, List(FieldError)) {
   use Nil <- result.try(check_lint_change(changed, previous))
   use Nil <- result.try(check_conflicts(rules))
   let built = matcher.build(rules)
@@ -145,7 +146,7 @@ pub fn many(
   rules: List(Rule),
   changed changed: List(Rule),
   check_conflicts check: Bool,
-) -> Result(String, List(String)) {
+) -> Result(String, List(FieldError)) {
   use built <- result.try(check_many(target, rules, changed, check))
   use fingerprint <- result.try(write(target, rules, built))
   checker.request(target.files.rules_path, checker.Problems)
@@ -159,7 +160,7 @@ pub fn check_many(
   rules: List(Rule),
   changed: List(Rule),
   check_conflicts check: Bool,
-) -> Result(matcher.Matcher, List(String)) {
+) -> Result(matcher.Matcher, List(FieldError)) {
   use Nil <- result.try(case check {
     True -> check_conflicts(rules)
     False -> Ok(Nil)
@@ -179,7 +180,7 @@ fn write(
   target: Target,
   rules: List(Rule),
   built: matcher.Matcher,
-) -> Result(String, List(String)) {
+) -> Result(String, List(FieldError)) {
   use fingerprint <- result.try(persist(target, rules))
   publish(target, built, rules, fingerprint)
   Ok(fingerprint)
@@ -190,13 +191,13 @@ fn write(
 pub fn persist(
   target: Target,
   rules: List(Rule),
-) -> Result(String, List(String)) {
+) -> Result(String, List(FieldError)) {
   case store_file.persist(target.files, rules) {
     Ok(fingerprint) -> Ok(fingerprint)
     Error(reason) -> {
       metrics.incr(metrics.StorageWriteFailures)
       log.error("failed to persist redirections: " <> reason)
-      Error(["storage: " <> reason])
+      Error([FieldError("storage", reason)])
     }
   }
 }

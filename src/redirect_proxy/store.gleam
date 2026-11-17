@@ -26,6 +26,7 @@ import gleam/set
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
+import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/id
 import redirect_proxy/log
 import redirect_proxy/matcher
@@ -184,15 +185,22 @@ pub fn import_mode_from_string(mode: String) -> Result(ImportMode, Nil) {
   }
 }
 
-/// Why a versioned change was refused.
+/// Why a change was refused: nothing was written.
 pub type ChangeError {
+  /// The rule to change does not exist.
   NotFound
+  /// A rule already has the id given to a new one (a retried creation).
+  AlreadyExists
   /// The rule changed since the version the caller based its change on.
   Conflict(current: Rule)
-  Invalid(List(String))
+  /// The rule set changed since the version (`versioned`) the caller based
+  /// its change of the whole set (an import, a bulk change) on, such as an
+  /// import preview.
+  Stale(current: String)
+  /// The change is invalid.
+  Invalid(List(FieldError))
 }
 
-/// Why a change to the whole rule set (an import, a bulk change) was refused.
 /// What an import would make of the rule set, before the checks of the
 /// rules it changes (done by the caller, not to block the store).
 type Preview {
@@ -204,27 +212,11 @@ type Preview {
   )
 }
 
-pub type SetChangeError {
-  /// The rule set changed since the version (`versioned`) the caller based
-  /// its change on, such as an import preview: nothing was written.
-  Stale(current: String)
-  Rejected(List(String))
-}
-
-pub fn describe_set_change_error(error: SetChangeError) -> List(String) {
-  case error {
-    Stale(_) -> [
-      "version: the rules were changed since they were read: review the changes and retry",
-    ]
-    Rejected(errors) -> errors
-  }
-}
-
 pub opaque type Message {
   All(reply: Subject(List(Rule)))
   Versioned(reply: Subject(#(List(Rule), String)))
   Get(id: String, reply: Subject(Result(Rule, Nil)))
-  Create(rule: Rule, actor: String, reply: Subject(Result(Rule, List(String))))
+  Create(rule: Rule, actor: String, reply: Subject(Result(Rule, ChangeError)))
   Update(
     rule: Rule,
     expected: Option(String),
@@ -243,20 +235,20 @@ pub opaque type Message {
     mode: ImportMode,
     expected: Option(String),
     actor: String,
-    reply: Subject(Result(Int, SetChangeError)),
+    reply: Subject(Result(Int, ChangeError)),
   )
   /// `rules` are prepared and validated, as for `Import`.
   PreviewImport(
     rules: List(Rule),
     mode: ImportMode,
-    reply: Subject(Result(Preview, List(String))),
+    reply: Subject(Result(Preview, List(FieldError))),
   )
   Bulk(
     ids: List(String),
     action: BulkAction,
     expected: Option(String),
     actor: String,
-    reply: Subject(Result(Int, SetChangeError)),
+    reply: Subject(Result(Int, ChangeError)),
   )
   Reload(actor: String, reply: Subject(Result(Int, String)))
   ReloadInBackground(actor: String)
@@ -475,17 +467,8 @@ pub fn create(
   store: Store,
   rule: Rule,
   by actor_name: String,
-) -> Result(Rule, List(String)) {
+) -> Result(Rule, ChangeError) {
   call(store, timeout, Create(rule, actor_name, _))
-}
-
-pub fn update(
-  store: Store,
-  rule: Rule,
-  by actor_name: String,
-) -> Result(Rule, List(String)) {
-  update_versioned(store, rule, None, actor_name)
-  |> result.map_error(describe_change_error)
 }
 
 /// Updates a rule only if its current version equals `expected` (when given).
@@ -498,15 +481,6 @@ pub fn update_versioned(
   call(store, timeout, Update(rule, expected, actor_name, _))
 }
 
-pub fn delete(
-  store: Store,
-  id: String,
-  by actor_name: String,
-) -> Result(Rule, String) {
-  delete_versioned(store, id, None, actor_name)
-  |> result.map_error(fn(e) { string.join(describe_change_error(e), "; ") })
-}
-
 /// Deletes a rule only if its current version equals `expected` (when given).
 pub fn delete_versioned(
   store: Store,
@@ -517,20 +491,12 @@ pub fn delete_versioned(
   call(store, timeout, Delete(id, expected, actor_name, _))
 }
 
-pub fn describe_change_error(error: ChangeError) -> List(String) {
-  case error {
-    NotFound -> ["id: rule not found"]
-    Conflict(_) -> ["version: the rule was modified concurrently"]
-    Invalid(errors) -> errors
-  }
-}
-
 /// `expected` (when given, `*` for any) must be the current version of the
 /// rule set.
 fn check_collection_version(
   state: State,
   expected: Option(String),
-) -> Result(Nil, SetChangeError) {
+) -> Result(Nil, ChangeError) {
   case expected {
     Some(v) if v != "*" && v != state.fingerprint ->
       Error(Stale(state.fingerprint))
@@ -557,9 +523,8 @@ pub fn import_rules(
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(Int, List(String)) {
+) -> Result(Int, ChangeError) {
   import_rules_versioned(store, rules, mode, None, actor_name)
-  |> result.map_error(describe_set_change_error)
 }
 
 /// `import_rules` without a running store, for the `rules import` command:
@@ -573,7 +538,7 @@ pub fn import_into_file(
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(Int, List(String)) {
+) -> Result(Int, List(FieldError)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
   let files = files(settings)
   let locked =
@@ -583,7 +548,9 @@ pub fn import_into_file(
       fn() {
         use #(existing, before) <- result.try(
           store_file.load_failing(files, store_file.FirstStart)
-          |> result.map_error(fn(failure) { [failure.reason] }),
+          |> result.map_error(fn(failure) {
+            [field_error.general(failure.reason)]
+          }),
         )
         use #(prepared, rules) <- result.try(imported(existing, prepared, mode))
         let action = case mode {
@@ -621,7 +588,7 @@ pub fn import_into_file(
               action <> "_failed",
               summary,
               None,
-              Some(json.object([#("errors", json.array(errors, json.string))])),
+              Some(errors_json(errors)),
             )
             Error(errors)
           }
@@ -630,7 +597,8 @@ pub fn import_into_file(
     )
   case locked {
     Ok(outcome) -> outcome
-    Error(ffi.Held(reason)) | Error(ffi.CannotCreate(reason)) -> Error([reason])
+    Error(ffi.Held(reason)) | Error(ffi.CannotCreate(reason)) ->
+      Error([field_error.general(reason)])
   }
 }
 
@@ -642,11 +610,11 @@ pub fn import_rules_versioned(
   mode: ImportMode,
   expected: Option(String),
   by actor_name: String,
-) -> Result(Int, SetChangeError) {
+) -> Result(Int, ChangeError) {
   // Validation is done here, in the caller's process, so that the store
   // does not hold the file lock (nor block other callers) while it runs.
   use prepared <- result.try(
-    prepare_import(rules, actor_name) |> result.map_error(Rejected),
+    prepare_import(rules, actor_name) |> result.map_error(Invalid),
   )
   call(store, 60_000, Import(prepared, mode, expected, actor_name, _))
 }
@@ -660,7 +628,7 @@ pub fn preview_import(
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(#(store_rules.Diff, String), List(String)) {
+) -> Result(#(store_rules.Diff, String), List(FieldError)) {
   use prepared <- result.try(prepare_import(rules, actor_name))
   use preview <- result.try(
     read(store, 60_000, PreviewImport(prepared, mode, _)),
@@ -685,7 +653,7 @@ pub fn bulk_versioned(
   action: BulkAction,
   expected: Option(String),
   by actor_name: String,
-) -> Result(Int, SetChangeError) {
+) -> Result(Int, ChangeError) {
   call(store, timeout, Bulk(list.unique(ids), action, expected, actor_name, _))
 }
 
@@ -727,7 +695,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Create(input, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { [e] })
+      use state <- mutate(state, reply)
       let now = ffi.now_rfc3339()
       let new_id = case string.trim(input.id) {
         "" -> id.uuid()
@@ -744,18 +712,23 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       {
         use <- bool.guard(
           list.any(state.rules, fn(r) { r.id == new_id }),
-          Error(["id: already exists"]),
+          Error(AlreadyExists),
         )
-        use valid <- result.try(rule.validate(candidate))
+        use valid <- result.try(
+          rule.validate(candidate) |> result.map_error(Invalid),
+        )
         let rules = list.append(state.rules, [valid])
         // a new rule only adds matches: a loop it makes goes through it
-        use fingerprint <- result.try(commit.one(
-          target(state.settings),
-          valid,
-          None,
-          rules,
-          uncovers: False,
-        ))
+        use fingerprint <- result.try(
+          commit.one(
+            target(state.settings),
+            valid,
+            None,
+            rules,
+            uncovers: False,
+          )
+          |> result.map_error(Invalid),
+        )
         audit.record(
           state.settings.audit_path,
           actor_name,
@@ -769,7 +742,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Update(input, expected, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { Invalid([e]) })
+      use state <- mutate(state, reply)
       {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == input.id })
@@ -817,7 +790,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Delete(rule_id, expected, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { Invalid([e]) })
+      use state <- mutate(state, reply)
       {
         use existing <- result.try(
           list.find(state.rules, fn(r) { r.id == rule_id })
@@ -849,11 +822,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Import(prepared, mode, expected, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { Rejected([e]) })
+      use state <- mutate(state, reply)
       {
         use Nil <- result.try(check_collection_version(state, expected))
         use #(prepared, rules) <- result.try(
-          imported(state.rules, prepared, mode) |> result.map_error(Rejected),
+          imported(state.rules, prepared, mode) |> result.map_error(Invalid),
         )
         let action = case mode {
           Replace -> "rules.import.replace"
@@ -885,9 +858,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
               action <> "_failed",
               int.to_string(list.length(prepared)) <> " rule(s)",
               None,
-              Some(json.object([#("errors", json.array(errors, json.string))])),
+              Some(errors_json(errors)),
             )
-            Error(Rejected(errors))
+            Error(Invalid(errors))
           }
         }
       }
@@ -908,20 +881,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Bulk(ids, action, expected, actor_name, reply) -> {
-      use state <- mutate(state, reply, fn(e) { Rejected([e]) })
+      use state <- mutate(state, reply)
       use Nil <- result.try(check_collection_version(state, expected))
-      result.map_error(_, Rejected)({
+      result.map_error(_, Invalid)({
         let known = list.map(state.rules, fn(r) { r.id }) |> set.from_list
         let wanted = set.from_list(ids)
-        use <- bool.guard(ids == [], Error(["ids: select at least one rule"]))
+        use <- bool.guard(
+          ids == [],
+          Error([FieldError("ids", "select at least one rule")]),
+        )
         use <- bool.guard(
           !list.all(ids, set.contains(known, _)),
           Error([
-            "ids: unknown rule "
-            <> {
-              list.filter(ids, fn(id) { !set.contains(known, id) })
-              |> string.join(", ")
-            },
+            FieldError(
+              "ids",
+              "unknown rule "
+                <> {
+                list.filter(ids, fn(id) { !set.contains(known, id) })
+                |> string.join(", ")
+              },
+            ),
           ]),
         )
         let now = ffi.now_rfc3339()
@@ -1168,7 +1147,7 @@ fn imported(
   existing: List(Rule),
   prepared: List(Rule),
   mode: ImportMode,
-) -> Result(#(List(Rule), List(Rule)), List(String)) {
+) -> Result(#(List(Rule), List(Rule)), List(FieldError)) {
   let prepared = store_rules.resolve_ids(existing, prepared)
   use Nil <- result.try(store_rules.check_new_ids(existing, prepared))
   let rules =
@@ -1299,9 +1278,8 @@ fn audit_rule_set(
 /// or exited) is skipped: nothing is written, audited or published.
 fn mutate(
   state: State,
-  reply: Subject(Result(a, e)),
-  to_error: fn(String) -> e,
-  change: fn(State) -> Result(#(a, List(Rule), String), e),
+  reply: Subject(Result(a, ChangeError)),
+  change: fn(State) -> Result(#(a, List(Rule), String), ChangeError),
 ) -> actor.Next(State, Message) {
   use <- bool.lazy_guard(abandoned(reply), fn() {
     log.warning("a change was skipped: its caller stopped waiting for it")
@@ -1312,10 +1290,13 @@ fn mutate(
       // the lock may have taken long enough for the caller to give up
       use <- bool.lazy_guard(abandoned(reply), fn() {
         log.warning("a change was skipped: its caller stopped waiting for it")
-        #(state, Error(to_error("the caller stopped waiting")))
+        #(
+          state,
+          Error(Invalid([field_error.general("the caller stopped waiting")])),
+        )
       })
       case refresh(state) {
-        Error(reason) -> #(state, Error(to_error(reason)))
+        Error(reason) -> #(state, Error(storage_failure(reason)))
         Ok(state) ->
           case change(state) {
             Ok(#(value, rules, fingerprint)) -> {
@@ -1334,10 +1315,23 @@ fn mutate(
     Error(reason) -> {
       metrics.incr(metrics.StorageWriteFailures)
       log.error("redirections not saved: " <> reason)
-      process.send(reply, Error(to_error("storage: " <> reason)))
+      process.send(reply, Error(storage_failure(reason)))
       actor.continue(state)
     }
   }
+}
+
+/// A change refused because the redirections file could not be read or
+/// written.
+fn storage_failure(reason: String) -> ChangeError {
+  Invalid([FieldError("storage", reason)])
+}
+
+/// The errors of a refused change, for its audit entry.
+fn errors_json(errors: List(FieldError)) -> json.Json {
+  json.object([
+    #("errors", json.array(field_error.to_strings(errors), json.string)),
+  ])
 }
 
 /// Whether nobody waits for the reply any more.
@@ -1358,7 +1352,7 @@ fn refresh(state: State) -> Result(State, String) {
     // overwritten as if it were
     Error(e) ->
       Error(
-        "storage: the redirections file cannot be read ("
+        "the redirections file cannot be read ("
         <> simplifile.describe_error(e)
         <> "), so it was not overwritten. Fix its permissions, then retry.",
       )
@@ -1371,12 +1365,12 @@ fn refresh(state: State) -> Result(State, String) {
           {
             Error(store_file.IdsNotWritten(reason:, ..)) ->
               Error(
-                "storage: the redirections file was changed outside the server, and the ids of its rules without one could not be written, so it was not overwritten. Free space or fix the permissions, then retry. "
+                "the redirections file was changed outside the server, and the ids of its rules without one could not be written, so it was not overwritten. Free space or fix the permissions, then retry. "
                 <> reason,
               )
             Error(store_file.Invalid(reason:, ..)) ->
               Error(
-                "storage: the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
+                "the redirections file was changed outside the server and is invalid, so it was not overwritten. Fix it, then retry. "
                 <> reason,
               )
             Ok(#(rules, fingerprint)) -> {

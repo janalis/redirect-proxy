@@ -1,8 +1,10 @@
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
 import redirect_proxy/ffi
-import redirect_proxy/rule.{Rule}
+import redirect_proxy/field_error
+import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/rule/template
 
 fn base() -> rule.Rule {
@@ -11,7 +13,7 @@ fn base() -> rule.Rule {
 
 pub fn valid_rule_is_normalised_test() {
   let assert Ok(r) =
-    rule.validate(
+    validate(
       Rule(..base(), host: "  Example.COM ", source: " /a ", target: " /b "),
     )
   assert r.host == "example.com"
@@ -20,30 +22,30 @@ pub fn valid_rule_is_normalised_test() {
 }
 
 pub fn empty_host_becomes_wildcard_test() {
-  let assert Ok(r) = rule.validate(Rule(..base(), host: ""))
+  let assert Ok(r) = validate(Rule(..base(), host: ""))
   assert r.host == "*"
 }
 
 pub fn host_with_port_is_accepted_test() {
-  let assert Ok(_) = rule.validate(Rule(..base(), host: "example.com:8080"))
+  let assert Ok(_) = validate(Rule(..base(), host: "example.com:8080"))
 }
 
 pub fn invalid_hosts_are_rejected_test() {
   ["exa mple.com", "-bad.com", "bad-.com", "a..b", "example.com:99999", "é.com"]
   |> list.each(fn(host) {
-    let assert Error(errors) = rule.validate(Rule(..base(), host:))
+    let assert Error(errors) = validate(Rule(..base(), host:))
     assert list.any(errors, string.starts_with(_, "host:"))
   })
 }
 
 pub fn exact_source_must_start_with_slash_test() {
-  let assert Error(errors) = rule.validate(Rule(..base(), source: "old"))
+  let assert Error(errors) = validate(Rule(..base(), source: "old"))
   assert errors == ["source: must start with /"]
 }
 
 pub fn invalid_regex_is_rejected_test() {
   let assert Error([error]) =
-    rule.validate(Rule(..base(), kind: rule.Regex, source: "^/(unclosed"))
+    validate(Rule(..base(), kind: rule.Regex, source: "^/(unclosed"))
   assert string.starts_with(error, "source: invalid regular expression")
 }
 
@@ -57,28 +59,28 @@ pub fn targets_test() {
   ]
   let bad = ["javascript:alert(1)", "example.com", "ftp://example.com", ""]
   list.each(ok, fn(target) {
-    let assert Ok(_) = rule.validate(Rule(..base(), target:))
+    let assert Ok(_) = validate(Rule(..base(), target:))
   })
   list.each(bad, fn(target) {
-    let assert Error(errors) = rule.validate(Rule(..base(), target:))
+    let assert Error(errors) = validate(Rule(..base(), target:))
     assert list.any(errors, string.starts_with(_, "target:"))
   })
 }
 
 pub fn header_injection_is_rejected_test() {
   let assert Error(errors) =
-    rule.validate(Rule(..base(), target: "/x\r\nset-cookie: a=b"))
+    validate(Rule(..base(), target: "/x\r\nset-cookie: a=b"))
   assert list.contains(errors, "target: contains control characters")
 }
 
 pub fn status_must_be_a_redirect_test() {
   [301, 302, 303, 307, 308]
   |> list.each(fn(status) {
-    let assert Ok(_) = rule.validate(Rule(..base(), status:))
+    let assert Ok(_) = validate(Rule(..base(), status:))
   })
   [200, 300, 304, 305, 404]
   |> list.each(fn(status) {
-    let assert Error(_) = rule.validate(Rule(..base(), status:))
+    let assert Error(_) = validate(Rule(..base(), status:))
   })
 }
 
@@ -204,7 +206,7 @@ pub fn target_guard_shapes_test() {
   // the host is entirely a capture: it never redirects, and lint says so
   assert template.target_guard("https://$1/") == template.Unsafe
   assert template.target_guard("//${1}/x") == template.Unsafe
-  assert rule.lint(
+  assert lint(
       Rule(..base(), kind: rule.Prefix, source: "/a/", target: "https://$1/"),
     )
     != []
@@ -286,7 +288,7 @@ pub fn guard_blocks_open_redirects_test() {
 
 pub fn wildcard_and_international_hosts_test() {
   let with_host = fn(host) {
-    rule.validate(Rule(..rule.blank(), host:, source: "/a", target: "/b"))
+    validate(Rule(..rule.blank(), host:, source: "/a", target: "/b"))
   }
   let assert Ok(r) = with_host("*.Example.com")
   assert r.host == "*.example.com"
@@ -302,19 +304,19 @@ pub fn wildcard_and_international_hosts_test() {
 }
 
 pub fn lint_flags_parts_that_never_match_test() {
-  assert rule.lint(base()) == []
-  let assert [query] = rule.lint(Rule(..base(), source: "/page.php?id=5"))
+  assert lint(base()) == []
+  let assert [query] = lint(Rule(..base(), source: "/page.php?id=5"))
   assert string.starts_with(query, "source: cannot contain a query string")
   let assert [fragment] =
-    rule.lint(Rule(..base(), kind: rule.Prefix, source: "/a#b"))
+    lint(Rule(..base(), kind: rule.Prefix, source: "/a#b"))
   assert string.starts_with(fragment, "source: cannot contain a fragment")
-  let assert [port] = rule.lint(Rule(..base(), host: "example.com:8080"))
+  let assert [port] = lint(Rule(..base(), host: "example.com:8080"))
   assert string.starts_with(port, "host: remove the port")
   let assert [slashes] =
-    rule.lint(Rule(..base(), kind: rule.Prefix, source: "//legacy/"))
+    lint(Rule(..base(), kind: rule.Prefix, source: "//legacy/"))
   assert string.starts_with(slashes, "source: cannot start with //")
   // `?` is a quantifier in a regex
-  assert rule.lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
+  assert lint(Rule(..base(), kind: rule.Regex, source: "^/a?$")) == []
 }
 
 /// A regex runs on the normalised path (unreserved characters and UTF-8
@@ -323,7 +325,7 @@ pub fn lint_flags_parts_that_never_match_test() {
 /// classes, an unescaped `.` and case-insensitive escapes can still match.
 pub fn lint_flags_regex_escapes_that_never_match_test() {
   let regex = fn(source) { Rule(..base(), kind: rule.Regex, source:) }
-  let problems = fn(source) { rule.lint(regex(source)) }
+  let problems = fn(source) { lint(regex(source)) }
   let assert [accent] = problems("^/caf%C3%A9$")
   assert string.contains(accent, "%C3%A9") && string.contains(accent, "é")
   let assert [tilde] = problems("^/%7euser/(.*)$")
@@ -353,7 +355,7 @@ pub fn lint_flags_regex_escapes_that_never_match_test() {
   assert problems("^/50%$") == []
   assert problems("^/a%zz$") == []
   assert problems("^/a\\.b$") == []
-  assert rule.lint(Rule(..regex("^/a%2f(.*)$"), case_insensitive: True)) == []
+  assert lint(Rule(..regex("^/a%2f(.*)$"), case_insensitive: True)) == []
   // a regex lint refuses indeed never matches, as written or decoded
   let assert Ok(compiled) = rule.compile(regex("^/caf%C3%A9$"))
   assert ffi.regex_run(compiled, ffi.normalise_path("/caf%C3%A9")) |> is_error
@@ -369,9 +371,8 @@ fn is_error(result: Result(a, b)) -> Bool {
 
 pub fn whole_segments_test() {
   let prefix = Rule(..base(), kind: rule.Prefix, whole_segments: True)
-  let assert Ok(_) = rule.validate(prefix)
-  let assert Error([reason]) =
-    rule.validate(Rule(..base(), whole_segments: True))
+  let assert Ok(_) = validate(prefix)
+  let assert Error([reason]) = validate(Rule(..base(), whole_segments: True))
   assert string.starts_with(reason, "whole_segments:")
   // only written when set: existing files and rule versions do not change
   assert !string.contains(rule.file_to_string([base()]), "whole_segments")
@@ -387,7 +388,7 @@ pub fn schedule_test() {
       starts_at: "2026-12-01T00:00:00Z",
       expires_at: "2026-12-02T00:00:00+01:00",
     )
-  let assert Ok(_) = rule.validate(timed)
+  let assert Ok(_) = validate(timed)
   let #(from, until) = rule.window(timed)
   assert until - from == 23 * 3600
   assert rule.is_active(timed, from)
@@ -397,10 +398,10 @@ pub fn schedule_test() {
   assert rule.is_active(base(), 0)
   // the time zone is required, and the window must not be empty
   let assert Error([no_zone]) =
-    rule.validate(Rule(..base(), starts_at: "2026-12-01T00:00:00"))
+    validate(Rule(..base(), starts_at: "2026-12-01T00:00:00"))
   assert string.starts_with(no_zone, "starts_at:")
   let assert Error([order]) =
-    rule.validate(Rule(..timed, expires_at: "2026-11-30T00:00:00Z"))
+    validate(Rule(..timed, expires_at: "2026-11-30T00:00:00Z"))
   assert order == "expires_at: must be after starts_at"
   // written only when set
   assert !string.contains(rule.file_to_string([base()]), "starts_at")
@@ -413,11 +414,11 @@ pub fn schedule_test() {
 
 pub fn host_placeholder_lint_test() {
   let prefix = Rule(..base(), kind: rule.Prefix, source: "/")
-  assert rule.lint(Rule(..prefix, target: "https://${host}/$1")) == []
-  assert rule.lint(Rule(..prefix, target: "https://${sub}.new.test/$1")) == []
-  let assert [exact] = rule.lint(Rule(..base(), target: "https://${host}/x"))
+  assert lint(Rule(..prefix, target: "https://${host}/$1")) == []
+  assert lint(Rule(..prefix, target: "https://${sub}.new.test/$1")) == []
+  let assert [exact] = lint(Rule(..base(), target: "https://${host}/x"))
   assert string.starts_with(exact, "target: ${host} and ${sub} only apply")
-  let assert [unsafe] = rule.lint(Rule(..prefix, target: "https://a$1b.test/"))
+  let assert [unsafe] = lint(Rule(..prefix, target: "https://a$1b.test/"))
   assert string.starts_with(unsafe, "target: placeholders in the host")
   assert template.expand_with(
       "${host}|${sub}|$${host}|${9}",
@@ -428,14 +429,14 @@ pub fn host_placeholder_lint_test() {
 }
 
 pub fn query_validation_test() {
-  let assert Ok(r) = rule.validate(Rule(..base(), query: "?id=42"))
+  let assert Ok(r) = validate(Rule(..base(), query: "?id=42"))
   assert r.query == "id=42"
   assert rule.query_conditions(Rule(..r, query: "b=2&a=1"))
     == [#("a", "1"), #("b", "2")]
   let assert Error([kind]) =
-    rule.validate(Rule(..base(), kind: rule.Prefix, query: "id=1"))
+    validate(Rule(..base(), kind: rule.Prefix, query: "id=1"))
   assert kind == "query: only applies to exact rules"
-  let assert Error([shape]) = rule.validate(Rule(..base(), query: "=x"))
+  let assert Error([shape]) = validate(Rule(..base(), query: "=x"))
   assert string.starts_with(shape, "query: must be name=value pairs")
   assert !string.contains(rule.file_to_string([base()]), "\"query\"")
   assert rule.file_from_string(rule.file_to_string([r])) == Ok([r])
@@ -478,7 +479,7 @@ pub fn guard_location_reads_the_host_like_a_browser_test() {
 
 pub fn tags_test() {
   let tagged = fn(tags) {
-    rule.validate(Rule(..rule.blank(), source: "/a", target: "/b", tags:))
+    validate(Rule(..rule.blank(), source: "/a", target: "/b", tags:))
   }
   let assert Ok(r) = tagged([" Legacy", "campaign", "legacy", ""])
   assert r.tags == ["campaign", "legacy"]
@@ -495,4 +496,14 @@ pub fn tags_test() {
   let assert Ok([back]) =
     rule.file_from_string(rule.file_to_string([Rule(..untagged, tags: ["x"])]))
   assert back.tags == ["x"]
+}
+
+/// `rule.validate`, its errors as `field: message`.
+fn validate(r: Rule) -> Result(Rule, List(String)) {
+  rule.validate(r) |> result.map_error(field_error.to_strings)
+}
+
+/// `rule.lint`, as `field: message`.
+fn lint(r: Rule) -> List(String) {
+  rule.lint(r) |> field_error.to_strings
 }

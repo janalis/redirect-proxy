@@ -5,12 +5,14 @@ import gleam/option.{None, Some}
 import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
+import redirect_proxy/field_error.{FieldError}
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/rules as store_rules
 import simplifile
+import store_support
 import support
 
 fn settings(dir: String, backups: Int) -> store.Settings {
@@ -63,14 +65,15 @@ pub fn crud_persists_and_publishes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
 
-  let assert Ok(created) = store.create(s, new_rule("/a", "/b"), by: "tester")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/a", "/b"), by: "tester")
   assert created.id != ""
   assert created.updated_by == "tester"
   assert created.created_at != ""
   assert redirect("/a") == Ok("/b")
 
   let assert Ok(updated) =
-    store.update(s, Rule(..created, target: "/c"), by: "tester")
+    store_support.update(s, Rule(..created, target: "/c"), by: "tester")
   assert updated.created_at == created.created_at
   assert redirect("/a") == Ok("/c")
   assert store.get(s, created.id) == Ok(updated)
@@ -79,10 +82,10 @@ pub fn crud_persists_and_publishes_test() {
   let s2 = start(settings(dir, 5))
   assert store.all(s2) == [updated]
 
-  let assert Ok(_) = store.delete(s2, created.id, by: "tester")
+  let assert Ok(_) = store_support.delete(s2, created.id, by: "tester")
   assert redirect("/a") == Error(Nil)
   assert store.all(s2) == []
-  let assert Error(_) = store.delete(s2, created.id, by: "tester")
+  let assert Error(_) = store_support.delete(s2, created.id, by: "tester")
 
   let assert Ok(audit) = simplifile.read(dir <> "/audit.jsonl")
   let actions =
@@ -95,32 +98,42 @@ pub fn crud_persists_and_publishes_test() {
 pub fn invalid_rules_are_rejected_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
-  let assert Error(errors) = store.create(s, new_rule("nope", "/b"), by: "t")
+  let assert Error(errors) =
+    store_support.create(s, new_rule("nope", "/b"), by: "t")
   assert errors == ["source: must start with /"]
   let assert Error(["id: rule not found"]) =
-    store.update(s, Rule(..new_rule("/a", "/b"), id: "missing"), by: "t")
+    store_support.update(
+      s,
+      Rule(..new_rule("/a", "/b"), id: "missing"),
+      by: "t",
+    )
   assert store.all(s) == []
 }
 
 pub fn conflicts_are_rejected_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
-  let assert Ok(_) = store.create(s, new_rule("/dup", "/one"), by: "t")
-  let assert Error([error]) = store.create(s, new_rule("/dup", "/two"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/dup", "/one"), by: "t")
+  let assert Error([error]) =
+    store_support.create(s, new_rule("/dup", "/two"), by: "t")
   assert string.contains(error, "already matches")
   // same path on another host is fine
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/dup", "/two"), host: "other.test"),
       by: "t",
     )
   // disabled duplicates are allowed
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/dup", "/three"), enabled: False), by: "t")
+    store_support.create(
+      s,
+      Rule(..new_rule("/dup", "/three"), enabled: False),
+      by: "t",
+    )
   // self redirects are refused
   let assert Error([loop]) =
-    store.create(s, new_rule("/loop", "/loop"), by: "t")
+    store_support.create(s, new_rule("/loop", "/loop"), by: "t")
   assert string.contains(loop, "redirects to itself")
 }
 
@@ -128,18 +141,19 @@ pub fn rules_that_never_match_are_refused_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
   let assert Error([query]) =
-    store.create(s, new_rule("/page.php?id=5", "/page"), by: "t")
+    store_support.create(s, new_rule("/page.php?id=5", "/page"), by: "t")
   assert string.contains(query, "query string")
   let assert Error([port]) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/a", "/b"), host: "example.com:8080"),
       by: "t",
     )
   assert string.contains(port, "port")
-  let assert Ok(created) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/a", "/b"), by: "t")
   let assert Error([_]) =
-    store.update(s, Rule(..created, source: "/a?b"), by: "t")
+    store_support.update(s, Rule(..created, source: "/a?b"), by: "t")
   assert store.all(s) == [created]
 }
 
@@ -159,7 +173,8 @@ pub fn reload_keeps_rules_when_file_is_invalid_test() {
   let dir = support.temp_dir()
   let path = dir <> "/redirects.json"
   let s = start(settings(dir, 5))
-  let assert Ok(_) = store.create(s, new_rule("/keep", "/kept"), by: "t")
+  let assert Ok(_) =
+    store_support.create(s, new_rule("/keep", "/kept"), by: "t")
 
   let assert Ok(Nil) =
     simplifile.write(path, "[{\"source\": \"/new\", \"target\": \"/fresh\"}]")
@@ -192,7 +207,7 @@ pub fn backups_are_rotated_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 2))
   list.each(["/1", "/2", "/3", "/4", "/5"], fn(source) {
-    let assert Ok(_) = store.create(s, new_rule(source, "/x"), by: "t")
+    let assert Ok(_) = store_support.create(s, new_rule(source, "/x"), by: "t")
     // backup names have millisecond resolution
     process.sleep(2)
   })
@@ -210,7 +225,7 @@ pub fn backups_rotation_ignores_other_files_test() {
     simplifile.write(dir <> "/backups/redirects-old.json", "")
   let s = start(settings(dir, 2))
   list.each(["/r1", "/r2", "/r3", "/r4"], fn(source) {
-    let assert Ok(_) = store.create(s, new_rule(source, "/x"), by: "t")
+    let assert Ok(_) = store_support.create(s, new_rule(source, "/x"), by: "t")
   })
   let assert Ok(files) = simplifile.read_directory(dir <> "/backups")
   assert list.contains(files, "redirects-old.json")
@@ -218,18 +233,18 @@ pub fn backups_rotation_ignores_other_files_test() {
 
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(_) = store.create(s, new_rule("/a", "/x"), by: "t")
-  let assert Ok(_) = store.create(s, new_rule("/b", "/x"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/a", "/x"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/b", "/x"), by: "t")
   assert simplifile.is_directory(dir <> "/backups") == Ok(False)
 }
 
 pub fn backups_keep_the_rules_file_mode_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
-  let assert Ok(_) = store.create(s, new_rule("/mode-1", "/x"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/mode-1", "/x"), by: "t")
   let assert Ok(Nil) =
     simplifile.set_permissions_octal(dir <> "/redirects.json", 0o640)
-  let assert Ok(_) = store.create(s, new_rule("/mode-2", "/x"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/mode-2", "/x"), by: "t")
   let assert Ok(backups) = simplifile.read_directory(dir <> "/backups")
   let assert Ok(latest) = list.max(backups, string.compare)
   let assert Ok(info) = simplifile.file_info(dir <> "/backups/" <> latest)
@@ -239,25 +254,31 @@ pub fn backups_keep_the_rules_file_mode_test() {
 pub fn import_merge_and_replace_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(existing) = store.create(s, new_rule("/a", "/1"), by: "t")
+  let assert Ok(existing) =
+    store_support.create(s, new_rule("/a", "/1"), by: "t")
 
   let incoming = [
     Rule(..existing, target: "/updated"),
     new_rule("/b", "/2"),
   ]
-  assert store.import_rules(s, incoming, store.Merge, by: "t") == Ok(2)
+  assert store_support.import_rules(s, incoming, store.Merge, by: "t") == Ok(2)
   assert redirect("/a") == Ok("/updated")
   assert redirect("/b") == Ok("/2")
   assert list.length(store.all(s)) == 2
 
-  assert store.import_rules(s, [new_rule("/c", "/3")], store.Replace, by: "t")
+  assert store_support.import_rules(
+      s,
+      [new_rule("/c", "/3")],
+      store.Replace,
+      by: "t",
+    )
     == Ok(1)
   assert redirect("/a") == Error(Nil)
   assert redirect("/c") == Ok("/3")
 
   // all or nothing
   let assert Error(errors) =
-    store.import_rules(
+    store_support.import_rules(
       s,
       [new_rule("/d", "/4"), new_rule("bad", "/5")],
       store.Merge,
@@ -274,15 +295,15 @@ pub fn import_keeps_creation_dates_test() {
   let s = start(settings(dir, 0))
   let created = "2020-01-01T00:00:00Z"
   let dated = Rule(..new_rule("/a", "/1"), id: "a", created_at: created)
-  assert store.import_rules(s, [dated], store.Merge, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [dated], store.Merge, by: "t") == Ok(1)
   let undated = Rule(..dated, target: "/2", created_at: "")
-  assert store.import_rules(s, [undated], store.Merge, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [undated], store.Merge, by: "t") == Ok(1)
   let assert Ok(after) = store.get(s, "a")
   assert after.target == "/2"
   assert after.created_at == created
   let fresh = Rule(..new_rule("/b", "/3"), created_at: "")
   let undated = Rule(..undated, target: "/4")
-  assert store.import_rules(s, [undated, fresh], store.Replace, by: "t")
+  assert store_support.import_rules(s, [undated, fresh], store.Replace, by: "t")
     == Ok(2)
   let assert Ok(after) = store.get(s, "a")
   assert after.created_at == created
@@ -297,17 +318,19 @@ pub fn set_changes_check_the_rules_they_change_test() {
   let a = Rule(..new_rule("/a", "/b"), id: "a")
   let b = Rule(..new_rule("/b", "/a"), id: "b")
   // a loop
-  let assert Error(errors) = store.import_rules(s, [a, b], store.Merge, by: "t")
+  let assert Error(errors) =
+    store_support.import_rules(s, [a, b], store.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
-  let assert Error(_) = store.preview_import(s, [a, b], store.Merge, by: "t")
+  let assert Error(_) =
+    store_support.preview_import(s, [a, b], store.Merge, by: "t")
   // a target that never redirects
   let unsafe = Rule(..new_rule("/u/", "https://$1x.com/"), kind: rule.Prefix)
   let assert Error([error]) =
-    store.import_rules(s, [unsafe], store.Merge, by: "t")
+    store_support.import_rules(s, [unsafe], store.Merge, by: "t")
   assert string.contains(error, "never redirect")
   // enabling the second half of a loop
   let off = Rule(..b, enabled: False)
-  assert store.import_rules(s, [a, off], store.Merge, by: "t") == Ok(2)
+  assert store_support.import_rules(s, [a, off], store.Merge, by: "t") == Ok(2)
   let assert Error(errors) =
     store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
   assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
@@ -316,7 +339,8 @@ pub fn set_changes_check_the_rules_they_change_test() {
   let assert Ok(Nil) =
     simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
   let assert Ok(_) = store.reload(s, by: "t")
-  assert store.import_rules(s, [legacy], store.Replace, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [legacy], store.Replace, by: "t")
+    == Ok(1)
   assert store.bulk_versioned(s, ["legacy"], store.Disable, None, by: "t")
     == Ok(1)
 }
@@ -330,8 +354,9 @@ pub fn rules_that_never_apply_can_be_disabled_test() {
   let assert Ok(Nil) =
     simplifile.write(dir <> "/redirects.json", store_rules.export([legacy]))
   let assert Ok(_) = store.reload(s, by: "t")
-  let assert Ok(_) = store.update(s, Rule(..legacy, enabled: False), by: "t")
-  let assert Error([error]) = store.update(s, legacy, by: "t")
+  let assert Ok(_) =
+    store_support.update(s, Rule(..legacy, enabled: False), by: "t")
+  let assert Error([error]) = store_support.update(s, legacy, by: "t")
   assert string.contains(error, "query string")
 }
 
@@ -341,12 +366,17 @@ pub fn unchanged_imported_rules_keep_their_version_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(a) =
-    store.create(s, Rule(..new_rule("/a", "/t"), id: "a"), by: "alice")
+    store_support.create(s, Rule(..new_rule("/a", "/t"), id: "a"), by: "alice")
   let assert Ok(b) =
-    store.create(s, Rule(..new_rule("/b", "/t"), id: "b"), by: "alice")
+    store_support.create(s, Rule(..new_rule("/b", "/t"), id: "b"), by: "alice")
   process.sleep(1100)
   let assert Ok(2) =
-    store.import_rules(s, [a, Rule(..b, target: "/u")], store.Merge, by: "bob")
+    store_support.import_rules(
+      s,
+      [a, Rule(..b, target: "/u")],
+      store.Merge,
+      by: "bob",
+    )
   let assert Ok(a2) = store.get(s, "a")
   let assert Ok(b2) = store.get(s, "b")
   assert rule.version(a2) == rule.version(a)
@@ -364,12 +394,14 @@ pub fn loaded_reserved_ids_import_again_test() {
   let assert Ok(Nil) =
     simplifile.write(dir <> "/redirects.json", store_rules.export([export]))
   let assert Ok(_) = store.reload(s, by: "t")
-  assert store.import_rules(s, [export], store.Replace, by: "t") == Ok(1)
-  assert store.import_rules(s, [export], store.Merge, by: "t") == Ok(1)
-  let assert Ok(_) = store.preview_import(s, [export], store.Merge, by: "t")
+  assert store_support.import_rules(s, [export], store.Replace, by: "t")
+    == Ok(1)
+  assert store_support.import_rules(s, [export], store.Merge, by: "t") == Ok(1)
+  let assert Ok(_) =
+    store_support.preview_import(s, [export], store.Merge, by: "t")
   let bulk = Rule(..new_rule("/b", "/t"), id: "bulk")
   let assert Error([error]) =
-    store.import_rules(s, [bulk], store.Merge, by: "t")
+    store_support.import_rules(s, [bulk], store.Merge, by: "t")
   assert string.contains(error, "reserved")
 }
 
@@ -383,11 +415,12 @@ pub fn loaded_ids_with_spaces_import_again_test() {
     simplifile.write(dir <> "/redirects.json", store_rules.export([spaced]))
   let assert Ok(_) = store.reload(s, by: "t")
   let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
-  assert store.import_rules(s, [spaced, fresh], store.Merge, by: "t") == Ok(2)
+  assert store_support.import_rules(s, [spaced, fresh], store.Merge, by: "t")
+    == Ok(2)
   assert list.map(store.all(s), fn(r) { r.id }) == [" a", "b"]
   // two ids that are one once trimmed are duplicates
   let assert Error(errors) =
-    store.import_rules(
+    store_support.import_rules(
       s,
       [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
       store.Merge,
@@ -395,7 +428,7 @@ pub fn loaded_ids_with_spaces_import_again_test() {
     )
   assert list.any(errors, string.contains(_, "duplicate"))
   let assert Error(_) =
-    store.preview_import(
+    store_support.preview_import(
       s,
       [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
       store.Merge,
@@ -409,22 +442,27 @@ pub fn scheduled_loops_are_refused_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/a", "/b"), id: "a"), by: "t")
+    store_support.create(s, Rule(..new_rule("/a", "/b"), id: "a"), by: "t")
   let later =
     Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
-  let assert Error(errors) = store.create(s, later, by: "t")
+  let assert Error(errors) = store_support.create(s, later, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Error(errors) =
-    store.import_rules(s, [later], store.Merge, by: "t")
+    store_support.import_rules(s, [later], store.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Ok(1) =
-    store.import_rules(s, [Rule(..later, enabled: False)], store.Merge, by: "t")
+    store_support.import_rules(
+      s,
+      [Rule(..later, enabled: False)],
+      store.Merge,
+      by: "t",
+    )
   let assert Error(errors) =
     store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
   assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
   // rules whose windows do not overlap do not loop
   let assert Ok(_) =
-    store.update(
+    store_support.update(
       s,
       Rule(
         ..later,
@@ -443,18 +481,23 @@ pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
   let s = start(settings(dir, 0))
   let later =
     Rule(..new_rule("/b", "/a"), id: "b", starts_at: "2999-01-01T00:00:00Z")
-  let assert Ok(_) = store.create(s, later, by: "t")
+  let assert Ok(_) = store_support.create(s, later, by: "t")
   let now = Rule(..new_rule("/a", "/b"), id: "a")
-  let assert Error(errors) = store.create(s, now, by: "t")
+  let assert Error(errors) = store_support.create(s, now, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
-  let assert Error(errors) = store.import_rules(s, [now], store.Merge, by: "t")
+  let assert Error(errors) =
+    store_support.import_rules(s, [now], store.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   // one that expires before the other starts does not loop
   let assert Ok(_) =
-    store.create(s, Rule(..now, expires_at: "2998-01-01T00:00:00Z"), by: "t")
+    store_support.create(
+      s,
+      Rule(..now, expires_at: "2998-01-01T00:00:00Z"),
+      by: "t",
+    )
   // nor do two rules whose windows do not overlap
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(
         ..new_rule("/c", "/d"),
@@ -465,7 +508,7 @@ pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
       by: "t",
     )
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/d", "/c"), id: "d", starts_at: "2999-03-01T00:00:00Z"),
       by: "t",
@@ -478,21 +521,22 @@ pub fn loops_through_rules_taking_turns_are_refused_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/a", "/b"), id: "a1", expires_at: "2999-01-01T00:00:00Z"),
       by: "t",
     )
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/a", "/x"), id: "a2", starts_at: "2999-01-01T00:00:00Z"),
       by: "t",
     )
   let x = Rule(..new_rule("/x", "/a"), id: "x")
-  let assert Error(errors) = store.create(s, x, by: "t")
+  let assert Error(errors) = store_support.create(s, x, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
-  let assert Error(errors) = store.import_rules(s, [x], store.Merge, by: "t")
+  let assert Error(errors) =
+    store_support.import_rules(s, [x], store.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
@@ -504,7 +548,7 @@ pub fn each_imported_rule_is_followed_at_its_own_times_test() {
   // eight times to come, all within the window of `a` below
   list.each([1, 2, 3, 4, 5, 6, 7, 8], fn(n) {
     let assert Ok(_) =
-      store.create(
+      store_support.create(
         s,
         Rule(
           ..new_rule("/f" <> int.to_string(n), "/t"),
@@ -515,11 +559,12 @@ pub fn each_imported_rule_is_followed_at_its_own_times_test() {
       )
   })
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+    store_support.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
   let a = Rule(..new_rule("/a", "/z"), id: "a")
   let b =
     Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
-  let assert Error(errors) = store.import_rules(s, [a, b], store.Merge, by: "t")
+  let assert Error(errors) =
+    store_support.import_rules(s, [a, b], store.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
@@ -529,7 +574,7 @@ pub fn rules_starting_later_are_followed_past_the_kept_matchers_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
+    store_support.create(s, Rule(..new_rule("/c", "/b"), id: "c"), by: "t")
   let fillers =
     int.range(10, 50, [], fn(acc, n) {
       let n = int.to_string(n)
@@ -546,7 +591,12 @@ pub fn rules_starting_later_are_followed_past_the_kept_matchers_test() {
   let b =
     Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
   let assert Error(errors) =
-    store.import_rules(s, list.append(fillers, [b]), store.Merge, by: "t")
+    store_support.import_rules(
+      s,
+      list.append(fillers, [b]),
+      store.Merge,
+      by: "t",
+    )
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
@@ -557,13 +607,14 @@ pub fn disabled_rules_are_checked_too_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let bad = Rule(..new_rule("/q?x=1", "/t"), id: "bad", enabled: False)
-  let assert Error([_]) = store.create(s, bad, by: "t")
-  let assert Error(_) = store.import_rules(s, [bad], store.Merge, by: "t")
+  let assert Error([_]) = store_support.create(s, bad, by: "t")
+  let assert Error(_) =
+    store_support.import_rules(s, [bad], store.Merge, by: "t")
 }
 
-fn errors_of(error: store.SetChangeError) -> List(String) {
+fn errors_of(error: store.ChangeError) -> List(String) {
   case error {
-    store.Rejected(errors) -> errors
+    store.Invalid(errors) -> field_error.to_strings(errors)
     _ -> []
   }
 }
@@ -587,6 +638,7 @@ pub fn keep_created_at_test() {
 pub fn validate_all_reports_rule_numbers_test() {
   let assert Error([error]) =
     store_rules.validate_all([new_rule("/ok", "/x"), new_rule("bad", "/y")])
+    |> store_support.messages
   assert string.starts_with(error, "rule #2")
 }
 
@@ -597,13 +649,15 @@ pub fn validate_all_reports_rule_numbers_test() {
 pub fn outside_changes_are_reloaded_before_writing_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 5))
-  let assert Ok(_) = store.create(s, new_rule("/mine", "/a"), by: "server")
+  let assert Ok(_) =
+    store_support.create(s, new_rule("/mine", "/a"), by: "server")
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/redirects.json",
       "{\"version\": 1, \"rules\": [{\"source\": \"/theirs\", \"target\": \"/b\"}]}",
     )
-  let assert Ok(_) = store.create(s, new_rule("/new", "/c"), by: "server")
+  let assert Ok(_) =
+    store_support.create(s, new_rule("/new", "/c"), by: "server")
   let sources = fn(rules: List(rule.Rule)) {
     list.map(rules, fn(r) { r.source }) |> list.sort(string.compare)
   }
@@ -625,7 +679,7 @@ pub fn outside_changes_whose_ids_cannot_be_written_are_told_apart_test() {
       "[{\"source\": \"/theirs\", \"target\": \"/b\"}]",
     )
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
-  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let result = store_support.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   let assert Error([reason]) = result
   assert string.contains(reason, "could not be written")
@@ -638,7 +692,7 @@ pub fn invalid_outside_changes_are_not_overwritten_test() {
   let broken = "{\"version\": 1, \"rules\": [ half written"
   let assert Ok(Nil) = simplifile.write(dir <> "/redirects.json", broken)
   let assert Error([reason]) =
-    store.create(s, new_rule("/x", "/y"), by: "server")
+    store_support.create(s, new_rule("/x", "/y"), by: "server")
   assert string.contains(reason, "changed outside the server")
   assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
 }
@@ -653,7 +707,7 @@ pub fn unreadable_outside_changes_are_not_overwritten_test() {
     "{\"version\": 1, \"rules\": [{\"id\": \"t\", \"source\": \"/theirs\", \"target\": \"/b\"}]}"
   let assert Ok(Nil) = simplifile.write(path, theirs)
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o200)
-  let result = store.create(s, new_rule("/x", "/y"), by: "server")
+  let result = store_support.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
   let assert Error([reason]) = result
   assert string.contains(reason, "cannot be read")
@@ -672,7 +726,8 @@ pub fn concurrent_writers_lose_no_update_test() {
     process.spawn(fn() {
       list.each(int.range(from: 1, to: 16, with: [], run: list.prepend), fn(i) {
         let source = "/" <> writer.0 <> "/" <> string.inspect(i)
-        let assert Ok(_) = store.create(writer.1, new_rule(source, "/t"), "t")
+        let assert Ok(_) =
+          store_support.create(writer.1, new_rule(source, "/t"), "t")
       })
       process.send(done, Nil)
     })
@@ -693,7 +748,7 @@ pub fn waits_for_the_file_lock_test() {
     process.sleep(300)
     let _ = simplifile.delete(lock)
   })
-  let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(_) = store_support.create(s, new_rule("/x", "/y"), by: "server")
   assert simplifile.is_file(lock) == Ok(False)
 }
 
@@ -703,12 +758,12 @@ pub fn waits_for_the_file_lock_test() {
 pub fn reads_do_not_wait_for_changes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(a) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let assert Ok(a) = store_support.create(s, new_rule("/a", "/b"), by: "t")
   let lock = dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
   let done = process.new_subject()
   process.spawn(fn() {
-    process.send(done, store.create(s, new_rule("/c", "/d"), by: "t"))
+    process.send(done, store_support.create(s, new_rule("/c", "/d"), by: "t"))
   })
   // the change has reached the store, which waits for the lock
   process.sleep(100)
@@ -729,7 +784,8 @@ pub fn reads_of_a_stopped_store_fail_test() {
   let dir = support.temp_dir()
   let assert Ok(started) =
     store.start(settings(dir, 0), process.new_name("store_test"))
-  let assert Ok(_) = store.create(started.data, new_rule("/a", "/b"), by: "t")
+  let assert Ok(_) =
+    store_support.create(started.data, new_rule("/a", "/b"), by: "t")
   assert list.length(store.all(started.data)) == 1
   process.unlink(started.pid)
   process.kill(started.pid)
@@ -751,16 +807,20 @@ pub fn stale_lock_is_broken_test() {
   let lock = dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 crashed@host\n")
   set_mtime(lock, 60)
-  let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Ok(_) = store_support.create(s, new_rule("/x", "/y"), by: "server")
 }
 
 pub fn backups_have_unique_names_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 50))
-  let assert Ok(r) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let assert Ok(r) = store_support.create(s, new_rule("/a", "/b"), by: "t")
   list.each(int.range(from: 1, to: 11, with: [], run: list.prepend), fn(i) {
     let assert Ok(_) =
-      store.update(s, Rule(..r, target: "/" <> string.inspect(i)), by: "t")
+      store_support.update(
+        s,
+        Rule(..r, target: "/" <> string.inspect(i)),
+        by: "t",
+      )
   })
   let assert Ok(files) = simplifile.read_directory(dir <> "/backups")
   // one backup per write after the first one (creation of the empty file)
@@ -774,7 +834,7 @@ fn set_mtime(path: String, seconds_ago: Int) -> Nil
 pub fn reload_keeps_rules_when_the_file_is_missing_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(_) = store.create(s, new_rule("/a", "/b"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/a", "/b"), by: "t")
   // e.g. an editor or a deploy replacing the file non-atomically
   let assert Ok(Nil) = simplifile.delete(dir <> "/redirects.json")
   let assert Error(reason) = store.reload(s, by: "t")
@@ -810,14 +870,14 @@ pub fn creating_a_redirect_loop_is_refused_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let looping = Rule(..new_rule("/a/", "/a/b/$1"), kind: rule.Prefix)
-  let assert Error([reason]) = store.create(s, looping, by: "t")
+  let assert Error([reason]) = store_support.create(s, looping, by: "t")
   assert string.contains(reason, "redirect loop")
   let assert Ok(_) =
-    store.create(s, Rule(..looping, target: "/new/$1"), by: "t")
+    store_support.create(s, Rule(..looping, target: "/new/$1"), by: "t")
   // whole segments: `/w` -> `/w/x$1` is a loop (`/w/…` matches again)
   let segments =
     Rule(..new_rule("/w", "/w/x$1"), kind: rule.Prefix, whole_segments: True)
-  let assert Error([reason]) = store.create(s, segments, by: "t")
+  let assert Error([reason]) = store_support.create(s, segments, by: "t")
   assert string.contains(reason, "redirect loop")
 }
 
@@ -836,7 +896,8 @@ pub fn a_file_with_a_loop_still_loads_test() {
 pub fn equivalent_exact_sources_conflict_test() {
   let a = Rule(..rule.blank(), id: "a", source: "/café", target: "/x")
   let b = Rule(..rule.blank(), id: "b", source: "/caf%C3%A9", target: "/y")
-  let assert Error([reason]) = store_rules.check_conflicts([a, b])
+  let assert Error([reason]) =
+    store_rules.check_conflicts([a, b]) |> store_support.messages
   assert string.contains(reason, "already matches")
 }
 
@@ -851,25 +912,29 @@ pub fn equivalent_exact_hosts_conflict_test() {
       on("a", "example.com"),
       on("b", "Example.com:8080"),
     ])
+    |> store_support.messages
   assert string.contains(reason, "already matches")
   let assert Error(_) =
     store_rules.check_conflicts([
       on("a", "example.com"),
       on("b", "example.com."),
     ])
+    |> store_support.messages
   assert store_rules.check_conflicts([
       on("a", "example.com"),
       on("b", "other.com"),
     ])
+    |> store_support.messages
     == Ok(Nil)
 }
 
 pub fn imports_and_reloads_are_audited_with_their_changes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(kept) = store.create(s, new_rule("/kept", "/k"), by: "t")
+  let assert Ok(kept) =
+    store_support.create(s, new_rule("/kept", "/k"), by: "t")
   let assert Ok(_) =
-    store.import_rules(
+    store_support.import_rules(
       s,
       [
         Rule(..kept, target: "/k2"),
@@ -918,7 +983,7 @@ pub fn restart_with_an_invalid_file_keeps_the_last_rules_test() {
   let s = settings(dir, 0)
   let assert Ok(started) = store.start(s, process.new_name("store_test"))
   let assert Ok(_) =
-    store.create(started.data, new_rule("/kept", "/target"), by: "test")
+    store_support.create(started.data, new_rule("/kept", "/target"), by: "test")
   let assert Ok(Nil) = simplifile.write(s.rules_path, "{ not json")
   process.unlink(started.pid)
   process.kill(started.pid)
@@ -928,11 +993,11 @@ pub fn restart_with_an_invalid_file_keeps_the_last_rules_test() {
   assert redirect("/kept") == Ok("/target")
   // a change re-reads the file first and refuses to overwrite it
   let assert Error(_) =
-    store.create(restarted.data, new_rule("/new", "/x"), by: "test")
+    store_support.create(restarted.data, new_rule("/new", "/x"), by: "test")
   // once fixed, changes go through again
   let assert Ok(Nil) = simplifile.write(s.rules_path, "[]")
   let assert Ok(_) =
-    store.create(restarted.data, new_rule("/new", "/x"), by: "test")
+    store_support.create(restarted.data, new_rule("/new", "/x"), by: "test")
 
   let other = settings(support.temp_dir(), 0)
   let assert Ok(Nil) = simplifile.write(other.rules_path, "{ not json")
@@ -945,7 +1010,8 @@ pub fn watched_file_is_reloaded_test() {
   let dir = support.temp_dir()
   let s = store.Settings(..settings(dir, 0), watch_interval: 20)
   let store = start(s)
-  let assert Ok(_) = store.create(store, new_rule("/own", "/write"), by: "test")
+  let assert Ok(_) =
+    store_support.create(store, new_rule("/own", "/write"), by: "test")
   process.sleep(100)
   // our own write was not taken for an outside change
   assert reloads(dir) == 0
@@ -1119,7 +1185,7 @@ pub fn versioned_set_changes_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let #(_, before) = store.versioned(s)
-  let assert Ok(a) = store.create(s, new_rule("/a", "/1"), by: "t")
+  let assert Ok(a) = store_support.create(s, new_rule("/a", "/1"), by: "t")
   let #(_, current) = store.versioned(s)
   assert current != before
   let incoming = [new_rule("/b", "/2")]
@@ -1136,7 +1202,7 @@ pub fn versioned_set_changes_test() {
   assert store.all(s) == [a]
   // the preview tells which version it was computed against
   let assert Ok(#(_, previewed)) =
-    store.preview_import(s, incoming, store.Replace, by: "t")
+    store_support.preview_import(s, incoming, store.Replace, by: "t")
   assert previewed == current
   assert store.import_rules_versioned(
       s,
@@ -1147,7 +1213,7 @@ pub fn versioned_set_changes_test() {
     )
     == Ok(1)
   assert store.bulk_versioned(s, [], store.Disable, Some("*"), by: "t")
-    == Error(store.Rejected(["ids: select at least one rule"]))
+    == Error(store.Invalid([FieldError("ids", "select at least one rule")]))
 }
 
 /// The preview of an import tells exactly what the import then changes: a
@@ -1156,8 +1222,8 @@ pub fn versioned_set_changes_test() {
 pub fn import_preview_matches_the_import_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(a) = store.create(s, new_rule("/a", "/1"), by: "t")
-  let assert Ok(b) = store.create(s, new_rule("/b", "/2"), by: "t")
+  let assert Ok(a) = store_support.create(s, new_rule("/a", "/1"), by: "t")
+  let assert Ok(b) = store_support.create(s, new_rule("/b", "/2"), by: "t")
   let before = store.all(s)
   let incoming = [
     Rule(..a, updated_at: "", updated_by: "someone"),
@@ -1166,11 +1232,12 @@ pub fn import_preview_matches_the_import_test() {
     Rule(..new_rule("/c", "/3"), id: "c"),
   ]
   let assert Ok(#(preview, _)) =
-    store.preview_import(s, incoming, store.Merge, by: "t")
+    store_support.preview_import(s, incoming, store.Merge, by: "t")
   assert preview.added == ["c"]
   assert preview.changed == [b.id]
   assert preview.removed == []
-  let assert Ok(3) = store.import_rules(s, incoming, store.Merge, by: "t")
+  let assert Ok(3) =
+    store_support.import_rules(s, incoming, store.Merge, by: "t")
   let after = store.all(s)
   let applied = store_rules.diff(before, after)
   assert applied.added == preview.added
@@ -1184,7 +1251,8 @@ pub fn import_preview_matches_the_import_test() {
 pub fn hit_counts_survive_a_restart_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(created) = store.create(s, new_rule("/counted", "/x"), by: "t")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/counted", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   matcher.record_hit(snapshot.current(), created.id)
   support.with_draining(fn() { wait_for_file(dir <> "/hits.json", 30) })
@@ -1202,7 +1270,8 @@ pub fn hit_counts_survive_a_restart_test() {
 pub fn hits_counted_while_draining_are_kept_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(created) = store.create(s, new_rule("/drained", "/x"), by: "t")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/drained", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   support.with_draining(fn() {
     wait_for_file(dir <> "/hits.json", 30)
@@ -1234,26 +1303,26 @@ pub fn scheduled_rules_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/sale", "/summer"), expires_at: "2000-01-01T00:00:00Z"),
       by: "t",
     )
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/sale", "/winter"), starts_at: "2000-01-01T00:00:00Z"),
       by: "t",
     )
   assert redirect("/sale") == Ok("/winter")
   let assert Error([overlap]) =
-    store.create(s, new_rule("/sale", "/always"), by: "t")
+    store_support.create(s, new_rule("/sale", "/always"), by: "t")
   assert string.contains(overlap, "at the same time")
 
   // a rule starting in 2 seconds and expiring in 3
   let now = ffi.now_seconds()
   let assert Ok(_) =
-    store.create(
+    store_support.create(
       s,
       Rule(
         ..new_rule("/soon", "/started"),
@@ -1273,18 +1342,30 @@ pub fn scheduled_rules_test() {
 pub fn query_rules_conflicts_and_loops_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(_) = store.create(s, new_rule("/q", "/plain"), by: "t")
+  let assert Ok(_) = store_support.create(s, new_rule("/q", "/plain"), by: "t")
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/q", "/a"), query: "a=1&b=2"), by: "t")
+    store_support.create(
+      s,
+      Rule(..new_rule("/q", "/a"), query: "a=1&b=2"),
+      by: "t",
+    )
   let assert Error([same]) =
-    store.create(s, Rule(..new_rule("/q", "/b"), query: "b=2&a=1"), by: "t")
+    store_support.create(
+      s,
+      Rule(..new_rule("/q", "/b"), query: "b=2&a=1"),
+      by: "t",
+    )
   assert string.contains(same, "at the same time")
   let assert Error([loop]) =
-    store.create(s, Rule(..new_rule("/l", "/l?x=1"), query: "x=1"), by: "t")
+    store_support.create(
+      s,
+      Rule(..new_rule("/l", "/l?x=1"), query: "x=1"),
+      by: "t",
+    )
   assert string.contains(loop, "redirect loop")
   // the target keeps the query that matched: the same request again
   let assert Error([loop]) =
-    store.create(
+    store_support.create(
       s,
       Rule(..new_rule("/p", "/p"), query: "x=1", preserve_query: True),
       by: "t",
@@ -1292,7 +1373,7 @@ pub fn query_rules_conflicts_and_loops_test() {
   assert string.contains(loop, "redirect loop")
   // without it, the query is not asked again
   let assert Ok(_) =
-    store.create(s, Rule(..new_rule("/p", "/p"), query: "x=1"), by: "t")
+    store_support.create(s, Rule(..new_rule("/p", "/p"), query: "x=1"), by: "t")
 }
 
 @external(erlang, "test_log_ffi", "capture_start")
@@ -1316,7 +1397,8 @@ pub fn an_update_warns_about_an_uncovered_loop_test() {
   let s = start(settings(dir, 0))
   let assert Ok(shadow) = store.get(s, "shadow")
   capture_logs()
-  let assert Ok(_) = store.update(s, Rule(..shadow, source: "/b"), by: "t")
+  let assert Ok(_) =
+    store_support.update(s, Rule(..shadow, source: "/b"), by: "t")
   // logged after the change is answered, by the store's checker
   assert logged_within("redirect loop", 5000)
 }
@@ -1326,7 +1408,8 @@ pub fn an_update_warns_about_an_uncovered_loop_test() {
 pub fn unchanged_hits_are_not_rewritten_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(created) = store.create(s, new_rule("/idle", "/x"), by: "t")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/idle", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
   let path = dir <> "/hits.json"
@@ -1362,12 +1445,16 @@ pub fn deleting_a_rule_saves_the_counts_at_once_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
   let assert Ok(created) =
-    store.create(s, Rule(..new_rule("/promo", "/x"), id: "promo"), by: "t")
+    store_support.create(
+      s,
+      Rule(..new_rule("/promo", "/x"), id: "promo"),
+      by: "t",
+    )
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
   let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
   assert string.contains(saved, "\"promo\"")
-  let assert Ok(_) = store.delete(s, "promo", by: "t")
+  let assert Ok(_) = store_support.delete(s, "promo", by: "t")
   let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
   assert !string.contains(saved, "\"promo\"")
 }
@@ -1377,7 +1464,8 @@ pub fn deleting_a_rule_saves_the_counts_at_once_test() {
 pub fn the_counts_file_is_kept_test() {
   let dir = support.temp_dir()
   let s = start(settings(dir, 0))
-  let assert Ok(created) = store.create(s, new_rule("/kept", "/x"), by: "t")
+  let assert Ok(created) =
+    store_support.create(s, new_rule("/kept", "/x"), by: "t")
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
   let assert Ok(Nil) = simplifile.delete(dir <> "/hits.json")
@@ -1426,12 +1514,15 @@ pub fn changes_of_callers_gone_are_not_made_test() {
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
   let first = process.new_subject()
   process.spawn(fn() {
-    process.send(first, store.create(s, new_rule("/kept", "/t"), by: "first"))
+    process.send(
+      first,
+      store_support.create(s, new_rule("/kept", "/t"), by: "first"),
+    )
   })
   process.sleep(100)
   let gone =
     process.spawn_unlinked(fn() {
-      store.create(s, new_rule("/gone", "/t"), by: "gone")
+      store_support.create(s, new_rule("/gone", "/t"), by: "gone")
     })
   process.sleep(100)
   process.kill(gone)
@@ -1455,13 +1546,14 @@ pub fn changes_abandoned_while_waiting_for_the_lock_are_not_made_test() {
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
   let gone =
     process.spawn_unlinked(fn() {
-      store.create(s, new_rule("/gone", "/t"), by: "gone")
+      store_support.create(s, new_rule("/gone", "/t"), by: "gone")
     })
   // the store has taken the change and waits for the lock
   process.sleep(200)
   process.kill(gone)
   let assert Ok(Nil) = simplifile.delete(lock)
-  let assert Ok(_) = store.create(s, new_rule("/after", "/t"), by: "after")
+  let assert Ok(_) =
+    store_support.create(s, new_rule("/after", "/t"), by: "after")
 
   assert list.map(store.all(s), fn(r) { r.source }) == ["/after"]
   let assert Ok(audit) = simplifile.read(dir <> "/audit.jsonl")
@@ -1492,7 +1584,7 @@ pub fn a_lock_held_long_is_not_taken_over_test() {
     process.send(held, Nil)
   })
   let assert Ok(Nil) = process.receive(held, 1000)
-  let created = store.create(s, new_rule("/server", "/t"), by: "server")
+  let created = store_support.create(s, new_rule("/server", "/t"), by: "server")
   let released = process.receive(held, 5000)
   ffi.clear_tunable("stale_lock_seconds")
   let assert Ok(_) = created
