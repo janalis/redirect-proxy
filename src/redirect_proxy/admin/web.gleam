@@ -9,7 +9,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
@@ -19,6 +18,7 @@ import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
 import redirect_proxy/http_security
 import redirect_proxy/log
+import redirect_proxy/oidc_provider as provider
 import redirect_proxy/store.{type Store}
 import redirect_proxy/users
 import wisp.{type Request, type Response}

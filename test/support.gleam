@@ -14,11 +14,11 @@ import gleam/list
 import gleam/result
 import gleam/string
 import mist
-import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/app
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/oidc_provider as provider
 import simplifile
 
 /// Creates a fresh, empty temporary directory.

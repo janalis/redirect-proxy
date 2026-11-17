@@ -12,10 +12,10 @@ import integration_support.{
   session_cookie, sso_login, start_fake_idp,
 }
 import redirect_proxy/admin/auth/header
-import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/audit
 import redirect_proxy/config
 import redirect_proxy/ffi
+import redirect_proxy/oidc_provider as provider
 import simplifile
 
 /// Each SSO start holds a pending login attempt: one address cannot start

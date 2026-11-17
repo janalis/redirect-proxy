@@ -1,6 +1,6 @@
 //// OpenID Connect single sign-on: the authorization code flow with PKCE,
 //// ID token checks and authorisation. Provider metadata and keys come from
-//// `oidc/provider`.
+//// `redirect_proxy/oidc_provider`.
 
 import gleam/bit_array
 import gleam/bool
@@ -13,13 +13,13 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/admin/auth/oidc/provider.{
-  type Provider, discover, dispatch, purge_expired as purge_provider_cache,
-  table, trim_trailing_slash, verify_signature,
-} as _
 import redirect_proxy/config.{type OidcConfig}
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/oidc_provider.{
+  type Provider, discover, dispatch, purge_expired as purge_provider_cache,
+  table, trim_trailing_slash, verify_signature,
+} as _
 import redirect_proxy/ratelimit
 import redirect_proxy/role.{type Role}
 
