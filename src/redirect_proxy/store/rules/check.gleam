@@ -89,7 +89,7 @@ fn follow_loop(
 ) -> #(Result(Nil, List(FieldError)), Later) {
   use <- bool.guard(!changed.enabled, #(Ok(Nil), later))
   let found = fn(matcher) {
-    matcher_loop.redirect_loop(matcher, changed, ignore_trailing_slash)
+    matcher_loop.redirect_loop(matcher, rules, changed, ignore_trailing_slash)
   }
   let refused = fn(cycle) {
     Error([FieldError("target", "redirect loop: " <> describe_cycle(cycle))])
@@ -264,7 +264,7 @@ pub fn warn_loops(
     rules
     |> list.filter(fn(r) { r.enabled })
     |> list.fold(set.new(), fn(reported, r) {
-      case matcher_loop.redirect_loop(built, r, ignore_trailing_slash) {
+      case matcher_loop.redirect_loop(built, rules, r, ignore_trailing_slash) {
         Error(Nil) -> reported
         Ok(cycle) -> {
           let key =

@@ -159,7 +159,8 @@ pub fn every_exact_rule_is_reachable_test() {
     }
     let assert Ok(found) = matcher.lookup(m, host, r.source)
     // a host-specific rule may shadow a wildcard one for the same path
-    assert found.rule.source == r.source
+    let assert Ok(rule) = matcher.rule_of(found, unique)
+    assert rule.source == r.source
   })
 }
 
@@ -874,7 +875,7 @@ pub fn query_rules_match_like_the_reference_test() {
       |> result.map(fn(entry) { { entry.1 }.id })
     let found =
       matcher.lookup_query(matcher.build(rules), "x.test", path, query)
-      |> result.map(fn(m) { m.rule.id })
+      |> result.map(fn(m) { m.redirect.id })
     assert found == expected
   })
 }
@@ -963,7 +964,7 @@ pub fn listener_host_agrees_with_normalise_request_host_test() {
   assert text_ffi.listener_host(host)
     == #(normalised, rule.is_host_name(normalised))
   let found = fn(r: Result(matcher.Match, Nil)) {
-    result.map(r, fn(m) { #(m.rule.id, m.location) })
+    result.map(r, fn(m) { #(m.redirect.id, m.location) })
   }
   assert found(matcher.lookup_listener(m, host, "/x", "", False))
     == found(matcher.lookup_query(m, host, "/x", ""))

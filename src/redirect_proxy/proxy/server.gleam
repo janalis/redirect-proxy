@@ -484,11 +484,11 @@ fn route_rules(
           matcher.record_match(current, m)
           Answered(
             redirect(
-              m.rule.status,
+              m.redirect.status,
               matcher.location(m, option_to_result(req.query)),
               permanent_cache,
             ),
-            m.rule.id,
+            m.redirect.id,
           )
         }
         Error(Nil) if upstream -> Unanswered

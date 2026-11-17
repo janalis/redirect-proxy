@@ -30,7 +30,7 @@ fn location(
 
 fn matched_id(m: matcher.Matcher, host: String, path: String) -> String {
   let assert Ok(found) = matcher.lookup(m, host, path)
-  found.rule.id
+  found.redirect.id
 }
 
 pub fn exact_match_test() {
@@ -369,7 +369,8 @@ pub fn redirect_loop_test() {
   let to_c = r("1", "example.com", rule.Exact, "/x", "https://other.test/y")
   let back = r("2", "other.test", rule.Exact, "/y", "https://example.com/x")
   let plain = r("3", "*", rule.Prefix, "/old/", "/new/$1")
-  let m = matcher.build([prefix, to_c, back, plain])
+  let rules = [prefix, to_c, back, plain]
+  let m = matcher.build(rules)
   let ids = fn(result) {
     case result {
       Ok(cycle) -> Ok(list.map(cycle, fn(x: rule.Rule) { x.id }))
@@ -377,12 +378,13 @@ pub fn redirect_loop_test() {
     }
   }
   // /a/x -> /a/b/x -> /a/b/b/x ...
-  let assert Ok(growing) = matcher_loop.redirect_loop(m, prefix, False)
+  let assert Ok(growing) = matcher_loop.redirect_loop(m, rules, prefix, False)
   assert list.length(growing) == 21
   assert list.all(growing, fn(r) { r.id == "p" })
   // across hosts
-  assert ids(matcher_loop.redirect_loop(m, to_c, False)) == Ok(["1", "2", "1"])
-  assert matcher_loop.redirect_loop(m, plain, False) == Error(Nil)
+  assert ids(matcher_loop.redirect_loop(m, rules, to_c, False))
+    == Ok(["1", "2", "1"])
+  assert matcher_loop.redirect_loop(m, rules, plain, False) == Error(Nil)
 }
 
 pub fn shadowed_rule_is_not_a_loop_test() {
@@ -390,7 +392,8 @@ pub fn shadowed_rule_is_not_a_loop_test() {
   let prefix = r("p", "*", rule.Prefix, "/a/", "/a/b")
   let exact = r("e", "*", rule.Exact, "/a/b", "/done")
   let m = matcher.build([prefix, exact])
-  assert matcher_loop.redirect_loop(m, prefix, False) == Error(Nil)
+  assert matcher_loop.redirect_loop(m, [prefix, exact], prefix, False)
+    == Error(Nil)
 }
 
 pub fn wildcard_hosts_test() {
@@ -521,8 +524,8 @@ pub fn redirect_loop_through_trailing_slash_retry_test() {
   // /docs misses, is retried as /docs/ and redirected to /docs again
   let slash = r("s", "*", rule.Exact, "/docs/", "/docs")
   let m = matcher.build([slash])
-  assert matcher_loop.redirect_loop(m, slash, False) == Error(Nil)
-  let assert Ok(chain) = matcher_loop.redirect_loop(m, slash, True)
+  assert matcher_loop.redirect_loop(m, [slash], slash, False) == Error(Nil)
+  let assert Ok(chain) = matcher_loop.redirect_loop(m, [slash], slash, True)
   // /docs/ -> /docs -> /docs: the URL repeats only after the second hop.
   assert list.map(chain, fn(r) { r.id }) == ["s", "s", "s"]
 }
@@ -820,7 +823,10 @@ pub fn prefix_index_with_many_lengths_test() {
   let m = matcher.build(rules)
   let target = fn(path) {
     case matcher.lookup(m, "x.test", path) {
-      Ok(found) -> found.rule.target
+      Ok(found) -> {
+        let assert Ok(r) = matcher.rule_of(found, rules)
+        r.target
+      }
       Error(Nil) -> ""
     }
   }
@@ -867,7 +873,8 @@ pub fn wildcard_host_loops_are_detected_test() {
   let looping =
     r("w", "*.example.com", rule.Prefix, "/old", "https://${host}/old$1")
   let m = matcher.build([looping])
-  let assert Ok([first, again]) = matcher_loop.redirect_loop(m, looping, False)
+  let assert Ok([first, again]) =
+    matcher_loop.redirect_loop(m, [looping], looping, False)
   assert first.id == "w" && again.id == "w"
   let sub =
     r(
@@ -878,10 +885,10 @@ pub fn wildcard_host_loops_are_detected_test() {
       "https://${sub}.example.com/go$1",
     )
   let m = matcher.build([sub])
-  assert matcher_loop.redirect_loop(m, sub, False) |> result.is_ok
+  assert matcher_loop.redirect_loop(m, [sub], sub, False) |> result.is_ok
   // one that leaves the domain does not loop
   let away = r("a", "*.example.com", rule.Prefix, "/x", "https://new.test/x$1")
-  assert matcher_loop.redirect_loop(matcher.build([away]), away, False)
+  assert matcher_loop.redirect_loop(matcher.build([away]), [away], away, False)
     == Error(Nil)
 }
 
@@ -896,7 +903,7 @@ pub fn explain_reports_endless_chains_test() {
   assert explained.loops
   assert list.length(explained.chain) == 21
   let assert Ok(checked) =
-    matcher_loop.redirect_loop(matcher.build(rules), growing, False)
+    matcher_loop.redirect_loop(matcher.build(rules), rules, growing, False)
   assert list.length(checked) == list.length(explained.chain)
   // a chain of 15 redirects that ends is not one
   let ends =
@@ -910,7 +917,7 @@ pub fn explain_reports_endless_chains_test() {
   assert !explained.loops
   assert list.length(explained.chain) == 15
   let assert Ok(first) = list.find(ends, fn(r) { r.source == "/1" })
-  assert matcher_loop.redirect_loop(matcher.build(ends), first, False)
+  assert matcher_loop.redirect_loop(matcher.build(ends), ends, first, False)
     == Error(Nil)
 }
 
@@ -1066,7 +1073,7 @@ pub fn redirect_destinations_use_browser_backslashes_test() {
       let r = r("loop", "h", rule.Exact, "/a", target)
       let assert Ok(r) = rule.validate(r)
       let m = matcher.build([r])
-      let assert Ok(chain) = matcher_loop.redirect_loop(m, r, False)
+      let assert Ok(chain) = matcher_loop.redirect_loop(m, [r], r, False)
       assert list.map(chain, fn(r) { r.id }) == ["loop", "loop"]
       let assert Ok(explained) = explain.explain(m, [r], "http://h/a", False)
       assert explained.loops
@@ -1138,7 +1145,7 @@ pub fn explanation_exact_order_matches_runtime_test() {
     let assert Ok(e) =
       explain.explain(m, rules, "http://h.test/Page?id=42&lang=fr", False)
     let assert [first, ..] = e.candidates
-    assert first.rule.id == found.rule.id
+    assert first.rule.id == found.redirect.id
     assert first.verdict == explain.Applied
     list.map(e.candidates, fn(c) { c.rule.id })
   }
@@ -1161,13 +1168,18 @@ pub fn repeated_rules_with_new_urls_can_terminate_test() {
   let exit = r("exit", "*", rule.Prefix, "/abb", "/done")
   let rules = [grow, exit]
   let m = matcher.build(rules)
-  assert matcher_loop.redirect_loop(m, grow, False) == Error(Nil)
+  assert matcher_loop.redirect_loop(m, rules, grow, False) == Error(Nil)
   let assert Ok(e) = explain.explain(m, rules, "http://h/aloop-check", False)
   assert !e.loops
   assert list.map(e.chain, fn(hop) { hop.rule_id }) == ["grow", "grow", "exit"]
   let assert Ok(grow) = rule.validate(grow)
   let assert Ok(exit) = rule.validate(exit)
-  assert matcher_loop.redirect_loop(matcher.build([grow, exit]), grow, False)
+  assert matcher_loop.redirect_loop(
+      matcher.build([grow, exit]),
+      [grow, exit],
+      grow,
+      False,
+    )
     == Error(Nil)
 }
 
@@ -1175,14 +1187,15 @@ pub fn redirect_loop_states_include_host_and_query_test() {
   let cross = r("cross", "*", rule.Exact, "/a", "http://b.test/a")
   let exit = r("exit", "b.test", rule.Exact, "/a", "/done")
   let m = matcher.build([cross, exit])
-  assert matcher_loop.redirect_loop(m, cross, False) == Error(Nil)
+  assert matcher_loop.redirect_loop(m, [cross, exit], cross, False)
+    == Error(Nil)
   let assert Ok(e) = explain.explain(m, [cross, exit], "http://a.test/a", False)
   assert !e.loops
   let first = r("query", "*", rule.Exact, "/a", "/a?x=1")
   let second = Rule(..r("exit", "*", rule.Exact, "/a", "/done"), query: "x=1")
   let rules = [first, second]
   let m = matcher.build(rules)
-  assert matcher_loop.redirect_loop(m, first, False) == Error(Nil)
+  assert matcher_loop.redirect_loop(m, rules, first, False) == Error(Nil)
   let assert Ok(e) = explain.explain(m, rules, "http://h/a", False)
   assert !e.loops
 }

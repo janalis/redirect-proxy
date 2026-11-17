@@ -641,26 +641,38 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
   // one read of the published rules: the result and its explanation come
   // from the same rule set, even if a change is published in between
   let current = snapshot.current()
-  let result = case string.trim(url) {
-    "" -> tester_view.NotTested
+  let resolution = case string.trim(url) {
+    "" -> None
     url ->
-      case
-        matcher.resolve_url(
-          current,
-          url,
-          config.ignore_trailing_slash(ctx.config),
-        )
-      {
-        matcher.Redirected(m, location) -> tester_view.Matched(m.rule, location)
-        matcher.NotMatched -> tester_view.NoMatch
-        matcher.BadUrl -> tester_view.InvalidUrl
+      Some(matcher.resolve_url(
+        current,
+        url,
+        config.ignore_trailing_slash(ctx.config),
+      ))
+  }
+  // the matched rule's other fields are the store's (read once: they are
+  // copied from its table)
+  let rules = case resolution {
+    Some(matcher.Redirected(..)) | Some(matcher.NotMatched) ->
+      store.all(ctx.store)
+    _ -> []
+  }
+  let result = case resolution {
+    None -> tester_view.NotTested
+    Some(matcher.Redirected(m, location)) ->
+      case matcher.rule_of(m, rules) {
+        Ok(r) -> tester_view.Matched(r, location)
+        // removed since the matcher was read
+        Error(Nil) -> tester_view.NoMatch
       }
+    Some(matcher.NotMatched) -> tester_view.NoMatch
+    Some(matcher.BadUrl) -> tester_view.InvalidUrl
   }
   let explanation = case result {
     tester_view.Matched(..) | tester_view.NoMatch ->
       explain.explain(
         current,
-        store.all(ctx.store),
+        rules,
         url,
         config.ignore_trailing_slash(ctx.config),
       )

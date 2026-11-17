@@ -28,9 +28,11 @@ const loop_check_label = "loop-check"
 /// cannot be sampled (they may still be part of a cycle started elsewhere);
 /// a rule shadowed by another one for its sample request is not checked.
 /// With `ignore_trailing_slash`, a request that misses is retried with or
-/// without its trailing slash, as the redirect listener does.
+/// without its trailing slash, as the redirect listener does. `rules` are
+/// those `matcher` was built from: the traversed rules are taken from them.
 pub fn redirect_loop(
   matcher: Matcher,
+  rules: List(Rule),
   r: Rule,
   ignore_trailing_slash: Bool,
 ) -> Result(List(Rule), Nil) {
@@ -54,16 +56,20 @@ pub fn redirect_loop(
     h -> h
   }
   case lookup(matcher, host, path, r.query) {
-    Ok(first) if first.rule.id == r.id ->
+    Ok(first) if first.redirect.id == r.id ->
       follow(
         lookup,
         matcher,
         host,
         r.query,
         first,
-        [r],
+        [r.id],
         set.from_list([request_key(host, path, r.query)]),
         20,
+      )
+      // only a loop, rarely, has its rules looked up
+      |> result.map(
+        list.filter_map(_, fn(id) { list.find(rules, fn(r) { r.id == id }) }),
       )
     _ -> Error(Nil)
   }
@@ -75,10 +81,10 @@ fn follow(
   host: String,
   query: String,
   current: Match,
-  chain: List(Rule),
+  chain: List(String),
   seen: set.Set(#(String, String, String)),
   hops: Int,
-) -> Result(List(Rule), Nil) {
+) -> Result(List(String), Nil) {
   // `query`, the one of the request `current` answers: kept by rules that
   // preserve it
   use #(host, path, query) <- result.try(next_request(
@@ -88,7 +94,7 @@ fn follow(
   use next <- result.try(lookup(matcher, host, path, query))
   let key = request_key(host, path, query)
   case set.contains(seen, key), hops == 0 {
-    True, _ -> Ok(list.reverse([next.rule, ..chain]))
+    True, _ -> Ok(list.reverse([next.redirect.id, ..chain]))
     False, True -> Ok(list.reverse(chain))
     False, False ->
       follow(
@@ -97,7 +103,7 @@ fn follow(
         host,
         query,
         next,
-        [next.rule, ..chain],
+        [next.redirect.id, ..chain],
         set.insert(seen, key),
         hops - 1,
       )

@@ -626,8 +626,9 @@ pub fn test_url(req: Request, ctx: Context) -> Response {
         "url must be an absolute URL, e.g. https://host/path.",
       )
     resolution -> {
-      let explanation =
-        explain.explain(current, store.all(ctx.store), url, tolerant)
+      // the matched rule's other fields are the store's
+      let rules = store.all(ctx.store)
+      let explanation = explain.explain(current, rules, url, tolerant)
       let details = case explanation {
         Ok(e) -> [
           #(
@@ -653,19 +654,26 @@ pub fn test_url(req: Request, ctx: Context) -> Response {
         ]
         Error(Nil) -> []
       }
-      case resolution {
+      let matched = case resolution {
         matcher.Redirected(m, location) ->
+          // an error when removed since the matcher was read
+          matcher.rule_of(m, rules)
+          |> result.map(fn(r) { #(m, location, r) })
+        _ -> Error(Nil)
+      }
+      case matched {
+        Ok(#(m, location, r)) ->
           problem.json_response(
             200,
             json.object([
               #("matched", json.bool(True)),
-              #("status", json.int(m.rule.status)),
+              #("status", json.int(m.redirect.status)),
               #("location", json.string(location)),
-              #("rule", rule_json(m.rule)),
+              #("rule", rule_json(r)),
               ..details
             ]),
           )
-        _ ->
+        Error(Nil) ->
           problem.json_response(
             200,
             json.object([#("matched", json.bool(False)), ..details]),

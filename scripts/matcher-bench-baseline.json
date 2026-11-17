@@ -6,7 +6,7 @@
     "host_hit": 102,
     "miss": 444,
     "prefix_hit": 320,
-    "query_hit": 328,
+    "query_hit": 303,
     "regex_indexed_hit": 273,
     "regex_unindexed_last": 583,
     "tolerant_miss": 784,

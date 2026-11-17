@@ -309,7 +309,7 @@ pub fn explanation_agrees_with_lookup_test() {
   })
   case found {
     Ok(m) -> {
-      assert list.map(applied, fn(c) { c.rule.id }) == [m.rule.id]
+      assert list.map(applied, fn(c) { c.rule.id }) == [m.redirect.id]
       let request_query = case query {
         "" -> Error(Nil)
         q -> Ok(q)
@@ -318,8 +318,8 @@ pub fn explanation_agrees_with_lookup_test() {
       assert first
         == explain.Hop(
           matcher.location(m, request_query),
-          m.rule.status,
-          m.rule.id,
+          m.redirect.status,
+          m.redirect.id,
         )
     }
     Error(Nil) -> {

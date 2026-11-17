@@ -80,7 +80,7 @@ pub fn explain(
   let applied = find(host, path, request_query)
   let now = system_ffi.now_seconds()
   let applied_id = case applied {
-    Ok(m) -> m.rule.id
+    Ok(m) -> m.redirect.id
     Error(Nil) -> ""
   }
   let candidates =
@@ -111,7 +111,12 @@ pub fn explain(
     Ok(m) ->
       case list.any(candidates, fn(c) { c.verdict == Applied }) {
         True -> candidates
-        False -> [Candidate(m.rule, Applied), ..candidates]
+        False ->
+          case matcher.rule_of(m, rules) {
+            Ok(r) -> [Candidate(r, Applied), ..candidates]
+            // `rules` read after a change that removed it
+            Error(Nil) -> candidates
+          }
       }
     Error(Nil) -> candidates
   }
@@ -249,7 +254,10 @@ fn follow(
   chain: List(Hop),
   hops: Int,
 ) -> #(List(Hop), Bool) {
-  let chain = [Hop(location, current.rule.status, current.rule.id), ..chain]
+  let chain = [
+    Hop(location, current.redirect.status, current.redirect.id),
+    ..chain
+  ]
   case loop.next_request(host, location) {
     Error(Nil) -> #(list.reverse(chain), False)
     Ok(#(next_host, next_path, next_query)) -> {

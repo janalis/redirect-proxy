@@ -22,6 +22,11 @@
 //// every rule (`record_hit`): a lock-free `counters` array, carried over to
 //// the next matcher by rule id (`carry_hits`) and kept across restarts by
 //// the store (`hit_records`, `seed_hits`).
+////
+//// Entries keep only what a redirect needs of their rule (`Redirect`): the
+//// matcher is copied whole each time it is published, and every rule is
+//// held by the store already (`store.all`), where the URL testers and the
+//// loop checks find the rest of it by id.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -66,11 +71,10 @@ type HostRules {
     /// Whether some exact rule with query conditions is case-insensitive:
     /// otherwise the path is not lower-cased to look them up.
     exact_query_ci: Bool,
-    /// Exact rules, with their target as a header value
-    /// (`text_ffi.header_value`, computed once: an exact rule's location is
-    /// its target) and their hit slot.
-    exact: Dict(String, #(Rule, String, Int)),
-    exact_ci: Dict(String, #(Rule, String, Int)),
+    /// Exact rules, as the match they give (their location is their
+    /// target, as a header value: computed once).
+    exact: Dict(String, Match),
+    exact_ci: Dict(String, Match),
     /// Case-sensitive prefix rules, keyed by their source.
     prefix: Index(PrefixRule),
     /// Case-insensitive prefix rules, keyed by their lower-cased source and
@@ -103,8 +107,9 @@ const leaf_lengths = 4
 
 type QueryRule {
   QueryRule(
-    rule: Rule,
-    slot: Int,
+    match: Match,
+    case_insensitive: Bool,
+    priority: Int,
     conditions: List(#(String, String)),
     file_rank: Int,
   )
@@ -125,8 +130,12 @@ type QueryGroup {
 type PrefixRule {
   PrefixRule(
     rank: Int,
-    rule: Rule,
-    slot: Int,
+    redirect: Redirect,
+    /// Normalised (`text_ffi.normalise_path`).
+    source: String,
+    case_insensitive: Bool,
+    whole_segments: Bool,
+    priority: Int,
     template: template.Template,
     guard: template.TargetGuard,
   )
@@ -135,18 +144,30 @@ type PrefixRule {
 type RegexRule {
   RegexRule(
     rank: Int,
-    rule: Rule,
-    slot: Int,
+    redirect: Redirect,
     regex: regex_ffi.CompiledRegex,
     template: template.Template,
     guard: template.TargetGuard,
   )
 }
 
+/// What a redirect needs of the rule that matched. `slot`: the rule's hit
+/// slot (`record_match`). The whole rule is the store's, by `id`
+/// (`rule_of`).
+pub type Redirect {
+  Redirect(id: String, status: Int, preserve_query: Bool, slot: Int)
+}
+
 pub type Match {
-  /// `location`: a header value already (`text_ffi.header_value`). `slot`: the
-  /// rule's hit slot (`record_match`).
-  Match(rule: Rule, location: String, slot: Int)
+  /// `location`: a header value already (`text_ffi.header_value`).
+  Match(redirect: Redirect, location: String)
+}
+
+/// The rule of a match, among `rules` (those the matcher was built from):
+/// an error when it is not among them (rules read after a change that
+/// removed it).
+pub fn rule_of(m: Match, rules: List(Rule)) -> Result(Rule, Nil) {
+  list.find(rules, fn(r) { r.id == m.redirect.id })
 }
 
 pub fn empty() -> Matcher {
@@ -193,17 +214,7 @@ pub fn build(rules: List(Rule)) -> Matcher {
 
 /// The matcher `build` gives at `now` (seconds): the rules active then.
 pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
-  let enabled =
-    rules
-    |> list.filter(rule.is_active(_, now))
-    // paths are compared in one form: see `text_ffi.normalise_path`
-    |> list.map(fn(r) {
-      case r.kind {
-        Regex -> r
-        Exact | Prefix ->
-          rule.Rule(..r, source: text_ffi.normalise_path(r.source))
-      }
-    })
+  let enabled = list.filter(rules, rule.is_active(_, now))
   let #(slots, count) =
     list.fold(rules, #(dict.new(), 0), fn(acc, r) {
       let #(slots, count) = acc
@@ -250,7 +261,7 @@ pub fn record_hit(matcher: Matcher, rule_id: String) -> Nil {
 /// `record_hit` for the rule of a match `matcher` found: the slot came
 /// with the match, the rule id is not looked up again.
 pub fn record_match(matcher: Matcher, m: Match) -> Nil {
-  record_slot(matcher, m.slot)
+  record_slot(matcher, m.redirect.slot)
 }
 
 fn record_slot(matcher: Matcher, slot: Int) -> Nil {
@@ -268,6 +279,26 @@ fn slot_of(slots: Dict(String, Int), r: Rule) -> Int {
     Ok(slot) -> slot
     Error(Nil) -> panic as "every rule has a slot"
   }
+}
+
+fn redirect_of(slots: Dict(String, Int), r: Rule) -> Redirect {
+  Redirect(
+    id: r.id,
+    status: r.status,
+    preserve_query: r.preserve_query,
+    slot: slot_of(slots, r),
+  )
+}
+
+/// The source of an exact or prefix rule as paths are compared: see
+/// `text_ffi.normalise_path`.
+fn path_source(r: Rule) -> String {
+  text_ffi.normalise_path(r.source)
+}
+
+/// An exact rule's match: its location is its target.
+fn exact_match(slots: Dict(String, Int), r: Rule) -> Match {
+  Match(redirect_of(slots, r), text_ffi.header_value(r.target))
 }
 
 /// Hits of a rule (kept across restarts by the store).
@@ -345,15 +376,25 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
   let exact_query =
     with_query
     |> list.index_map(fn(r, file_rank) {
-      QueryRule(r, slot_of(slots, r), rule.query_conditions(r), file_rank)
-    })
-    |> list.sort(compare_query_rules)
-    |> list.reverse
-    |> list.fold(dict.new(), fn(acc, q) {
-      let key = case q.rule.case_insensitive {
-        True -> string.lowercase(q.rule.source)
-        False -> q.rule.source
+      let key = case r.case_insensitive {
+        True -> string.lowercase(path_source(r))
+        False -> path_source(r)
       }
+      #(
+        key,
+        QueryRule(
+          match: exact_match(slots, r),
+          case_insensitive: r.case_insensitive,
+          priority: r.priority,
+          conditions: rule.query_conditions(r),
+          file_rank:,
+        ),
+      )
+    })
+    |> list.sort(fn(a, b) { compare_query_rules(a.1, b.1) })
+    |> list.reverse
+    |> list.fold(dict.new(), fn(acc, keyed) {
+      let #(key, q) = keyed
       dict.upsert(acc, key, fn(group) { [q, ..option.unwrap(group, [])] })
     })
     |> dict.map_values(fn(_, rules) { query_group(rules) })
@@ -361,30 +402,21 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
     rules
     |> list.filter(fn(r) { r.kind == Exact && !r.case_insensitive })
     |> list.fold(dict.new(), fn(acc, r) {
+      let key = path_source(r)
       // first rule wins on duplicates
-      case dict.has_key(acc, r.source) {
+      case dict.has_key(acc, key) {
         True -> acc
-        False ->
-          dict.insert(acc, r.source, #(
-            r,
-            text_ffi.header_value(r.target),
-            slot_of(slots, r),
-          ))
+        False -> dict.insert(acc, key, exact_match(slots, r))
       }
     })
   let exact_ci =
     rules
     |> list.filter(fn(r) { r.kind == Exact && r.case_insensitive })
     |> list.fold(dict.new(), fn(acc, r) {
-      let key = string.lowercase(r.source)
+      let key = string.lowercase(path_source(r))
       case dict.has_key(acc, key) {
         True -> acc
-        False ->
-          dict.insert(acc, key, #(
-            r,
-            text_ffi.header_value(r.target),
-            slot_of(slots, r),
-          ))
+        False -> dict.insert(acc, key, exact_match(slots, r))
       }
     })
   let prefix =
@@ -393,14 +425,17 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
     |> list.index_map(fn(r, rank) {
       PrefixRule(
         rank:,
-        rule: r,
-        slot: slot_of(slots, r),
+        redirect: redirect_of(slots, r),
+        source: path_source(r),
+        case_insensitive: r.case_insensitive,
+        whole_segments: r.whole_segments,
+        priority: r.priority,
         template: template.compile_template(r.target),
         guard: template.target_guard(r.target),
       )
     })
   let #(prefix_ci, prefix) =
-    list.partition(prefix, fn(p) { p.rule.case_insensitive })
+    list.partition(prefix, fn(p) { p.case_insensitive })
   let regex =
     rules
     |> list.filter(fn(r) { r.kind == Regex })
@@ -411,26 +446,30 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
     })
     |> list.index_map(fn(entry, rank) {
       let #(r, regex) = entry
-      RegexRule(
-        rank:,
-        rule: r,
-        slot: slot_of(slots, r),
-        regex:,
-        template: template.compile_template(r.target),
-        guard: template.target_guard(r.target),
+      #(
+        regex_literal(r),
+        RegexRule(
+          rank:,
+          redirect: redirect_of(slots, r),
+          regex:,
+          template: template.compile_template(r.target),
+          guard: template.target_guard(r.target),
+        ),
       )
     })
   let #(regex_unindexed, regex) =
-    list.partition(regex, fn(r) { regex_literal(r.rule) == "" })
+    list.partition(regex, fn(keyed) { keyed.0 == "" })
   HostRules(
     exact_query:,
     exact_query_ci: list.any(with_query, fn(r) { r.case_insensitive }),
     exact:,
     exact_ci:,
-    prefix: index(prefix, fn(p) { p.rule.source }),
-    prefix_ci: index(prefix_ci, fn(p) { string.lowercase(p.rule.source) }),
-    regex: index(regex, fn(r) { regex_literal(r.rule) }),
-    regex_unindexed:,
+    prefix: index(list.map(prefix, fn(p) { #(p.source, p) })),
+    prefix_ci: index(
+      list.map(prefix_ci, fn(p) { #(string.lowercase(p.source), p) }),
+    ),
+    regex: index(regex),
+    regex_unindexed: list.map(regex_unindexed, fn(keyed) { keyed.1 }),
   )
 }
 
@@ -455,15 +494,14 @@ fn drop_codepoints(rest: List(UtfCodepoint), bytes: Int) -> List(UtfCodepoint) {
   }
 }
 
-/// Indexes entries (given in rank order) by `key`.
-fn index(entries: List(a), key: fn(a) -> String) -> Index(a) {
+/// Indexes entries (given in rank order, with their key).
+fn index(entries: List(#(String, a))) -> Index(a) {
   entries
   |> list.reverse
-  |> list.fold(dict.new(), fn(acc, entry) {
+  |> list.fold(dict.new(), fn(acc, keyed) {
+    let #(key, entry) = keyed
     // folding the reversed list keeps each group in rank order
-    dict.upsert(acc, key(entry), fn(group) {
-      [entry, ..option.unwrap(group, [])]
-    })
+    dict.upsert(acc, key, fn(group) { [entry, ..option.unwrap(group, [])] })
   })
   |> dict.to_list
   |> index_tree
@@ -872,7 +910,7 @@ fn match_rules(
 /// candidates came from different index groups.
 fn compare_query_rules(a: QueryRule, b: QueryRule) -> order.Order {
   int.compare(list.length(b.conditions), list.length(a.conditions))
-  |> order.break_tie(int.compare(a.rule.priority, b.rule.priority))
+  |> order.break_tie(int.compare(a.priority, b.priority))
   |> order.break_tie(int.compare(a.file_rank, b.file_rank))
 }
 
@@ -938,10 +976,10 @@ fn match_query(
           }
           let exact =
             candidates(exact_group)
-            |> list.filter(fn(q) { !q.rule.case_insensitive })
+            |> list.filter(fn(q) { !q.case_insensitive })
           let folded =
             candidates(folded_group)
-            |> list.filter(fn(q) { q.rule.case_insensitive })
+            |> list.filter(fn(q) { q.case_insensitive })
           // each list is in match order already (sorted when built): only
           // rules from both need sorting again
           let found = case exact, folded {
@@ -952,9 +990,7 @@ fn match_query(
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
-          |> result.map(fn(q) {
-            Match(q.rule, text_ffi.header_value(q.rule.target), q.slot)
-          })
+          |> result.map(fn(q) { q.match })
         }
       }
     }
@@ -965,15 +1001,11 @@ fn match_query(
 /// rules.
 fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   case dict.get(rules.exact, path) {
-    Ok(#(r, location, slot)) -> Ok(Match(r, location, slot))
+    Ok(found) -> Ok(found)
     Error(Nil) ->
       case dict.size(rules.exact_ci) {
         0 -> Error(Nil)
-        _ ->
-          case dict.get(rules.exact_ci, string.lowercase(path)) {
-            Ok(#(r, location, slot)) -> Ok(Match(r, location, slot))
-            Error(Nil) -> Error(Nil)
-          }
+        _ -> dict.get(rules.exact_ci, string.lowercase(path))
       }
   }
 }
@@ -993,11 +1025,10 @@ fn match_prefix(
     [] -> []
     _ ->
       list.filter_map(found, fn(p) {
-        let remainder = prefix_remainder(p.rule, path)
+        let remainder = remainder_after(p.source, p.case_insensitive, path)
         // whole segments: `/blog` matches `/blog` and `/blog/…`, not `/blogger`
         case
-          !p.rule.whole_segments
-          || rule.on_segment_boundary(p.rule.source, remainder)
+          !p.whole_segments || rule.on_segment_boundary(p.source, remainder)
         {
           True -> Ok(#(p, remainder))
           False -> Error(Nil)
@@ -1015,10 +1046,7 @@ fn match_prefix(
       found
       |> list.sort(fn(a, b) {
         int.compare(string.byte_size(a.1), string.byte_size(b.1))
-        |> order.break_tie(int.compare(
-          { a.0 }.rule.priority,
-          { b.0 }.rule.priority,
-        ))
+        |> order.break_tie(int.compare({ a.0 }.priority, { b.0 }.priority))
         |> order.break_tie(int.compare({ a.0 }.rank, { b.0 }.rank))
       })
       |> list.find_map(prefix_location(_, path, vars))
@@ -1036,7 +1064,7 @@ fn prefix_location(
   template.expand_template(p.template, [path, remainder], vars)
   |> template.guard_location(p.guard, _, vars)
   |> result.map(fn(location) {
-    Match(p.rule, text_ffi.header_value(location), p.slot)
+    Match(p.redirect, text_ffi.header_value(location))
   })
 }
 
@@ -1061,10 +1089,18 @@ pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
 /// The rest of a normalized path after the normalized source of a matching
 /// prefix rule. Shared with explanations to preserve Unicode boundaries.
 pub fn prefix_remainder(r: Rule, path: String) -> String {
-  case r.case_insensitive {
-    False -> text_ffi.byte_drop(path, string.byte_size(r.source))
+  remainder_after(r.source, r.case_insensitive, path)
+}
+
+fn remainder_after(
+  source: String,
+  case_insensitive: Bool,
+  path: String,
+) -> String {
+  case case_insensitive {
+    False -> text_ffi.byte_drop(path, string.byte_size(source))
     // cut where the lower-cased prefix ends, in bytes, like the index
-    True -> drop_lowered(path, string.byte_size(string.lowercase(r.source)))
+    True -> drop_lowered(path, string.byte_size(string.lowercase(source)))
   }
 }
 
@@ -1150,11 +1186,7 @@ fn run_regexes(
             )
           {
             Ok(location) ->
-              Found(Match(
-                entry.rule,
-                text_ffi.header_value(location),
-                entry.slot,
-              ))
+              Found(Match(entry.redirect, text_ffi.header_value(location)))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
@@ -1174,7 +1206,7 @@ fn run_regexes(
 /// string when the rule asks for it (before a `#fragment` of the target)
 /// and strips any CR/LF characters.
 pub fn location(m: Match, query: Result(String, Nil)) -> String {
-  case m.rule.preserve_query, query {
+  case m.redirect.preserve_query, query {
     True, Ok(q) if q != "" -> {
       let #(url, fragment) = case string.split_once(m.location, "#") {
         Ok(#(url, fragment)) -> #(url, "#" <> fragment)
