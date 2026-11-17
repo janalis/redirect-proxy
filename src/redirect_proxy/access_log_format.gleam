@@ -331,16 +331,25 @@ fn header(e: Entry, name: String) -> String {
 pub fn strip_query(log_query: Bool, url: String) -> String {
   case log_query {
     True -> url
-    False -> {
-      let without_fragment = case string.split_once(url, "#") {
-        Ok(#(base, _)) -> base
-        Error(Nil) -> url
+    // without a `#` or `?` byte (no referer, a URL without a query),
+    // nothing is dropped: the grapheme splits below are not needed to
+    // find that out
+    False ->
+      case ffi.byte_contains(url, "#") || ffi.byte_contains(url, "?") {
+        False -> url
+        True -> drop_query(url)
       }
-      case string.split_once(without_fragment, "?") {
-        Ok(#(base, _)) -> base
-        Error(Nil) -> without_fragment
-      }
-    }
+  }
+}
+
+fn drop_query(url: String) -> String {
+  let without_fragment = case string.split_once(url, "#") {
+    Ok(#(base, _)) -> base
+    Error(Nil) -> url
+  }
+  case string.split_once(without_fragment, "?") {
+    Ok(#(base, _)) -> base
+    Error(Nil) -> without_fragment
   }
 }
 
