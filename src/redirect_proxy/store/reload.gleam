@@ -69,7 +69,9 @@ pub fn refresh(state: State) -> Result(State, String) {
     Ok(content) ->
       case store_file.fingerprint(content) == state.fingerprint {
         True -> Ok(state)
-        False ->
+        False -> {
+          // like `reload`, the time counted includes loading the file
+          let started = system_ffi.monotonic_micros()
           case
             store_file.load_failing(files(state.config), store_file.Reloading)
           {
@@ -84,7 +86,6 @@ pub fn refresh(state: State) -> Result(State, String) {
                 <> reason,
               )
             Ok(#(rules, fingerprint)) -> {
-              let started = system_ffi.monotonic_micros()
               let reloaded =
                 loaded(state, rules, fingerprint, "external", started)
               log.warning(
@@ -96,6 +97,7 @@ pub fn refresh(state: State) -> Result(State, String) {
               Ok(reloaded)
             }
           }
+        }
       }
   }
 }
