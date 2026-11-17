@@ -367,7 +367,7 @@ pub fn error_page(
 }
 
 /// A change not made because another process holds the lock of the
-/// redirections file (503, as the API).
+/// redirections file (503 with `Retry-After: 1`, as the API).
 pub fn busy_page(ctx: Context, s: Session, title: String) -> Response {
   error_page(
     ctx,
@@ -376,6 +376,7 @@ pub fn busy_page(ctx: Context, s: Session, title: String) -> Response {
     title,
     "The redirections are busy with another change, so nothing was changed. Try again in a moment.",
   )
+  |> wisp.set_header("retry-after", "1")
 }
 
 /// A change not saved because the redirections file could not be read or

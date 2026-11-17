@@ -549,18 +549,74 @@ pub fn reload_from_disk_test() {
 }
 
 /// A reload waiting past the store's wait for the lock another process
-/// holds: busy (503), as any other change, not an invalid file (422).
+/// holds: busy (503, with Retry-After as the API), as any other change, not
+/// an invalid file (422).
 pub fn reload_waiting_too_long_for_the_lock_is_busy_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)
   let lock = env.dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
-  let resp = post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
+  let #(head, page) =
+    raw_post_form(env, "/reload", cookie, [#("csrf_token", csrf)])
   let assert Ok(Nil) = simplifile.delete(lock)
-  assert resp.status == 503
-  assert string.contains(resp.body, "busy with another change")
-  assert !string.contains(resp.body, "The redirections file is invalid")
+  assert string.starts_with(head, "http/1.1 503")
+  assert string.contains(head, "\r\nretry-after: 1\r\n")
+  assert string.contains(page, "busy with another change")
+  assert !string.contains(page, "The redirections file is invalid")
 }
+
+/// Posts a form to the admin over a raw socket: httpc before OTP 28.4
+/// retries a 503 with Retry-After until it succeeds. The lowercased head and
+/// the body of the response, read up to the end of the page (the store may
+/// wait for the lock for a few seconds first).
+fn raw_post_form(
+  env: Env,
+  path: String,
+  cookie: String,
+  fields: List(#(String, String)),
+) -> #(String, String) {
+  let body = uri.query_to_string(fields)
+  let assert [_, port] = string.split(env.admin, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let socket = raw_open(port)
+  raw_send(socket, <<
+    "POST ":utf8,
+    path:utf8,
+    " HTTP/1.1\r\nhost: 127.0.0.1:",
+    int.to_string(port):utf8,
+    "\r\nconnection: close\r\norigin: ",
+    env.admin:utf8,
+    "\r\ncookie: ",
+    cookie:utf8,
+    "\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: ",
+    int.to_string(string.byte_size(body)):utf8,
+    "\r\n\r\n",
+    body:utf8,
+  >>)
+  let #(raw, _closed) = raw_read_until(socket, <<"</html>">>, 30_000)
+  raw_close(socket)
+  let assert Ok(raw) = bit_array.to_string(raw)
+  let assert Ok(#(head, page)) = string.split_once(raw, "\r\n\r\n")
+  #(string.lowercase(head), page)
+}
+
+type Socket
+
+@external(erlang, "test_net_ffi", "open")
+fn raw_open(port: Int) -> Socket
+
+@external(erlang, "test_net_ffi", "send")
+fn raw_send(socket: Socket, data: BitArray) -> Nil
+
+@external(erlang, "test_net_ffi", "read_until")
+fn raw_read_until(
+  socket: Socket,
+  suffix: BitArray,
+  wait_ms: Int,
+) -> #(BitArray, Bool)
+
+@external(erlang, "test_net_ffi", "close")
+fn raw_close(socket: Socket) -> Nil
 
 /// Deleting and enabling a rule answer a refused change alike, and as the
 /// API: 404 when the rule is gone, 500 when it cannot be written (a failure
@@ -833,37 +889,17 @@ pub fn admin_busy_store_answers_503_test() {
   let lock = env.dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
   ffi.set_tunable("store_call_timeout", 200)
-  let body =
-    uri.query_to_string([
+  let #(head, page) =
+    raw_post_form(env, "/rules", cookie, [
       #("csrf_token", csrf),
       #("match", "exact"),
       #("source", "/busy"),
       #("target", "/t"),
       #("status", "301"),
     ])
-  let assert [_, port] = string.split(env.admin, "127.0.0.1:")
-  let assert Ok(port) = int.parse(port)
-  let raw =
-    integration_support.raw_exchange(port, [
-      <<
-        "POST /rules HTTP/1.1\r\nhost: 127.0.0.1:",
-        int.to_string(port):utf8,
-        "\r\nconnection: close\r\norigin: ",
-        env.admin:utf8,
-        "\r\ncookie: ",
-        cookie:utf8,
-        "\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: ",
-        int.to_string(string.byte_size(body)):utf8,
-        "\r\n\r\n",
-        body:utf8,
-      >>,
-    ])
   ffi.clear_tunable("store_call_timeout")
   let assert Ok(Nil) = simplifile.delete(lock)
 
-  let assert Ok(raw) = bit_array.to_string(raw)
-  let assert Ok(#(head, page)) = string.split_once(raw, "\r\n\r\n")
-  let head = string.lowercase(head)
   assert string.starts_with(head, "http/1.1 503")
   assert string.contains(head, "\r\nretry-after: 1\r\n")
   assert string.contains(page, "your change was not made")
