@@ -511,17 +511,24 @@ pub fn import_rules(
     Ok(mode) -> store.import_mode_from_string(mode)
     Error(Nil) -> Ok(store.Merge)
   }
-  let dry_run = list.key_find(wisp.get_query(req), "dry_run") == Ok("true")
+  // anything but true or false is an error: a misspelt dry run (`1`,
+  // `True`) would otherwise write the import it meant to preview
+  let dry_run = case list.key_find(wisp.get_query(req), "dry_run") {
+    Error(Nil) | Ok("false") -> Ok(False)
+    Ok("true") -> Ok(True)
+    Ok(_) -> Error(Nil)
+  }
   // a rules file may be an array of rules: not `require_json_object`
   use body, csv <- require_import_body(req)
   let incoming = case csv {
     True -> rule_csv.parse(body)
     False -> rule.file_from_string(body) |> result.map_error(fn(e) { [e] })
   }
-  case mode, incoming {
-    Error(Nil), _ -> problem.bad_request("mode must be merge or replace.")
-    _, Error(errors) -> problem.validation(errors)
-    Ok(mode), Ok(incoming) if dry_run ->
+  case mode, dry_run, incoming {
+    Error(Nil), _, _ -> problem.bad_request("mode must be merge or replace.")
+    _, Error(Nil), _ -> problem.bad_request("dry_run must be true or false.")
+    _, _, Error(errors) -> problem.validation(errors)
+    Ok(mode), Ok(True), Ok(incoming) ->
       case store.preview_import(ctx.store, incoming, mode, principal.actor) {
         Ok(#(d, version)) ->
           problem.json_response(
@@ -535,7 +542,7 @@ pub fn import_rules(
           |> wisp.set_header("etag", problem.etag(version))
         Error(errors) -> problem.validation(errors)
       }
-    Ok(mode), Ok(incoming) -> {
+    Ok(mode), Ok(False), Ok(incoming) -> {
       use <- require_precondition(req, ctx)
       case
         store.import_rules_versioned(

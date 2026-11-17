@@ -359,6 +359,32 @@ pub fn import_dry_run_test() {
   assert api(env, Get, "/api/redirects/c", token, "").status == 404
 }
 
+/// A dry_run value other than true or false is refused, never applied: a
+/// misspelt preview must not replace the rules.
+pub fn import_rejects_invalid_dry_run_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  import_set(env, token, [#("a", "/a", True)])
+  let body = "[{\"id\": \"c\", \"source\": \"/c\", \"target\": \"/new\"}]"
+  let resp =
+    api(env, Post, "/api/redirects/import?mode=replace&dry_run=1", token, body)
+  assert resp.status == 400
+  // nothing was written
+  assert api(env, Get, "/api/redirects/a", token, "").status == 200
+  assert api(env, Get, "/api/redirects/c", token, "").status == 404
+  // dry_run=false applies
+  let resp =
+    api(
+      env,
+      Post,
+      "/api/redirects/import?mode=replace&dry_run=false",
+      token,
+      body,
+    )
+  assert resp.status == 200
+  assert api(env, Get, "/api/redirects/c", token, "").status == 200
+}
+
 /// The dry run's ETag applies exactly the previewed change: if the rules
 /// changed in between, the import is refused with 412 and nothing is written.
 pub fn import_applies_only_what_was_previewed_test() {
