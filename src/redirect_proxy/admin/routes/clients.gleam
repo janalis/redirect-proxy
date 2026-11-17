@@ -3,6 +3,7 @@
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/uri
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/clients as clients_view
@@ -53,11 +54,28 @@ pub fn create_api_client(req: Request, ctx: Context, s: Session) -> Response {
   use <- bool.lazy_guard(!ctx.config.api.enabled, fn() { not_found(ctx, s) })
   use form <- require_csrf_form(req, s)
   let name = form_value(form, "name")
-  let scopes =
+  let #(scopes, unknown) =
     form.values
     |> list.filter(fn(pair) { pair.0 == "scope" })
-    |> list.filter_map(fn(pair) { scope.from_string(pair.1) })
-  case clients.create(ctx.clients, name, scopes, s.username) {
+    |> list.map(fn(pair) {
+      scope.from_string(pair.1) |> result.replace_error(pair.1)
+    })
+    |> result.partition
+  // an unknown scope is an error: dropping it would create a client with
+  // less access than asked for
+  use <- bool.lazy_guard(unknown != [], fn() {
+    render_api_clients(
+      ctx,
+      s,
+      422,
+      None,
+      None,
+      list.map(list.reverse(unknown), fn(name) {
+        "Unknown scope: " <> name <> "."
+      }),
+    )
+  })
+  case clients.create(ctx.clients, name, list.reverse(scopes), s.username) {
     Ok(#(client, secret)) ->
       render_api_clients(
         ctx,

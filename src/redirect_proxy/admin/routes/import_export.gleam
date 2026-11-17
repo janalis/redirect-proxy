@@ -43,13 +43,18 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
     Ok(file) -> simplifile.read(file.path) |> result.replace_error(Nil)
     Error(Nil) -> Ok("")
   }
-  let mode =
-    form_value(form, "mode")
-    |> store.import_mode_from_string
-    |> result.unwrap(store.Merge)
   let fail = fn(errors) {
     html(422, import_export_view.import_export(s, features(ctx), None, errors))
   }
+  // a merge unless the form says otherwise; any other mode is an error,
+  // not a merge the user did not ask for
+  use mode <- result_or(
+    case form_value(form, "mode") {
+      "" -> Ok(store.Merge)
+      mode -> store.import_mode_from_string(mode)
+    },
+    fn() { fail(["Mode must be merge or replace."]) },
+  )
   // a file that is not UTF-8 (Excel's plain "CSV" is Windows-1252) is an
   // error, not an empty upload that would import the pasted text instead
   use uploaded <- result_or(uploaded, fn() {

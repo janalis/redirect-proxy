@@ -156,7 +156,7 @@ fn authenticated(req: Request, ctx: Context) -> Response {
     Post, ["rules", id, "toggle"] -> toggle_rule(req, ctx, s, id)
     Post, ["reload"] -> reload(req, ctx, s)
     Get, ["test"] -> test_url(req, ctx, s)
-    Get, ["export"] -> export(req, ctx)
+    Get, ["export"] -> export(req, ctx, s)
     Get, ["import"] -> import_page(req, ctx, s)
     Post, ["import"] -> import_rules(req, ctx, s)
     Get, ["users"] -> list_users(req, ctx, s)

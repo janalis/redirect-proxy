@@ -34,34 +34,91 @@ import wisp.{type Request, type Response}
 /// The list filters, named as in the API (`match`, `enabled=true|false`,
 /// `sort=last_hit_at`). The names of earlier versions (`kind`,
 /// `status=enabled|disabled`, `sort=last_hit`) are still read, so that
-/// saved links keep working.
-fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
+/// saved links keep working. An invalid value is replaced by the default
+/// and returned with the others ignored, so that the page can say so.
+fn filters_from(
+  get: fn(String) -> String,
+) -> #(rules_view.Filters, List(Ignored)) {
   let either = fn(name, old) {
     case get(name) {
       "" -> get(old)
       value -> value
     }
   }
-  rules_view.Filters(
-    query: string.trim(get("q")),
-    host: string.trim(get("host")),
-    match: either("match", "kind"),
-    enabled: case either("enabled", "status") {
-      "enabled" -> "true"
-      "disabled" -> "false"
-      value -> value
-    },
-    // `last_hit` and `updated`: the earlier names of `last_hit_at` and
-    // `updated_at`
-    sort: store_rules.current_sort(get("sort")),
-    tag: string.trim(get("tag")),
-    page: int.parse(get("page")) |> result.unwrap(1),
+  let match = either("match", "kind")
+  let #(match, ignored_match) = case
+    match == "" || list.contains(rule.kind_names(), match)
+  {
+    True -> #(match, [])
+    False -> #("", [
+      Ignored("match", match, string.join(rule.kind_names(), ", ")),
+    ])
+  }
+  let #(enabled, ignored_enabled) = case either("enabled", "status") {
+    "" -> #("", [])
+    "true" | "enabled" -> #("true", [])
+    "false" | "disabled" -> #("false", [])
+    value -> #("", [Ignored("enabled", value, "true, false")])
+  }
+  // `last_hit` and `updated`: the earlier names of `last_hit_at` and
+  // `updated_at`
+  let sort = store_rules.current_sort(get("sort"))
+  let #(sort, ignored_sort) = case
+    store_rules.sort([], sort, fn(_) { 0 }, fn(_) { 0 })
+  {
+    Ok(_) -> #(sort, [])
+    Error(Nil) -> #("", [
+      Ignored("sort", sort, string.join(store_rules.sort_fields, ", ")),
+    ])
+  }
+  let #(page, ignored_page) = case get("page") {
+    "" -> #(1, [])
+    value ->
+      case int.parse(value) {
+        Ok(page) if page >= 1 -> #(page, [])
+        _ -> #(1, [Ignored("page", value, "a positive integer")])
+      }
+  }
+  #(
+    rules_view.Filters(
+      query: string.trim(get("q")),
+      host: string.trim(get("host")),
+      match:,
+      enabled:,
+      sort:,
+      tag: string.trim(get("tag")),
+      page:,
+    ),
+    list.flatten([ignored_match, ignored_enabled, ignored_sort, ignored_page]),
   )
+}
+
+/// A query value the list ignored as invalid, with the values it accepts.
+type Ignored {
+  Ignored(name: String, value: String, accepted: String)
+}
+
+/// `Ignored invalid filters: sort "bogus" (source, host, …).`
+fn describe_ignored(ignored: List(Ignored)) -> String {
+  "Ignored invalid filters: "
+  <> list.map(ignored, fn(i) {
+    i.name <> " \"" <> shorten(i.value) <> "\" (" <> i.accepted <> ")"
+  })
+  |> string.join(", ")
+  <> "."
+}
+
+/// A value from a link, cut short: it is shown, not trusted.
+fn shorten(value: String) -> String {
+  case string.length(value) > 40 {
+    True -> string.slice(value, 0, 40) <> "…"
+    False -> value
+  }
 }
 
 pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
   let query = wisp.get_query(req)
-  let filters =
+  let #(filters, ignored) =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
   let #(all, version) = store.versioned(ctx.store)
   let found = matching(all, filters)
@@ -114,6 +171,10 @@ pub fn list_rules(req: Request, ctx: Context, s: Session) -> Response {
       s,
       features(ctx),
       flash,
+      case ignored {
+        [] -> None
+        _ -> Some(describe_ignored(ignored))
+      },
       rows,
       list.length(all),
       count,
@@ -165,7 +226,9 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
   )
   let selected = case all_matching {
     True -> {
-      let filters = filters_from(fn(key) { form_value(form, "filter_" <> key) })
+      // the filters of the page, which it only writes valid
+      let #(filters, _) =
+        filters_from(fn(key) { form_value(form, "filter_" <> key) })
       matching(rules, filters)
       |> list.map(fn(r) { r.id })
     }
@@ -175,7 +238,13 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
       |> list.map(fn(kv) { kv.1 })
   }
   case store.bulk_action_from_string(form_value(form, "action")), selected {
-    Error(Nil), _ -> wisp.redirect(return_to(back, []))
+    Error(Nil), _ ->
+      wisp.redirect(
+        return_to(back, [
+          #("flash", "unknown_action"),
+          #("action", form_value(form, "action")),
+        ]),
+      )
     Ok(_), [] -> wisp.redirect(return_to(back, []))
     Ok(store.Remove), ids ->
       case form_value(form, "confirm") {
@@ -573,24 +642,45 @@ pub fn test_url(req: Request, ctx: Context, s: Session) -> Response {
 }
 
 /// Exports the rules matching the list filters of the query (all of them
-/// without filters).
-pub fn export(req: Request, ctx: Context) -> Response {
+/// without filters). Invalid filters or format are a 400, as in the API:
+/// ignoring them would export another set than the one asked for.
+pub fn export(req: Request, ctx: Context, s: Session) -> Response {
   let query = wisp.get_query(req)
-  let filters =
+  let #(filters, ignored) =
     filters_from(fn(key) { list.key_find(query, key) |> result.unwrap("") })
-  let rules = matching(store.all(ctx.store), filters)
-  let #(content_type, name, body) = case list.key_find(query, "format") {
-    Ok("csv") -> #(
-      "text/csv; charset=utf-8",
-      "redirects.csv",
-      rule_csv.to_spreadsheet_string(rules),
-    )
-    _ -> #("application/json", "redirects.json", store_rules.export(rules))
+  // the export is in file order, of every page
+  let ignored =
+    list.filter(ignored, fn(i) { i.name != "sort" && i.name != "page" })
+  let format = case list.key_find(query, "format") {
+    Error(Nil) | Ok("") | Ok("json") -> Ok(False)
+    Ok("csv") -> Ok(True)
+    Ok(_) -> Error(Nil)
   }
-  wisp.ok()
-  |> wisp.set_header("content-type", content_type)
-  |> wisp.file_download_from_memory(
-    named: name,
-    containing: bytes_tree.from_string(body),
-  )
+  case ignored, format {
+    [_, ..], _ ->
+      error_page(ctx, s, 400, "Not exported", describe_ignored(ignored))
+    _, Error(Nil) ->
+      error_page(ctx, s, 400, "Not exported", "format must be json or csv.")
+    [], Ok(csv) -> {
+      let rules = matching(store.all(ctx.store), filters)
+      let #(content_type, name, body) = case csv {
+        True -> #(
+          "text/csv; charset=utf-8",
+          "redirects.csv",
+          rule_csv.to_spreadsheet_string(rules),
+        )
+        False -> #(
+          "application/json",
+          "redirects.json",
+          store_rules.export(rules),
+        )
+      }
+      wisp.ok()
+      |> wisp.set_header("content-type", content_type)
+      |> wisp.file_download_from_memory(
+        named: name,
+        containing: bytes_tree.from_string(body),
+      )
+    }
+  }
 }

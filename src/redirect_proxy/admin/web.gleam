@@ -256,7 +256,9 @@ pub fn return_to(value: String, flash: List(#(String, String))) -> String {
   let kept =
     uri.parse_query(query)
     |> result.unwrap([])
-    |> list.filter(fn(kv) { kv.0 != "flash" && kv.0 != "count" && kv.0 != "id" })
+    |> list.filter(fn(kv) {
+      !list.contains(["flash", "count", "id", "action"], kv.0)
+    })
   path <> "?" <> uri.query_to_string(list.append(kept, flash))
 }
 
@@ -328,10 +330,34 @@ pub fn flash_from_query(req: Request) -> Option(layout.Flash) {
     Ok("user_deleted") -> Some(layout.Success("User deleted."))
     Ok("password_changed") -> Some(layout.Success("Password changed."))
     Ok("role_changed") -> Some(layout.Success("Role changed."))
+    // the action is named only when it is a short word: a link must not
+    // write sentences into the page
+    Ok("unknown_action") ->
+      Some(
+        layout.Failure(case list.key_find(query, "action") {
+          Ok(action) ->
+            case is_word(action) {
+              True -> "Unknown action: " <> action <> "."
+              False -> "Unknown action."
+            }
+          Error(Nil) -> "Unknown action."
+        }),
+      )
     Ok("client_deleted") ->
       Some(layout.Success("API client deleted; its tokens are revoked."))
     _ -> None
   }
+}
+
+/// 1 to 32 lowercase ASCII letters, digits, `_` or `-`.
+fn is_word(value: String) -> Bool {
+  let size = string.byte_size(value)
+  size >= 1
+  && size <= 32
+  && list.all(string.to_utf_codepoints(value), fn(c) {
+    let c = string.utf_codepoint_to_int(c)
+    { c >= 97 && c <= 122 } || { c >= 48 && c <= 57 } || c == 95 || c == 45
+  })
 }
 
 pub fn html(status: Int, body: String) -> Response {

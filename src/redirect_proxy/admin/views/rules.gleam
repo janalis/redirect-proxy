@@ -3,7 +3,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/uri
 import lustre/attribute as a
 import lustre/element.{type Element}
@@ -47,13 +47,15 @@ pub fn filters_query(filters: Filters) -> List(#(String, String)) {
   |> list.filter(fn(kv) { kv.1 != "" })
 }
 
-/// `rows` are the rules of the current page; `matching` counts the rules
+/// `ignored` says which filters of the link were invalid. `rows` are the
+/// rules of the current page; `matching` counts the rules
 /// matching the filters, `total` every rule. `here` is the URL of this page,
 /// where actions return.
 pub fn index(
   session: Session,
   features: layout.Features,
   flash: Option(Flash),
+  ignored: Option(String),
   rows: List(Row),
   total: Int,
   matching: Int,
@@ -91,6 +93,11 @@ pub fn index(
         ]
       }),
       filters_form(filters),
+      // filters of the link that were invalid, replaced by the defaults
+      case ignored {
+        Some(message) -> layout.alert("theme-danger", message)
+        None -> element.none()
+      },
       h.p([a.class("small fg-secondary d-flex gap-2")], [
         h.text(
           int.to_string(matching)

@@ -888,3 +888,70 @@ fn list_version(env: Env, cookie: String) -> String {
   let assert Ok(#(_, form)) = string.split_once(page, "id=\"bulk\"")
   hidden_value(form, "version")
 }
+
+/// Invalid input is reported, as the API does, rather than silently
+/// replaced by a default.
+pub fn admin_reports_invalid_input_test() {
+  let env = boot(config.default())
+  let #(cookie, csrf) = login(env)
+  let page = fn(path) { get(env.admin <> path, [#("cookie", cookie)]) }
+  // the list names the ignored filters and shows the rules with defaults
+  let list = page("/rules?match=glob&enabled=maybe&sort=bogus&page=x")
+  assert list.status == 200
+  assert string.contains(
+    list.body,
+    "Ignored invalid filters: match &quot;glob&quot; (exact, prefix, regex), enabled &quot;maybe&quot; (true, false), sort &quot;bogus&quot; (source, host, hits, last_hit_at, updated_at), page &quot;x&quot; (a positive integer).",
+  )
+  assert string.contains(list.body, "3 matching of 3 redirection(s)")
+  // valid filters, and their earlier names, are not reported
+  let list = page("/rules?kind=exact&status=disabled&sort=-updated&page=1")
+  assert !string.contains(list.body, "Ignored invalid filters")
+
+  // a bulk action the server does not know
+  let resp =
+    post_form(env, "/rules/bulk", cookie, [
+      #("csrf_token", csrf),
+      #("action", "explode"),
+      #("return_to", "/rules?q=old"),
+      #("ids", "x"),
+    ])
+  assert resp.status == 303
+  let back = page(location(resp))
+  assert string.contains(back.body, "Unknown action: explode.")
+  // a link names only a short word, never a sentence
+  let back = page("/rules?flash=unknown_action&action=Call%20us%20now")
+  assert string.contains(back.body, "Unknown action.")
+  assert !string.contains(back.body, "Call us")
+
+  // an import mode other than merge or replace changes nothing
+  let resp =
+    post_form(env, "/import", cookie, [
+      #("csrf_token", csrf),
+      #("mode", "replcae"),
+      #("content", "[{\"source\": \"/new\", \"target\": \"/x\"}]"),
+    ])
+  assert resp.status == 422
+  assert string.contains(resp.body, "Mode must be merge or replace.")
+  assert get(env.redirect <> "/new", []).status == 404
+
+  // an export in an unknown format, or of invalid filters
+  let resp = page("/export?format=xml")
+  assert resp.status == 400
+  assert string.contains(resp.body, "format must be json or csv.")
+  let resp = page("/export?match=glob")
+  assert resp.status == 400
+  assert string.contains(resp.body, "match &quot;glob&quot;")
+  assert page("/export?format=csv&sort=bogus").status == 200
+
+  // an API client with an unknown scope is not created
+  let resp =
+    post_form(env, "/api-clients", cookie, [
+      #("csrf_token", csrf),
+      #("name", "deploy"),
+      #("scope", "redirects:read"),
+      #("scope", "redirects:admin"),
+    ])
+  assert resp.status == 422
+  assert string.contains(resp.body, "Unknown scope: redirects:admin.")
+  assert string.contains(page("/api-clients").body, "No API client yet.")
+}
