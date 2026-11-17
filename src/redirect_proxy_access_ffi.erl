@@ -15,6 +15,9 @@
 %% #{Listener => Writer}: where each listener's lines go.
 -define(WRITERS, redirect_proxy_access_writers).
 
+%% The compiled pattern of special_bytes/0.
+-define(SPECIAL_BYTES, redirect_proxy_access_special_bytes).
+
 %% ---------------------------------------------------------------------------
 %% Writers
 %% ---------------------------------------------------------------------------
@@ -93,15 +96,25 @@ set_levels(Primary, Default) ->
 
 %% nginx `escape=default`: ", \ and bytes outside 0x20..0x7e as \xHH.
 escape_default(Bin) ->
-    case needs_default_escape(Bin) of
-        false -> Bin;
-        true -> << <<(escape_byte(C))/binary>> || <<C>> <= Bin >>
+    case binary:match(Bin, special_bytes()) of
+        nomatch -> Bin;
+        _ -> << <<(escape_byte(C))/binary>> || <<C>> <= Bin >>
     end.
 
-needs_default_escape(<<>>) -> false;
-needs_default_escape(<<C, _/binary>>)
-  when C < 16#20; C > 16#7e; C =:= $"; C =:= $\\ -> true;
-needs_default_escape(<<_, Rest/binary>>) -> needs_default_escape(Rest).
+%% The bytes escape_default/1 escapes: ", \, the controls and the bytes
+%% outside ASCII, as a compiled pattern. Looking for them with
+%% binary:match/2 costs a few reductions per value, against one per byte
+%% for a match on each byte; most values have none.
+special_bytes() ->
+    try
+        persistent_term:get(?SPECIAL_BYTES)
+    catch
+        error:badarg ->
+            Bytes = lists:seq(0, 16#1f) ++ lists:seq(16#7f, 16#ff) ++ [$", $\\],
+            Pattern = binary:compile_pattern([<<C>> || C <- Bytes]),
+            persistent_term:put(?SPECIAL_BYTES, Pattern),
+            Pattern
+    end.
 
 escape_byte(C) when C < 16#20; C > 16#7e; C =:= $"; C =:= $\\ ->
     <<"\\x", (hex(C bsr 4)), (hex(C band 15))>>;
@@ -112,7 +125,13 @@ hex(N) -> $A + N - 10.
 
 %% JSON string contents. Invalid UTF-8 bytes are written as \u00XX so the
 %% output is always valid JSON.
-escape_json(Bin) -> iolist_to_binary(json_chars(Bin)).
+escape_json(Bin) ->
+    %% the special bytes of escape_default/1 are the only ones json_chars/1
+    %% may change
+    case binary:match(Bin, special_bytes()) of
+        nomatch -> Bin;
+        _ -> iolist_to_binary(json_chars(Bin))
+    end.
 
 json_chars(<<>>) -> [];
 json_chars(<<$", R/binary>>) -> [<<"\\\"">> | json_chars(R)];
