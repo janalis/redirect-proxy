@@ -199,6 +199,13 @@ pub type ChangeError {
   Stale(current: String)
   /// The change is invalid.
   Invalid(List(FieldError))
+  /// Another process holds the lock of the redirections file past the
+  /// wait: retrying soon may succeed.
+  Busy(reason: String)
+  /// The redirections file could not be read or written (permissions, a
+  /// full disk), or was changed outside the server into a file that does
+  /// not load.
+  Storage(reason: String)
 }
 
 /// What an import would make of the rule set, before the checks of the
@@ -538,8 +545,10 @@ pub fn import_into_file(
   rules: List(Rule),
   mode: ImportMode,
   by actor_name: String,
-) -> Result(Int, List(FieldError)) {
-  use prepared <- result.try(prepare_import(rules, actor_name))
+) -> Result(Int, ChangeError) {
+  use prepared <- result.try(
+    prepare_import(rules, actor_name) |> result.map_error(Invalid),
+  )
   let files = files(settings)
   let locked =
     ffi.with_file_lock_detailed(
@@ -548,24 +557,28 @@ pub fn import_into_file(
       fn() {
         use #(existing, before) <- result.try(
           store_file.load_failing(files, store_file.FirstStart)
-          |> result.map_error(fn(failure) {
-            [field_error.general(failure.reason)]
-          }),
+          |> result.map_error(fn(failure) { Storage(failure.reason) }),
         )
-        use #(prepared, rules) <- result.try(imported(existing, prepared, mode))
+        use #(prepared, rules) <- result.try(
+          imported(existing, prepared, mode) |> result.map_error(Invalid),
+        )
         let action = case mode {
           Replace -> "rules.import.replace"
           Merge -> "rules.import.merge"
         }
         let summary = int.to_string(list.length(prepared)) <> " rule(s)"
         let outcome = {
-          use _ <- result.try(commit.check_many(
-            target(settings),
-            rules,
-            store_rules.changed_rules(existing, rules),
-            check_conflicts: True,
-          ))
+          use _ <- result.try(
+            commit.check_many(
+              target(settings),
+              rules,
+              store_rules.changed_rules(existing, rules),
+              check_conflicts: True,
+            )
+            |> result.map_error(commit.Refused),
+          )
           commit.persist(target(settings), rules)
+          |> result.map_error(commit.NotWritten)
         }
         case outcome {
           Ok(fingerprint) -> {
@@ -581,24 +594,24 @@ pub fn import_into_file(
             hits.keep_only(settings.hits_path, list.map(rules, fn(r) { r.id }))
             Ok(list.length(prepared))
           }
-          Error(errors) -> {
+          Error(refusal) -> {
             audit.record(
               settings.audit_path,
               actor_name,
               action <> "_failed",
               summary,
               None,
-              Some(errors_json(errors)),
+              Some(refusal_json(refusal)),
             )
-            Error(errors)
+            Error(refused(refusal))
           }
         }
       },
     )
   case locked {
     Ok(outcome) -> outcome
-    Error(ffi.Held(reason)) | Error(ffi.CannotCreate(reason)) ->
-      Error([field_error.general(reason)])
+    Error(ffi.Held(reason)) -> Error(Busy(reason))
+    Error(ffi.CannotCreate(reason)) -> Error(Storage(reason))
   }
 }
 
@@ -727,7 +740,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             rules,
             uncovers: False,
           )
-          |> result.map_error(Invalid),
+          |> result.map_error(refused),
         )
         audit.record(
           state.settings.audit_path,
@@ -775,7 +788,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             rules,
             uncovers: True,
           )
-          |> result.map_error(Invalid),
+          |> result.map_error(refused),
         )
         audit.record(
           state.settings.audit_path,
@@ -807,7 +820,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             changed: [],
             check_conflicts: False,
           )
-          |> result.map_error(Invalid),
+          |> result.map_error(refused),
         )
         audit.record(
           state.settings.audit_path,
@@ -851,16 +864,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             )
             Ok(#(list.length(prepared), rules, fingerprint))
           }
-          Error(errors) -> {
+          Error(refusal) -> {
             audit.record(
               state.settings.audit_path,
               actor_name,
               action <> "_failed",
               int.to_string(list.length(prepared)) <> " rule(s)",
               None,
-              Some(errors_json(errors)),
+              Some(refusal_json(refusal)),
             )
-            Error(Invalid(errors))
+            Error(refused(refusal))
           }
         }
       }
@@ -883,25 +896,27 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Bulk(ids, action, expected, actor_name, reply) -> {
       use state <- mutate(state, reply)
       use Nil <- result.try(check_collection_version(state, expected))
-      result.map_error(_, Invalid)({
+      {
         let known = list.map(state.rules, fn(r) { r.id }) |> set.from_list
         let wanted = set.from_list(ids)
         use <- bool.guard(
           ids == [],
-          Error([FieldError("ids", "select at least one rule")]),
+          Error(Invalid([FieldError("ids", "select at least one rule")])),
         )
         use <- bool.guard(
           !list.all(ids, set.contains(known, _)),
-          Error([
-            FieldError(
-              "ids",
-              "unknown rule "
-                <> {
-                list.filter(ids, fn(id) { !set.contains(known, id) })
-                |> string.join(", ")
-              },
-            ),
-          ]),
+          Error(
+            Invalid([
+              FieldError(
+                "ids",
+                "unknown rule "
+                  <> {
+                  list.filter(ids, fn(id) { !set.contains(known, id) })
+                  |> string.join(", ")
+                },
+              ),
+            ]),
+          ),
         )
         let now = ffi.now_rfc3339()
         let change = fn(r: Rule, enabled: Bool) {
@@ -919,15 +934,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
         // enabling may bring two exact rules for one path back together, or
         // rules that loop or can never apply
-        use fingerprint <- result.try(commit.many(
-          target(state.settings),
-          rules,
-          changed: case action {
-            Enable -> store_rules.changed_rules(state.rules, rules)
-            Disable | Remove -> []
-          },
-          check_conflicts: True,
-        ))
+        use fingerprint <- result.try(
+          commit.many(
+            target(state.settings),
+            rules,
+            changed: case action {
+              Enable -> store_rules.changed_rules(state.rules, rules)
+              Disable | Remove -> []
+            },
+            check_conflicts: True,
+          )
+          |> result.map_error(refused),
+        )
         let d = store_rules.diff(state.rules, rules)
         let count = list.length(d.removed) + list.length(d.changed)
         audit_rules_change(
@@ -939,7 +957,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           fingerprint,
         )
         Ok(#(count, rules, fingerprint))
-      })
+      }
     }
 
     FlushHits(reply) -> {
@@ -1286,17 +1304,14 @@ fn mutate(
     actor.continue(state)
   })
   let outcome =
-    ffi.with_file_lock(state.settings.rules_path, lock_timeout, fn() {
+    ffi.with_file_lock_detailed(state.settings.rules_path, lock_timeout, fn() {
       // the lock may have taken long enough for the caller to give up
       use <- bool.lazy_guard(abandoned(reply), fn() {
         log.warning("a change was skipped: its caller stopped waiting for it")
-        #(
-          state,
-          Error(Invalid([field_error.general("the caller stopped waiting")])),
-        )
+        #(state, Error(Busy("the caller stopped waiting")))
       })
       case refresh(state) {
-        Error(reason) -> #(state, Error(storage_failure(reason)))
+        Error(reason) -> #(state, Error(Storage(reason)))
         Ok(state) ->
           case change(state) {
             Ok(#(value, rules, fingerprint)) -> {
@@ -1312,26 +1327,36 @@ fn mutate(
       process.send(reply, result)
       actor.continue(state)
     }
-    Error(reason) -> {
+    Error(failure) -> {
       metrics.incr(metrics.StorageWriteFailures)
-      log.error("redirections not saved: " <> reason)
-      process.send(reply, Error(storage_failure(reason)))
+      log.error("redirections not saved: " <> failure.message)
+      process.send(
+        reply,
+        Error(case failure {
+          ffi.Held(reason) -> Busy(reason)
+          ffi.CannotCreate(reason) -> Storage(reason)
+        }),
+      )
       actor.continue(state)
     }
   }
 }
 
-/// A change refused because the redirections file could not be read or
-/// written.
-fn storage_failure(reason: String) -> ChangeError {
-  Invalid([FieldError("storage", reason)])
+/// A change `commit` refused.
+fn refused(refusal: commit.Refusal) -> ChangeError {
+  case refusal {
+    commit.Refused(errors) -> Invalid(errors)
+    commit.NotWritten(reason) -> Storage(reason)
+  }
 }
 
-/// The errors of a refused change, for its audit entry.
-fn errors_json(errors: List(FieldError)) -> json.Json {
-  json.object([
-    #("errors", json.array(field_error.to_strings(errors), json.string)),
-  ])
+/// The errors of a change `commit` refused, for its audit entry.
+fn refusal_json(refusal: commit.Refusal) -> json.Json {
+  let errors = case refusal {
+    commit.Refused(errors) -> field_error.to_strings(errors)
+    commit.NotWritten(reason) -> ["storage: " <> reason]
+  }
+  json.object([#("errors", json.array(errors, json.string))])
 }
 
 /// Whether nobody waits for the reply any more.

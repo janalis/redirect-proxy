@@ -271,7 +271,10 @@ pub fn failure_metrics_test() {
       #("enabled", "on"),
     ])
   let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
-  assert resp.status == 422
+  // a failure of the server, shown as such, not as an error of the form
+  assert resp.status == 500
+  assert string.contains(resp.body, "The change was not saved")
+  assert !string.contains(resp.body, "Please fix the following")
   assert metric(env, "redirect_proxy_storage_write_failures_total") > writes
 }
 

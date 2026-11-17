@@ -10,7 +10,8 @@ import gleam/string
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/import_export as import_export_view
 import redirect_proxy/admin/web.{
-  type Context, features, flash_from_query, form_value, html, require_csrf_form,
+  type Context, busy_page, features, flash_from_query, form_value, html,
+  require_csrf_form, storage_page,
 } as _
 import redirect_proxy/field_error
 import redirect_proxy/rule_csv
@@ -75,6 +76,8 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   let refused = fn(error) {
     case error {
       store.Invalid(errors) -> fail(errors)
+      store.Busy(_) -> busy_page(ctx, s, "Not imported")
+      store.Storage(reason) -> storage_page(ctx, s, "Not imported", reason)
       // an import names no one rule, and is made whatever the version of
       // the rule set without one (`import_rules`)
       store.NotFound

@@ -133,6 +133,19 @@ fn store_errors(codes: List(#(String, String))) -> List(#(String, Json)) {
   )
 }
 
+/// Errors of operations that change the rules: those of the store, and a
+/// 500 when the redirections file could not be read or written.
+fn change_errors(codes: List(#(String, String))) -> List(#(String, Json)) {
+  store_errors(
+    list.append(codes, [
+      #(
+        "500",
+        "The change was not saved: the redirections file could not be read or written (permissions, a full disk), or was changed outside the server and does not load (code internal_error, detail says why); rules unchanged.",
+      ),
+    ]),
+  )
+}
+
 /// Responses of operations that read a request body.
 fn body_errors() -> List(#(String, Json)) {
   [
@@ -504,7 +517,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               ),
               ..list.append(
                 json_object_body_errors(),
-                store_errors([
+                change_errors([
                   #(
                     "409",
                     "A redirection with the id given already exists (a retried request). Location points to it.",
@@ -554,7 +567,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               ),
               ..list.append(
                 json_object_body_errors(),
-                store_errors([
+                change_errors([
                   #("404", "Not found."),
                   #("412", "Version mismatch."),
                   #(
@@ -588,7 +601,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ),
                 ..list.append(
                   json_object_body_errors(),
-                  store_errors([
+                  change_errors([
                     #("404", "Not found."),
                     #("412", "Version mismatch."),
                     #(
@@ -611,13 +624,9 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
             "responses",
             json.object([
               #("204", json.object([#("description", json.string("Deleted."))])),
-              ..store_errors([
+              ..change_errors([
                 #("404", "Not found."),
                 #("412", "Version mismatch."),
-                #(
-                  "422",
-                  "The redirections file could not be written, or was changed outside the server and is invalid; rules unchanged.",
-                ),
                 #("428", "If-Match is missing and api.require_if_match is on."),
               ])
             ]),
@@ -789,7 +798,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ..list.append(
                   // any media type is read (see the body): never a 415
                   list.filter(body_errors(), fn(e) { e.0 != "415" }),
-                  store_errors([
+                  change_errors([
                     #("400", "mode is not merge or replace."),
                     #("412", "The rules changed since the If-Match version."),
                     #(
@@ -849,7 +858,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                 ),
                 ..list.append(
                   json_object_body_errors(),
-                  store_errors([
+                  change_errors([
                     #("412", "The rules changed since the If-Match version."),
                     #(
                       "428",

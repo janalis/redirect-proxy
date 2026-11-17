@@ -17,8 +17,8 @@ import redirect_proxy/admin/views/rule_form as rule_form_view
 import redirect_proxy/admin/views/rules as rules_view
 import redirect_proxy/admin/views/tester as tester_view
 import redirect_proxy/admin/web.{
-  type Context, error_page, features, flash_from_query, form_value, html,
-  not_found, require_csrf_form, return_to,
+  type Context, busy_page, error_page, features, flash_from_query, form_value,
+  html, not_found, require_csrf_form, return_to, storage_page,
 } as _
 import redirect_proxy/config
 import redirect_proxy/field_error.{type FieldError, FieldError}
@@ -491,7 +491,8 @@ pub fn toggle_rule(
 /// The page of a change the store refused, the same for every change,
 /// with the statuses of the API: 404 when the rule is gone, 409 when it
 /// (or the rule set) changed meanwhile (`retry` says what to do then), 422
-/// when the change is invalid or could not be written.
+/// when the change is invalid, 503 when another process holds the file
+/// lock, 500 when the file could not be read or written.
 fn change_error_page(
   ctx: Context,
   s: Session,
@@ -535,6 +536,8 @@ fn change_error_page(
         title,
         string.join(field_error.to_strings(errors), " "),
       )
+    store.Busy(_) -> busy_page(ctx, s, title)
+    store.Storage(reason) -> storage_page(ctx, s, title, reason)
   }
 }
 

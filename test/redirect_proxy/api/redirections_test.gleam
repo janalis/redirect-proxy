@@ -972,6 +972,85 @@ pub fn imported_ids_are_reachable_by_url_test() {
   assert created.status == 422
 }
 
+/// A change the redirections file cannot take (a data directory that
+/// cannot be written) is a failure of the server: 500, with the reason, not
+/// a 422 telling the client to change its request.
+pub fn a_change_that_cannot_be_written_answers_500_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o500)
+  let created =
+    api(
+      env,
+      Post,
+      "/api/redirects",
+      token,
+      "{\"source\":\"/s\",\"target\":\"/t\"}",
+    )
+  let imported =
+    api(
+      env,
+      Post,
+      "/api/redirects/import",
+      token,
+      "[{\"source\":\"/i\",\"target\":\"/t\"}]",
+    )
+  let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
+  assert created.status == 500
+  assert header(created, "content-type") == "application/problem+json"
+  assert field(created.body, ["code"], decode.string) == "internal_error"
+  assert field(created.body, ["title"], decode.string)
+    == "Internal Server Error"
+  let assert Ok(detail) =
+    json.parse(created.body, decode.at(["detail"], decode.string))
+  assert string.contains(detail, "could not be written")
+  assert imported.status == 500
+  assert field(imported.body, ["code"], decode.string) == "internal_error"
+}
+
+/// The file lock another process holds past the store's wait for it: 503
+/// store_busy with Retry-After, as a busy store, not a 422. Sent over a raw
+/// socket (see `a_busy_store_answers_503_test`), waiting past the store's
+/// 5 seconds of wait for the lock.
+pub fn a_change_waiting_too_long_for_the_lock_answers_503_test() {
+  let env = support.boot(config.default())
+  let token = access_token(env, [scope.Write])
+  let lock = env.dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let body = "{\"source\":\"/locked\",\"target\":\"/t\"}"
+  let assert [_, port] = string.split(env.api, "127.0.0.1:")
+  let assert Ok(port) = int.parse(port)
+  let #(raw, _) =
+    session(
+      port,
+      [
+        <<
+          "POST /api/redirects HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n",
+          "authorization: Bearer ",
+          token:utf8,
+          "\r\ncontent-type: application/json\r\ncontent-length: ",
+          int.to_string(string.byte_size(body)):utf8,
+          "\r\n\r\n",
+          body:utf8,
+        >>,
+      ],
+      15_000,
+    )
+  let assert Ok(Nil) = simplifile.delete(lock)
+
+  let assert Ok(raw) = bit_array.to_string(raw)
+  let assert Ok(#(head, resp_body)) = string.split_once(raw, "\r\n\r\n")
+  let head = string.lowercase(head)
+  assert string.starts_with(head, "http/1.1 503")
+  assert string.contains(head, "\r\nretry-after: 1\r\n")
+  assert field(resp_body, ["code"], decode.string) == "store_busy"
+}
+
+/// Sends `chunks` on one connection, then reads until the server closes it
+/// or `wait_ms` of silence.
+@external(erlang, "test_net_ffi", "session")
+fn session(port: Int, chunks: List(BitArray), wait_ms: Int) -> #(BitArray, Bool)
+
 /// A store too busy to answer in time (here waiting for the lock another
 /// process holds): 503 with Retry-After, not a crash. Sent over a raw socket:
 /// httpc before OTP 28.4 retries a 503 with Retry-After until it succeeds.

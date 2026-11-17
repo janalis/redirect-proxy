@@ -47,6 +47,14 @@ pub fn openapi_document_test() {
   assert documented("/api/redirects/{id}", "put", "400")
   assert documented("/api/redirects/{id}", "patch", "400")
   assert documented("/api/redirects/bulk", "post", "400")
+  // a change the redirections file cannot take is a 500, not a 422
+  assert documented("/api/redirects", "post", "500")
+  assert documented("/api/redirects/{id}", "put", "500")
+  assert documented("/api/redirects/{id}", "patch", "500")
+  assert documented("/api/redirects/{id}", "delete", "500")
+  assert !documented("/api/redirects/{id}", "delete", "422")
+  assert documented("/api/redirects/import", "post", "500")
+  assert documented("/api/redirects/bulk", "post", "500")
   assert documented("/oauth/token", "post", "413")
   assert documented("/oauth/token", "post", "415")
   // headers the code sends
@@ -71,7 +79,6 @@ pub fn openapi_document_test() {
     )
   assert list.length(patch_status) == 2
   // statuses and codes the code answers with
-  assert documented("/api/redirects/{id}", "delete", "422")
   let problem_codes =
     field(
       resp.body,

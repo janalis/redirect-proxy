@@ -265,6 +265,16 @@ fn change_problem(error: store.ChangeError, id: String) -> Response {
       problem.precondition_failed(rule.version(current))
     store.Stale(current) -> problem.precondition_failed(current)
     store.Invalid(errors) -> problem.validation(errors)
+    // another process holds the file lock: as when the store is busy
+    store.Busy(_) -> store_busy()
+    // not the request's fault: a 422 would tell the client to change it
+    store.Storage(reason) ->
+      problem.problem(
+        500,
+        "Internal Server Error",
+        "The change was not saved: " <> reason,
+        [],
+      )
   }
 }
 
@@ -679,6 +689,10 @@ fn verdict_string(verdict: explain.Verdict) -> String {
 /// for the file lock another process holds), rather than a crash (500).
 fn store_available(handler: fn() -> Response) -> Response {
   use <- store.or_unavailable(handler)
+  store_busy()
+}
+
+fn store_busy() -> Response {
   problem.coded_problem(
     503,
     "store_busy",

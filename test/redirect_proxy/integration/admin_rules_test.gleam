@@ -549,7 +549,8 @@ pub fn reload_from_disk_test() {
 }
 
 /// Deleting and enabling a rule answer a refused change alike, and as the
-/// API: 404 when the rule is gone, 422 when it cannot be written.
+/// API: 404 when the rule is gone, 500 when it cannot be written (a failure
+/// of the server, not of the form).
 pub fn rule_changes_fail_alike_test() {
   let env = boot(config.default())
   let #(cookie, csrf) = login(env)
@@ -568,8 +569,9 @@ pub fn rule_changes_fail_alike_test() {
   let deleted = change("/rules/" <> id <> "/delete")
   let toggled = change("/rules/" <> id <> "/toggle")
   let assert Ok(Nil) = simplifile.set_permissions_octal(env.dir, 0o700)
-  assert deleted.status == 422
-  assert toggled.status == 422
+  assert deleted.status == 500
+  assert toggled.status == 500
+  assert string.contains(deleted.body, "The change was not saved")
   assert get(env.redirect <> "/old", []).status == 301
 }
 

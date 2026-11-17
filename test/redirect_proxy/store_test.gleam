@@ -679,9 +679,9 @@ pub fn outside_changes_whose_ids_cannot_be_written_are_told_apart_test() {
       "[{\"source\": \"/theirs\", \"target\": \"/b\"}]",
     )
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
-  let result = store_support.create(s, new_rule("/x", "/y"), by: "server")
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  let assert Error([reason]) = result
+  let assert Error(store.Storage(reason)) = result
   assert string.contains(reason, "could not be written")
   assert !string.contains(reason, "is invalid")
 }
@@ -691,8 +691,8 @@ pub fn invalid_outside_changes_are_not_overwritten_test() {
   let s = start(settings(dir, 5))
   let broken = "{\"version\": 1, \"rules\": [ half written"
   let assert Ok(Nil) = simplifile.write(dir <> "/redirects.json", broken)
-  let assert Error([reason]) =
-    store_support.create(s, new_rule("/x", "/y"), by: "server")
+  let assert Error(store.Storage(reason)) =
+    store.create(s, new_rule("/x", "/y"), by: "server")
   assert string.contains(reason, "changed outside the server")
   assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
 }
@@ -707,11 +707,40 @@ pub fn unreadable_outside_changes_are_not_overwritten_test() {
     "{\"version\": 1, \"rules\": [{\"id\": \"t\", \"source\": \"/theirs\", \"target\": \"/b\"}]}"
   let assert Ok(Nil) = simplifile.write(path, theirs)
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o200)
-  let result = store_support.create(s, new_rule("/x", "/y"), by: "server")
+  let result = store.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
-  let assert Error([reason]) = result
+  let assert Error(store.Storage(reason)) = result
   assert string.contains(reason, "cannot be read")
   assert simplifile.read(path) == Ok(theirs)
+}
+
+/// A file that cannot be written refuses the change as a storage failure,
+/// not as an invalid change, and leaves the rules as they were.
+pub fn unwritable_files_are_storage_failures_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
+  let created = store.create(s, new_rule("/x", "/y"), by: "t")
+  let imported = store.import_rules(s, [new_rule("/i", "/y")], store.Merge, "t")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Error(store.Storage(reason)) = created
+  assert string.contains(reason, "could not be written")
+  let assert Error(store.Storage(_)) = imported
+  assert store.all(s) == []
+}
+
+/// The file lock another process holds past the wait refuses the change as
+/// busy: retrying later may succeed.
+pub fn a_lock_held_past_the_wait_is_busy_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let lock = dir <> "/redirects.json.lock"
+  let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
+  let created = store.create(s, new_rule("/x", "/y"), by: "t")
+  let assert Ok(Nil) = simplifile.delete(lock)
+  let assert Error(store.Busy(reason)) = created
+  assert string.contains(reason, "is held by another process")
+  let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "t")
 }
 
 /// Two stores on the same file stand for two OS processes (server and CLI):

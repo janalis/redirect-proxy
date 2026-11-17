@@ -5,7 +5,7 @@ import gleam/list
 import gleam/option.{type Option, Some}
 import gleam/result
 import redirect_proxy/ffi
-import redirect_proxy/field_error.{type FieldError, FieldError}
+import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -15,6 +15,14 @@ import redirect_proxy/store/checker
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/rules.{
   check_changed, check_conflicts, check_lint, check_loop,
+}
+
+/// Why a change was not committed.
+pub type Refusal {
+  /// The rules it leaves fail a check: nothing was written.
+  Refused(List(FieldError))
+  /// The redirections file could not be written: nothing was published.
+  NotWritten(reason: String)
 }
 
 /// Where a store writes and how it follows loops.
@@ -101,16 +109,22 @@ pub fn one(
   previous: Option(Rule),
   rules: List(Rule),
   uncovers uncovers: Bool,
-) -> Result(String, List(FieldError)) {
-  use Nil <- result.try(check_lint_change(changed, previous))
-  use Nil <- result.try(check_conflicts(rules))
-  let built = matcher.build(rules)
-  use Nil <- result.try(check_loop(
-    built,
-    rules,
-    changed,
-    target.ignore_trailing_slash,
-  ))
+) -> Result(String, Refusal) {
+  use built <- result.try(
+    {
+      use Nil <- result.try(check_lint_change(changed, previous))
+      use Nil <- result.try(check_conflicts(rules))
+      let built = matcher.build(rules)
+      use Nil <- result.try(check_loop(
+        built,
+        rules,
+        changed,
+        target.ignore_trailing_slash,
+      ))
+      Ok(built)
+    }
+    |> result.map_error(Refused),
+  )
   use fingerprint <- result.try(write(target, rules, built))
   case uncovers {
     True -> checker.request(target.files.rules_path, checker.Loops)
@@ -146,8 +160,10 @@ pub fn many(
   rules: List(Rule),
   changed changed: List(Rule),
   check_conflicts check: Bool,
-) -> Result(String, List(FieldError)) {
-  use built <- result.try(check_many(target, rules, changed, check))
+) -> Result(String, Refusal) {
+  use built <- result.try(
+    check_many(target, rules, changed, check) |> result.map_error(Refused),
+  )
   use fingerprint <- result.try(write(target, rules, built))
   checker.request(target.files.rules_path, checker.Problems)
   Ok(fingerprint)
@@ -180,24 +196,23 @@ fn write(
   target: Target,
   rules: List(Rule),
   built: matcher.Matcher,
-) -> Result(String, List(FieldError)) {
-  use fingerprint <- result.try(persist(target, rules))
+) -> Result(String, Refusal) {
+  use fingerprint <- result.try(
+    persist(target, rules) |> result.map_error(NotWritten),
+  )
   publish(target, built, rules, fingerprint)
   Ok(fingerprint)
 }
 
 /// Backs up then writes the rules, without publishing them. Returns the
-/// fingerprint of the file.
-pub fn persist(
-  target: Target,
-  rules: List(Rule),
-) -> Result(String, List(FieldError)) {
+/// fingerprint of the file, or why it could not be written.
+pub fn persist(target: Target, rules: List(Rule)) -> Result(String, String) {
   case store_file.persist(target.files, rules) {
     Ok(fingerprint) -> Ok(fingerprint)
     Error(reason) -> {
       metrics.incr(metrics.StorageWriteFailures)
       log.error("failed to persist redirections: " <> reason)
-      Error([FieldError("storage", reason)])
+      Error("the redirections file could not be written (" <> reason <> ")")
     }
   }
 }

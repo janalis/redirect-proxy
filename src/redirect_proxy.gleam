@@ -545,13 +545,17 @@ fn rules_export(config_path: String) -> Result(Nil, String) {
 const store_busy =
   "the rules are busy (another change holds the lock); nothing was changed, retry"
 
-/// The busy message when `reason` is the file lock that another process
-/// (a server making a change, another command) holds past the wait: the
+/// Why an import was refused. The file lock that another process (a
+/// server making a change, another command) holds past the wait says the
 /// command made no change and can be retried.
-fn busy_or(reason: String) -> String {
-  case string.contains(reason, " is held by another process") {
-    True -> store_busy <> "\n" <> reason
-    False -> reason
+fn describe_import_error(error: store.ChangeError) -> String {
+  case error {
+    store.Busy(reason) -> store_busy <> "\n" <> reason
+    store.Storage(reason) -> reason
+    store.Invalid(errors) -> string.join(field_error.to_strings(errors), "\n")
+    // an import names no one rule, and expects no version
+    store.NotFound | store.AlreadyExists | store.Conflict(_) | store.Stale(_) ->
+      "the rules were changed meanwhile; nothing was changed, retry"
   }
 }
 
@@ -576,9 +580,7 @@ fn rules_import(
   )
   use count <- result.try(
     store.import_into_file(app.store_settings(cfg), incoming, mode, by: "cli")
-    |> result.map_error(fn(errors) {
-      busy_or(string.join(field_error.to_strings(errors), "\n"))
-    }),
+    |> result.map_error(describe_import_error),
   )
   io.println(
     int.to_string(count)

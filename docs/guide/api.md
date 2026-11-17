@@ -133,7 +133,11 @@ use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 apart by it, not by `title` or `detail`. `store_busy` (503, with
 `Retry-After`) means the rule store could not take the request in time,
 because changes are queued or another process holds the file lock: a change
-the store had not started is not made, so retry it. Validation errors carry an `errors` array of
+the store had not started is not made, so retry it. A change the
+redirections file cannot take (it cannot be read or written, or was changed
+outside the server and does not load) is a `500` (`internal_error`), with
+the reason in `detail`: nothing was changed, and the request itself is not
+at fault. Validation errors (`422`) carry an `errors` array of
 `{field, message}`. Authentication failures follow
 [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (`WWW-Authenticate:
 Bearer error="invalid_token"` or `"insufficient_scope"`). The API never uses

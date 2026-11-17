@@ -59,6 +59,8 @@ pub fn describe(error: store.ChangeError) -> List(String) {
     store.Conflict(_) -> ["version: the rule was modified concurrently"]
     store.Stale(_) -> ["version: the rules were changed since they were read"]
     store.Invalid(errors) -> field_error.to_strings(errors)
+    store.Busy(reason) -> ["busy: " <> reason]
+    store.Storage(reason) -> ["storage: " <> reason]
   }
 }
 
