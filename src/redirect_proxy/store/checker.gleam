@@ -6,7 +6,8 @@
 //// to it.
 
 import gleam/erlang/process.{type Subject}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/log
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/snapshot
@@ -26,7 +27,7 @@ pub type Check {
 /// Creates the table of checkers: by the table owner (`tables`) in the
 /// application, by `store.start` otherwise.
 pub fn init() -> Nil {
-  ffi.ets_new(table)
+  ets_ffi.ets_new(table)
 }
 
 /// Starts the checker of the store of `rules_path`, linked to the calling
@@ -44,13 +45,13 @@ pub fn start(
     loop(checks, fetch, ignore_trailing_slash)
   })
   let assert Ok(checks) = process.receive(ready, 5000)
-  ffi.ets_put(table, rules_path, checks)
+  ets_ffi.ets_put(table, rules_path, checks)
 }
 
 /// Asks the checker of the store of `rules_path` to check the rules now
 /// published.
 pub fn request(rules_path: String, check: Check) -> Nil {
-  case ffi.ets_get(table, rules_path) {
+  case ets_ffi.ets_get(table, rules_path) {
     Ok(checks) -> process.send(checks, check)
     Error(Nil) -> Nil
   }
@@ -63,7 +64,7 @@ fn loop(
 ) -> Nil {
   let check = pending(checks, process.receive_forever(checks))
   let outcome =
-    ffi.rescue(fn() {
+    system_ffi.rescue(fn() {
       // the rules as published: the snapshot is their matcher
       let rules = fetch()
       let built = snapshot.current()
@@ -78,7 +79,7 @@ fn loop(
   }
   // A check leaves megabytes of garbage (9 MiB at 11 500 rules), kept until
   // the next one: this process does nothing else to trigger a collection.
-  ffi.garbage_collect()
+  system_ffi.garbage_collect()
   loop(checks, fetch, ignore_trailing_slash)
 }
 

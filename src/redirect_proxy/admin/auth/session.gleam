@@ -7,7 +7,8 @@ import gleam/bit_array
 import gleam/crypto
 import gleam/int
 import gleam/list
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/role.{type Role}
 
@@ -45,8 +46,8 @@ pub type Session {
 
 /// Creates the ETS table. Must be called from a long lived process.
 pub fn init() -> Nil {
-  ffi.ets_new(table)
-  ffi.ets_new(header_index)
+  ets_ffi.ets_new(table)
+  ets_ffi.ets_new(header_index)
 }
 
 /// `name` is the local username, the SSO username or the name vouched for by
@@ -58,7 +59,7 @@ pub fn create(
   fingerprint: String,
   role: Role,
 ) -> Session {
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let session =
     Session(
       token: id.token(32),
@@ -71,7 +72,7 @@ pub fn create(
       last_seen: now,
     )
   // Stored as #(expires_at, session) so that `ets_delete_older` can purge.
-  ffi.ets_put(table, key(session.token), #(
+  ets_ffi.ets_put(table, key(session.token), #(
     session.expires_at,
     Session(..session, token: ""),
   ))
@@ -86,7 +87,7 @@ fn key(token: String) -> String {
 /// The live session of a token. A session unused for `idle_timeout` seconds
 /// (0: no limit) or past its lifetime is destroyed.
 pub fn get(token: String, idle_timeout: Int) -> Result(Session, Nil) {
-  get_at(token, idle_timeout, ffi.now_seconds())
+  get_at(token, idle_timeout, system_ffi.now_seconds())
 }
 
 /// `get` at a given time (seconds since the epoch), for tests.
@@ -104,7 +105,7 @@ fn get_for_key(
   idle_timeout: Int,
   now: Int,
 ) -> Result(Session, Nil) {
-  case ffi.ets_get(table, key) {
+  case ets_ffi.ets_get(table, key) {
     Ok(#(expires_at, session)) -> {
       let session: Session = session
       let old = #(expires_at, session)
@@ -115,13 +116,13 @@ fn get_for_key(
           // overwriting a concurrent request's later activity.
           let updated =
             Session(..session, last_seen: int.max(now, session.last_seen))
-          case ffi.ets_replace_if(table, key, old, #(expires_at, updated)) {
+          case ets_ffi.ets_replace_if(table, key, old, #(expires_at, updated)) {
             True -> Ok(Session(..updated, token:))
             False -> get_for_key(token, key, idle_timeout, now)
           }
         }
         False ->
-          case ffi.ets_delete_if(table, key, old) {
+          case ets_ffi.ets_delete_if(table, key, old) {
             True -> Error(Nil)
             False -> get_for_key(token, key, idle_timeout, now)
           }
@@ -143,7 +144,7 @@ pub fn header_session(
   idle_timeout: Int,
 ) -> #(Session, Bool) {
   let key = actor(Header, name) <> " " <> role.to_string(role)
-  let live = case ffi.ets_get(header_index, key) {
+  let live = case ets_ffi.ets_get(header_index, key) {
     Ok(#(_, token)) ->
       case get(token, idle_timeout) {
         Ok(s) if s.method == Header && s.role == role -> Ok(s)
@@ -157,14 +158,14 @@ pub fn header_session(
       let s = create(name, Header, ttl, "", role)
       // the token itself: every browser the proxy vouches for gets it (the
       // proxy's sign-in, checked on every request, is what protects it)
-      ffi.ets_put(header_index, key, #(s.expires_at, s.token))
+      ets_ffi.ets_put(header_index, key, #(s.expires_at, s.token))
       #(s, True)
     }
   }
 }
 
 pub fn destroy(token: String) -> Nil {
-  ffi.ets_delete(table, key(token))
+  ets_ffi.ets_delete(table, key(token))
 }
 
 /// The name a session acts as. Names from the identity provider or the proxy
@@ -191,21 +192,21 @@ pub fn display_name(session: Session) -> String {
 /// Revokes every session of a local user (e.g. after deletion or password
 /// change).
 pub fn destroy_user(username: String) -> Nil {
-  let entries: List(#(String, #(Int, Session))) = ffi.ets_to_list(table)
+  let entries: List(#(String, #(Int, Session))) = ets_ffi.ets_to_list(table)
   entries
   |> list.each(fn(entry) {
     let #(token, #(_, session)) = entry
     case session.method == Local && session.username == username {
-      True -> ffi.ets_delete(table, token)
+      True -> ets_ffi.ets_delete(table, token)
       False -> Nil
     }
   })
 }
 
 pub fn purge_expired() -> Int {
-  let now = ffi.now_seconds()
-  let _ = ffi.ets_delete_older(header_index, now)
-  ffi.ets_delete_older(table, now)
+  let now = system_ffi.now_seconds()
+  let _ = ets_ffi.ets_delete_older(header_index, now)
+  ets_ffi.ets_delete_older(table, now)
 }
 
 pub fn method_to_string(method: Method) -> String {

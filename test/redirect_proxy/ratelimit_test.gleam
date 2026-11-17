@@ -2,12 +2,13 @@ import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/ratelimit
 import support
 
 fn key(name: String) -> String {
-  name <> "-" <> int.to_string(ffi.now_micros())
+  name <> "-" <> int.to_string(system_ffi.now_micros())
 }
 
 pub fn blocks_at_the_limit_and_resets_test() {
@@ -131,7 +132,7 @@ pub fn bounded_work_refuses_beyond_the_limit_test() {
   process.send(release, Nil)
   // the slot is given back, even by work that crashes
   support_wait(fn() { ratelimit.bounded(name, 1, fn() { Nil }) == Ok(Nil) })
-  let _ = ffi.rescue(fn() { ratelimit.bounded(name, 1, fn() { panic }) })
+  let _ = system_ffi.rescue(fn() { ratelimit.bounded(name, 1, fn() { panic }) })
   assert ratelimit.bounded(name, 1, fn() { 7 }) == Ok(7)
 }
 
@@ -168,37 +169,38 @@ pub fn concurrent_resets_never_crash_admission_test() {
 
 pub fn admission_preserves_rejected_counts_and_window_boundaries_test() {
   let table = "redirect_proxy_window_boundary_test"
-  ffi.ets_new(table)
-  assert ffi.window_take(table, "key", 100, 60, 2) == Ok(Nil)
-  assert ffi.window_take(table, "key", 159, 60, 2) == Ok(Nil)
-  assert ffi.window_take(table, "key", 159, 60, 2) == Error(1)
-  assert ffi.window_get(table, "key") == Ok(#(160, 2))
+  ets_ffi.ets_new(table)
+  assert ets_ffi.window_take(table, "key", 100, 60, 2) == Ok(Nil)
+  assert ets_ffi.window_take(table, "key", 159, 60, 2) == Ok(Nil)
+  assert ets_ffi.window_take(table, "key", 159, 60, 2) == Error(1)
+  assert ets_ffi.window_get(table, "key") == Ok(#(160, 2))
   // Exact expiry starts a fresh window and its first admitted use.
-  assert ffi.window_take(table, "key", 160, 60, 2) == Ok(Nil)
-  assert ffi.window_get(table, "key") == Ok(#(220, 1))
-  assert ffi.window_take(table, "zero", 100, 60, 0) == Error(60)
-  assert ffi.window_get(table, "zero") == Error(Nil)
+  assert ets_ffi.window_take(table, "key", 160, 60, 2) == Ok(Nil)
+  assert ets_ffi.window_get(table, "key") == Ok(#(220, 1))
+  assert ets_ffi.window_take(table, "zero", 100, 60, 0) == Error(60)
+  assert ets_ffi.window_get(table, "zero") == Error(Nil)
 }
 
 pub fn refunds_never_change_replacement_windows_test() {
   let table = "redirect_proxy_receipt_test"
-  ffi.ets_new(table)
-  let assert Ok(old) = ffi.window_take_receipt(table, "key", 100, 60, 2)
-  let assert Ok(_) = ffi.window_take_receipt(table, "key", 159, 60, 2)
-  let assert Ok(new) = ffi.window_take_receipt(table, "key", 160, 60, 2)
-  let assert Ok(_) = ffi.window_take_receipt(table, "key", 160, 60, 2)
+  ets_ffi.ets_new(table)
+  let assert Ok(old) = ets_ffi.window_take_receipt(table, "key", 100, 60, 2)
+  let assert Ok(_) = ets_ffi.window_take_receipt(table, "key", 159, 60, 2)
+  let assert Ok(new) = ets_ffi.window_take_receipt(table, "key", 160, 60, 2)
+  let assert Ok(_) = ets_ffi.window_take_receipt(table, "key", 160, 60, 2)
   assert new != old
-  ffi.window_forgive(table, "key", old)
-  assert ffi.window_get(table, "key") == Ok(#(220, 2))
-  assert ffi.window_take(table, "key", 160, 60, 2) == Error(60)
+  ets_ffi.window_forgive(table, "key", old)
+  assert ets_ffi.window_get(table, "key") == Ok(#(220, 2))
+  assert ets_ffi.window_take(table, "key", 160, 60, 2) == Error(60)
   // Reset/recreation can give exactly the same expiry but a new generation.
-  ffi.ets_delete(table, "key")
-  let assert Ok(recreated) = ffi.window_take_receipt(table, "key", 160, 60, 2)
+  ets_ffi.ets_delete(table, "key")
+  let assert Ok(recreated) =
+    ets_ffi.window_take_receipt(table, "key", 160, 60, 2)
   assert recreated != new
-  ffi.window_forgive(table, "key", new)
-  assert ffi.window_get(table, "key") == Ok(#(220, 1))
-  ffi.window_forgive(table, "key", recreated)
-  assert ffi.window_get(table, "key") == Ok(#(220, 0))
-  ffi.window_forgive(table, "key", recreated)
-  assert ffi.window_get(table, "key") == Ok(#(220, 0))
+  ets_ffi.window_forgive(table, "key", new)
+  assert ets_ffi.window_get(table, "key") == Ok(#(220, 1))
+  ets_ffi.window_forgive(table, "key", recreated)
+  assert ets_ffi.window_get(table, "key") == Ok(#(220, 0))
+  ets_ffi.window_forgive(table, "key", recreated)
+  assert ets_ffi.window_get(table, "key") == Ok(#(220, 0))
 }

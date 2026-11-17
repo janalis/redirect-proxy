@@ -4,7 +4,7 @@
 
 import gleam/int
 import gleam/list
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
@@ -24,7 +24,7 @@ pub fn reload(
   actor_name: String,
   report_busy report_busy: Bool,
 ) -> #(State, Result(Int, store_file.LoadFailure)) {
-  let started = ffi.monotonic_micros()
+  let started = system_ffi.monotonic_micros()
   case
     store_file.load_locked_or_busy(
       files(state.config),
@@ -84,7 +84,7 @@ pub fn refresh(state: State) -> Result(State, String) {
                 <> reason,
               )
             Ok(#(rules, fingerprint)) -> {
-              let started = ffi.monotonic_micros()
+              let started = system_ffi.monotonic_micros()
               let reloaded =
                 loaded(state, rules, fingerprint, "external", started)
               log.warning(
@@ -111,7 +111,7 @@ fn loaded(
 ) -> State {
   commit.loaded(state.config.target, rules, fingerprint, checker.Problems)
   metrics.incr(metrics.Reloads)
-  metrics.reloaded(ffi.monotonic_micros() - started)
+  metrics.reloaded(system_ffi.monotonic_micros() - started)
   audit_entries.rules_change(
     state,
     actor_name,

@@ -15,7 +15,8 @@ import redirect_proxy/config.{
 } as _
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/file.{unknown_keys} as _
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/listener
 import redirect_proxy/metrics_endpoint
 import redirect_proxy/role
@@ -33,7 +34,8 @@ fn is_http_url(url: String) -> Bool {
 fn remote_url(url: String) -> Bool {
   case uri.parse(url) {
     Ok(uri.Uri(host: Some(host), ..)) ->
-      string.lowercase(host) != "localhost" && !ffi.is_loopback_address(host)
+      string.lowercase(host) != "localhost"
+      && !net_ffi.is_loopback_address(host)
     _ -> False
   }
 }
@@ -41,7 +43,7 @@ fn remote_url(url: String) -> Bool {
 fn plain_http_remote(url: String) -> Bool {
   case uri.parse(url) {
     Ok(uri.Uri(scheme: Some(scheme), host: Some(host), ..)) ->
-      string.lowercase(scheme) == "http" && !ffi.is_loopback_address(host)
+      string.lowercase(scheme) == "http" && !net_ffi.is_loopback_address(host)
     _ -> False
   }
 }
@@ -198,13 +200,13 @@ fn open_oidc(config: Config) -> Bool {
 }
 
 fn is_loopback(address: String) -> Bool {
-  ffi.is_loopback_address(address)
+  net_ffi.is_loopback_address(address)
 }
 
 pub fn validate(config: Config) -> Result(Config, String) {
   let port_ok = fn(p) { p >= 0 && p < 65_536 }
   let listen_ok = fn(name, address) {
-    case ffi.valid_listen_address(address) {
+    case net_ffi.valid_listen_address(address) {
       True -> Ok(Nil)
       False ->
         Error(
@@ -336,7 +338,7 @@ pub fn validate(config: Config) -> Result(Config, String) {
   )
   // sent as is in `Location`
   use <- bool.guard(
-    !ffi.no_control_chars(config.server.fallback_url)
+    !text_ffi.no_control_chars(config.server.fallback_url)
       || string.contains(config.server.fallback_url, " "),
     Error(
       "server.fallback_url must not contain spaces or control characters (percent-encode them)",
@@ -421,7 +423,7 @@ pub fn validate(config: Config) -> Result(Config, String) {
     Error("auth.header requires at least one trusted proxy CIDR"),
   )
   use <- bool.guard(
-    !list.all(config.header_auth.trusted_proxies, ffi.valid_cidr),
+    !list.all(config.header_auth.trusted_proxies, net_ffi.valid_cidr),
     Error("auth.header.trusted_proxies contains an invalid CIDR"),
   )
   use <- bool.guard(
@@ -484,7 +486,7 @@ fn validate_access_log(al: AccessLogConfig) -> Result(Nil, String) {
     Error("access_log.output must be stdout, stderr or a file path"),
   )
   use <- bool.guard(
-    !list.all(al.trusted_proxies, ffi.valid_cidr),
+    !list.all(al.trusted_proxies, net_ffi.valid_cidr),
     Error("access_log.trusted_proxies contains an invalid CIDR"),
   )
   // a tiny size would rotate, and gzip, on almost every line

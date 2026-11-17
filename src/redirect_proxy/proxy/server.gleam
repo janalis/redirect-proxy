@@ -16,7 +16,9 @@ import mist
 import redirect_proxy/access_log
 import redirect_proxy/cidr
 import redirect_proxy/config.{type ServerConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/net as net_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/listener
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -125,7 +127,7 @@ pub fn handler_with_identity(
   let trusted_listed = trusted_proxies != []
   let trusted = cidr.compile(trusted_proxies)
   fn(req: Request(proxy_http.Peer)) {
-    let started = ffi.monotonic_micros()
+    let started = system_ffi.monotonic_micros()
     // one read of the counters for every metric of the request
     let counts = metrics.current()
     let peer_trusted =
@@ -151,11 +153,11 @@ pub fn handler_with_identity(
         // while the node drains before stopping (SIGTERM), connections are
         // closed after each response so that clients reconnect to another
         // instance
-        let resp = case ffi.draining() {
+        let resp = case system_ffi.draining() {
           False -> resp
           True -> response.set_header(resp, "connection", "close")
         }
-        let finished = ffi.monotonic_micros()
+        let finished = system_ffi.monotonic_micros()
         metrics.observe(listener.RedirectListener, finished - started)
         metrics.count_response(counts, resp.status)
         case access {
@@ -169,7 +171,7 @@ pub fn handler_with_identity(
               resp,
               bytes_tree.byte_size(resp.body),
               rule_id,
-              ffi.now_micros() - duration_us,
+              system_ffi.now_micros() - duration_us,
               duration_us,
             )
           }
@@ -194,7 +196,7 @@ fn forward(
 ) -> proxy_http.Outcome {
   metrics.incr(metrics.UpstreamRequests)
   proxy_http.Forward(
-    close: ffi.draining(),
+    close: system_ffi.draining(),
     headers: forwarded_headers(req, trusted),
     // the headers naming the client from `access_log.trusted_proxies`,
     // the user's from `auth.header.trusted_proxies`
@@ -213,7 +215,7 @@ fn forward(
         }
     },
     done: fn(forwarded: proxy_http.Forwarded) {
-      let duration_us = ffi.monotonic_micros() - started
+      let duration_us = system_ffi.monotonic_micros() - started
       // an upgraded connection (101) lasts as long as the client keeps it:
       // counted, but its lifetime is not a response time (the access log
       // has it)
@@ -241,7 +243,7 @@ fn forward(
             Response(forwarded.status, [], Nil),
             forwarded.bytes,
             "",
-            ffi.now_micros() - duration_us,
+            system_ffi.now_micros() - duration_us,
             duration_us,
           )
       }
@@ -333,7 +335,7 @@ fn route(
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
-  counts: ffi.Counters,
+  counts: ets_ffi.Counters,
 ) -> Routed {
   case config.health_path != "" && req.path == config.health_path {
     True -> Answered(health(), "")
@@ -389,7 +391,7 @@ fn metrics_response(
 /// `server.health_path`: for load balancers that can only probe the traffic
 /// port. Not counted as a request, like the admin's /readyz.
 fn health() -> Response(BytesTree) {
-  let #(status, body) = case ffi.draining() {
+  let #(status, body) = case system_ffi.draining() {
     False -> #(200, "ok")
     True -> #(503, "draining")
   }
@@ -419,7 +421,7 @@ fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
     Ok(proto) ->
       // the first value: the client side of the first proxy; `wss`:
       // Traefik's value for a WebSocket upgrade over TLS
-      case ffi.first_item(proto) {
+      case net_ffi.first_item(proto) {
         "https" | "wss" -> True
         _ -> False
       }
@@ -433,7 +435,7 @@ fn https_proto(req: Request(proxy_http.Peer)) -> Bool {
 fn to_https(
   req: Request(proxy_http.Peer),
   permanent_cache: String,
-  counts: ffi.Counters,
+  counts: ets_ffi.Counters,
 ) -> Response(BytesTree) {
   let host =
     list.key_find(req.headers, "host")
@@ -468,7 +470,7 @@ fn route_rules(
   req: Request(proxy_http.Peer),
   not_found_body: BytesTree,
   permanent_cache: String,
-  counts: ffi.Counters,
+  counts: ets_ffi.Counters,
 ) -> Routed {
   // the listener has checked the Host header and split its port off
   let host = req.host
@@ -537,7 +539,7 @@ fn redirect(
 fn unmatched(
   config: ServerConfig,
   not_found_body: BytesTree,
-  counts: ffi.Counters,
+  counts: ets_ffi.Counters,
 ) -> Response(BytesTree) {
   case config.fallback_url {
     "" -> {

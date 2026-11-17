@@ -16,7 +16,8 @@ import gleam/string
 import redirect_proxy/api_token as token
 import redirect_proxy/clients
 import redirect_proxy/config.{type ApiOAuthConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/oidc_provider
 import redirect_proxy/scope.{type Scope}
 import wisp
@@ -92,8 +93,8 @@ fn external(oauth: ApiOAuthConfig, jwt: String) -> Result(Principal, String) {
     oidc_provider.verify_signature(provider, jwt)
     |> result.replace_error("invalid token signature"),
   )
-  use Nil <- result.try(check_type(oauth, ffi.jwt_peek_header(jwt)))
-  check_claims(oauth, provider.issuer, claims, ffi.now_seconds())
+  use Nil <- result.try(check_type(oauth, crypto_ffi.jwt_peek_header(jwt)))
+  check_claims(oauth, provider.issuer, claims, system_ffi.now_seconds())
 }
 
 /// With `require_at_jwt`, the token header must say it is an access token

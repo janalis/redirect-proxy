@@ -17,7 +17,8 @@ import mist
 import redirect_proxy/access_log_format.{type Format} as fmt
 import redirect_proxy/cidr.{type Cidrs}
 import redirect_proxy/config.{type AccessLogConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/listener.{
   type Listener, AdminListener, ApiListener, RedirectListener,
 }
@@ -82,7 +83,7 @@ pub fn start(cfg: AccessLogConfig) -> Result(Loggers, String) {
         Error(Nil) -> list.append(groups, [#(output, [l])])
       }
     })
-  use Nil <- result.try(ffi.access_log_start(
+  use Nil <- result.try(access_ffi.access_log_start(
     groups,
     cfg.max_bytes,
     cfg.max_files,
@@ -102,7 +103,7 @@ pub fn start(cfg: AccessLogConfig) -> Result(Loggers, String) {
 
 /// Writes the lines waiting in the writers and stops them.
 pub fn stop() -> Nil {
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
 }
 
 /// Wraps a listener's handler so that each request is timed (request
@@ -115,10 +116,10 @@ pub fn wrap(
 ) -> fn(Request(mist.Connection)) -> Response(mist.ResponseData) {
   fn(req) {
     let #(listener, settings) = choose(req)
-    let time_us = ffi.now_micros()
-    let started = ffi.monotonic_micros()
+    let time_us = system_ffi.now_micros()
+    let started = system_ffi.monotonic_micros()
     let resp = handle(req)
-    let duration_us = ffi.monotonic_micros() - started
+    let duration_us = system_ffi.monotonic_micros() - started
     metrics.observe(listener, duration_us)
     case settings {
       option.None -> Nil
@@ -152,7 +153,7 @@ pub fn is_api_path(path: String) -> Bool {
 
 /// Logs one served request: `peer` is the address of the connection,
 /// `bytes` the size of the response body, `time_us` when the request arrived
-/// (`ffi.now_micros()`) and `duration_us` how long it took.
+/// (`system_ffi.now_micros()`) and `duration_us` how long it took.
 pub fn record(
   settings: Settings,
   req: Request(body),
@@ -167,11 +168,11 @@ pub fn record(
     Ok(ip) ->
       case cidr.contains_peer(settings.trusted_proxies, ip) {
         // the peer is the client: anonymise its address without formatting it
-        False if settings.anonymize_ip -> ffi.anonymize_peer(ip)
-        False -> ffi.peer_to_string(ip)
+        False if settings.anonymize_ip -> access_ffi.anonymize_peer(ip)
+        False -> access_ffi.peer_to_string(ip)
         True ->
           fmt.forwarded_client_ip(
-            ffi.peer_to_string(ip),
+            access_ffi.peer_to_string(ip),
             req.headers,
             settings.trusted_proxies,
           )
@@ -186,7 +187,7 @@ pub fn record(
       method: http.method_to_string(req.method),
       // header names are lower case (`request.get_header` lower-cases the
       // name it is given on every call)
-      host: ffi.header(req.headers, "host") |> result.unwrap(req.host),
+      host: access_ffi.header(req.headers, "host") |> result.unwrap(req.host),
       path: req.path,
       query: option.unwrap(req.query, ""),
       protocol: "HTTP/1.1",
@@ -205,13 +206,13 @@ pub fn record(
             }
           })
       },
-      location: ffi.header(resp.headers, "location") |> result.unwrap(""),
+      location: access_ffi.header(resp.headers, "location") |> result.unwrap(""),
       rule_id:,
       time_us:,
       duration_us:,
     )
   fmt.render_tree(settings.format, settings.log_query, entry)
-  |> ffi.access_log_emit(settings.listener, _)
+  |> access_ffi.access_log_emit(settings.listener, _)
 }
 
 fn body_size(body: mist.ResponseData) -> Int {

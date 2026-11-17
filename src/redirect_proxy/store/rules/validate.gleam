@@ -8,7 +8,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/matcher
 import redirect_proxy/rule.{type Rule}
@@ -51,7 +51,7 @@ pub fn check_conflicts(rules: List(Rule)) -> Result(Nil, List(FieldError)) {
   // example.com are one host, /café and /caf%C3%A9 one path
   let exact_key = fn(r: Rule) {
     let host = matcher.normalise_request_host(r.host)
-    let source = ffi.normalise_path(r.source)
+    let source = text_ffi.normalise_path(r.source)
     let path = case r.case_insensitive {
       True -> host <> " " <> string.lowercase(source)
       False -> host <> " " <> source

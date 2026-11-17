@@ -23,7 +23,7 @@ import redirect_proxy/api/rule_routes
 import redirect_proxy/api/token_endpoint.{token_endpoint} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/health
 import redirect_proxy/http_security
 import redirect_proxy/log
@@ -207,7 +207,7 @@ fn authenticated(
   next: fn(Principal) -> Response,
 ) -> Response {
   // checked before the token: verifying a signature costs CPU
-  let ip_key = "api-ip:" <> ffi.throttle_address(ctx.client_ip)
+  let ip_key = "api-ip:" <> net_ffi.throttle_address(ctx.client_ip)
   use <- api_throttle(ip_key)
   case auth.authenticate(req, ctx.config.api.oauth, ctx.clients) {
     Ok(principal) -> next(principal)

@@ -1,7 +1,7 @@
 import gleam/erlang/process
 import gleam/list
 import redirect_proxy/admin/auth/session
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
 import redirect_proxy/role
 import redirect_proxy/users
 
@@ -116,20 +116,21 @@ pub fn concurrent_activity_keeps_latest_timestamp_test() {
 pub fn stale_activity_cannot_restore_or_delete_sessions_test() {
   session.init()
   let table = "redirect_proxy_session_cas_test"
-  ffi.ets_new(table)
+  ets_ffi.ets_new(table)
   let s = session.create("alice", session.Local, 3600, "fp", role.Admin)
   let old = #(s.expires_at, s)
   let updated = #(
     s.expires_at,
     session.Session(..s, last_seen: s.last_seen + 29),
   )
-  ffi.ets_put(table, "key", old)
-  assert ffi.ets_replace_if(table, "key", old, updated)
-  assert !ffi.ets_replace_if(table, "key", old, old)
-  assert !ffi.ets_delete_if(table, "key", old)
-  ffi.ets_delete(table, "key")
-  assert !ffi.ets_replace_if(table, "key", updated, old)
-  let result: Result(#(Int, session.Session), Nil) = ffi.ets_get(table, "key")
+  ets_ffi.ets_put(table, "key", old)
+  assert ets_ffi.ets_replace_if(table, "key", old, updated)
+  assert !ets_ffi.ets_replace_if(table, "key", old, old)
+  assert !ets_ffi.ets_delete_if(table, "key", old)
+  ets_ffi.ets_delete(table, "key")
+  assert !ets_ffi.ets_replace_if(table, "key", updated, old)
+  let result: Result(#(Int, session.Session), Nil) =
+    ets_ffi.ets_get(table, "key")
   assert result == Error(Nil)
 }
 

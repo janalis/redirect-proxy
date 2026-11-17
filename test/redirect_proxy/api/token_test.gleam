@@ -9,7 +9,7 @@ import gleam/list
 import gleam/string
 import redirect_proxy/clients
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/ratelimit
 import redirect_proxy/scope
 import simplifile
@@ -251,9 +251,9 @@ pub fn clients_wait_for_another_process_test() {
   let lock = s.path <> ".lock"
   let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host\n")
   // well under the 5 s a change waits for the lock
-  let started = ffi.now_millis()
+  let started = system_ffi.now_millis()
   let assert Ok(_) = clients.authenticate(s, client.client_id, secret)
-  assert ffi.now_millis() - started < 4000
+  assert system_ffi.now_millis() - started < 4000
   let released = process.new_subject()
   process.spawn(fn() {
     process.sleep(300)

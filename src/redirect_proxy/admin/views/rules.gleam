@@ -10,7 +10,7 @@ import lustre/element.{type Element}
 import lustre/element/html as h
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout.{type Flash}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/rule.{type Rule}
 
 pub type Filters {
@@ -368,7 +368,7 @@ fn row(session: Session, row: Row, here: String) -> Element(Nil) {
         a.class("text-end"),
         a.title(case row.last_hit {
           0 -> "Never hit"
-          at -> "Last hit " <> ffi.rfc3339(at)
+          at -> "Last hit " <> system_ffi.rfc3339(at)
         }),
       ],
       [h.text(int.to_string(row.hits))],
@@ -643,7 +643,7 @@ pub fn confirm_bulk_delete(
 
 /// "scheduled" before `starts_at`, "expired" from `expires_at`.
 fn schedule_badge(r: rule.Rule) -> Element(Nil) {
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let #(from, until) = rule.window(r)
   let badge = fn(text, title) {
     h.span([a.class("badge theme-warning ms-1"), a.title(title)], [h.text(text)])

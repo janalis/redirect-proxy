@@ -8,7 +8,9 @@ import gleam/result
 import gleam/string
 import gleam/string_tree.{type StringTree}
 import redirect_proxy/cidr.{type Cidrs}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
+import redirect_proxy/ffi/net as net_ffi
+import redirect_proxy/ffi/text as text_ffi
 
 /// How variable values are escaped.
 pub type Escape {
@@ -287,8 +289,8 @@ fn value(field: Field, log_query: Bool, e: Entry) -> String {
   case field {
     RemoteAddr -> e.client_ip
     RemoteUser -> ""
-    TimeLocal -> ffi.time_local(e.time_us)
-    TimeIso8601 -> ffi.time_iso8601(e.time_us)
+    TimeLocal -> access_ffi.time_local(e.time_us)
+    TimeIso8601 -> access_ffi.time_iso8601(e.time_us)
     Msec -> decimal(e.time_us / 1000, 1000)
     Request -> e.method <> " " <> request_uri(log_query, e) <> " " <> e.protocol
     RequestMethod -> e.method
@@ -321,7 +323,7 @@ fn request_uri(log_query: Bool, e: Entry) -> String {
 }
 
 fn header(e: Entry, name: String) -> String {
-  case ffi.header(e.headers, name) {
+  case access_ffi.header(e.headers, name) {
     Ok(v) -> v
     Error(Nil) -> ""
   }
@@ -335,7 +337,9 @@ pub fn strip_query(log_query: Bool, url: String) -> String {
     // nothing is dropped: the grapheme splits below are not needed to
     // find that out
     False ->
-      case ffi.byte_contains(url, "#") || ffi.byte_contains(url, "?") {
+      case
+        text_ffi.byte_contains(url, "#") || text_ffi.byte_contains(url, "?")
+      {
         False -> url
         True -> drop_query(url)
       }
@@ -364,9 +368,9 @@ fn decimal(value: Int, scale: Int) -> String {
 fn escape(mode: Escape, value: String) -> String {
   case mode, value {
     EscapeDefault, "" -> "-"
-    EscapeDefault, v -> ffi.escape_default(v)
-    EscapeJson, v -> ffi.escape_json(v)
-    EscapeNone, v -> ffi.escape_newlines(v)
+    EscapeDefault, v -> access_ffi.escape_default(v)
+    EscapeJson, v -> access_ffi.escape_json(v)
+    EscapeNone, v -> access_ffi.escape_newlines(v)
   }
 }
 
@@ -401,7 +405,7 @@ pub fn forwarded_client_ip(
     [] ->
       case list.key_find(headers, "x-real-ip") |> result.map(string.trim) {
         Ok(ip) ->
-          case ffi.is_ip_address(ip) {
+          case net_ffi.is_ip_address(ip) {
             True -> ip
             False -> peer
           }
@@ -488,5 +492,5 @@ fn forwarded_address(value: String) -> String {
 }
 
 pub fn anonymize(ip: String) -> String {
-  ffi.anonymize_ip(ip)
+  access_ffi.anonymize_ip(ip)
 }

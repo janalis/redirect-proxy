@@ -4,7 +4,7 @@ import gleam/dynamic/decode
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 
@@ -46,7 +46,7 @@ pub fn rule_json(r: Rule) -> Json {
           "last_hit_at",
           json.string(case metrics.last_hit(r.id) {
             0 -> ""
-            at -> ffi.rfc3339(at)
+            at -> system_ffi.rfc3339(at)
           }),
         ),
       ],

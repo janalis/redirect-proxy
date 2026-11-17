@@ -6,7 +6,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import redirect_proxy/config.{type HeaderAuthConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/log
 import redirect_proxy/role.{type Role}
 import wisp
@@ -79,5 +79,5 @@ pub fn identity_header(cfg: HeaderAuthConfig) -> String {
 }
 
 pub fn is_trusted(cfg: HeaderAuthConfig, peer_ip: String) -> Bool {
-  list.any(cfg.trusted_proxies, ffi.ip_in_cidr(peer_ip, _))
+  list.any(cfg.trusted_proxies, net_ffi.ip_in_cidr(peer_ip, _))
 }

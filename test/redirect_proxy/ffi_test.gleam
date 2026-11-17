@@ -5,72 +5,80 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/net as net_ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import simplifile
 import support
 
 pub fn ip_in_cidr_test() {
-  assert ffi.ip_in_cidr("10.1.2.3", "10.0.0.0/8")
-  assert !ffi.ip_in_cidr("11.1.2.3", "10.0.0.0/8")
-  assert ffi.ip_in_cidr("127.0.0.1", "127.0.0.1")
-  assert ffi.ip_in_cidr("192.168.1.10", "192.168.1.0/24")
-  assert !ffi.ip_in_cidr("192.168.2.10", "192.168.1.0/24")
-  assert ffi.ip_in_cidr("::1", "::1/128")
-  assert ffi.ip_in_cidr("fd00::1", "fd00::/8")
-  assert !ffi.ip_in_cidr("fe80::1", "fd00::/8")
+  assert net_ffi.ip_in_cidr("10.1.2.3", "10.0.0.0/8")
+  assert !net_ffi.ip_in_cidr("11.1.2.3", "10.0.0.0/8")
+  assert net_ffi.ip_in_cidr("127.0.0.1", "127.0.0.1")
+  assert net_ffi.ip_in_cidr("192.168.1.10", "192.168.1.0/24")
+  assert !net_ffi.ip_in_cidr("192.168.2.10", "192.168.1.0/24")
+  assert net_ffi.ip_in_cidr("::1", "::1/128")
+  assert net_ffi.ip_in_cidr("fd00::1", "fd00::/8")
+  assert !net_ffi.ip_in_cidr("fe80::1", "fd00::/8")
   // IPv4-mapped IPv6 peers match IPv4 networks
-  assert ffi.ip_in_cidr("::ffff:10.0.0.1", "10.0.0.0/8")
-  assert ffi.ip_in_cidr("1.2.3.4", "0.0.0.0/0")
-  assert !ffi.ip_in_cidr("garbage", "0.0.0.0/0")
-  assert !ffi.ip_in_cidr("10.0.0.1", "garbage")
+  assert net_ffi.ip_in_cidr("::ffff:10.0.0.1", "10.0.0.0/8")
+  assert net_ffi.ip_in_cidr("1.2.3.4", "0.0.0.0/0")
+  assert !net_ffi.ip_in_cidr("garbage", "0.0.0.0/0")
+  assert !net_ffi.ip_in_cidr("10.0.0.1", "garbage")
 }
 
 pub fn valid_cidr_test() {
-  assert ffi.valid_cidr("10.0.0.0/8")
-  assert ffi.valid_cidr("::1/128")
-  assert ffi.valid_cidr("127.0.0.1")
-  assert !ffi.valid_cidr("10.0.0.0/33")
-  assert !ffi.valid_cidr("::/129")
-  assert !ffi.valid_cidr("nope/8")
+  assert net_ffi.valid_cidr("10.0.0.0/8")
+  assert net_ffi.valid_cidr("::1/128")
+  assert net_ffi.valid_cidr("127.0.0.1")
+  assert !net_ffi.valid_cidr("10.0.0.0/33")
+  assert !net_ffi.valid_cidr("::/129")
+  assert !net_ffi.valid_cidr("nope/8")
 }
 
 pub fn strip_control_test() {
-  assert ffi.strip_control("/a\r\nb\nc\rd") == "/abcd"
-  assert ffi.strip_control("/plain") == "/plain"
+  assert support.strip_control("/a\r\nb\nc\rd") == "/abcd"
+  assert support.strip_control("/plain") == "/plain"
 }
 
 pub fn header_value_test() {
-  assert ffi.header_value("https://new.example.com/a?b=c")
+  assert text_ffi.header_value("https://new.example.com/a?b=c")
     == "https://new.example.com/a?b=c"
-  assert ffi.header_value("https://x.test/a\r\nb\u{0}c") == "https://x.test/abc"
-  assert ffi.header_value("https://x.test/café") == "https://x.test/caf%C3%A9"
-  assert ffi.header_value("https://x.test/é\r\n") == "https://x.test/%C3%A9"
+  assert text_ffi.header_value("https://x.test/a\r\nb\u{0}c")
+    == "https://x.test/abc"
+  assert text_ffi.header_value("https://x.test/café")
+    == "https://x.test/caf%C3%A9"
+  assert text_ffi.header_value("https://x.test/é\r\n")
+    == "https://x.test/%C3%A9"
 }
 
 pub fn secure_compare_test() {
-  assert ffi.secure_compare(<<"abc":utf8>>, <<"abc":utf8>>)
-  assert !ffi.secure_compare(<<"abc":utf8>>, <<"abd":utf8>>)
-  assert !ffi.secure_compare(<<"abc":utf8>>, <<"ab":utf8>>)
+  assert crypto_ffi.secure_compare(<<"abc":utf8>>, <<"abc":utf8>>)
+  assert !crypto_ffi.secure_compare(<<"abc":utf8>>, <<"abd":utf8>>)
+  assert !crypto_ffi.secure_compare(<<"abc":utf8>>, <<"ab":utf8>>)
 }
 
 pub fn regex_limit_test() {
-  let assert Ok(re) = ffi.regex_compile("^(a+)+$", False)
-  assert ffi.regex_run(re, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!")
-    == Error(ffi.LimitExceeded)
-  assert ffi.regex_run(re, "aaa") == Ok(["aaa", "aaa"])
-  assert ffi.regex_run(re, "b") == Error(ffi.NoMatch)
+  let assert Ok(re) = regex_ffi.regex_compile("^(a+)+$", False)
+  assert regex_ffi.regex_run(re, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!")
+    == Error(regex_ffi.LimitExceeded)
+  assert regex_ffi.regex_run(re, "aaa") == Ok(["aaa", "aaa"])
+  assert regex_ffi.regex_run(re, "b") == Error(regex_ffi.NoMatch)
 }
 
 pub fn file_lock_test() {
   let path = support.temp_dir() <> "/data.json"
-  let assert Ok(42) = ffi.with_file_lock(path, 100, fn() { 42 })
+  let assert Ok(42) = file_ffi.with_file_lock(path, 100, fn() { 42 })
   // released afterwards
   assert simplifile.is_file(path <> ".lock") == Ok(False)
   // held by another process: times out with the owner in the message
   let assert Ok(Nil) = simplifile.write(path <> ".lock", "4242 cli@host\n")
-  let assert Error(reason) = ffi.with_file_lock(path, 100, fn() { 1 })
+  let assert Error(reason) = file_ffi.with_file_lock(path, 100, fn() { 1 })
   assert string.contains(reason, "4242 cli@host")
-  let assert Error(_) = ffi.locked_file(path, 100, fn() { Ok(1) })
+  let assert Error(_) = file_ffi.locked_file(path, 100, fn() { Ok(1) })
 }
 
 pub fn file_lock_release_keeps_a_lock_taken_over_test() {
@@ -78,7 +86,7 @@ pub fn file_lock_release_keeps_a_lock_taken_over_test() {
   let lock = path <> ".lock"
   // held past the stale delay: another process broke the lock and took it
   let assert Ok(Nil) =
-    ffi.with_file_lock(path, 100, fn() {
+    file_ffi.with_file_lock(path, 100, fn() {
       let assert Ok(Nil) = simplifile.write(lock, "4242 cli@host 1\n")
       Nil
     })
@@ -96,7 +104,7 @@ pub fn stale_file_lock_is_broken_by_one_waiter_at_a_time_test() {
   list.each(list.repeat(Nil, waiters), fn(_) {
     process.spawn(fn() {
       let outcome =
-        ffi.with_file_lock(path, 10_000, fn() {
+        file_ffi.with_file_lock(path, 10_000, fn() {
           // mutual exclusion: nobody else is inside
           let alone = simplifile.is_file(marker) == Ok(False)
           let assert Ok(Nil) = simplifile.write(marker, "")
@@ -120,7 +128,7 @@ pub fn atomic_write_failure_returns_an_error_test() {
   // the target is a non-empty directory: the final rename fails
   let target = dir <> "/target"
   let assert Ok(Nil) = simplifile.create_directory_all(target <> "/sub")
-  let assert Error(_) = ffi.atomic_write(target, "content")
+  let assert Error(_) = file_ffi.atomic_write(target, "content")
   let assert Ok(files) = simplifile.read_directory(dir)
   assert files == ["target"]
 }
@@ -138,25 +146,25 @@ pub fn memo_file_test() {
       Error(_) -> Error("missing")
     }
   }
-  assert ffi.memo_file(path, parse) == Error("missing")
-  let assert Ok(Nil) = ffi.atomic_write(path, "ok:one")
-  assert ffi.memo_file(path, parse) == Ok("one")
+  assert file_ffi.memo_file(path, parse) == Error("missing")
+  let assert Ok(Nil) = file_ffi.atomic_write(path, "ok:one")
+  assert file_ffi.memo_file(path, parse) == Ok("one")
   set_mtime(path, 10)
-  assert ffi.memo_file(path, parse) == Ok("one")
+  assert file_ffi.memo_file(path, parse) == Ok("one")
   // cached: not recomputed while the mature file is unchanged
-  assert ffi.memo_file(path, fn() {
+  assert file_ffi.memo_file(path, fn() {
       panic as "unchanged mature file was recomputed"
     })
     == Ok("one")
   // a write within the same second, of the same size, is still seen
-  let assert Ok(Nil) = ffi.atomic_write(path, "ok:two")
-  assert ffi.memo_file(path, parse) == Ok("two")
+  let assert Ok(Nil) = file_ffi.atomic_write(path, "ok:two")
+  assert file_ffi.memo_file(path, parse) == Ok("two")
   // In-place edits can retain the inode, size and second-resolution mtime.
   let assert Ok(Nil) = simplifile.write(path, "ok:six")
-  assert ffi.memo_file(path, parse) == Ok("six")
+  assert file_ffi.memo_file(path, parse) == Ok("six")
   // a broken file keeps the last good value
-  let assert Ok(Nil) = ffi.atomic_write(path, "garbage")
-  assert ffi.memo_file(path, parse) == Ok("six")
+  let assert Ok(Nil) = file_ffi.atomic_write(path, "garbage")
+  assert file_ffi.memo_file(path, parse) == Ok("six")
 }
 
 pub fn json_log_lines_test() {
@@ -176,29 +184,29 @@ fn format_json_log(level: String, message: String) -> String
 /// Rewriting a file keeps its permissions instead of the umask default.
 pub fn atomic_write_keeps_the_file_mode_test() {
   let path = support.temp_dir() <> "/kept-mode.json"
-  let assert Ok(Nil) = ffi.atomic_write(path, "one")
+  let assert Ok(Nil) = file_ffi.atomic_write(path, "one")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
-  let assert Ok(Nil) = ffi.atomic_write(path, "two")
+  let assert Ok(Nil) = file_ffi.atomic_write(path, "two")
   let assert Ok(info) = simplifile.file_info(path)
   assert simplifile.file_info_permissions_octal(info) == 0o640
   assert simplifile.read(path) == Ok("two")
 }
 
 pub fn host_helpers_test() {
-  assert ffi.is_host_name("my_app-1.example.com")
-  assert !ffi.is_host_name("")
-  assert !ffi.is_host_name("Example.com")
-  assert !ffi.is_host_name("x@evil.test")
-  assert !ffi.is_host_name("café.example")
-  assert ffi.lowercase_host("Shop.TEST:80") == "shop.test:80"
-  assert ffi.lowercase_host("CAFÉ.Example") == "café.example"
+  assert text_ffi.is_host_name("my_app-1.example.com")
+  assert !text_ffi.is_host_name("")
+  assert !text_ffi.is_host_name("Example.com")
+  assert !text_ffi.is_host_name("x@evil.test")
+  assert !text_ffi.is_host_name("café.example")
+  assert text_ffi.lowercase_host("Shop.TEST:80") == "shop.test:80"
+  assert text_ffi.lowercase_host("CAFÉ.Example") == "café.example"
   // only ASCII letters change; other bytes are kept
-  assert ffi.lowercase_ascii("HTTPS://CAFÉ") == "https://cafÉ"
-  assert ffi.url_host("example.com/a@b") == "example.com"
-  assert ffi.url_host("user:pw@example.com?x") == "example.com"
-  assert ffi.url_host("a@b@example.com#f") == "example.com"
-  assert ffi.url_host("example.com\\x") == "example.com"
-  assert ffi.url_host("") == ""
+  assert text_ffi.lowercase_ascii("HTTPS://CAFÉ") == "https://cafÉ"
+  assert text_ffi.url_host("example.com/a@b") == "example.com"
+  assert text_ffi.url_host("user:pw@example.com?x") == "example.com"
+  assert text_ffi.url_host("a@b@example.com#f") == "example.com"
+  assert text_ffi.url_host("example.com\\x") == "example.com"
+  assert text_ffi.url_host("") == ""
 }
 
 /// In a directory this process cannot write to, the lock cannot be taken,
@@ -207,20 +215,21 @@ pub fn file_lock_in_a_read_only_directory_test() {
   let dir = support.temp_dir()
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
-  let result = ffi.with_file_lock(dir <> "/redirects.json", 100, fn() { 7 })
+  let result =
+    file_ffi.with_file_lock(dir <> "/redirects.json", 100, fn() { 7 })
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
   assert result == Ok(7)
 }
 
 /// IPv6 addresses are throttled by /64: a host usually holds a whole one.
 pub fn throttle_address_test() {
-  assert ffi.throttle_address("192.0.2.7") == "192.0.2.7"
-  assert ffi.throttle_address("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
-  assert ffi.throttle_address("2001:db8:1:2:bbbb::9") == "2001:db8:1:2::/64"
-  assert ffi.throttle_address("2001:db8:1:3::1") == "2001:db8:1:3::/64"
-  assert ffi.throttle_address("::ffff:192.0.2.7") == "192.0.2.7"
-  assert ffi.throttle_address("not an address") == "not an address"
-  assert ffi.throttle_address("") == ""
+  assert net_ffi.throttle_address("192.0.2.7") == "192.0.2.7"
+  assert net_ffi.throttle_address("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
+  assert net_ffi.throttle_address("2001:db8:1:2:bbbb::9") == "2001:db8:1:2::/64"
+  assert net_ffi.throttle_address("2001:db8:1:3::1") == "2001:db8:1:3::/64"
+  assert net_ffi.throttle_address("::ffff:192.0.2.7") == "192.0.2.7"
+  assert net_ffi.throttle_address("not an address") == "not an address"
+  assert net_ffi.throttle_address("") == ""
 }
 
 fn mode(path: String) -> Int {
@@ -233,20 +242,20 @@ fn mode(path: String) -> Int {
 pub fn atomic_write_private_mode_test() {
   let dir = support.temp_dir()
   let path = dir <> "/users.json"
-  let assert Ok(Nil) = ffi.atomic_write_private(path, "{}")
+  let assert Ok(Nil) = file_ffi.atomic_write_private(path, "{}")
   assert mode(path) == 0o600
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
-  let assert Ok(Nil) = ffi.atomic_write_private(path, "{\"a\":1}")
+  let assert Ok(Nil) = file_ffi.atomic_write_private(path, "{\"a\":1}")
   assert mode(path) == 0o640
   assert simplifile.read(path) == Ok("{\"a\":1}")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o644)
-  let assert Ok(Nil) = ffi.atomic_write_private(path, "{}")
+  let assert Ok(Nil) = file_ffi.atomic_write_private(path, "{}")
   assert mode(path) == 0o640
   // other files: the old permissions too
   let rules = dir <> "/redirects.json"
-  let assert Ok(Nil) = ffi.atomic_write(rules, "[]")
+  let assert Ok(Nil) = file_ffi.atomic_write(rules, "[]")
   let assert Ok(Nil) = simplifile.set_permissions_octal(rules, 0o604)
-  let assert Ok(Nil) = ffi.atomic_write(rules, "[ ]")
+  let assert Ok(Nil) = file_ffi.atomic_write(rules, "[ ]")
   assert mode(rules) == 0o604
 }
 
@@ -254,32 +263,34 @@ pub fn atomic_write_private_mode_test() {
 pub fn copy_file_as_test() {
   let dir = support.temp_dir()
   let source = dir <> "/redirects.json"
-  let assert Ok(Nil) = ffi.atomic_write(source, "[]")
+  let assert Ok(Nil) = file_ffi.atomic_write(source, "[]")
   let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o640)
   let copy = dir <> "/copy.json"
-  let assert Ok(Nil) = ffi.copy_file_as(source, copy)
+  let assert Ok(Nil) = file_ffi.copy_file_as(source, copy)
   assert mode(copy) == 0o640
   assert simplifile.read(copy) == Ok("[]")
   // never over an existing file
-  let assert Error(_) = ffi.copy_file_as(source, copy)
+  let assert Error(_) = file_ffi.copy_file_as(source, copy)
   // a source its owner cannot write
   let assert Ok(Nil) = simplifile.set_permissions_octal(source, 0o440)
   let read_only = dir <> "/read-only.json"
-  let assert Ok(Nil) = ffi.copy_file_as(source, read_only)
+  let assert Ok(Nil) = file_ffi.copy_file_as(source, read_only)
   assert mode(read_only) == 0o440
   assert simplifile.read(read_only) == Ok("[]")
   // a failed copy leaves nothing behind
   let missing = dir <> "/failed.json"
-  let assert Error(_) = ffi.copy_file_as(dir, missing)
+  let assert Error(_) = file_ffi.copy_file_as(dir, missing)
   assert simplifile.is_file(missing) == Ok(False)
 }
 
 /// Dates that do not exist are refused, not shifted to the next month.
 pub fn rfc3339_is_strict_test() {
-  assert ffi.parse_rfc3339("2026-12-01T00:00:00Z") == Ok(1_796_083_200)
-  assert ffi.parse_rfc3339("2026-12-01T01:00:00+01:00") == Ok(1_796_083_200)
-  assert ffi.parse_rfc3339("2026-12-01t00:00:00.250z") == Ok(1_796_083_200)
-  assert ffi.parse_rfc3339("2028-02-29T00:00:00Z") |> result.is_ok
+  assert system_ffi.parse_rfc3339("2026-12-01T00:00:00Z") == Ok(1_796_083_200)
+  assert system_ffi.parse_rfc3339("2026-12-01T01:00:00+01:00")
+    == Ok(1_796_083_200)
+  assert system_ffi.parse_rfc3339("2026-12-01t00:00:00.250z")
+    == Ok(1_796_083_200)
+  assert system_ffi.parse_rfc3339("2028-02-29T00:00:00Z") |> result.is_ok
   list.each(
     [
       "2026-02-30T00:00:00Z", "2026-04-31T12:00:00Z", "2026-13-01T00:00:00Z",
@@ -288,7 +299,7 @@ pub fn rfc3339_is_strict_test() {
       "2026-12-01T00:00:00.Z", "2026-1-01T00:00:00Z", "",
     ],
     fn(bad) {
-      assert ffi.parse_rfc3339(bad) == Error(Nil)
+      assert system_ffi.parse_rfc3339(bad) == Error(Nil)
     },
   )
 }
@@ -298,20 +309,20 @@ pub fn rfc3339_is_strict_test() {
 pub fn jwt_keys_are_for_signatures_test() {
   let #(jwks, key) = support.keypair()
   let token = support.sign(key, "{\"sub\":\"a\"}")
-  let assert Ok(_) = ffi.jwt_verify(jwks, token)
+  let assert Ok(_) = crypto_ffi.jwt_verify(jwks, token)
   let enc = string.replace(jwks, "\"use\":\"sig\"", "\"use\":\"enc\"")
   assert enc != jwks
-  let assert Error(_) = ffi.jwt_verify(enc, token)
+  let assert Error(_) = crypto_ffi.jwt_verify(enc, token)
   let other = string.replace(jwks, "\"alg\":\"RS256\"", "\"alg\":\"RS512\"")
   assert other != jwks
-  let assert Error(_) = ffi.jwt_verify(other, token)
+  let assert Error(_) = crypto_ffi.jwt_verify(other, token)
 }
 
 pub fn first_item_test() {
-  assert ffi.first_item(" HTTPS , http") == "https"
-  assert ffi.first_item("wss") == "wss"
-  assert ffi.first_item("") == ""
-  assert ffi.first_item(",https") == ""
+  assert net_ffi.first_item(" HTTPS , http") == "https"
+  assert net_ffi.first_item("wss") == "wss"
+  assert net_ffi.first_item("") == ""
+  assert net_ffi.first_item(",https") == ""
 }
 
 @external(erlang, "redirect_proxy_file_ffi", "same_write")
@@ -332,20 +343,20 @@ pub fn same_write_test() {
 pub fn writable_probe_keeps_existing_entries_test() {
   let dir = support.temp_dir()
   let probe = dir <> "/probe"
-  assert ffi.probe_writable_file(probe) == Ok(Nil)
+  assert file_ffi.probe_writable_file(probe) == Ok(Nil)
   assert simplifile.is_file(probe) == Ok(False)
   let assert Ok(Nil) = simplifile.write(probe, "existing")
   let assert Ok(Nil) = simplifile.set_permissions_octal(probe, 0o640)
-  let assert Error(_) = ffi.probe_writable_file(probe)
+  let assert Error(_) = file_ffi.probe_writable_file(probe)
   assert simplifile.read(probe) == Ok("existing")
   assert mode(probe) == 0o640
   let assert Ok(Nil) = simplifile.delete(probe)
   let target = dir <> "/target"
   let assert Ok(Nil) = simplifile.write(target, "untouched")
   let assert Ok(Nil) = simplifile.create_symlink(to: target, from: probe)
-  let assert Error(_) = ffi.probe_writable_file(probe)
+  let assert Error(_) = file_ffi.probe_writable_file(probe)
   assert simplifile.is_symlink(probe) == Ok(True)
   assert simplifile.read(target) == Ok("untouched")
-  let assert Error(_) = ffi.probe_writable_file(dir <> "/missing/probe")
+  let assert Error(_) = file_ffi.probe_writable_file(dir <> "/missing/probe")
   assert simplifile.is_directory(dir <> "/missing") == Ok(False)
 }

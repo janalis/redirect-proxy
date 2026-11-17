@@ -15,7 +15,7 @@ import integration_support.{
 }
 import redirect_proxy/audit
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/password
 import redirect_proxy/ratelimit
 import redirect_proxy/role
@@ -163,7 +163,7 @@ pub fn login_failures_are_throttled_test() {
 pub fn parallel_login_attempts_stay_within_the_limit_test() {
   let env = boot(config.default())
   // the address budget is shared with the other tests' failed logins
-  let ip = ffi.throttle_address("127.0.0.1")
+  let ip = net_ffi.throttle_address("127.0.0.1")
   ratelimit.reset("login-ip:" <> ip)
   let done = process.new_subject()
   let attempts = 30

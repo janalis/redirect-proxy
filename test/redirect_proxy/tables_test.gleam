@@ -6,7 +6,7 @@ import gleam/erlang/process.{type Pid}
 import gleam/list
 import redirect_proxy/app
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
 import redirect_proxy/store
 import simplifile
 import support
@@ -121,7 +121,7 @@ pub fn tables_outlive_the_services_test() {
   // the applications of earlier tests may still run, and hold the tables
   let _ = start()
   wait(fn() { all_held(by: fn(_) { True }) }, 10_000, "an owner")
-  ffi.ets_put(marked, "tables_test", True)
+  ets_ffi.ets_put(marked, "tables_test", True)
   let holders = holders()
   assert !list.is_empty(holders)
 
@@ -136,7 +136,7 @@ pub fn tables_outlive_the_services_test() {
     10_000,
     "the second owner",
   )
-  assert ffi.ets_find(marked, "tables_test") == Ok(True)
+  assert ets_ffi.ets_find(marked, "tables_test") == Ok(True)
 
   // a store crash: the store restarts, the tables stay
   let assert Ok(crashed) = store_pid(second)
@@ -152,7 +152,7 @@ pub fn tables_outlive_the_services_test() {
     "the store restart",
   )
   assert all_held(by: fn(pid) { pid == second_owner })
-  assert ffi.ets_find(marked, "tables_test") == Ok(True)
+  assert ets_ffi.ets_find(marked, "tables_test") == Ok(True)
   let assert [_] = store.all(second.store)
 
   // an owner crash: its tables pass to its heir (the other application's

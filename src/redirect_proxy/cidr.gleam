@@ -1,6 +1,6 @@
 //// Lists of networks (`trusted_proxies`), parsed once when the settings are
 //// built so that a request compares integers instead of parsing text. The
-//// same matches as `ffi.ip_in_cidr`, entry by entry: IPv4 addresses match
+//// same matches as `ffi/net.ip_in_cidr`, entry by entry: IPv4 addresses match
 //// IPv4 networks, IPv6 addresses IPv6 networks, and IPv4-mapped IPv6
 //// addresses also the IPv4 networks of their IPv4 address. Invalid entries
 //// (which configuration validation rejects) match nothing.

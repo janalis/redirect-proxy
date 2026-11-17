@@ -1,7 +1,7 @@
 //// The store's work each second: republishing the rules when a scheduled
 //// one starts or expires, and saving the hit counts.
 
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/log
 import redirect_proxy/rule
 import redirect_proxy/store/checker
@@ -11,7 +11,7 @@ import redirect_proxy/store/state.{type State, State, save_hits}
 
 /// Republishes the rules when one started or expired since the last check.
 pub fn schedule(state: State) -> State {
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   // computed again when the rules changed (another term: comparing
   // the same term is immediate)
   let next = case state.next_boundary {
@@ -43,8 +43,8 @@ pub fn schedule(state: State) -> State {
 /// Saves the hit counts when due (`hits.interval`) or when the node starts
 /// draining before a stop.
 pub fn save_hits_if_due(state: State) -> State {
-  let now = ffi.now_seconds()
-  let draining = ffi.draining()
+  let now = system_ffi.now_seconds()
+  let draining = system_ffi.draining()
   case
     now - state.hits_saved_at >= hits.interval
     || { draining && !state.hits_saved_draining }
@@ -65,5 +65,5 @@ pub fn save_hits_if_due(state: State) -> State {
 /// Saves the hit counts now.
 pub fn flush_hits(state: State) -> State {
   let hits_written = save_hits(state)
-  State(..state, hits_saved_at: ffi.now_seconds(), hits_written:)
+  State(..state, hits_saved_at: system_ffi.now_seconds(), hits_written:)
 }

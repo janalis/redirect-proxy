@@ -8,7 +8,7 @@
 import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/result
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/json_error
 import simplifile
 
@@ -20,7 +20,7 @@ pub fn locked(
   path: String,
   next: fn() -> Result(a, String),
 ) -> Result(a, String) {
-  ffi.locked_file(path, lock_timeout, next)
+  file_ffi.locked_file(path, lock_timeout, next)
 }
 
 /// The items under `key`; none when the file does not exist.
@@ -53,7 +53,7 @@ pub fn save(
       #(key, json.array(items, encode)),
     ])
     |> json.to_string
-  use Nil <- result.try(ffi.atomic_write_private(path, content <> "\n"))
+  use Nil <- result.try(file_ffi.atomic_write_private(path, content <> "\n"))
   // secrets: readable by the service account only
   let _ = simplifile.set_permissions_octal(path, 0o600)
   Ok(Nil)

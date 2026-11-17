@@ -15,7 +15,8 @@ import redirect_proxy/config.{type Config}
 import redirect_proxy/config/file as config_file
 import redirect_proxy/config/loader as config_loader
 import redirect_proxy/config/validate as config_validate
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error
 import redirect_proxy/log
 import redirect_proxy/password
@@ -71,11 +72,11 @@ pub fn main() -> Nil {
   let level = envoy.get("RP_LOG_LEVEL") |> result.unwrap("info")
   let format = envoy.get("RP_LOG_FORMAT") |> result.unwrap("text")
   log.configure_with(string.lowercase(level), string.lowercase(format))
-  case run(ffi.plain_arguments()) {
+  case run(system_ffi.plain_arguments()) {
     Ok(Nil) -> Nil
     Error(message) -> {
       io.println_error("error: " <> message)
-      ffi.halt(1)
+      system_ffi.halt(1)
     }
   }
 }
@@ -158,7 +159,7 @@ const system_config = "/etc/redirect-proxy/config.toml"
 fn load_for_change(config_path: String) -> Result(Config, String) {
   use cfg <- result.map(load(config_path))
   io.println_error("data directory: " <> cfg.storage.data_dir)
-  case ffi.data_dir_owner_mismatch(cfg.storage.data_dir) {
+  case file_ffi.data_dir_owner_mismatch(cfg.storage.data_dir) {
     Ok(owner) ->
       io.println_error(
         "warning: running as root in a data directory owned by "
@@ -256,11 +257,11 @@ fn check_config(config_path: String) -> Result(Nil, String) {
 }
 
 fn data_dir_writable(dir: String) -> Result(Nil, String) {
-  let probe = dir <> "/.check-config-" <> int.to_string(ffi.now_millis())
+  let probe = dir <> "/.check-config-" <> int.to_string(system_ffi.now_millis())
   let written =
     simplifile.create_directory_all(dir)
     |> result.map_error(simplifile.describe_error)
-    |> result.try(fn(_) { ffi.probe_writable_file(probe) })
+    |> result.try(fn(_) { file_ffi.probe_writable_file(probe) })
   written
   |> result.map_error(fn(reason) {
     "the data directory " <> dir <> " is not writable: " <> reason
@@ -274,12 +275,12 @@ fn read_new_password() -> Result(String, String) {
     Ok(pass) -> password.validate_strength(pass) |> result.replace(pass)
     Error(Nil) -> {
       use first <- result.try(
-        ffi.read_password("New password: ")
+        system_ffi.read_password("New password: ")
         |> result.replace_error("cannot read password"),
       )
       use Nil <- result.try(password.validate_strength(first))
       use second <- result.try(
-        ffi.read_password("Repeat password: ")
+        system_ffi.read_password("Repeat password: ")
         |> result.replace_error("cannot read password"),
       )
       case first == second {

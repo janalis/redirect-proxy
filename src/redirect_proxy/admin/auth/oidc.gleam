@@ -14,7 +14,9 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/config.{type OidcConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/oidc_provider.{
   type Provider, discover, dispatch, purge_expired as purge_provider_cache,
@@ -48,8 +50,8 @@ pub type Identity {
 }
 
 pub fn init() -> Nil {
-  ffi.ets_new(table)
-  ffi.ets_new(used_states)
+  ets_ffi.ets_new(table)
+  ets_ffi.ets_new(used_states)
 }
 
 pub fn redirect_uri(public_url: String) -> String {
@@ -112,7 +114,7 @@ pub fn begin_with_receipt(
       verifier:,
       nonce:,
       next:,
-      expires_at: ffi.now_seconds() + flow_ttl,
+      expires_at: system_ffi.now_seconds() + flow_ttl,
       receipt:,
     )
   let query =
@@ -236,15 +238,15 @@ fn authenticate(
     |> result.replace_error("the login was not started in this browser"),
   )
   use <- bool.guard(
-    !ffi.secure_compare(<<flow.state:utf8>>, <<state:utf8>>),
+    !crypto_ffi.secure_compare(<<flow.state:utf8>>, <<state:utf8>>),
     Error("the login was not started in this browser"),
   )
   use <- bool.guard(
-    flow.expires_at <= ffi.now_seconds(),
+    flow.expires_at <= system_ffi.now_seconds(),
     Error("login attempt expired, please try again"),
   )
   use <- bool.guard(
-    ffi.ets_get(used_states, state) |> result.is_ok,
+    ets_ffi.ets_get(used_states, state) |> result.is_ok,
     Error("unknown or already used login state"),
   )
   use provider <- result.try(discover(cfg))
@@ -260,7 +262,7 @@ fn authenticate(
   // single use, also against callbacks racing each other: only the first
   // one to complete records the state
   use <- bool.guard(
-    !ffi.ets_insert_new(used_states, state, #(flow.expires_at, Nil)),
+    !ets_ffi.ets_insert_new(used_states, state, #(flow.expires_at, Nil)),
     Error("unknown or already used login state"),
   )
   Ok(#(identity, flow.next))
@@ -399,11 +401,11 @@ pub fn check_claims(
     azp != "" && azp != cfg.client_id,
     Error("ID token authorised party mismatch"),
   )
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   use <- bool.guard(exp + 60 < now, Error("ID token expired"))
   use <- bool.guard(nbf - 60 > now, Error("ID token not yet valid"))
   use <- bool.guard(
-    !ffi.secure_compare(<<nonce:utf8>>, <<expected_nonce:utf8>>),
+    !crypto_ffi.secure_compare(<<nonce:utf8>>, <<expected_nonce:utf8>>),
     Error("ID token nonce mismatch"),
   )
   let email = case email_verified {
@@ -467,6 +469,6 @@ pub fn authorise(cfg: OidcConfig, identity: Identity) -> Result(Nil, String) {
 }
 
 pub fn purge_expired() -> Int {
-  let now = ffi.now_seconds()
-  purge_provider_cache(now) + ffi.ets_delete_older(used_states, now)
+  let now = system_ffi.now_seconds()
+  purge_provider_cache(now) + ets_ffi.ets_delete_older(used_states, now)
 }

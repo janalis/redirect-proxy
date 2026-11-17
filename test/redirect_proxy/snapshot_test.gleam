@@ -3,7 +3,7 @@
 
 import gleam/erlang/process
 import gleam/result
-import redirect_proxy/ffi
+import redirect_proxy/ffi/snapshot as snapshot_ffi
 import redirect_proxy/matcher.{type Matcher}
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
@@ -12,7 +12,7 @@ import redirect_proxy/snapshot
 fn unpublish() -> Nil
 
 fn with_snapshot_restored(run: fn() -> Nil) -> Nil {
-  let previous: Result(Matcher, Nil) = ffi.snapshot_get("matcher")
+  let previous: Result(Matcher, Nil) = snapshot_ffi.snapshot_get("matcher")
   run()
   case previous {
     Ok(m) -> snapshot.publish(m)
@@ -55,6 +55,6 @@ pub fn empty_until_published_test() {
   let current = snapshot.current()
   assert matcher.size(current) == 0
   assert location(current) == Error(Nil)
-  let still: Result(Matcher, Nil) = ffi.snapshot_get("matcher")
+  let still: Result(Matcher, Nil) = snapshot_ffi.snapshot_get("matcher")
   assert result.is_error(still)
 }

@@ -1,7 +1,7 @@
 import gleam/list
 import mist
 import redirect_proxy/cidr
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
 
 /// Addresses: IPv4, IPv6, IPv4-mapped IPv6, and text that is not one.
 const addresses = [
@@ -25,14 +25,14 @@ const networks = [
 ]
 
 fn old(ip: String, cidrs: List(String)) -> Bool {
-  list.any(cidrs, ffi.ip_in_cidr(ip, _))
+  list.any(cidrs, net_ffi.ip_in_cidr(ip, _))
 }
 
 pub fn same_as_ip_in_cidr_test() {
   list.each(addresses, fn(ip) {
     list.each(networks, fn(network) {
       assert cidr.contains(cidr.compile([network]), ip)
-        == ffi.ip_in_cidr(ip, network)
+        == net_ffi.ip_in_cidr(ip, network)
     })
     assert cidr.contains(cidr.compile(networks), ip) == old(ip, networks)
     assert cidr.contains(cidr.compile([]), ip) == False
@@ -67,7 +67,7 @@ pub fn peer_same_as_ip_in_cidr_test() {
     let text = mist.ip_address_to_string(peer)
     list.each(networks, fn(network) {
       assert cidr.contains_peer(cidr.compile([network]), peer)
-        == ffi.ip_in_cidr(text, network)
+        == net_ffi.ip_in_cidr(text, network)
     })
     assert cidr.contains_peer(cidr.compile(networks), peer)
       == old(text, networks)

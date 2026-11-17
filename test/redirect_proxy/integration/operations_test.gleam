@@ -14,7 +14,7 @@ import integration_support.{
 }
 import redirect_proxy/app
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import simplifile
 import support
 
@@ -146,7 +146,7 @@ pub fn sighup_with_an_invalid_file_keeps_the_rules_test() {
 /// A reload callback that crashes is logged; later signals still reach it.
 pub fn sighup_survives_a_crashing_callback_test() {
   let calls = process.new_subject()
-  ffi.on_sighup(fn() {
+  system_ffi.on_sighup(fn() {
     process.send(calls, Nil)
     panic as "reload exploded"
   })
@@ -158,7 +158,7 @@ pub fn sighup_survives_a_crashing_callback_test() {
   let _ = hup()
   let second = process.receive(calls, 2000)
   // the next boot installs the application's own callback again
-  ffi.on_sighup(fn() { Nil })
+  system_ffi.on_sighup(fn() { Nil })
   assert first == Ok(Nil)
   assert second == Ok(Nil)
 }
@@ -169,7 +169,7 @@ pub fn other_signals_are_left_to_otp_test() {
   let _ = boot(config.default())
   notify_signal("sigusr2")
   notify_signal("sigchld")
-  assert !ffi.draining()
+  assert !system_ffi.draining()
   assert list.contains(signal_handlers(), "redirect_proxy_sigterm")
   assert !list.contains(signal_handlers(), "erl_signal_handler")
 }

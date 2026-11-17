@@ -14,9 +14,11 @@ import integration_support.{
 import redirect_proxy/admin/auth/header
 import redirect_proxy/audit
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/oidc_provider as provider
 import simplifile
+import support
 
 /// Each SSO start holds a pending login attempt: one address cannot start
 /// enough of them to block everyone else's SSO logins.
@@ -42,7 +44,7 @@ pub fn sso_starts_are_throttled_per_address_test() {
   let start = fn(ip) {
     get(env.admin <> "/auth/oidc/start", [#("x-forwarded-for", ip)])
   }
-  let flows_before = ffi.ets_size("redirect_proxy_oidc_flows")
+  let flows_before = support.ets_size("redirect_proxy_oidc_flows")
   let statuses =
     list.map(list.repeat(Nil, 31), fn(_) { start("198.51.100.8").status })
   assert list.take(statuses, 30) == list.repeat(303, 30)
@@ -52,7 +54,7 @@ pub fn sso_starts_are_throttled_per_address_test() {
   assert start("203.0.113.10").status == 303
   // logins in progress are kept by the browsers: starting them stores
   // nothing on the server, so no amount of them blocks anyone's SSO
-  assert ffi.ets_size("redirect_proxy_oidc_flows") == flows_before
+  assert support.ets_size("redirect_proxy_oidc_flows") == flows_before
   // failed callbacks are throttled too
   let callbacks =
     list.map(list.repeat(Nil, 21), fn(_) {
@@ -332,8 +334,8 @@ pub fn logout_endpoint_on_another_origin_is_allowed_test() {
     )
   let cookie = session_cookie(sso_login(env))
   let assert Ok(discovered) = provider.cached(issuer)
-  let now = ffi.now_seconds()
-  ffi.ets_put(provider.table, "provider:" <> issuer, #(
+  let now = system_ffi.now_seconds()
+  ets_ffi.ets_put(provider.table, "provider:" <> issuer, #(
     now + 3600,
     #(
       now,

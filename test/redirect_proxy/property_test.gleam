@@ -10,7 +10,9 @@ import gleam/string
 import qcheck
 import redirect_proxy/access_log_format as fmt
 import redirect_proxy/api/rule_json
-import redirect_proxy/ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/rule/template
@@ -251,10 +253,10 @@ fn reference_lookup(
   |> list.sort(fn(a, b) { int.compare(a.priority, b.priority) })
   |> list.find_map(fn(r) {
     use re <- result.try(
-      ffi.regex_compile(r.source, r.case_insensitive)
+      regex_ffi.regex_compile(r.source, r.case_insensitive)
       |> result.replace_error(Nil),
     )
-    ffi.regex_run(re, path)
+    regex_ffi.regex_run(re, path)
     |> result.replace_error(Nil)
     |> result.map(fn(captures) { template.expand(r.target, captures) })
   })
@@ -287,7 +289,7 @@ pub fn indexed_matching_agrees_with_reference_test() {
       |> result.map(fn(found) { found.location })
     // the matcher hands over header values (non-ASCII percent-encoded)
     assert actual
-      == reference_lookup(rules, path) |> result.map(ffi.header_value)
+      == reference_lookup(rules, path) |> result.map(text_ffi.header_value)
   })
 }
 
@@ -404,15 +406,15 @@ pub fn path_normalisation_is_idempotent_test() {
       ]),
     ),
   )
-  let once = ffi.normalise_path(path)
-  assert ffi.normalise_path(once) == once
+  let once = text_ffi.normalise_path(path)
+  assert text_ffi.normalise_path(once) == once
   // no `.` or `..` segment survives in an absolute path
   let absolute = string.starts_with(once, "/")
   assert !absolute
     || !list.any(string.split(once, "/"), fn(s) { s == "." || s == ".." })
   // an escaped slash or percent sign is never decoded
-  assert !string.contains(ffi.normalise_path("/x%2Fy%25"), "/x/")
-  assert string.contains(ffi.normalise_path("/x%2fy"), "%2F")
+  assert !string.contains(text_ffi.normalise_path("/x%2Fy%25"), "/x/")
+  assert string.contains(text_ffi.normalise_path("/x%2fy"), "%2F")
 }
 
 // --- open redirects -----------------------------------------------------------
@@ -884,7 +886,7 @@ pub fn next_boundary_agrees_with_crosses_boundary_test() {
   let at = fn(seconds) {
     case seconds {
       0 -> ""
-      s -> ffi.rfc3339(1_800_000_000 + s * 60)
+      s -> system_ffi.rfc3339(1_800_000_000 + s * 60)
     }
   }
   let scheduled =
@@ -935,7 +937,7 @@ fn crosses_boundary(rules: List(rule.Rule), after: Int, now: Int) -> Bool {
 }
 
 /// A Host the redirect listener accepts (the characters of a URI's
-/// reg-name, without a port) is normalised by `ffi.listener_host` as by
+/// reg-name, without a port) is normalised by `text_ffi.listener_host` as by
 /// `matcher.normalise_request_host` then `rule.is_host_name`, and looked
 /// up by `matcher.lookup_listener` as by `matcher.lookup_query`.
 pub fn listener_host_agrees_with_normalise_request_host_test() {
@@ -958,7 +960,8 @@ pub fn listener_host_agrees_with_normalise_request_host_test() {
     ])
   use host <- check_many(500, qcheck.string_from(char))
   let normalised = matcher.normalise_request_host(host)
-  assert ffi.listener_host(host) == #(normalised, rule.is_host_name(normalised))
+  assert text_ffi.listener_host(host)
+    == #(normalised, rule.is_host_name(normalised))
   let found = fn(r: Result(matcher.Match, Nil)) {
     result.map(r, fn(m) { #(m.rule.id, m.location) })
   }

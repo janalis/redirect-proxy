@@ -10,7 +10,9 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleam/uri
-import redirect_proxy/ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/matcher.{type Matcher}
 import redirect_proxy/matcher/loop
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
@@ -67,7 +69,7 @@ pub fn explain(
 ) -> Result(Explanation, Nil) {
   use #(host, path, query) <- result.try(parse(url))
   let host = matcher.normalise_request_host(host)
-  let path = ffi.normalise_path(path)
+  let path = text_ffi.normalise_path(path)
   let find = fn(host, path, query) {
     case ignore_trailing_slash {
       True -> matcher.lookup_tolerant_query(matcher, host, path, query)
@@ -76,7 +78,7 @@ pub fn explain(
   }
   let request_query = result.unwrap(query, "")
   let applied = find(host, path, request_query)
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let applied_id = case applied {
     Ok(m) -> m.rule.id
     Error(Nil) -> ""
@@ -198,7 +200,7 @@ fn int_compare(a: Int, b: Int) -> order.Order {
 
 fn prefix_remainder(r: Rule, path: String) -> String {
   matcher.prefix_remainder(
-    rule.Rule(..r, source: ffi.normalise_path(r.source)),
+    rule.Rule(..r, source: text_ffi.normalise_path(r.source)),
     path,
   )
 }
@@ -216,9 +218,9 @@ fn matches_path(r: Rule, path: String) -> Bool {
     }
   }
   case r.kind {
-    Exact -> fold(ffi.normalise_path(r.source)) == fold(path)
+    Exact -> fold(text_ffi.normalise_path(r.source)) == fold(path)
     Prefix -> {
-      let source = fold(ffi.normalise_path(r.source))
+      let source = fold(text_ffi.normalise_path(r.source))
       string.starts_with(fold(path), source)
       && case r.whole_segments {
         False -> True
@@ -226,8 +228,8 @@ fn matches_path(r: Rule, path: String) -> Bool {
       }
     }
     Regex ->
-      case ffi.regex_compile(r.source, r.case_insensitive) {
-        Ok(regex) -> result.is_ok(ffi.regex_run(regex, path))
+      case regex_ffi.regex_compile(r.source, r.case_insensitive) {
+        Ok(regex) -> result.is_ok(regex_ffi.regex_run(regex, path))
         Error(_) -> False
       }
   }
@@ -235,7 +237,7 @@ fn matches_path(r: Rule, path: String) -> Bool {
 
 /// A request, for loop detection: the query decides some rules.
 fn request_key(host: String, path: String, query: String) -> String {
-  host <> ffi.normalise_path(path) <> "?" <> query
+  host <> text_ffi.normalise_path(path) <> "?" <> query
 }
 
 fn follow(

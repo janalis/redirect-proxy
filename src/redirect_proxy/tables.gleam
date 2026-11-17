@@ -9,6 +9,8 @@ import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/session
 import redirect_proxy/api_token as token
+import redirect_proxy/ffi/access as access_ffi
+import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/metrics
 import redirect_proxy/ratelimit
 import redirect_proxy/store/checker
@@ -33,15 +35,9 @@ fn create() -> Nil {
   token.init()
   commit.init()
   checker.init()
-  memo_init()
-  time_cache_init()
+  file_ffi.memo_init()
+  access_ffi.time_cache_init()
 }
 
 @external(erlang, "redirect_proxy_tables_ffi", "start_link")
 fn start_link(create: fn() -> Nil) -> Result(Pid, String)
-
-@external(erlang, "redirect_proxy_file_ffi", "memo_init")
-fn memo_init() -> Nil
-
-@external(erlang, "redirect_proxy_access_ffi", "time_cache_init")
-fn time_cache_init() -> Nil

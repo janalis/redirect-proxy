@@ -12,7 +12,7 @@ import gleam/io
 import gleam/json
 import gleam/list
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/matcher
 import redirect_proxy/rule.{type MatchKind, type Rule, Exact, Prefix, Regex}
 
@@ -103,9 +103,9 @@ fn rules() -> List(Rule) {
 
 pub fn main() -> Nil {
   let rules = rules()
-  let started = ffi.monotonic_micros()
+  let started = system_ffi.monotonic_micros()
   let m = matcher.build(rules)
-  let build_ms = { ffi.monotonic_micros() - started } / 1000
+  let build_ms = { system_ffi.monotonic_micros() - started } / 1000
   let request = fn(tolerant, host, path, query) {
     fn() {
       let found = case tolerant {

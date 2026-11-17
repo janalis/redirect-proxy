@@ -7,7 +7,8 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/set
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/snapshot
@@ -32,7 +33,8 @@ pub fn load(path: String) -> Nil {
             Error(_) -> {
               // set aside, not overwritten by the first save: the counts
               // may still be recovered from it
-              let aside = path <> ".corrupt-" <> int.to_string(ffi.now_millis())
+              let aside =
+                path <> ".corrupt-" <> int.to_string(system_ffi.now_millis())
               let _ = simplifile.rename(path, aside)
               log.warning(
                 path <> " is not a valid hit count file: moved to " <> aside,
@@ -68,7 +70,7 @@ pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
       case content == last.content && simplifile.is_file(path) == Ok(True) {
         True -> last
         False ->
-          case ffi.atomic_write(path, content) {
+          case file_ffi.atomic_write(path, content) {
             Ok(Nil) -> Written(content:, failing: False)
             Error(reason) -> {
               case last.failing {
@@ -110,7 +112,7 @@ pub fn keep_only(path: String, rule_ids: List(String)) -> Nil {
       case list.length(kept) == list.length(records) {
         True -> Nil
         False ->
-          case ffi.atomic_write(path, encode(kept)) {
+          case file_ffi.atomic_write(path, encode(kept)) {
             Ok(Nil) -> Nil
             Error(reason) -> log.warning("hit counts not saved: " <> reason)
           }

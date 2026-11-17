@@ -1,7 +1,8 @@
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/rule.{Rule}
@@ -72,11 +73,11 @@ pub fn host_is_normalised_test() {
   let dots = "example.com" <> string.repeat(".", 100_000)
   assert matcher.normalise_request_host(dots) == "example.com"
   // a host from the listener: ASCII, without a port
-  assert ffi.listener_host("Example.COM..") == #("example.com", True)
-  assert ffi.listener_host("[::1]") == #("[::1]", False)
-  assert ffi.listener_host("..") == #("", False)
-  assert ffi.listener_host("") == #("", False)
-  assert ffi.listener_host("a~B.test") == #("a~b.test", False)
+  assert text_ffi.listener_host("Example.COM..") == #("example.com", True)
+  assert text_ffi.listener_host("[::1]") == #("[::1]", False)
+  assert text_ffi.listener_host("..") == #("", False)
+  assert text_ffi.listener_host("") == #("", False)
+  assert text_ffi.listener_host("a~B.test") == #("a~b.test", False)
   let assert Ok(found) =
     matcher.lookup_listener(m, "EXAMPLE.com.", "/a", "", False)
   assert found.location == "/b"
@@ -853,9 +854,9 @@ pub fn regex_cost_per_request_is_bounded_test() {
   assert location(m, "h", crafted) == Ok("/caught")
   // a hundred do not: the request stops, and it is counted
   let m = matcher.build(list.append(costly(100), [last]))
-  let before = ffi.regex_limit_count()
+  let before = regex_ffi.regex_limit_count()
   assert location(m, "h", crafted) == Error(Nil)
-  assert ffi.regex_limit_count() == before + 1
+  assert regex_ffi.regex_limit_count() == before + 1
   // usual paths cost nothing near the budget
   assert location(m, "h", "/plain!") == Ok("/caught")
 }

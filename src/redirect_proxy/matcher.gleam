@@ -31,7 +31,10 @@ import gleam/order
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/rule.{type Rule, Exact, Prefix, Regex}
 import redirect_proxy/rule/template
 
@@ -51,7 +54,7 @@ pub opaque type Matcher {
     /// count survives being disabled then enabled again). Slot `n` uses
     /// `hits` indexes `2n - 1` (count) and `2n` (last hit, in seconds).
     slots: Dict(String, Int),
-    hits: ffi.Counters,
+    hits: ets_ffi.Counters,
   )
 }
 
@@ -63,9 +66,9 @@ type HostRules {
     /// Whether some exact rule with query conditions is case-insensitive:
     /// otherwise the path is not lower-cased to look them up.
     exact_query_ci: Bool,
-    /// Exact rules, with their target as a header value (`ffi.header_value`,
-    /// computed once: an exact rule's location is its target) and their
-    /// hit slot.
+    /// Exact rules, with their target as a header value
+    /// (`text_ffi.header_value`, computed once: an exact rule's location is
+    /// its target) and their hit slot.
     exact: Dict(String, #(Rule, String, Int)),
     exact_ci: Dict(String, #(Rule, String, Int)),
     /// Case-sensitive prefix rules, keyed by their source.
@@ -134,14 +137,14 @@ type RegexRule {
     rank: Int,
     rule: Rule,
     slot: Int,
-    regex: ffi.CompiledRegex,
+    regex: regex_ffi.CompiledRegex,
     template: template.Template,
     guard: template.TargetGuard,
   )
 }
 
 pub type Match {
-  /// `location`: a header value already (`ffi.header_value`). `slot`: the
+  /// `location`: a header value already (`text_ffi.header_value`). `slot`: the
   /// rule's hit slot (`record_match`).
   Match(rule: Rule, location: String, slot: Int)
 }
@@ -158,8 +161,8 @@ pub fn empty() -> Matcher {
   )
 }
 
-fn new_hits(rules: Int) -> ffi.Counters {
-  ffi.counter_new(int.max(2 * rules, 2))
+fn new_hits(rules: Int) -> ets_ffi.Counters {
+  ets_ffi.counter_new(int.max(2 * rules, 2))
 }
 
 fn count_index(slot: Int) -> Int {
@@ -185,7 +188,7 @@ pub fn size(matcher: Matcher) -> Int {
 /// have gone through `rule.validate`; a regex that fails to compile is
 /// skipped.
 pub fn build(rules: List(Rule)) -> Matcher {
-  build_at(rules, ffi.now_seconds())
+  build_at(rules, system_ffi.now_seconds())
 }
 
 /// The matcher `build` gives at `now` (seconds): the rules active then.
@@ -193,11 +196,12 @@ pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
   let enabled =
     rules
     |> list.filter(rule.is_active(_, now))
-    // paths are compared in one form: see `ffi.normalise_path`
+    // paths are compared in one form: see `text_ffi.normalise_path`
     |> list.map(fn(r) {
       case r.kind {
         Regex -> r
-        Exact | Prefix -> rule.Rule(..r, source: ffi.normalise_path(r.source))
+        Exact | Prefix ->
+          rule.Rule(..r, source: text_ffi.normalise_path(r.source))
       }
     })
   let #(slots, count) =
@@ -250,11 +254,11 @@ pub fn record_match(matcher: Matcher, m: Match) -> Nil {
 }
 
 fn record_slot(matcher: Matcher, slot: Int) -> Nil {
-  ffi.counter_add(matcher.hits, count_index(slot), 1)
-  let now = ffi.now_seconds()
-  case ffi.counter_get(matcher.hits, last_index(slot)) == now {
+  ets_ffi.counter_add(matcher.hits, count_index(slot), 1)
+  let now = system_ffi.now_seconds()
+  case ets_ffi.counter_get(matcher.hits, last_index(slot)) == now {
     True -> Nil
-    False -> ffi.counter_put(matcher.hits, last_index(slot), now)
+    False -> ets_ffi.counter_put(matcher.hits, last_index(slot), now)
   }
 }
 
@@ -269,7 +273,7 @@ fn slot_of(slots: Dict(String, Int), r: Rule) -> Int {
 /// Hits of a rule (kept across restarts by the store).
 pub fn hit_count(matcher: Matcher, rule_id: String) -> Int {
   case dict.get(matcher.slots, rule_id) {
-    Ok(slot) -> ffi.counter_get(matcher.hits, count_index(slot))
+    Ok(slot) -> ets_ffi.counter_get(matcher.hits, count_index(slot))
     Error(Nil) -> 0
   }
 }
@@ -277,7 +281,7 @@ pub fn hit_count(matcher: Matcher, rule_id: String) -> Int {
 /// When a rule was last hit, in seconds since the epoch (0: never).
 pub fn last_hit(matcher: Matcher, rule_id: String) -> Int {
   case dict.get(matcher.slots, rule_id) {
-    Ok(slot) -> ffi.counter_get(matcher.hits, last_index(slot))
+    Ok(slot) -> ets_ffi.counter_get(matcher.hits, last_index(slot))
     Error(Nil) -> 0
   }
 }
@@ -292,13 +296,13 @@ pub fn hit_records(matcher: Matcher) -> List(HitRecord) {
   dict.to_list(matcher.slots)
   |> list.filter_map(fn(entry) {
     let #(rule_id, slot) = entry
-    case ffi.counter_get(matcher.hits, count_index(slot)) {
+    case ets_ffi.counter_get(matcher.hits, count_index(slot)) {
       0 -> Error(Nil)
       count ->
         Ok(HitRecord(
           rule_id:,
           count:,
-          last: ffi.counter_get(matcher.hits, last_index(slot)),
+          last: ets_ffi.counter_get(matcher.hits, last_index(slot)),
         ))
     }
   })
@@ -315,9 +319,9 @@ pub fn seed_hits(matcher: Matcher, records: List(HitRecord)) -> Nil {
 }
 
 fn add_hits(matcher: Matcher, slot: Int, count: Int, last: Int) -> Nil {
-  ffi.counter_add(matcher.hits, count_index(slot), count)
-  case last > ffi.counter_get(matcher.hits, last_index(slot)) {
-    True -> ffi.counter_put(matcher.hits, last_index(slot), last)
+  ets_ffi.counter_add(matcher.hits, count_index(slot), count)
+  case last > ets_ffi.counter_get(matcher.hits, last_index(slot)) {
+    True -> ets_ffi.counter_put(matcher.hits, last_index(slot), last)
     False -> Nil
   }
 }
@@ -363,7 +367,7 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
         False ->
           dict.insert(acc, r.source, #(
             r,
-            ffi.header_value(r.target),
+            text_ffi.header_value(r.target),
             slot_of(slots, r),
           ))
       }
@@ -378,7 +382,7 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
         False ->
           dict.insert(acc, key, #(
             r,
-            ffi.header_value(r.target),
+            text_ffi.header_value(r.target),
             slot_of(slots, r),
           ))
       }
@@ -402,7 +406,7 @@ fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
     |> list.filter(fn(r) { r.kind == Regex })
     |> list.sort(fn(a, b) { int.compare(a.priority, b.priority) })
     |> list.filter_map(fn(r) {
-      ffi.regex_compile(r.source, r.case_insensitive)
+      regex_ffi.regex_compile(r.source, r.case_insensitive)
       |> result.map(fn(compiled) { #(r, compiled) })
     })
     |> list.index_map(fn(entry, rank) {
@@ -481,7 +485,7 @@ fn index_tree(groups: List(#(String, List(a)))) -> Index(a) {
       // every child has fewer lengths: the tree ends
       let children =
         longer
-        |> list.group(fn(group) { ffi.byte_take(group.0, shortest) })
+        |> list.group(fn(group) { text_ffi.byte_take(group.0, shortest) })
         |> dict.map_values(fn(_, groups) { index_tree(groups) })
       Node(length: shortest, entries: dict.from_list(here), children:)
     }
@@ -505,7 +509,7 @@ fn candidates(index: Index(a), subject: String) -> List(a) {
         // every key is at least `length` bytes long
         True -> []
         False -> {
-          let head = ffi.byte_take(subject, length)
+          let head = text_ffi.byte_take(subject, length)
           let deeper = case dict.get(children, head) {
             Ok(child) -> candidates(child, subject)
             Error(Nil) -> []
@@ -534,7 +538,7 @@ fn leaf_candidates(
     [length, ..rest] if length > size ->
       leaf_candidates(rest, entries, subject, size, found)
     [length, ..rest] ->
-      case dict.get(entries, ffi.byte_take(subject, length)) {
+      case dict.get(entries, text_ffi.byte_take(subject, length)) {
         Ok(group) ->
           leaf_candidates(
             rest,
@@ -592,14 +596,15 @@ fn take_literal(rest: List(UtfCodepoint), taken: List(UtfCodepoint)) -> String {
 /// Strips the port and trailing dots (`example.com.`) from a Host header
 /// value and lower-cases it.
 pub fn normalise_request_host(host: String) -> String {
-  drop_trailing_dots(ffi.strip_port(ffi.lowercase_host(host)))
+  drop_trailing_dots(text_ffi.strip_port(text_ffi.lowercase_host(host)))
 }
 
 /// Byte by byte (`.` is one byte): `string.drop_end` would count the
 /// graphemes of the host for each dot.
 fn drop_trailing_dots(host: String) -> String {
   case string.ends_with(host, ".") {
-    True -> drop_trailing_dots(ffi.byte_take(host, string.byte_size(host) - 1))
+    True ->
+      drop_trailing_dots(text_ffi.byte_take(host, string.byte_size(host) - 1))
     False -> host
   }
 }
@@ -608,7 +613,7 @@ fn drop_trailing_dots(host: String) -> String {
 /// location (without the query string). Rules of the request host win, then
 /// those of `*.parent` domains from the closest one (`a.b.example.com`:
 /// `*.b.example.com`, then `*.example.com`), then those of `*`. The path is
-/// compared in normalised form (`ffi.normalise_path`).
+/// compared in normalised form (`text_ffi.normalise_path`).
 pub fn lookup(
   matcher: Matcher,
   host: String,
@@ -629,7 +634,7 @@ pub fn lookup_query(
   lookup_normalised(
     matcher,
     host,
-    ffi.normalise_path(path),
+    text_ffi.normalise_path(path),
     Error(Nil),
     query,
     vars,
@@ -732,7 +737,7 @@ pub fn lookup_listener(
   query: String,
   tolerant: Bool,
 ) -> Result(Match, Nil) {
-  let #(host, name) = ffi.listener_host(host)
+  let #(host, name) = text_ffi.listener_host(host)
   let vars =
     template.RequestVars(
       host: case name {
@@ -747,7 +752,7 @@ pub fn lookup_listener(
       lookup_normalised(
         matcher,
         host,
-        ffi.normalise_path(path),
+        text_ffi.normalise_path(path),
         Error(Nil),
         query,
         vars,
@@ -766,7 +771,7 @@ fn tolerant_normalised(
   // the host and path are normalised once for both forms (a trailing `/`
   // is kept by the normalisation, so the other form adds or drops it on
   // the normalised path)
-  let normalised = ffi.normalise_path(path)
+  let normalised = text_ffi.normalise_path(path)
   let other = case normalised {
     "/" | "" -> Error(Nil)
     _ ->
@@ -799,7 +804,7 @@ fn lookup_wildcards(
       let sub = case vars.host {
         "" -> ""
         full ->
-          ffi.byte_take(
+          text_ffi.byte_take(
             full,
             string.byte_size(full) - string.byte_size(parent) - 1,
           )
@@ -948,7 +953,7 @@ fn match_query(
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
           |> result.map(fn(q) {
-            Match(q.rule, ffi.header_value(q.rule.target), q.slot)
+            Match(q.rule, text_ffi.header_value(q.rule.target), q.slot)
           })
         }
       }
@@ -1031,7 +1036,7 @@ fn prefix_location(
   template.expand_template(p.template, [path, remainder], vars)
   |> template.guard_location(p.guard, _, vars)
   |> result.map(fn(location) {
-    Match(p.rule, ffi.header_value(location), p.slot)
+    Match(p.rule, text_ffi.header_value(location), p.slot)
   })
 }
 
@@ -1057,7 +1062,7 @@ pub fn target_allowed(r: Rule, host: String, path: String) -> Bool {
 /// prefix rule. Shared with explanations to preserve Unicode boundaries.
 pub fn prefix_remainder(r: Rule, path: String) -> String {
   case r.case_insensitive {
-    False -> ffi.byte_drop(path, string.byte_size(r.source))
+    False -> text_ffi.byte_drop(path, string.byte_size(r.source))
     // cut where the lower-cased prefix ends, in bytes, like the index
     True -> drop_lowered(path, string.byte_size(string.lowercase(r.source)))
   }
@@ -1120,7 +1125,7 @@ fn run_regexes(
   let runs = runs + 1
   let until = case runs % budget_check_every {
     0 ->
-      case until, ffi.reductions() {
+      case until, regex_ffi.reductions() {
         0, now -> now + regex_reductions_budget
         until, now if now > until -> -1
         until, _ -> until
@@ -1131,11 +1136,11 @@ fn run_regexes(
     Error(Nil) -> Missed
     // over budget: the lookup stops, counted like an exhausted run
     Ok(_) if until < 0 -> {
-      ffi.count_regex_limit()
+      regex_ffi.count_regex_limit()
       Stopped
     }
     Ok(#(entry, a, b)) ->
-      case ffi.regex_run(entry.regex, path) {
+      case regex_ffi.regex_run(entry.regex, path) {
         Ok(captures) ->
           case
             template.guard_location(
@@ -1145,14 +1150,18 @@ fn run_regexes(
             )
           {
             Ok(location) ->
-              Found(Match(entry.rule, ffi.header_value(location), entry.slot))
+              Found(Match(
+                entry.rule,
+                text_ffi.header_value(location),
+                entry.slot,
+              ))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }
-        Error(ffi.NoMatch) ->
+        Error(regex_ffi.NoMatch) ->
           run_regexes(a, b, path, vars, exhausted, runs, until)
         // a run exhausting its budget is counted by `regex_run`
-        Error(ffi.LimitExceeded) ->
+        Error(regex_ffi.LimitExceeded) ->
           case exhausted + 1 >= max_exhausted_runs {
             True -> Stopped
             False -> run_regexes(a, b, path, vars, exhausted + 1, runs, until)
@@ -1173,7 +1182,7 @@ pub fn location(m: Match, query: Result(String, Nil)) -> String {
       }
       // a header value must be ASCII: captures, and the query, may hold
       // decoded characters
-      ffi.header_value(merge_query(url, q) <> fragment)
+      text_ffi.header_value(merge_query(url, q) <> fragment)
     }
     _, _ -> m.location
   }

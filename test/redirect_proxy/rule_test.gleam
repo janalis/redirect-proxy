@@ -2,7 +2,8 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/field_error
 import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/rule/template
@@ -359,8 +360,10 @@ pub fn lint_flags_regex_escapes_that_never_match_test() {
   assert lint(Rule(..regex("^/a%2f(.*)$"), case_insensitive: True)) == []
   // a regex lint refuses indeed never matches, as written or decoded
   let assert Ok(compiled) = rule.compile(regex("^/caf%C3%A9$"))
-  assert ffi.regex_run(compiled, ffi.normalise_path("/caf%C3%A9")) |> is_error
-  assert ffi.regex_run(compiled, ffi.normalise_path("/café")) |> is_error
+  assert regex_ffi.regex_run(compiled, text_ffi.normalise_path("/caf%C3%A9"))
+    |> is_error
+  assert regex_ffi.regex_run(compiled, text_ffi.normalise_path("/café"))
+    |> is_error
 }
 
 fn is_error(result: Result(a, b)) -> Bool {

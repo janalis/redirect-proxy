@@ -17,7 +17,8 @@ import redirect_proxy/api_token as token
 import redirect_proxy/audit
 import redirect_proxy/clients
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/ratelimit
@@ -35,7 +36,7 @@ const ip_limit = 30
 const window = 900
 
 pub fn token_endpoint(req: Request, ctx: Context) -> Response {
-  let ip = ffi.throttle_address(ctx.client_ip)
+  let ip = net_ffi.throttle_address(ctx.client_ip)
   let ip_key = "token-ip:" <> ip
   // before the body is read: a blocked address costs no parsing
   use <- throttled([#(ip_key, ip_limit)])
@@ -80,7 +81,7 @@ pub fn token_endpoint(req: Request, ctx: Context) -> Response {
       )
       log.warning(
         "token request rejected for client="
-        <> ffi.escape_newlines(client_id)
+        <> access_ffi.escape_newlines(client_id)
         <> " ip="
         <> ctx.client_ip,
       )

@@ -11,7 +11,9 @@ import gleam/order
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/json_error
 import redirect_proxy/rule/template
@@ -285,7 +287,7 @@ pub fn file_to_string_cached(rules: List(Rule)) -> String {
   <> int.to_string(file_format_version)
   <> ",\"rules\":["
   <> string.join(
-    ffi.encode_cached(rules, fn(r) { json.to_string(to_json(r)) }),
+    text_ffi.encode_cached(rules, fn(r) { json.to_string(to_json(r)) }),
     ",",
   )
   <> "]}"
@@ -358,7 +360,7 @@ pub fn validate(rule: Rule) -> Result(Rule, List(FieldError)) {
   let time = fn(value) {
     case value {
       "" -> Ok(Nil)
-      v -> ffi.parse_rfc3339(v) |> result.replace(Nil)
+      v -> system_ffi.parse_rfc3339(v) |> result.replace(Nil)
     }
   }
 
@@ -545,7 +547,7 @@ pub fn window(rule: Rule) -> #(Int, Int) {
   let bound = fn(value, open) {
     case value {
       "" -> open
-      v -> ffi.parse_rfc3339(v) |> result.unwrap(open)
+      v -> system_ffi.parse_rfc3339(v) |> result.unwrap(open)
     }
   }
   #(bound(rule.starts_at, min_time), bound(rule.expires_at, max_time))
@@ -649,7 +651,7 @@ pub fn lint(rule: Rule) -> List(FieldError) {
 }
 
 /// Parts of a regex that never match the path it runs on, which is
-/// normalised (`ffi.normalise_path`): percent-escapes outside a character
+/// normalised (`text_ffi.normalise_path`): percent-escapes outside a character
 /// class that normalisation decodes (unreserved characters, UTF-8) or
 /// writes in upper case, and whole dot segments (`/\\./`, `/\\.\\./`,
 /// or one before the closing `$`).
@@ -741,7 +743,7 @@ fn escape_problem(
 ) -> List(FieldError) {
   use <- bool.guard(run == "", problems)
   // after a segment, so that `%2E` is not taken for a dot segment
-  let normalised = ffi.normalise_path("/x" <> run) |> string.drop_start(2)
+  let normalised = text_ffi.normalise_path("/x" <> run) |> string.drop_start(2)
   let same = case case_insensitive {
     True -> string.uppercase(normalised) == string.uppercase(run)
     False -> normalised == run
@@ -791,9 +793,9 @@ fn check_source(errors: List(FieldError), rule: Rule) -> List(FieldError) {
 
 /// Compiles the regex of a `Regex` rule and makes sure it cannot be abused to
 /// burn CPU with catastrophic backtracking (ReDoS).
-pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
+pub fn compile(rule: Rule) -> Result(regex_ffi.CompiledRegex, String) {
   use regex <- result.try(
-    ffi.regex_compile(rule.source, rule.case_insensitive)
+    regex_ffi.regex_compile(rule.source, rule.case_insensitive)
     |> result.map_error(fn(e) { "invalid regular expression: " <> e }),
   )
   // Adversarial subjects: runs of a single character followed by a character
@@ -811,7 +813,7 @@ pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
     })
   let exhausts =
     list.any(probes, fn(probe) {
-      ffi.regex_run(regex, probe) == Error(ffi.LimitExceeded)
+      regex_ffi.regex_run(regex, probe) == Error(regex_ffi.LimitExceeded)
     })
   case exhausts {
     True ->
@@ -825,7 +827,7 @@ pub fn compile(rule: Rule) -> Result(ffi.CompiledRegex, String) {
 /// Only letters, digits, `-`, `_` and `.` (what a rule host may hold): what
 /// `${host}` and `${sub}` may hold.
 pub fn is_host_name(host: String) -> Bool {
-  ffi.is_host_name(host)
+  text_ffi.is_host_name(host)
 }
 
 pub fn normalise_host(host: String) -> String {
@@ -836,13 +838,13 @@ pub fn normalise_host(host: String) -> String {
 }
 
 fn is_ascii(value: String) -> Bool {
-  ffi.is_ascii(value)
+  text_ffi.is_ascii(value)
 }
 
 /// `string.trim`, without its cost for the usual value that has nothing to
 /// trim (it runs for every field of every rule when a file loads).
 fn trim(value: String) -> String {
-  case ffi.needs_trim(value) {
+  case text_ffi.needs_trim(value) {
     True -> string.trim(value)
     False -> value
   }
@@ -888,7 +890,7 @@ fn valid_label(label: String) -> Bool {
 }
 
 fn no_control_chars(value: String) -> Bool {
-  ffi.no_control_chars(value)
+  text_ffi.no_control_chars(value)
 }
 
 fn valid_target(target: String) -> Bool {

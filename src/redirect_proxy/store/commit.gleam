@@ -4,7 +4,8 @@
 import gleam/list
 import gleam/option.{type Option, Some}
 import gleam/result
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/log
 import redirect_proxy/matcher
@@ -44,28 +45,28 @@ const rules_table = "redirect_proxy_store_last_good"
 /// process: in the application, by the table owner (`tables`); `store.start`
 /// creates it otherwise (a store started alone, as in tests).
 pub fn init() -> Nil {
-  ffi.ets_new(rules_table)
+  ets_ffi.ets_new(rules_table)
 }
 
 /// Says that `store` serves the rules of `rules_path`.
 pub fn register(store: store, rules_path: String) -> Nil {
-  ffi.ets_put(rules_table, store, rules_path)
+  ets_ffi.ets_put(rules_table, store, rules_path)
 }
 
 /// Sets the rules in effect at `rules_path` and their version.
 pub fn set_view(rules_path: String, rules: List(Rule), version: String) -> Nil {
-  ffi.ets_put(rules_table, rules_path, #(rules, version))
+  ets_ffi.ets_put(rules_table, rules_path, #(rules, version))
 }
 
 /// The rules in effect for `store` and their version, once it has started.
 pub fn view(store: store) -> Result(#(List(Rule), String), Nil) {
-  use rules_path <- result.try(ffi.ets_find(rules_table, store))
-  ffi.ets_find(rules_table, rules_path)
+  use rules_path <- result.try(ets_ffi.ets_find(rules_table, store))
+  ets_ffi.ets_find(rules_table, rules_path)
 }
 
 /// The rules last published from the file at `rules_path`.
 pub fn last_good(rules_path: String) -> Result(List(Rule), Nil) {
-  ffi.ets_find(rules_table, rules_path)
+  ets_ffi.ets_find(rules_table, rules_path)
   |> result.map(fn(view: #(List(Rule), String)) { view.0 })
 }
 
@@ -81,7 +82,7 @@ pub fn publish(
   |> matcher.carry_hits(from: snapshot.current())
   |> snapshot.publish
   // Building and parsing leave a lot of garbage in this long lived process.
-  ffi.garbage_collect()
+  system_ffi.garbage_collect()
 }
 
 /// Publishes rules loaded from the file, then has them checked.

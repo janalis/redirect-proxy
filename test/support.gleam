@@ -16,7 +16,9 @@ import gleam/string
 import mist
 import redirect_proxy/app
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/snapshot as snapshot_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/oidc_provider as provider
 import simplifile
@@ -126,7 +128,7 @@ pub fn start_fake_authorization_server_at(path: String) -> #(String, Key) {
   let handler = fn(req: request.Request(mist.Connection)) {
     let issuer =
       "http://127.0.0.1:"
-      <> int.to_string(ffi.snapshot_get(port_key) |> result.unwrap(0))
+      <> int.to_string(snapshot_ffi.snapshot_get(port_key) |> result.unwrap(0))
       <> path
     let body = case req.path {
       requested if requested == metadata_path ->
@@ -156,7 +158,7 @@ pub fn start_fake_authorization_server_at(path: String) -> #(String, Key) {
     |> mist.bind("127.0.0.1")
     |> mist.port(0)
     |> mist.after_start(fn(port, _, _) {
-      ffi.snapshot_put(port_key, port)
+      snapshot_ffi.snapshot_put(port_key, port)
       process.send(ready, port)
     })
     |> mist.start
@@ -171,10 +173,10 @@ pub fn start_fake_authorization_server_at(path: String) -> #(String, Key) {
 /// the port of one an earlier test found unreachable (`free_port`) would
 /// otherwise inherit that failure.
 pub fn forget_provider(issuer: String) -> Nil {
-  let entries: List(#(String, Dynamic)) = ffi.ets_to_list(provider.table)
+  let entries: List(#(String, Dynamic)) = ets_ffi.ets_to_list(provider.table)
   list.each(entries, fn(entry) {
     case string.contains(entry.0, issuer) {
-      True -> ffi.ets_delete(provider.table, entry.0)
+      True -> ets_ffi.ets_delete(provider.table, entry.0)
       False -> Nil
     }
   })
@@ -189,7 +191,7 @@ pub fn set_draining(value: Bool) -> Nil
 /// would fail every later test that probes readiness.
 pub fn with_draining(f: fn() -> a) -> a {
   set_draining(True)
-  let result = ffi.rescue(f)
+  let result = system_ffi.rescue(f)
   set_draining(False)
   case result {
     Ok(value) -> value
@@ -209,3 +211,27 @@ pub fn wait_until(condition: fn() -> Bool, timeout_ms: Int) -> Nil {
     }
   }
 }
+
+// --- bindings only tests use ------------------------------------------------
+
+/// Overrides a delay (see `ffi/file.tunable`): `stale_lock_seconds` (10),
+/// after which a lock is taken over, `store_call_timeout` (milliseconds),
+/// how long a store call waits, and `start_lock_timeout`.
+@external(erlang, "redirect_proxy_file_ffi", "set_tunable")
+pub fn set_tunable(name: String, value: Int) -> Nil
+
+/// Restores a delay's default.
+@external(erlang, "redirect_proxy_file_ffi", "clear_tunable")
+pub fn clear_tunable(name: String) -> Nil
+
+/// Number of entries in a table.
+@external(erlang, "redirect_proxy_ets_ffi", "ets_size")
+pub fn ets_size(table: String) -> Int
+
+/// Removes CR, LF and NUL bytes.
+@external(erlang, "redirect_proxy_text_ffi", "strip_control")
+pub fn strip_control(value: String) -> String
+
+/// Returns once the access log writers have handled every line sent before.
+@external(erlang, "redirect_proxy_access_ffi", "sync")
+pub fn access_log_sync() -> Nil

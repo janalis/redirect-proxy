@@ -8,7 +8,7 @@ import gleam/crypto
 import gleam/int
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
 
 pub const default_iterations = 600_000
 
@@ -29,7 +29,7 @@ pub fn hash(password: String) -> String {
 pub fn hash_with(password: String, iterations: Int) -> String {
   let salt = crypto.strong_random_bytes(16)
   let derived =
-    ffi.pbkdf2_sha256(<<password:utf8>>, salt, iterations, key_length)
+    crypto_ffi.pbkdf2_sha256(<<password:utf8>>, salt, iterations, key_length)
   "pbkdf2-sha256$"
   <> int.to_string(iterations)
   <> "$"
@@ -50,13 +50,13 @@ pub fn verify(password: String, encoded: String) -> Bool {
         use salt <- result.try(bit_array.base64_decode(pad(salt)))
         use expected <- result.try(bit_array.base64_decode(pad(expected)))
         let derived =
-          ffi.pbkdf2_sha256(
+          crypto_ffi.pbkdf2_sha256(
             <<password:utf8>>,
             salt,
             iterations,
             bit_array.byte_size(expected),
           )
-        Ok(ffi.secure_compare(derived, expected))
+        Ok(crypto_ffi.secure_compare(derived, expected))
       }
       result.unwrap(checked, False)
     }
@@ -81,7 +81,12 @@ pub fn needs_rehash(encoded: String) -> Bool {
 /// does not exist so that response timing does not leak valid usernames.
 pub fn dummy_verify() -> Nil {
   let _ =
-    ffi.pbkdf2_sha256(<<"dummy":utf8>>, <<"salt":utf8>>, default_iterations, 32)
+    crypto_ffi.pbkdf2_sha256(
+      <<"dummy":utf8>>,
+      <<"salt":utf8>>,
+      default_iterations,
+      32,
+    )
   Nil
 }
 

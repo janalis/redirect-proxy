@@ -14,11 +14,11 @@ import integration_support.{
   login_with_role, post_form, send,
 }
 import redirect_proxy/config
-import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/users
 import simplifile
+import support
 
 pub fn admin_bulk_actions_test() {
   let env = boot(config.default())
@@ -888,7 +888,7 @@ pub fn admin_busy_store_answers_503_test() {
   let #(cookie, csrf) = login(env)
   let lock = env.dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
-  ffi.set_tunable("store_call_timeout", 200)
+  support.set_tunable("store_call_timeout", 200)
   let #(head, page) =
     raw_post_form(env, "/rules", cookie, [
       #("csrf_token", csrf),
@@ -897,7 +897,7 @@ pub fn admin_busy_store_answers_503_test() {
       #("target", "/t"),
       #("status", "301"),
     ])
-  ffi.clear_tunable("store_call_timeout")
+  support.clear_tunable("store_call_timeout")
   let assert Ok(Nil) = simplifile.delete(lock)
 
   assert string.starts_with(head, "http/1.1 503")

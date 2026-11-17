@@ -6,7 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import gleam/string_tree
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
 import redirect_proxy/listener
 import simplifile
 import support
@@ -20,7 +20,7 @@ fn lines(path: String) -> List(String) {
 
 fn emit(from: Int, to: Int) -> Nil {
   int.range(from, to + 1, Nil, fn(_, i) {
-    ffi.access_log_emit(
+    access_ffi.access_log_emit(
       listener.RedirectListener,
       string_tree.from_string(
         "line " <> string.pad_start(int.to_string(i), 3, "0"),
@@ -32,15 +32,20 @@ fn emit(from: Int, to: Int) -> Nil {
 pub fn lines_are_written_in_order_test() {
   let path = support.temp_dir() <> "/logs/access.log"
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      0,
+      7,
+      False,
+    )
   // more than a batch: stopping writes them all
   emit(1, 3000)
   // lines of a listener with no writer are dropped quietly
-  ffi.access_log_emit(
+  access_ffi.access_log_emit(
     listener.AdminListener,
     string_tree.from_string("elsewhere"),
   )
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   let written = lines(path)
   assert list.length(written) == 3000
   assert list.first(written) == Ok("line 001")
@@ -52,13 +57,18 @@ pub fn lines_are_written_in_order_test() {
 pub fn files_rotate_test() {
   let path = support.temp_dir() <> "/access.log"
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 2, False)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      20,
+      2,
+      False,
+    )
   // "line 001\n" is 9 bytes: each write of more than 20 bytes rotates
   list.each([#(1, 3), #(4, 6), #(7, 9)], fn(batch) {
     emit(batch.0, batch.1)
-    ffi.access_log_sync()
+    support.access_log_sync()
   })
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   assert lines(path <> ".0") == ["line 007", "line 008", "line 009"]
   assert lines(path <> ".1") == ["line 004", "line 005", "line 006"]
   assert simplifile.is_file(path <> ".2") == Ok(False)
@@ -68,11 +78,16 @@ pub fn files_rotate_test() {
 pub fn rotated_files_are_compressed_test() {
   let path = support.temp_dir() <> "/access.log"
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 3, True)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      20,
+      3,
+      True,
+    )
   emit(1, 3)
-  ffi.access_log_sync()
+  support.access_log_sync()
   emit(4, 6)
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   assert simplifile.is_file(path <> ".0.gz") == Ok(True)
   assert simplifile.is_file(path <> ".1.gz") == Ok(True)
   assert simplifile.is_file(path <> ".0") == Ok(False)
@@ -87,13 +102,18 @@ pub fn rotated_files_are_compressed_test() {
 pub fn renamed_files_are_reopened_test() {
   let path = support.temp_dir() <> "/access.log"
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      0,
+      7,
+      False,
+    )
   emit(1, 1)
-  ffi.access_log_sync()
+  support.access_log_sync()
   let assert Ok(Nil) = simplifile.rename(path, path <> ".1")
   process.sleep(1300)
   emit(2, 2)
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   assert lines(path <> ".1") == ["line 001"]
   assert lines(path) == ["line 002"]
 }
@@ -103,13 +123,18 @@ pub fn removed_directories_are_recreated_test() {
   let dir = support.temp_dir() <> "/logs"
   let path = dir <> "/access.log"
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 7, False)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      0,
+      7,
+      False,
+    )
   emit(1, 1)
-  ffi.access_log_sync()
+  support.access_log_sync()
   let assert Ok(Nil) = simplifile.delete(dir)
   process.sleep(1300)
   emit(2, 2)
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   assert lines(path) == ["line 002"]
 }
 
@@ -117,7 +142,7 @@ pub fn unwritable_outputs_are_refused_test() {
   let dir = support.temp_dir()
   let assert Ok(Nil) = simplifile.write(dir <> "/file", "")
   let assert Error(message) =
-    ffi.access_log_start(
+    access_ffi.access_log_start(
       [#(dir <> "/file/access.log", [listener.RedirectListener])],
       0,
       7,
@@ -140,9 +165,14 @@ pub fn compressed_archives_preserve_modes_and_replace_symlinks_test() {
     let assert Ok(Nil) =
       simplifile.create_symlink(to: sentinel, from: path <> ".0.gz")
     let assert Ok(Nil) =
-      ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 1, True)
+      access_ffi.access_log_start(
+        [#(path, [listener.RedirectListener])],
+        20,
+        1,
+        True,
+      )
     emit(1, 3)
-    ffi.access_log_stop()
+    access_ffi.access_log_stop()
     assert simplifile.read(sentinel) == Ok("untouched")
     assert simplifile.is_symlink(path <> ".0.gz") == Ok(False)
     let assert Ok(info) = simplifile.file_info(path <> ".0.gz")
@@ -157,9 +187,14 @@ pub fn failed_compression_keeps_raw_archive_and_cleans_temp_test() {
   let path = dir <> "/access.log"
   let assert Ok(Nil) = simplifile.create_directory_all(path <> ".0.gz")
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 20, 1, True)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      20,
+      1,
+      True,
+    )
   emit(1, 3)
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   assert lines(path <> ".0") == ["line 001", "line 002", "line 003"]
   assert simplifile.is_directory(path <> ".0.gz") == Ok(True)
   let assert Ok(files) = simplifile.read_directory(dir)
@@ -173,25 +208,25 @@ pub fn recreated_active_logs_preserve_modes_test() {
       let assert Ok(Nil) = simplifile.write(path, "")
       let assert Ok(Nil) = simplifile.set_permissions_octal(path, mode)
       let assert Ok(Nil) =
-        ffi.access_log_start(
+        access_ffi.access_log_start(
           [#(path, [listener.RedirectListener])],
           20,
           rotation.1,
           rotation.0,
         )
       emit(1, 3)
-      ffi.access_log_sync()
+      support.access_log_sync()
       let assert Ok(info) = simplifile.file_info(path)
       assert simplifile.file_info_permissions_octal(info) == mode
       emit(4, 4)
-      ffi.access_log_sync()
+      support.access_log_sync()
       assert lines(path) == ["line 004"]
       // A second rotation must keep the mode too.
       emit(5, 7)
-      ffi.access_log_sync()
+      support.access_log_sync()
       let assert Ok(info) = simplifile.file_info(path)
       assert simplifile.file_info_permissions_octal(info) == mode
-      ffi.access_log_stop()
+      access_ffi.access_log_stop()
     })
   })
 }
@@ -201,15 +236,20 @@ pub fn external_replacement_keeps_operator_mode_test() {
   let assert Ok(Nil) = simplifile.write(path, "")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
   let assert Ok(Nil) =
-    ffi.access_log_start([#(path, [listener.RedirectListener])], 0, 2, False)
+    access_ffi.access_log_start(
+      [#(path, [listener.RedirectListener])],
+      0,
+      2,
+      False,
+    )
   emit(1, 1)
-  ffi.access_log_sync()
+  support.access_log_sync()
   let assert Ok(Nil) = simplifile.rename(path, path <> ".old")
   let assert Ok(Nil) = simplifile.write(path, "operator\n")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o640)
   process.sleep(1300)
   emit(2, 2)
-  ffi.access_log_stop()
+  access_ffi.access_log_stop()
   let assert Ok(info) = simplifile.file_info(path)
   assert simplifile.file_info_permissions_octal(info) == 0o640
   assert lines(path) == ["operator", "line 002"]

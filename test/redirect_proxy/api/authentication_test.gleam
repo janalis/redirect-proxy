@@ -15,7 +15,7 @@ import redirect_proxy/api/routes
 import redirect_proxy/app
 import redirect_proxy/clients
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/scope
 import simplifile
 import support
@@ -143,7 +143,7 @@ pub fn tokens_lose_scopes_the_client_loses_test() {
 
 pub fn external_access_tokens_test() {
   let #(env, issuer, key) = external_env()
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let base = fn(overrides: List(#(String, json.Json))) {
     let keys = list.map(overrides, fn(o) { o.0 })
     [
@@ -234,7 +234,7 @@ pub fn external_tokens_must_be_typed_as_access_tokens_test() {
       ),
     )
   }
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let claims =
     json.object([
       #("iss", json.string(issuer)),

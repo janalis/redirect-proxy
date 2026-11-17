@@ -15,7 +15,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import redirect_proxy/audit
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/private_file
 import redirect_proxy/role.{type Role}
@@ -94,7 +94,7 @@ pub fn create_with_role(
   case list.any(users, fn(u) { u.username == username }) {
     True -> Error("user " <> username <> " already exists")
     False -> {
-      let now = ffi.now_rfc3339()
+      let now = system_ffi.now_rfc3339()
       let user =
         User(
           username:,
@@ -199,7 +199,7 @@ fn store_password_if(
             User(
               ..user,
               password_hash:,
-              updated_at: ffi.now_rfc3339(),
+              updated_at: system_ffi.now_rfc3339(),
               credentials: credentials(user),
             )
           let users =

@@ -15,7 +15,8 @@ import redirect_proxy/admin/views/pages
 import redirect_proxy/api/web as api_web
 import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
 import redirect_proxy/http_security
 import redirect_proxy/log
 import redirect_proxy/oidc_provider as provider
@@ -265,13 +266,14 @@ pub fn require_csrf_form(
 }
 
 fn session_token_matches(s: Session, token: String) -> Bool {
-  token != "" && ffi.secure_compare(<<token:utf8>>, <<s.csrf_token:utf8>>)
+  token != ""
+  && crypto_ffi.secure_compare(<<token:utf8>>, <<s.csrf_token:utf8>>)
 }
 
 /// A user-supplied value in a log line: line breaks are escaped, so that a
 /// crafted value cannot forge log lines.
 pub fn log_value(value: String) -> String {
-  ffi.escape_newlines(value)
+  access_ffi.escape_newlines(value)
 }
 
 pub fn show_users(ctx: Context) -> Bool {

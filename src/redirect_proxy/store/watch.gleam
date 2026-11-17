@@ -5,7 +5,7 @@
 import gleam/bool
 import gleam/option.{None, Some}
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/log
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/reload
@@ -15,8 +15,8 @@ import simplifile
 /// Looks at the file: the state once any change of it is loaded, or
 /// noted as one that does not load.
 pub fn tick(state: State) -> State {
-  let stamp = ffi.file_stamp(state.config.rules_path)
-  case stamp == state.stamp && !ffi.stamp_is_recent(stamp) {
+  let stamp = file_ffi.file_stamp(state.config.rules_path)
+  case stamp == state.stamp && !file_ffi.stamp_is_recent(stamp) {
     True -> state
     False -> {
       let content = simplifile.read_bits(state.config.rules_path)
@@ -24,7 +24,7 @@ pub fn tick(state: State) -> State {
       // next tick, or the content read now would be taken again for a
       // change once the stamp settles (an invalid file reported twice)
       use <- bool.lazy_guard(
-        ffi.file_stamp(state.config.rules_path) != stamp,
+        file_ffi.file_stamp(state.config.rules_path) != stamp,
         fn() { state },
       )
       // the store's own writes leave the fingerprint unchanged
@@ -52,11 +52,11 @@ pub fn tick(state: State) -> State {
 }
 
 /// The file, at `stamp`, has a content of fingerprint `found`.
-fn changed(state: State, stamp: ffi.FileStamp, found: String) -> State {
+fn changed(state: State, stamp: file_ffi.FileStamp, found: String) -> State {
   // the same content, of the write refused (its time may have
   // moved since), not of a write made since
   let skipped = case state.rejected {
-    Some(#(at, refused)) -> refused == found && ffi.same_write(at, stamp)
+    Some(#(at, refused)) -> refused == found && file_ffi.same_write(at, stamp)
     None -> False
   }
   case found == state.fingerprint || skipped {
@@ -96,7 +96,7 @@ fn changed(state: State, stamp: ffi.FileStamp, found: String) -> State {
               store_file.Content(store_file.Invalid(read:, ..))
                 | store_file.Content(store_file.IdsNotWritten(read:, ..))
                 if read != ""
-              -> #(ffi.file_stamp(state.config.rules_path), read)
+              -> #(file_ffi.file_stamp(state.config.rules_path), read)
               _ -> #(stamp, found)
             }),
           )

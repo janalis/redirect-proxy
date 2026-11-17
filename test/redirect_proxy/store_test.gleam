@@ -4,7 +4,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import redirect_proxy/audit
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error.{FieldError}
 import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
@@ -799,11 +800,11 @@ pub fn reads_do_not_wait_for_changes_test() {
   })
   // the change has reached the store, which waits for the lock
   process.sleep(100)
-  let started = ffi.monotonic_micros()
+  let started = system_ffi.monotonic_micros()
   assert store.all(s) == [a]
   let #(rules, version) = store.versioned(s)
   assert rules == [a] && version != ""
-  assert ffi.monotonic_micros() - started < 50_000
+  assert system_ffi.monotonic_micros() - started < 50_000
   let assert Ok(Nil) = simplifile.delete(lock)
   let assert Ok(Ok(c)) = process.receive(done, 5000)
   assert store.all(s) == [a, c]
@@ -822,7 +823,7 @@ pub fn reads_of_a_stopped_store_fail_test() {
   process.unlink(started.pid)
   process.kill(started.pid)
   support.wait_until(fn() { !process.is_alive(started.pid) }, 1000)
-  let unavailable = fn(read) { ffi.rescue_store_timeout(read, fn() { True }) }
+  let unavailable = fn(read) { store.or_unavailable(read, fn() { True }) }
   assert unavailable(fn() {
     let _ = store.all(started.data)
     False
@@ -1352,14 +1353,14 @@ pub fn scheduled_rules_test() {
   assert string.contains(overlap, "at the same time")
 
   // a rule starting in 2 seconds and expiring in 3
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let assert Ok(_) =
     store_support.create(
       s,
       Rule(
         ..new_rule("/soon", "/started"),
-        starts_at: ffi.rfc3339(now + 2),
-        expires_at: ffi.rfc3339(now + 3),
+        starts_at: system_ffi.rfc3339(now + 2),
+        expires_at: system_ffi.rfc3339(now + 3),
       ),
       by: "t",
     )
@@ -1445,12 +1446,12 @@ pub fn unchanged_hits_are_not_rewritten_test() {
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
   let path = dir <> "/hits.json"
-  let written = ffi.file_stamp(path)
+  let written = file_ffi.file_stamp(path)
   store.flush_hits(s)
-  assert ffi.file_stamp(path) == written
+  assert file_ffi.file_stamp(path) == written
   matcher.record_hit(snapshot.current(), created.id)
   store.flush_hits(s)
-  assert ffi.file_stamp(path) != written
+  assert file_ffi.file_stamp(path) != written
 }
 
 pub fn filter_by_tag_test() {
@@ -1599,11 +1600,11 @@ pub fn a_lock_held_long_is_not_taken_over_test() {
   let dir = support.temp_dir()
   let path = dir <> "/redirects.json"
   let s = start(settings(dir, 0))
-  ffi.set_tunable("stale_lock_seconds", 1)
+  support.set_tunable("stale_lock_seconds", 1)
   let held = process.new_subject()
   process.spawn(fn() {
     let assert Ok(Nil) =
-      ffi.with_file_lock(path, 1000, fn() {
+      file_ffi.with_file_lock(path, 1000, fn() {
         let assert Ok(content) = simplifile.read(path)
         let assert Ok(rules) = rule.file_from_string(content)
         process.send(held, Nil)
@@ -1618,7 +1619,7 @@ pub fn a_lock_held_long_is_not_taken_over_test() {
   let assert Ok(Nil) = process.receive(held, 1000)
   let created = store_support.create(s, new_rule("/server", "/t"), by: "server")
   let released = process.receive(held, 5000)
-  ffi.clear_tunable("stale_lock_seconds")
+  support.clear_tunable("stale_lock_seconds")
   let assert Ok(_) = created
   let assert Ok(Nil) = released
 

@@ -10,7 +10,10 @@ import gleam/list
 import gleam/option.{type Option}
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/snapshot as snapshot_ffi
+import redirect_proxy/ffi/system as system_ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/log
 import redirect_proxy/ratelimit
 import simplifile
@@ -80,7 +83,7 @@ pub fn record(
 ) -> Nil {
   let line =
     json.object([
-      #("at", json.string(ffi.now_rfc3339())),
+      #("at", json.string(system_ffi.now_rfc3339())),
       #("actor", json.string(actor)),
       #("action", json.string(action)),
       #("target", json.string(target)),
@@ -91,11 +94,11 @@ pub fn record(
   // one writer at a time, across processes (the server and the CLI): a
   // rotation must not race another one or a write
   let written =
-    ffi.locked_file(path, lock_timeout, fn() {
+    file_ffi.locked_file(path, lock_timeout, fn() {
       use rotated <- result.try(rotate_if_full(path, line))
       case rotated {
         True -> Ok(Nil)
-        False -> ffi.append_line(path, line)
+        False -> file_ffi.append_line(path, line)
       }
     })
   case written {
@@ -117,7 +120,7 @@ const lock_timeout = 5000
 /// `storage.audit_max_bytes` (0: never rotate) and `storage.audit_files`
 /// (rotated files kept), set at start.
 pub fn configure(max_bytes: Int, files: Int) -> Nil {
-  ffi.snapshot_put(rotation_key, #(max_bytes, files))
+  snapshot_ffi.snapshot_put(rotation_key, #(max_bytes, files))
 }
 
 pub const default_max_bytes = 10_485_760
@@ -125,7 +128,7 @@ pub const default_max_bytes = 10_485_760
 pub const default_files = 5
 
 fn rotation() -> #(Int, Int) {
-  ffi.snapshot_get(rotation_key)
+  snapshot_ffi.snapshot_get(rotation_key)
   |> result.unwrap(#(default_max_bytes, default_files))
 }
 
@@ -135,7 +138,7 @@ fn rotate_if_full(path: String, line: String) -> Result(Bool, String) {
   let #(max_bytes, files) = rotation()
   case max_bytes > 0, simplifile.file_info(path) {
     True, Ok(info) if info.size >= max_bytes ->
-      ffi.audit_rotate(
+      file_ffi.audit_rotate(
         path,
         line,
         simplifile.file_info_permissions_octal(info),
@@ -188,7 +191,7 @@ pub const any = Filter(actor: "", action: "", target: "", since: 0, until: 0)
 /// seconds since the epoch. A `+01:00` offset sent unencoded in a query
 /// arrives as ` 01:00`, and is read as sent.
 pub fn parse_bound(value: String) -> Result(Int, Nil) {
-  ffi.parse_rfc3339(string.replace(value, " ", "+"))
+  system_ffi.parse_rfc3339(string.replace(value, " ", "+"))
 }
 
 /// What `parse_bound` accepts, for error messages.
@@ -214,7 +217,7 @@ fn search_files(
       let entries =
         simplifile.read_bits(file)
         |> result.unwrap(<<>>)
-        |> ffi.split_lines
+        |> text_ffi.split_lines
         |> list.reverse
         |> newest_matching(filter, limit - list.length(found), [])
       search_files(older, filter, limit, list.append(found, entries))
@@ -246,7 +249,7 @@ fn newest_matching(
 }
 
 fn matches(e: Entry, f: Filter) -> Bool {
-  let seconds = fn() { ffi.parse_rfc3339(e.at) |> result.unwrap(0) }
+  let seconds = fn() { system_ffi.parse_rfc3339(e.at) |> result.unwrap(0) }
   { f.actor == "" || e.actor == f.actor }
   && { f.action == "" || string.starts_with(e.action, f.action) }
   && { f.target == "" || string.contains(e.target, f.target) }

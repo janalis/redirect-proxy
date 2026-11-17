@@ -8,7 +8,7 @@ import redirect_proxy/access_log_format.{
   type Entry, Entry, Header, Literal, Status, Var,
 } as fmt
 import redirect_proxy/cidr
-import redirect_proxy/ffi
+import redirect_proxy/ffi/access as access_ffi
 
 // 2026-11-06T09:30:05.123456Z
 const time_us = 1_793_957_405_123_456
@@ -210,21 +210,18 @@ pub fn anonymize_peer_matches_anonymize_test() {
     mist.IpV6(0, 0, 0, 0, 0, 0xffff, 0x0a01, 0x0203),
   ]
   |> list.each(fn(ip) {
-    assert ffi.anonymize_peer(ip)
+    assert access_ffi.anonymize_peer(ip)
       == fmt.anonymize(mist.ip_address_to_string(ip))
   })
 }
 
-@external(erlang, "redirect_proxy_access_ffi", "time_cache_init")
-fn time_cache_init() -> Nil
-
 pub fn cached_time_follows_the_second_test() {
   // creates the shared cache, owned by this process (the application's
   // table owner creates it otherwise)
-  time_cache_init()
+  access_ffi.time_cache_init()
   let seconds_of = fn(t) {
-    let local = ffi.time_local(t)
-    let iso = ffi.time_iso8601(t)
+    let local = access_ffi.time_local(t)
+    let iso = access_ffi.time_iso8601(t)
     // the seconds do not depend on the time zone: 09:30:05 UTC is xx:x0:05
     let assert [_, after_minutes] = string.split(local, " ")
     assert string.length(after_minutes) == 5
@@ -235,7 +232,8 @@ pub fn cached_time_follows_the_second_test() {
   assert seconds_of(time_us + 1_000_000) == #("06", "06")
   // an older second (requests logged out of order) is rendered again
   assert seconds_of(time_us) == #("05", "05")
-  assert ffi.time_local(time_us) != ffi.time_local(time_us + 1_000_000)
+  assert access_ffi.time_local(time_us)
+    != access_ffi.time_local(time_us + 1_000_000)
 }
 
 /// A 6to4 address holds the client's whole IPv4 address in its /48: it is

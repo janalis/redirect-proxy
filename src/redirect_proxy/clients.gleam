@@ -12,7 +12,9 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import redirect_proxy/audit
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/private_file
 import redirect_proxy/scope.{type Scope}
@@ -39,7 +41,7 @@ pub fn list(settings: Settings) -> Result(List(Client), String) {
 
 /// Read on every API call: served from a cache until the file changes.
 pub fn get(settings: Settings, client_id: String) -> Result(Client, Nil) {
-  ffi.memo_file(settings.path, fn() { load(settings.path) })
+  file_ffi.memo_file(settings.path, fn() { load(settings.path) })
   |> result.unwrap([])
   |> list.find(fn(c) { c.client_id == client_id })
 }
@@ -62,7 +64,7 @@ pub fn create(
       name:,
       secret_hash: hash(secret),
       scopes: list.unique(scopes),
-      created_at: ffi.now_rfc3339(),
+      created_at: system_ffi.now_rfc3339(),
       created_by: actor,
       last_used_at: "",
     )
@@ -140,7 +142,7 @@ pub fn authenticate(
   let candidate = <<hash(secret):utf8>>
   case get(settings, client_id) {
     Ok(client) ->
-      case ffi.secure_compare(candidate, <<client.secret_hash:utf8>>) {
+      case crypto_ffi.secure_compare(candidate, <<client.secret_hash:utf8>>) {
         True -> {
           touch(settings, client)
           Ok(client)
@@ -149,20 +151,20 @@ pub fn authenticate(
       }
     Error(Nil) -> {
       // same work whether or not the client exists
-      let _ = ffi.secure_compare(candidate, candidate)
+      let _ = crypto_ffi.secure_compare(candidate, candidate)
       Error(Nil)
     }
   }
 }
 
 fn touch(settings: Settings, client: Client) -> Nil {
-  let now = ffi.now_rfc3339()
+  let now = system_ffi.now_rfc3339()
   case string.slice(client.last_used_at, 0, 16) == string.slice(now, 0, 16) {
     True -> Nil
     False -> {
       // Best effort: never make a token request wait for another writer.
       let _ = {
-        use <- ffi.locked_file(settings.path, 100)
+        use <- file_ffi.locked_file(settings.path, 100)
         use clients <- result.try(load(settings.path))
         list.map(clients, fn(c) {
           case c.client_id == client.client_id {

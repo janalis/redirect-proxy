@@ -4,7 +4,8 @@ import gleam/list
 import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/oidc_provider
 import redirect_proxy/ratelimit
 import support
@@ -43,7 +44,7 @@ fn base_claims() -> List(#(String, json.Json)) {
     #("iss", json.string("https://idp.test/")),
     #("sub", json.string("42")),
     #("aud", json.array(["rp", "other"], json.string)),
-    #("exp", json.int(ffi.now_seconds() + 60)),
+    #("exp", json.int(system_ffi.now_seconds() + 60)),
     #("nonce", json.string("n")),
     #("email", json.string("Alice@Example.com")),
     #("email_verified", json.bool(True)),
@@ -115,7 +116,7 @@ pub fn claim_mismatches_test() {
     oidc.check_claims(
       c,
       provider,
-      claims([#("nbf", json.int(ffi.now_seconds() + 3600))]),
+      claims([#("nbf", json.int(system_ffi.now_seconds() + 3600))]),
       "n",
     )
 }
@@ -178,7 +179,7 @@ pub fn redirect_uri_test() {
 pub fn provider_failures_are_remembered_test() {
   // while the provider is down, requests fail at once instead of each one
   // trying (and waiting for) it again
-  ffi.ets_new(oidc_provider.table)
+  ets_ffi.ets_new(oidc_provider.table)
   let #(port, counter) = counting_server()
   let issuer = "http://127.0.0.1:" <> int.to_string(port)
   let assert Error(_) = oidc_provider.discover_issuer(issuer)
@@ -203,7 +204,8 @@ fn accepted(counter: Counter) -> Int
 /// (up to a day past its hour), and drops it once it is too old for that.
 pub fn purge_keeps_the_metadata_an_outage_falls_back_on_test() {
   let _ = support.boot(config.default())
-  let down = "http://127.0.0.1:1/purge-" <> int.to_string(ffi.now_micros())
+  let down =
+    "http://127.0.0.1:1/purge-" <> int.to_string(system_ffi.now_micros())
   let provider =
     oidc_provider.Provider(
       issuer: down,
@@ -212,29 +214,30 @@ pub fn purge_keeps_the_metadata_an_outage_falls_back_on_test() {
       jwks_uri: down <> "/jwks",
       end_session_endpoint: "",
     )
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   // fetched two hours ago: expired an hour ago, still a fallback
-  ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
+  ets_ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
     now - 3600,
     #(now - 7200, provider),
   ))
   // fetched over a day ago: no longer one
   let old = down <> "/old"
-  ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
+  ets_ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
     now - 90_000,
     #(now - 93_600, provider),
   ))
   let _ = oidc.purge_expired()
   assert oidc_provider.discover_issuer(down) == Ok(provider)
   let gone: Result(#(Int, #(Int, oidc_provider.Provider)), Nil) =
-    ffi.ets_get(oidc_provider.table, "provider:" <> old)
+    ets_ffi.ets_get(oidc_provider.table, "provider:" <> old)
   assert gone == Error(Nil)
 }
 
 pub fn provider_outage_uses_the_last_good_metadata_test() {
   // the application owns the cache table
   let _ = support.boot(config.default())
-  let down = "http://127.0.0.1:1/outage-" <> int.to_string(ffi.now_micros())
+  let down =
+    "http://127.0.0.1:1/outage-" <> int.to_string(system_ffi.now_micros())
   let provider =
     oidc_provider.Provider(
       issuer: down,
@@ -243,15 +246,15 @@ pub fn provider_outage_uses_the_last_good_metadata_test() {
       jwks_uri: down <> "/jwks",
       end_session_endpoint: "",
     )
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   // fetched two hours ago: expired an hour ago
-  ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
+  ets_ffi.ets_put(oidc_provider.table, "provider:" <> down, #(
     now - 3600,
     #(now - 7200, provider),
   ))
   assert oidc_provider.discover_issuer(down) == Ok(provider)
   let #(jwks, key) = support.keypair()
-  ffi.ets_put(oidc_provider.table, "jwks:" <> down <> "/jwks", #(
+  ets_ffi.ets_put(oidc_provider.table, "jwks:" <> down <> "/jwks", #(
     now - 3600,
     #(now - 7200, jwks),
   ))
@@ -264,11 +267,11 @@ pub fn provider_outage_uses_the_last_good_metadata_test() {
   // the failed fetch is remembered: a forced refresh (a token with an
   // unknown key) does not fetch again at once
   let failed: Result(#(Int, String), Nil) =
-    ffi.ets_get(oidc_provider.table, "failed:jwks:" <> down <> "/jwks")
+    ets_ffi.ets_get(oidc_provider.table, "failed:jwks:" <> down <> "/jwks")
   assert result.is_ok(failed)
   // fetched over a day ago: gone
   let old = down <> "/old"
-  ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
+  ets_ffi.ets_put(oidc_provider.table, "provider:" <> old, #(
     now - 90_000,
     #(now - 93_600, provider),
   ))
@@ -277,7 +280,7 @@ pub fn provider_outage_uses_the_last_good_metadata_test() {
 
 /// OAuth metadata goes before the issuer path; the port must survive too.
 pub fn oauth_discovery_with_issuer_paths_test() {
-  ffi.ets_new(oidc_provider.table)
+  ets_ffi.ets_new(oidc_provider.table)
   list.each(["", "/", "/tenant", "/tenant/nested", "/tenant/nested/"], fn(path) {
     let #(issuer, _) = support.start_fake_authorization_server_at(path)
     let assert Ok(discovered) = oidc_provider.discover_issuer(issuer)

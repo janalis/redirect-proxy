@@ -30,7 +30,8 @@ import gleam/result
 import gleam/set
 import gleam/string
 import redirect_proxy/audit
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/id
 import redirect_proxy/log
@@ -38,7 +39,7 @@ import redirect_proxy/matcher
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store/audit_entries
-import redirect_proxy/store/call.{call, read}
+import redirect_proxy/store/call.{call, read, rescue_store_timeout}
 import redirect_proxy/store/checker
 import redirect_proxy/store/commit
 import redirect_proxy/store/file as store_file
@@ -64,7 +65,7 @@ const start_lock_timeout = 15_000
 
 /// How long callers wait for the store. Mutations queue behind each other and
 /// each one may wait `state.lock_timeout` for the file lock, then rebuild the
-/// matcher. A caller that stops waiting raises `ffi.store_timeout` (see
+/// matcher. A caller that stops waiting raises `call.store_timeout` (see
 /// `or_unavailable`), and its change is skipped unless the store had begun it.
 const timeout = 30_000
 
@@ -72,7 +73,7 @@ const timeout = 30_000
 /// was busy, with changes queued or waiting for the file lock another process
 /// holds.
 pub fn or_unavailable(run: fn() -> a, unavailable: fn() -> a) -> a {
-  ffi.rescue_store_timeout(run, unavailable)
+  rescue_store_timeout(run, unavailable)
 }
 
 pub type Settings {
@@ -257,19 +258,22 @@ pub fn start(
     checker.start(settings.rules_path, settings.ignore_trailing_slash, fn() {
       all(subject)
     })
-    let started = ffi.monotonic_micros()
-    let before = #(ffi.now_seconds(), ffi.file_stamp(settings.rules_path))
+    let started = system_ffi.monotonic_micros()
+    let before = #(
+      system_ffi.now_seconds(),
+      file_ffi.file_stamp(settings.rules_path),
+    )
     use state <- result.try(
       case
         store_file.load_locked(
           config.target.files,
           store_file.FirstStart,
-          ffi.tunable("start_lock_timeout", start_lock_timeout),
+          file_ffi.tunable("start_lock_timeout", start_lock_timeout),
         )
       {
         Ok(#(rules, fingerprint)) -> {
           commit.loaded(config.target, rules, fingerprint, checker.Problems)
-          metrics.reloaded(ffi.monotonic_micros() - started)
+          metrics.reloaded(system_ffi.monotonic_micros() - started)
           log.info(
             "loaded "
             <> int.to_string(list.length(rules))
@@ -404,9 +408,9 @@ pub fn import_into_file(
   )
   let target = target(settings)
   let locked =
-    ffi.with_file_lock_detailed(
+    file_ffi.with_file_lock_detailed(
       settings.rules_path,
-      ffi.tunable("start_lock_timeout", start_lock_timeout),
+      file_ffi.tunable("start_lock_timeout", start_lock_timeout),
       fn() {
         use #(existing, before) <- result.try(
           store_file.load_failing(target.files, store_file.FirstStart)
@@ -459,8 +463,8 @@ pub fn import_into_file(
     )
   case locked {
     Ok(outcome) -> outcome
-    Error(ffi.Held(reason)) -> Error(Busy(reason))
-    Error(ffi.CannotCreate(reason)) -> Error(Storage(reason))
+    Error(file_ffi.Held(reason)) -> Error(Busy(reason))
+    Error(file_ffi.CannotCreate(reason)) -> Error(Storage(reason))
   }
 }
 
@@ -633,7 +637,7 @@ fn create_rule(
   input: Rule,
   actor_name: String,
 ) -> Result(#(Rule, List(Rule), String), ChangeError) {
-  let now = ffi.now_rfc3339()
+  let now = system_ffi.now_rfc3339()
   let new_id = case string.trim(input.id) {
     "" -> id.uuid()
     given -> given
@@ -683,7 +687,7 @@ fn update_rule(
     rule.Rule(
       ..input,
       created_at: existing.created_at,
-      updated_at: ffi.now_rfc3339(),
+      updated_at: system_ffi.now_rfc3339(),
       updated_by: actor_name,
     )
   use valid <- result.try(rule.validate(candidate) |> result.map_error(Invalid))
@@ -834,7 +838,7 @@ fn bulk_change(
       ]),
     ),
   )
-  let now = ffi.now_rfc3339()
+  let now = system_ffi.now_rfc3339()
   let change = fn(r: Rule, enabled: Bool) {
     case set.contains(wanted, r.id) && r.enabled != enabled {
       True -> rule.Rule(..r, enabled:, updated_at: now, updated_by: actor_name)

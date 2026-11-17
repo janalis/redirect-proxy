@@ -6,7 +6,6 @@ import redirect_proxy/app
 import redirect_proxy/clients
 import redirect_proxy/config
 import redirect_proxy/config/loader as config_loader
-import redirect_proxy/ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/rule
@@ -183,10 +182,10 @@ pub fn rules_import_while_locked_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/data")
   let lock = dir <> "/data/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 server@host\n")
-  ffi.set_tunable("start_lock_timeout", 100)
+  support.set_tunable("start_lock_timeout", 100)
   let outcome =
     redirect_proxy.run(["rules", "import", import_file, "--config", config_path])
-  ffi.clear_tunable("start_lock_timeout")
+  support.clear_tunable("start_lock_timeout")
   let assert Ok(Nil) = simplifile.delete(lock)
   let assert Error(message) = outcome
   assert string.starts_with(

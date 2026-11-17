@@ -8,7 +8,8 @@
 
 import gleam/http/request
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/metrics
 import wisp.{type Request, type Response}
 
@@ -23,7 +24,7 @@ pub fn respond_on(req: Request, token: String, listen: String) -> Response {
 /// Whether a listener bound to `listen` serves the metrics without a token:
 /// only on the loopback interface.
 pub fn served_without_token(listen: String) -> Bool {
-  ffi.is_loopback_address(listen)
+  net_ffi.is_loopback_address(listen)
 }
 
 pub fn respond(req: Request, token: String) -> Response {
@@ -51,7 +52,9 @@ pub fn authorized(req: request.Request(body), token: String) -> Bool {
           case string.split_once(string.trim(value), " ") {
             Ok(#(scheme, given)) ->
               string.lowercase(scheme) == "bearer"
-              && ffi.secure_compare(<<string.trim(given):utf8>>, <<token:utf8>>)
+              && crypto_ffi.secure_compare(<<string.trim(given):utf8>>, <<
+                token:utf8,
+              >>)
             Error(Nil) -> False
           }
         Error(Nil) -> False

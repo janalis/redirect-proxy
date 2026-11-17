@@ -4,7 +4,7 @@
 
 import gleam/bool
 import gleam/erlang/process.{type Subject}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
@@ -41,24 +41,28 @@ pub fn run(
     state
   })
   let outcome =
-    ffi.with_file_lock_detailed(state.config.rules_path, lock_timeout, fn() {
-      // the lock may have taken long enough for the caller to give up
-      use <- bool.lazy_guard(abandoned(reply), fn() {
-        log.warning("a change was skipped: its caller stopped waiting for it")
-        #(state, Error(errors.busy("the caller stopped waiting")))
-      })
-      case reload.refresh(state) {
-        Error(reason) -> #(state, Error(errors.storage(reason)))
-        Ok(state) ->
-          case change(state) {
-            Ok(#(value, rules, fingerprint)) -> {
-              let changed = in_effect(state, rules, fingerprint)
-              #(save_hits_if_removed(state.rules, changed), Ok(value))
+    file_ffi.with_file_lock_detailed(
+      state.config.rules_path,
+      lock_timeout,
+      fn() {
+        // the lock may have taken long enough for the caller to give up
+        use <- bool.lazy_guard(abandoned(reply), fn() {
+          log.warning("a change was skipped: its caller stopped waiting for it")
+          #(state, Error(errors.busy("the caller stopped waiting")))
+        })
+        case reload.refresh(state) {
+          Error(reason) -> #(state, Error(errors.storage(reason)))
+          Ok(state) ->
+            case change(state) {
+              Ok(#(value, rules, fingerprint)) -> {
+                let changed = in_effect(state, rules, fingerprint)
+                #(save_hits_if_removed(state.rules, changed), Ok(value))
+              }
+              Error(error) -> #(state, Error(error))
             }
-            Error(error) -> #(state, Error(error))
-          }
-      }
-    })
+        }
+      },
+    )
   case outcome {
     Ok(#(state, result)) -> {
       process.send(reply, result)
@@ -70,8 +74,8 @@ pub fn run(
       process.send(
         reply,
         Error(case failure {
-          ffi.Held(reason) -> errors.busy(reason)
-          ffi.CannotCreate(reason) -> errors.storage(reason)
+          file_ffi.Held(reason) -> errors.busy(reason)
+          file_ffi.CannotCreate(reason) -> errors.storage(reason)
         }),
       )
       state

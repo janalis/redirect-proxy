@@ -13,7 +13,10 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import redirect_proxy/config.{type OidcConfig}
-import redirect_proxy/ffi
+import redirect_proxy/ffi/crypto as crypto_ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 
@@ -39,7 +42,7 @@ pub fn discover(cfg: OidcConfig) -> Result(Provider, String) {
 
 /// The provider metadata in the cache, however old, without fetching it.
 pub fn cached(issuer: String) -> Result(Provider, Nil) {
-  case ffi.ets_get(table, "provider:" <> issuer) {
+  case ets_ffi.ets_get(table, "provider:" <> issuer) {
     Ok(#(_, #(_, provider))) -> Ok(provider)
     Error(Nil) -> Error(Nil)
   }
@@ -49,8 +52,8 @@ pub fn cached(issuer: String) -> Result(Provider, Nil) {
 /// provider or OAuth 2.0 authorization server (RFC 8414).
 pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
   let cached = fn() {
-    let now = ffi.now_seconds()
-    case ffi.ets_get(table, "provider:" <> issuer) {
+    let now = system_ffi.now_seconds()
+    case ets_ffi.ets_get(table, "provider:" <> issuer) {
       Ok(#(expires_at, #(_, provider))) if expires_at > now -> Ok(provider)
       _ -> Error(Nil)
     }
@@ -75,14 +78,14 @@ pub fn discover_issuer(issuer: String) -> Result(Provider, String) {
 /// The metadata fetched before, while the provider cannot be reached (up to
 /// `stale_ttl` past its hour), retried in `failure_ttl` seconds.
 fn stale_provider(issuer: String, reason: String) -> Result(Provider, String) {
-  let now = ffi.now_seconds()
-  case ffi.ets_get(table, "provider:" <> issuer) {
+  let now = system_ffi.now_seconds()
+  case ets_ffi.ets_get(table, "provider:" <> issuer) {
     Ok(#(_, #(fetched_at, provider)))
       if now - fetched_at < cache_ttl + stale_ttl
     -> {
       metrics.incr(metrics.IdpFetchFailures)
       log.warning(reason <> "; using the provider metadata fetched before")
-      ffi.ets_put(table, "provider:" <> issuer, #(
+      ets_ffi.ets_put(table, "provider:" <> issuer, #(
         now + failure_ttl,
         #(fetched_at, provider),
       ))
@@ -104,8 +107,8 @@ fn guarded_fetch(
   fetch: fn() -> Result(a, String),
 ) -> Result(a, String) {
   let recent_failure = fn() {
-    let now = ffi.now_seconds()
-    case ffi.ets_get(table, "failed:" <> key) {
+    let now = system_ffi.now_seconds()
+    case ets_ffi.ets_get(table, "failed:" <> key) {
       Ok(#(expires_at, reason)) if expires_at > now -> Ok(reason)
       _ -> Error(Nil)
     }
@@ -113,7 +116,7 @@ fn guarded_fetch(
   case recent_failure() {
     Ok(reason) -> Error(reason)
     Error(Nil) -> {
-      use <- ffi.with_lock("oidc-fetch:" <> key)
+      use <- file_ffi.with_lock("oidc-fetch:" <> key)
       case recent_failure() {
         Ok(reason) -> Error(reason)
         Error(Nil) ->
@@ -121,8 +124,8 @@ fn guarded_fetch(
             Ok(value) -> Ok(value)
             Error(reason) -> {
               metrics.incr(metrics.IdpFetchFailures)
-              ffi.ets_put(table, "failed:" <> key, #(
-                ffi.now_seconds() + failure_ttl,
+              ets_ffi.ets_put(table, "failed:" <> key, #(
+                system_ffi.now_seconds() + failure_ttl,
                 reason,
               ))
               Error(reason)
@@ -205,8 +208,8 @@ fn fetch_provider(configured_issuer: String) -> Result(Provider, String) {
       <> configured_issuer,
     ),
   )
-  let now = ffi.now_seconds()
-  ffi.ets_put(table, "provider:" <> configured_issuer, #(
+  let now = system_ffi.now_seconds()
+  ets_ffi.ets_put(table, "provider:" <> configured_issuer, #(
     now + cache_ttl,
     #(now, provider),
   ))
@@ -223,14 +226,14 @@ const stale_ttl = 86_400
 /// the metadata and keys fetched before for that long. Returns the number
 /// of rows deleted.
 pub fn purge_expired(now: Int) -> Int {
-  ffi.ets_delete_older(table, now - stale_ttl)
+  ets_ffi.ets_delete_older(table, now - stale_ttl)
 }
 
 fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
   let key = "jwks:" <> provider.jwks_uri
   let cached = fn() {
-    let now = ffi.now_seconds()
-    case ffi.ets_get(table, key) {
+    let now = system_ffi.now_seconds()
+    case ets_ffi.ets_get(table, key) {
       Ok(#(expires_at, #(fetched_at, body))) -> {
         // A forced refresh (unknown signing key) is honoured at most once a
         // minute so that bogus tokens cannot make us hammer the provider.
@@ -253,14 +256,14 @@ fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
         case cached() {
           Ok(body) -> Ok(body)
           Error(Nil) -> {
-            let now = ffi.now_seconds()
+            let now = system_ffi.now_seconds()
             case http_get(provider.jwks_uri) |> result.try(check_jwks) {
               Ok(body) -> {
-                ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
+                ets_ffi.ets_put(table, key, #(now + cache_ttl, #(now, body)))
                 Ok(body)
               }
               Error(reason) ->
-                case ffi.ets_get(table, key) {
+                case ets_ffi.ets_get(table, key) {
                   Ok(#(_, #(fetched_at, body)))
                     if now - fetched_at < cache_ttl + stale_ttl
                   -> {
@@ -271,11 +274,11 @@ fn jwks(provider: Provider, refresh: Bool) -> Result(String, String) {
                     // try again in a while, not at every request: the
                     // stale keys answer until then, and a forced refresh
                     // (unknown key) fails at once instead of fetching
-                    ffi.ets_put(table, key, #(
+                    ets_ffi.ets_put(table, key, #(
                       now + failure_ttl,
                       #(fetched_at, body),
                     ))
-                    ffi.ets_put(table, "failed:" <> key, #(
+                    ets_ffi.ets_put(table, "failed:" <> key, #(
                       now + failure_ttl,
                       reason,
                     ))
@@ -309,11 +312,11 @@ pub fn verify_signature(
   token: String,
 ) -> Result(String, String) {
   use keys <- result.try(jwks(provider, False))
-  case ffi.jwt_verify(keys, token) {
+  case crypto_ffi.jwt_verify(keys, token) {
     Ok(claims) -> Ok(claims)
     Error(_) -> {
       use keys <- result.try(jwks(provider, True))
-      ffi.jwt_verify(keys, token)
+      crypto_ffi.jwt_verify(keys, token)
     }
   }
 }
@@ -339,7 +342,7 @@ fn http_get(url: String) -> Result(String, String) {
 pub fn dispatch(
   req: request.Request(String),
 ) -> Result(response.Response(String), String) {
-  ffi.rescue(fn() {
+  system_ffi.rescue(fn() {
     httpc.configure()
     |> httpc.timeout(10_000)
     |> httpc.dispatch(req)

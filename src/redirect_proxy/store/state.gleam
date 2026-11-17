@@ -4,7 +4,8 @@
 import gleam/list
 import gleam/option.{type Option, None}
 import gleam/set
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store/commit
 import redirect_proxy/store/file as store_file
@@ -40,15 +41,15 @@ pub type State {
     /// SHA-256 of the file content last read or written.
     fingerprint: String,
     /// The file's stamp at the last `Watch` tick.
-    stamp: ffi.FileStamp,
+    stamp: file_ffi.FileStamp,
     /// The write of the file (its stamp) the watcher last could not load,
     /// and the fingerprint of its content: reported once, not at every tick
     /// that reads it again, and tried again when the file is written again
     /// (or on `SIGHUP`).
-    rejected: Option(#(ffi.FileStamp, String)),
+    rejected: Option(#(file_ffi.FileStamp, String)),
     /// The write of the file the watcher last waited for the lock to load:
     /// said once.
-    busy: Option(ffi.FileStamp),
+    busy: Option(file_ffi.FileStamp),
     /// The stamp of the file the watcher last could not read, for the same
     /// reason.
     unreadable: String,
@@ -78,7 +79,7 @@ pub fn initial(
   config: Config,
   rules: List(Rule),
   fingerprint: String,
-  before: #(Int, ffi.FileStamp),
+  before: #(Int, file_ffi.FileStamp),
 ) -> State {
   let #(loaded_at, stamp) = before
   State(
@@ -89,7 +90,7 @@ pub fn initial(
     rejected: None,
     busy: None,
     unreadable: "",
-    hits_saved_at: ffi.now_seconds(),
+    hits_saved_at: system_ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
     checked_at: loaded_at,

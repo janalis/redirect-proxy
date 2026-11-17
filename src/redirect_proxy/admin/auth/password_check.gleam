@@ -8,7 +8,8 @@ import gleam/result
 import redirect_proxy/admin/web.{type Context, known_device, log_value} as _
 import redirect_proxy/audit
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/ratelimit
@@ -89,7 +90,7 @@ pub fn end_password_check(
 /// for a fraction of a second, and a burst of logins must not starve the
 /// redirect listener. `Error` when busy: answer 503.
 pub fn hashing_password(work: fn() -> a) -> Result(a, Nil) {
-  ratelimit.bounded("password", ffi.password_check_slots(), work)
+  ratelimit.bounded("password", ets_ffi.password_check_slots(), work)
 }
 
 pub fn record_password_check(
@@ -122,11 +123,11 @@ pub fn record_password_check(
 }
 
 fn login_pair_key(ip: String, username: String) -> String {
-  "login:" <> ffi.throttle_address(ip) <> " " <> username
+  "login:" <> net_ffi.throttle_address(ip) <> " " <> username
 }
 
 pub fn login_ip_key(ip: String) -> String {
-  "login-ip:" <> ffi.throttle_address(ip)
+  "login-ip:" <> net_ffi.throttle_address(ip)
 }
 
 /// The limits a login attempt is checked against. A browser where the

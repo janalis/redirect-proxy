@@ -7,7 +7,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/rule.{type Rule, Rule}
 import redirect_proxy/store
 import redirect_proxy/store/rules/listing
@@ -37,9 +37,9 @@ fn rules() -> List(Rule) {
 }
 
 fn time(label: String, f: fn() -> a) -> a {
-  let started = ffi.monotonic_micros()
+  let started = system_ffi.monotonic_micros()
   let result = f()
-  let ms = { ffi.monotonic_micros() - started } / 1000
+  let ms = { system_ffi.monotonic_micros() - started } / 1000
   io.println(label <> ": " <> int.to_string(ms) <> " ms")
   result
 }

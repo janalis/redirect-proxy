@@ -6,7 +6,8 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error
 import redirect_proxy/id
 import redirect_proxy/rule.{type Rule}
@@ -76,12 +77,12 @@ pub fn load_locked_or_busy(
   wait: Int,
 ) -> Result(#(List(Rule), String), LoadFailure) {
   case
-    ffi.with_file_lock_detailed(files.rules_path, wait, fn() {
+    file_ffi.with_file_lock_detailed(files.rules_path, wait, fn() {
       load_failing(files, mode)
     })
   {
-    Error(ffi.Held(message)) -> Error(LockHeld(message))
-    Error(ffi.CannotCreate(message)) -> Error(LockNotCreated(message))
+    Error(file_ffi.Held(message)) -> Error(LockHeld(message))
+    Error(file_ffi.CannotCreate(message)) -> Error(LockNotCreated(message))
     Ok(loaded) -> result.map_error(loaded, Content)
   }
 }
@@ -194,7 +195,7 @@ fn load_content(
 pub fn persist(files: Files, rules: List(Rule)) -> Result(String, String) {
   use Nil <- result.try(backup(files))
   let content = rule.file_to_string_cached(rules) <> "\n"
-  use Nil <- result.try(ffi.atomic_write(files.rules_path, content))
+  use Nil <- result.try(file_ffi.atomic_write(files.rules_path, content))
   Ok(fingerprint(bit_array.from_string(content)))
 }
 
@@ -208,10 +209,10 @@ fn backup(files: Files) -> Result(Nil, String) {
         simplifile.create_directory_all(files.backups_dir)
         |> result.map_error(simplifile.describe_error),
       )
-      let name = backup_name(files.backups_dir, ffi.now_millis())
+      let name = backup_name(files.backups_dir, system_ffi.now_millis())
       // with the permissions of the file it copies (e.g. not readable by
       // others), from its creation
-      use Nil <- result.try(ffi.copy_file_as(files.rules_path, name))
+      use Nil <- result.try(file_ffi.copy_file_as(files.rules_path, name))
       prune_backups(files)
       Ok(Nil)
     }

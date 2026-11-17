@@ -9,7 +9,7 @@ import redirect_proxy/config.{
   ApiOAuthConfig, Config, HeaderAuthConfig, ListenerLogConfig, LocalAuthConfig,
   LogConfig, OidcConfig, ServerConfig, StorageConfig,
 } as _
-import redirect_proxy/ffi
+import redirect_proxy/ffi/text as text_ffi
 import simplifile
 
 /// Integer and boolean overrides of `apply_env`. A value that does not parse
@@ -158,10 +158,10 @@ pub fn read_secret_file(path: String) -> Result(String, String) {
   case simplifile.read(path) {
     Ok(content) ->
       Ok(case string.ends_with(content, "\r\n") {
-        True -> ffi.byte_take(content, string.byte_size(content) - 2)
+        True -> text_ffi.byte_take(content, string.byte_size(content) - 2)
         False ->
           case string.ends_with(content, "\n") {
-            True -> ffi.byte_take(content, string.byte_size(content) - 1)
+            True -> text_ffi.byte_take(content, string.byte_size(content) - 1)
             False -> content
           }
       })

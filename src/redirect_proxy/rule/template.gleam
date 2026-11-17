@@ -6,7 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/text as text_ffi
 
 /// What a request gives to `${host}` and `${sub}` in targets.
 pub type RequestVars {
@@ -235,7 +235,7 @@ fn literal_authority(template: String) -> Bool {
     // a terminator itself, not a change by url_host, which also drops
     // user info (`https://a@b$1@example.com/` has no fixed host)
     Ok(after) -> {
-      let rest = drop_slashes(ffi.byte_drop(literal, after))
+      let rest = drop_slashes(text_ffi.byte_drop(literal, after))
       list.any(["/", "\\", "?", "#"], string.contains(rest, _))
     }
     Error(Nil) -> False
@@ -329,7 +329,7 @@ pub fn guard_location(
           case string.ends_with(host, suffix) {
             True -> {
               let sub = string.drop_end(host, string.length(suffix))
-              case ffi.is_host_name(sub) {
+              case text_ffi.is_host_name(sub) {
                 True -> Ok(location)
                 False -> Error(Nil)
               }
@@ -350,7 +350,7 @@ fn drop_slashes(text: String) -> String {
 }
 
 fn strip_url_whitespace(url: String) -> String {
-  ffi.strip_url_whitespace(url)
+  text_ffi.strip_url_whitespace(url)
 }
 
 /// The host (with port, without user info), lower-cased, of an absolute or
@@ -359,17 +359,17 @@ fn strip_url_whitespace(url: String) -> String {
 /// path.
 fn authority(url: String) -> Result(String, Nil) {
   // only the scheme is lowered here (ASCII): the host is lowered below,
-  // with Unicode case mapping if it is not ASCII (`ffi.lowercase_host`)
+  // with Unicode case mapping if it is not ASCII (`text_ffi.lowercase_host`)
   use after <- result.map(authority_start(url))
-  let rest = ffi.byte_drop(url, after)
-  rest |> drop_slashes |> ffi.url_host |> ffi.lowercase_host
+  let rest = text_ffi.byte_drop(url, after)
+  rest |> drop_slashes |> text_ffi.url_host |> text_ffi.lowercase_host
 }
 
 /// Where the authority of an absolute (http, https) or protocol-relative
 /// URL starts, in bytes (before extra slashes); `Error(Nil)` for a path.
 fn authority_start(url: String) -> Result(Int, Nil) {
   // only the scheme is lowered here (ASCII)
-  case ffi.lowercase_ascii(ffi.byte_take(url, 8)) {
+  case text_ffi.lowercase_ascii(text_ffi.byte_take(url, 8)) {
     "http://" <> _ | "http:\\\\" <> _ -> Ok(7)
     "https://" <> _ | "https:\\\\" <> _ -> Ok(8)
     "//" <> _ | "/\\" <> _ | "\\/" <> _ | "\\\\" <> _ -> Ok(2)

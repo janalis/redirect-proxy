@@ -1,7 +1,7 @@
 //// `/healthz` and `/readyz`, answered alike by the admin listener and the
 //// API's own listener.
 
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import wisp.{type Response}
 
 /// `/healthz`: the process is up.
@@ -12,7 +12,7 @@ pub fn live() -> Response {
 /// `/readyz`: 503 while draining before a stop, so that load balancers move
 /// away.
 pub fn ready() -> Response {
-  case ffi.draining() {
+  case system_ffi.draining() {
     True -> plain(503, "draining")
     False -> plain(200, "ready")
   }

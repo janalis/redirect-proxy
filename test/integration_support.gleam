@@ -18,7 +18,8 @@ import gleam/uri
 import mist
 import redirect_proxy/app
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/snapshot as snapshot_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/password
 import redirect_proxy/role
 import redirect_proxy/users
@@ -224,7 +225,7 @@ pub fn start_fake_idp(email: String) -> String {
   let handler = fn(req: request.Request(mist.Connection)) {
     let issuer =
       "http://127.0.0.1:"
-      <> int.to_string(ffi.snapshot_get(port_key) |> result.unwrap(0))
+      <> int.to_string(snapshot_ffi.snapshot_get(port_key) |> result.unwrap(0))
     let json_response = fn(body) {
       response.new(200)
       |> response.set_header("content-type", "application/json")
@@ -276,8 +277,8 @@ pub fn start_fake_idp(email: String) -> String {
                     #("iss", json.string(issuer)),
                     #("sub", json.string("user-123")),
                     #("aud", json.string("redirect-proxy")),
-                    #("exp", json.int(ffi.now_seconds() + 300)),
-                    #("iat", json.int(ffi.now_seconds())),
+                    #("exp", json.int(system_ffi.now_seconds() + 300)),
+                    #("iat", json.int(system_ffi.now_seconds())),
                     #("nonce", json.string(nonce)),
                     #("email", json.string(email)),
                     #("email_verified", json.bool(True)),
@@ -301,7 +302,7 @@ pub fn start_fake_idp(email: String) -> String {
     |> mist.bind("127.0.0.1")
     |> mist.port(0)
     |> mist.after_start(fn(port, _, _) {
-      ffi.snapshot_put(port_key, port)
+      snapshot_ffi.snapshot_put(port_key, port)
       process.send(ready, port)
     })
     |> mist.start

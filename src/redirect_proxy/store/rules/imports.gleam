@@ -6,7 +6,7 @@ import gleam/list
 import gleam/result
 import gleam/set
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/id
 import redirect_proxy/matcher
@@ -19,7 +19,7 @@ pub fn prepare_import(
   incoming: List(Rule),
   actor_name: String,
 ) -> Result(List(Rule), List(FieldError)) {
-  let now = ffi.now_rfc3339()
+  let now = system_ffi.now_rfc3339()
   incoming
   |> list.map(fn(r) {
     rule.Rule(

@@ -3,7 +3,10 @@
 import gleam/int
 import gleam/list
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/regex as regex_ffi
+import redirect_proxy/ffi/snapshot as snapshot_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/listener.{type Listener}
 import redirect_proxy/matcher
 import redirect_proxy/snapshot
@@ -91,24 +94,28 @@ fn index(metric: Metric) -> Int {
 pub fn init() -> Nil {
   fit(key, current(), new_counters)
   fit(latency_key, latency(), new_latency)
-  ffi.regex_limit_init()
+  regex_ffi.regex_limit_init()
 }
 
-fn fit(key: String, current: ffi.Counters, new: fn() -> ffi.Counters) -> Nil {
+fn fit(
+  key: String,
+  current: ets_ffi.Counters,
+  new: fn() -> ets_ffi.Counters,
+) -> Nil {
   let fresh = new()
-  case ffi.counter_size(current) < ffi.counter_size(fresh) {
-    True -> ffi.snapshot_put(key, fresh)
+  case ets_ffi.counter_size(current) < ets_ffi.counter_size(fresh) {
+    True -> snapshot_ffi.snapshot_put(key, fresh)
     False -> Nil
   }
 }
 
-fn latency() -> ffi.Counters {
-  ffi.snapshot_or_init(latency_key, new_latency)
+fn latency() -> ets_ffi.Counters {
+  snapshot_ffi.snapshot_or_init(latency_key, new_latency)
 }
 
-fn new_latency() -> ffi.Counters {
+fn new_latency() -> ets_ffi.Counters {
   // one more series for the forwarded requests
-  ffi.counter_new(latency_slots * { list.length(listener.all) + 1 })
+  ets_ffi.counter_new(latency_slots * { list.length(listener.all) + 1 })
 }
 
 fn listener_offset(l: Listener) -> Int {
@@ -135,9 +142,9 @@ pub fn observe_upstream(duration_us: Int) -> Nil {
 
 fn observe_at(base: Int, duration_us: Int) -> Nil {
   let c = latency()
-  ffi.counter_add(c, base + bucket(duration_us), 1)
-  ffi.counter_add(c, base + latency_slots - 1, duration_us)
-  ffi.counter_add(c, base + latency_slots, 1)
+  ets_ffi.counter_add(c, base + bucket(duration_us), 1)
+  ets_ffi.counter_add(c, base + latency_slots - 1, duration_us)
+  ets_ffi.counter_add(c, base + latency_slots, 1)
 }
 
 /// The slot of a duration's bucket (1 to 18, `buckets_us` then +Inf), by
@@ -172,7 +179,7 @@ pub fn response(status: Int) -> Nil {
 }
 
 /// `response` in counters from `current`.
-pub fn count_response(counts: ffi.Counters, status: Int) -> Nil {
+pub fn count_response(counts: ets_ffi.Counters, status: Int) -> Nil {
   case status / 100 {
     2 -> count(counts, Responses2xx)
     3 -> count(counts, Responses3xx)
@@ -184,19 +191,23 @@ pub fn count_response(counts: ffi.Counters, status: Int) -> Nil {
 
 /// Records a successful load of the redirections file.
 pub fn reloaded(duration_us: Int) -> Nil {
-  ffi.counter_put(current(), index(LastReloadTimestamp), ffi.now_seconds())
-  ffi.counter_put(current(), index(ReloadDurationMicros), duration_us)
+  ets_ffi.counter_put(
+    current(),
+    index(LastReloadTimestamp),
+    system_ffi.now_seconds(),
+  )
+  ets_ffi.counter_put(current(), index(ReloadDurationMicros), duration_us)
 }
 
 /// The counters, for a caller counting several metrics (the redirect
 /// listener, on every request): one read of the published counters
 /// instead of one per metric.
-pub fn current() -> ffi.Counters {
-  ffi.snapshot_or_init(key, new_counters)
+pub fn current() -> ets_ffi.Counters {
+  snapshot_ffi.snapshot_or_init(key, new_counters)
 }
 
-fn new_counters() -> ffi.Counters {
-  ffi.counter_new(23)
+fn new_counters() -> ets_ffi.Counters {
+  ets_ffi.counter_new(23)
 }
 
 pub fn incr(metric: Metric) -> Nil {
@@ -204,12 +215,12 @@ pub fn incr(metric: Metric) -> Nil {
 }
 
 /// `incr` in counters from `current`.
-pub fn count(counts: ffi.Counters, metric: Metric) -> Nil {
-  ffi.counter_add(counts, index(metric), 1)
+pub fn count(counts: ets_ffi.Counters, metric: Metric) -> Nil {
+  ets_ffi.counter_add(counts, index(metric), 1)
 }
 
 pub fn get(metric: Metric) -> Int {
-  ffi.counter_get(current(), index(metric))
+  ets_ffi.counter_get(current(), index(metric))
 }
 
 pub fn hits(rule_id: String) -> Int {
@@ -303,7 +314,7 @@ fn upstream_histogram() -> String {
 }
 
 fn labelled_series(
-  c: ffi.Counters,
+  c: ets_ffi.Counters,
   name: String,
   base: Int,
   label: String,
@@ -314,7 +325,7 @@ fn labelled_series(
 /// The bucket, sum and count lines of one series; `label` is empty or ends
 /// with a comma.
 fn series_lines(
-  c: ffi.Counters,
+  c: ets_ffi.Counters,
   name: String,
   base: Int,
   label: String,
@@ -323,7 +334,7 @@ fn series_lines(
   let #(_, lines) =
     list.index_fold(bounds, #(0, []), fn(acc, bound, i) {
       let #(total, lines) = acc
-      let total = total + ffi.counter_get(c, base + i + 1)
+      let total = total + ets_ffi.counter_get(c, base + i + 1)
       let line =
         name
         <> "_bucket{"
@@ -345,12 +356,12 @@ fn series_lines(
         <> "_sum"
         <> plain
         <> " "
-        <> seconds(ffi.counter_get(c, base + latency_slots - 1)),
+        <> seconds(ets_ffi.counter_get(c, base + latency_slots - 1)),
       name
         <> "_count"
         <> plain
         <> " "
-        <> int.to_string(ffi.counter_get(c, base + latency_slots)),
+        <> int.to_string(ets_ffi.counter_get(c, base + latency_slots)),
     ],
   ])
   |> string.join("\n")
@@ -471,7 +482,7 @@ pub fn render_prometheus() -> String {
       "redirect_proxy_regex_limit_exceeded_total",
       "Regex runs stopped by the backtracking budget (counted as no match).",
       "counter",
-      ffi.regex_limit_count(),
+      regex_ffi.regex_limit_count(),
     ),
     line(
       "redirect_proxy_rules",
@@ -515,25 +526,25 @@ pub fn render_prometheus() -> String {
     histogram(),
     upstream_histogram(),
     "# HELP redirect_proxy_build_info Version of the running server.\n# TYPE redirect_proxy_build_info gauge\nredirect_proxy_build_info{version=\""
-      <> ffi.app_version()
+      <> system_ffi.app_version()
       <> "\"} 1\n",
     line(
       "process_start_time_seconds",
       "Start time of the process since the epoch, in seconds.",
       "gauge",
-      ffi.start_time_seconds(),
+      system_ffi.start_time_seconds(),
     ),
     line(
       "redirect_proxy_memory_bytes",
       "Memory allocated by the Erlang VM.",
       "gauge",
-      ffi.memory_bytes(),
+      system_ffi.memory_bytes(),
     ),
     line(
       "redirect_proxy_processes",
       "Number of Erlang processes.",
       "gauge",
-      ffi.process_count(),
+      system_ffi.process_count(),
     ),
   ]
   |> list.map(string.trim_end)

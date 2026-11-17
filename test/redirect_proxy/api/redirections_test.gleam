@@ -16,7 +16,7 @@ import gleam/uri
 import integration_support
 import redirect_proxy/api/rule_json as api_rule_json
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/rule
 import redirect_proxy/scope
 import simplifile
@@ -247,7 +247,7 @@ pub fn import_export_reload_and_tester_test() {
   assert resp.status == 400
 
   let assert Ok(Nil) =
-    ffi.atomic_write(
+    file_ffi.atomic_write(
       env.dir <> "/redirects.json",
       "[{\"source\":\"/disk\",\"target\":\"/3\"}]",
     )
@@ -256,7 +256,8 @@ pub fn import_export_reload_and_tester_test() {
   assert field(resp.body, ["rules"], decode.int) == 1
   assert support.send(Get, env.redirect <> "/disk", [], "").status == 301
   // as the admin says it
-  let assert Ok(Nil) = ffi.atomic_write(env.dir <> "/redirects.json", "[{]")
+  let assert Ok(Nil) =
+    file_ffi.atomic_write(env.dir <> "/redirects.json", "[{]")
   let resp = api(env, Post, "/api/reload", token, "")
   assert resp.status == 422
   assert string.starts_with(
@@ -1094,7 +1095,7 @@ pub fn a_busy_store_answers_503_test() {
   let token = access_token(env, [scope.Write])
   let lock = env.dir <> "/redirects.json.lock"
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
-  ffi.set_tunable("store_call_timeout", 200)
+  support.set_tunable("store_call_timeout", 200)
   let body = "{\"source\":\"/busy\",\"target\":\"/t\"}"
   let assert [_, port] = string.split(env.api, "127.0.0.1:")
   let assert Ok(port) = int.parse(port)
@@ -1110,7 +1111,7 @@ pub fn a_busy_store_answers_503_test() {
         body:utf8,
       >>,
     ])
-  ffi.clear_tunable("store_call_timeout")
+  support.clear_tunable("store_call_timeout")
   let assert Ok(Nil) = simplifile.delete(lock)
 
   let assert Ok(raw) = bit_array.to_string(raw)

@@ -24,7 +24,7 @@ import redirect_proxy/admin/web.{
 } as _
 import redirect_proxy/audit
 import redirect_proxy/config
-import redirect_proxy/ffi
+import redirect_proxy/ffi/net as net_ffi
 import redirect_proxy/log
 import redirect_proxy/metrics
 import redirect_proxy/password
@@ -439,7 +439,7 @@ fn after_logout(ctx: Context, s: Session) -> String {
 }
 
 fn sso_start_key(ctx: Context) -> String {
-  "sso-start-ip:" <> ffi.throttle_address(ctx.client_ip)
+  "sso-start-ip:" <> net_ffi.throttle_address(ctx.client_ip)
 }
 
 pub fn oidc_start(req: Request, ctx: Context) -> Response {
@@ -497,7 +497,8 @@ fn navigation_only(req: Request, next: fn() -> Response) -> Response {
 pub fn oidc_callback(req: Request, ctx: Context) -> Response {
   use <- bool.lazy_guard(!ctx.config.oidc.enabled, fn() { wisp.not_found() })
   use <- navigation_only(req)
-  let failure_key = "sso-callback-ip:" <> ffi.throttle_address(ctx.client_ip)
+  let failure_key =
+    "sso-callback-ip:" <> net_ffi.throttle_address(ctx.client_ip)
   use <- sso_throttle(ctx, failure_key, sso_callback_ip_limit)
   let browser_flow =
     wisp.get_cookie(req, oidc_state_cookie_name(req, ctx), wisp.Signed)
@@ -631,7 +632,7 @@ fn sso_throttle(
 /// Runs `write` (an audit entry about throttling) at most once per address
 /// while it stays throttled.
 fn audit_once_per_window(client_ip: String, seconds: Int, write: fn() -> Nil) {
-  let key = "throttle-audited:" <> ffi.throttle_address(client_ip)
+  let key = "throttle-audited:" <> net_ffi.throttle_address(client_ip)
   case ratelimit.is_blocked(key, 1) {
     True -> Nil
     False -> {

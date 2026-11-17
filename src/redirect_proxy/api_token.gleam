@@ -6,7 +6,8 @@
 import gleam/bit_array
 import gleam/crypto
 import gleam/list
-import redirect_proxy/ffi
+import redirect_proxy/ffi/ets as ets_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/scope.{type Scope}
 
@@ -26,7 +27,7 @@ pub type Grant {
 }
 
 pub fn init() -> Nil {
-  ffi.ets_new(table)
+  ets_ffi.ets_new(table)
 }
 
 pub fn issue(
@@ -36,8 +37,8 @@ pub fn issue(
   ttl: Int,
 ) -> String {
   let token = prefix <> id.token(32)
-  let expires_at = ffi.now_seconds() + ttl
-  ffi.ets_put(table, key(token), #(
+  let expires_at = system_ffi.now_seconds() + ttl
+  ets_ffi.ets_put(table, key(token), #(
     expires_at,
     Grant(client_id:, scopes:, expires_at:, secret_hash:),
   ))
@@ -45,12 +46,12 @@ pub fn issue(
 }
 
 pub fn lookup(token: String) -> Result(Grant, Nil) {
-  case ffi.ets_get(table, key(token)) {
+  case ets_ffi.ets_get(table, key(token)) {
     Ok(#(expires_at, grant)) ->
-      case expires_at > ffi.now_seconds() {
+      case expires_at > system_ffi.now_seconds() {
         True -> Ok(grant)
         False -> {
-          ffi.ets_delete(table, key(token))
+          ets_ffi.ets_delete(table, key(token))
           Error(Nil)
         }
       }
@@ -60,18 +61,18 @@ pub fn lookup(token: String) -> Result(Grant, Nil) {
 
 /// Revokes every token of a client (secret rotated or client deleted).
 pub fn revoke_client(client_id: String) -> Nil {
-  let entries: List(#(String, #(Int, Grant))) = ffi.ets_to_list(table)
+  let entries: List(#(String, #(Int, Grant))) = ets_ffi.ets_to_list(table)
   list.each(entries, fn(entry) {
     let #(k, #(_, grant)) = entry
     case grant.client_id == client_id {
-      True -> ffi.ets_delete(table, k)
+      True -> ets_ffi.ets_delete(table, k)
       False -> Nil
     }
   })
 }
 
 pub fn purge_expired() -> Int {
-  ffi.ets_delete_older(table, ffi.now_seconds())
+  ets_ffi.ets_delete_older(table, system_ffi.now_seconds())
 }
 
 fn key(token: String) -> String {

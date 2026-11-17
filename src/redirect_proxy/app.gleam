@@ -28,7 +28,8 @@ import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/validate as config_validate
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/id
 import redirect_proxy/listener
 import redirect_proxy/log
@@ -259,8 +260,8 @@ pub fn start(cfg: Config) -> Result(Running, String) {
     False -> 0
   }
 
-  ffi.on_sighup(fn() { store.reload_async(store_subject) })
-  ffi.on_sigterm_drain(cfg.server.shutdown_grace * 1000, fn() {
+  system_ffi.on_sighup(fn() { store.reload_async(store_subject) })
+  system_ffi.on_sigterm_drain(cfg.server.shutdown_grace * 1000, fn() {
     store.flush_hits(store_subject)
     // the lines still waiting in the writers
     access_log.stop()
@@ -335,7 +336,7 @@ fn secret_key_base(cfg: Config) -> Result(String, String) {
 fn new_secret_key_base(path: String) -> Result(String, String) {
   let secret = id.token(48)
   use Nil <- result.try(
-    ffi.atomic_write_private(path, secret)
+    file_ffi.atomic_write_private(path, secret)
     |> result.map_error(fn(e) { "cannot write " <> path <> ": " <> e }),
   )
   log.info("generated a new cookie signing secret in " <> path)

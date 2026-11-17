@@ -9,7 +9,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
-import redirect_proxy/ffi
+import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
 import redirect_proxy/log
 import redirect_proxy/matcher
@@ -51,7 +51,7 @@ type Change {
 }
 
 fn later(rules: List(Rule)) -> Later {
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   let changes =
     list.fold(rules, [], fn(acc, r) {
       case r.enabled && { r.starts_at != "" || r.expires_at != "" } {
@@ -165,7 +165,7 @@ fn follow_loop(
 
 /// A matcher of the rules not expired, their schedules aside.
 fn beyond_matcher(rules: List(Rule)) -> matcher.Matcher {
-  let now = ffi.now_seconds()
+  let now = system_ffi.now_seconds()
   rules
   |> list.filter(fn(r) { r.enabled && rule.window(r).1 > now })
   |> list.map(fn(r) { rule.Rule(..r, starts_at: "", expires_at: "") })

@@ -1,10 +1,10 @@
 //// How callers wait for the store: a change (`call`) or a read (`read`),
 //// each with a timeout that makes the store unavailable rather than hang
-//// the caller (`ffi.store_timeout`, caught by `store.or_unavailable`).
+//// the caller (`store_timeout`, caught by `store.or_unavailable`).
 
 import gleam/erlang/process.{type Subject}
 import gleam/result
-import redirect_proxy/ffi
+import redirect_proxy/ffi/file as file_ffi
 
 /// Calls the store, waiting up to `waiting` milliseconds (unless a test
 /// shortened it) for the reply.
@@ -36,7 +36,7 @@ pub fn call(
     process.new_selector()
     |> process.select_map(forwarded, Ok)
     |> process.select_specific_monitor(store_down, fn(_) { Error(True) })
-    |> process.selector_receive(ffi.tunable("store_call_timeout", default))
+    |> process.selector_receive(file_ffi.tunable("store_call_timeout", default))
     |> result.unwrap(Error(False))
   process.demonitor_process(store_down)
   case outcome {
@@ -57,7 +57,7 @@ pub fn call(
       case late, store_exited {
         Ok(value), _ -> value
         Error(Nil), True -> panic as "the store exited before replying"
-        Error(Nil), False -> ffi.store_timeout()
+        Error(Nil), False -> store_timeout()
       }
     }
   }
@@ -79,13 +79,13 @@ pub fn read(
     process.new_selector()
     |> process.select_map(reply, Ok)
     |> process.select_specific_monitor(store_down, fn(_) { Error(True) })
-    |> process.selector_receive(ffi.tunable("store_call_timeout", default))
+    |> process.selector_receive(file_ffi.tunable("store_call_timeout", default))
     |> result.unwrap(Error(False))
   process.demonitor_process(store_down)
   case outcome {
     Ok(value) -> value
     Error(True) -> panic as "the store exited before replying"
-    Error(False) -> ffi.store_timeout()
+    Error(False) -> store_timeout()
   }
 }
 
@@ -94,6 +94,15 @@ pub fn read(
 fn store_pid(store: Subject(message)) -> process.Pid {
   case process.subject_owner(store) {
     Ok(pid) -> pid
-    Error(Nil) -> ffi.store_timeout()
+    Error(Nil) -> store_timeout()
   }
 }
+
+/// Raises the error of a store call that timed out.
+@external(erlang, "redirect_proxy_system_ffi", "store_timeout")
+fn store_timeout() -> a
+
+/// Runs `f`, or `unavailable` when a store call in it timed out
+/// (`store_timeout`).
+@external(erlang, "redirect_proxy_system_ffi", "rescue_store_timeout")
+pub fn rescue_store_timeout(f: fn() -> a, unavailable: fn() -> a) -> a

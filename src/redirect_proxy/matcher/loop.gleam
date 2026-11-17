@@ -7,7 +7,7 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleam/uri
-import redirect_proxy/ffi
+import redirect_proxy/ffi/text as text_ffi
 import redirect_proxy/matcher.{
   type Match, type Matcher, location, lookup_query, lookup_tolerant_query,
   normalise_request_host,
@@ -109,7 +109,7 @@ fn request_key(
   path: String,
   query: String,
 ) -> #(String, String, String) {
-  #(normalise_request_host(host), ffi.normalise_path(path), query)
+  #(normalise_request_host(host), text_ffi.normalise_path(path), query)
 }
 
 /// The host, path and query string a browser requests when redirected to
