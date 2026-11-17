@@ -1,15 +1,17 @@
 //// The state of the store actor, shared by the modules that handle its
 //// messages (`redirect_proxy/store` is the public interface).
 
+import gleam/bit_array
 import gleam/list
-import gleam/option.{type Option, None}
-import gleam/set
+import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/ffi/system as system_ffi
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store/commit
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/hits
+import simplifile
 
 /// How long a change or a reload waits for another process to release the
 /// file lock.
@@ -60,6 +62,11 @@ pub type State {
     /// What is in the hits file: an unchanged content is not written again
     /// (no write and fsync a minute while idle).
     hits_written: hits.Written,
+    /// The file's stamp at the last save of the hit counts, and the ids of
+    /// its rules when another process wrote it (a command line import)
+    /// since it was last loaded: only their counts are saved, or the counts
+    /// of rules it removed would be written back until a reload.
+    disk_ids: Option(#(file_ffi.FileStamp, Option(Set(String)))),
     /// When the published rules were last checked against the rules'
     /// `starts_at`/`expires_at` (`Schedule`).
     checked_at: Int,
@@ -93,6 +100,7 @@ pub fn initial(
     hits_saved_at: system_ffi.now_seconds(),
     hits_saved_draining: False,
     hits_written: hits.nothing_written,
+    disk_ids: None,
     checked_at: loaded_at,
     next_boundary: #(rules, rule.next_boundary(rules, loaded_at)),
   )
@@ -115,15 +123,60 @@ pub fn in_effect(
 pub fn save_hits_if_removed(before: List(Rule), after: State) -> State {
   let kept = set.from_list(list.map(after.rules, fn(r) { r.id }))
   case list.any(before, fn(r) { !set.contains(kept, r.id) }) {
-    True -> State(..after, hits_written: save_hits(after))
+    True -> save_hits(after)
     False -> after
   }
 }
 
-pub fn save_hits(state: State) -> hits.Written {
-  hits.save(
-    state.config.hits_path,
-    list.map(state.rules, fn(r) { r.id }),
-    state.hits_written,
-  )
+/// Saves the hit counts of the rules in effect that are still in the file.
+pub fn save_hits(state: State) -> State {
+  case state.config.hits_path {
+    "" -> state
+    path -> {
+      let state = look_at_disk(state)
+      let ids = list.map(state.rules, fn(r) { r.id })
+      let ids = case state.disk_ids {
+        Some(#(_, Some(on_disk))) -> list.filter(ids, set.contains(on_disk, _))
+        _ -> ids
+      }
+      State(..state, hits_written: hits.save(path, ids, state.hits_written))
+    }
+  }
+}
+
+/// `disk_ids` for the file as it is now: read again only when its stamp
+/// changed (one `stat` a save otherwise).
+fn look_at_disk(state: State) -> State {
+  let path = state.config.rules_path
+  let stamp = file_ffi.file_stamp(path)
+  case state.disk_ids {
+    Some(#(seen, _)) if seen == stamp ->
+      case file_ffi.stamp_is_recent(stamp) {
+        False -> state
+        True -> State(..state, disk_ids: Some(#(stamp, read_ids(state, path))))
+      }
+    _ -> State(..state, disk_ids: Some(#(stamp, read_ids(state, path))))
+  }
+}
+
+/// The ids of the rules in the file, when it is not the content in effect
+/// (`None`: it is, or it cannot be read: the rules in effect are kept).
+fn read_ids(state: State, path: String) -> Option(Set(String)) {
+  case simplifile.read_bits(path) {
+    Ok(content) ->
+      case store_file.fingerprint(content) == state.fingerprint {
+        True -> None
+        False ->
+          case bit_array.to_string(content) {
+            Ok(text) ->
+              case rule.file_from_string(text) {
+                Ok(rules) ->
+                  Some(set.from_list(list.map(rules, fn(r) { r.id })))
+                Error(_) -> None
+              }
+            Error(Nil) -> None
+          }
+      }
+    Error(_) -> None
+  }
 }

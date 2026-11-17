@@ -1511,6 +1511,41 @@ pub fn deleting_a_rule_saves_the_counts_at_once_test() {
   assert !string.contains(saved, "\"promo\"")
 }
 
+/// Another process (a command line import) removed a rule from the file
+/// while this server, not watching it, still has it: the server's saves
+/// leave out its count, as the import did, until it reloads.
+pub fn counts_of_rules_removed_by_another_process_are_not_saved_test() {
+  let dir = support.temp_dir()
+  let s = start(settings(dir, 0))
+  let assert Ok(promo) =
+    store_support.create(
+      s,
+      Rule(..new_rule("/promo", "/x"), id: "promo"),
+      by: "t",
+    )
+  let assert Ok(kept) =
+    store_support.create(
+      s,
+      Rule(..new_rule("/kept", "/y"), id: "kept"),
+      by: "t",
+    )
+  matcher.record_hit(snapshot.current(), promo.id)
+  matcher.record_hit(snapshot.current(), kept.id)
+  store.flush_hits(s)
+  let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
+  assert string.contains(saved, "\"promo\"")
+  // rewritten without the rule, as `rules import --replace` does
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/redirects.json",
+      listing.export([Rule(..new_rule("/kept", "/y"), id: "kept")]),
+    )
+  store.flush_hits(s)
+  let assert Ok(saved) = simplifile.read(dir <> "/hits.json")
+  assert !string.contains(saved, "\"promo\"")
+  assert string.contains(saved, "\"kept\"")
+}
+
 /// The counts file deleted while the server runs is written again, even
 /// when the counts did not change; one that cannot be read is moved aside.
 pub fn the_counts_file_is_kept_test() {

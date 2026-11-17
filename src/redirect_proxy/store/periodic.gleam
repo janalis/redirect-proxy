@@ -50,20 +50,16 @@ pub fn save_hits_if_due(state: State) -> State {
     || { draining && !state.hits_saved_draining }
   {
     False -> state
-    True -> {
-      let hits_written = save_hits(state)
+    True ->
       State(
-        ..state,
+        ..save_hits(state),
         hits_saved_at: now,
         hits_saved_draining: draining,
-        hits_written:,
       )
-    }
   }
 }
 
 /// Saves the hit counts now.
 pub fn flush_hits(state: State) -> State {
-  let hits_written = save_hits(state)
-  State(..state, hits_saved_at: system_ffi.now_seconds(), hits_written:)
+  State(..save_hits(state), hits_saved_at: system_ffi.now_seconds())
 }
