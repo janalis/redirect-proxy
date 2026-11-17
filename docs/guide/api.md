@@ -128,7 +128,7 @@ tokens from your own authorization server are accepted too:
 use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 `application/problem+json`. Every problem has a stable `code`
 (`not_found`, `validation_failed`, `already_exists`, `precondition_failed`,
-`precondition_required`, `reload_rejected`, `invalid_token`,
+`precondition_required`, `reload_rejected`, `missing_token`, `invalid_token`,
 `insufficient_scope`, `too_many_requests`, `store_busy`...): tell problems
 apart by it, not by `title` or `detail`. `store_busy` (503, with
 `Retry-After`) means the rule store could not take the request in time,
