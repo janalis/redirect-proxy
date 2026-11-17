@@ -9,7 +9,7 @@ import gleam/dynamic/decode.{type Decoder}
 import gleam/json.{type Json}
 import gleam/result
 import redirect_proxy/ffi
-import redirect_proxy/rule
+import redirect_proxy/json_error
 import simplifile
 
 /// How long a change waits for another process to release the file.
@@ -35,7 +35,7 @@ pub fn load(
         simplifile.read(path) |> result.map_error(simplifile.describe_error),
       )
       json.parse(content, decode.at([key], decode.list(item)))
-      |> result.map_error(fn(e) { path <> ": " <> rule.describe_json_error(e) })
+      |> result.map_error(fn(e) { path <> ": " <> json_error.describe(e) })
     }
     _ -> Ok([])
   }

@@ -20,6 +20,7 @@ import redirect_proxy/api/rule_json.{patch_decoder, rule_json} as _
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/config
 import redirect_proxy/field_error.{FieldError}
+import redirect_proxy/json_error
 import redirect_proxy/matcher
 import redirect_proxy/matcher/explain
 import redirect_proxy/metrics
@@ -313,7 +314,7 @@ pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
   }
   case json.parse(body, decoder) {
     Error(e) ->
-      problem.validation([field_error.general(rule.describe_json_error(e))])
+      problem.validation([field_error.general(json_error.describe(e))])
     Ok(#(ids, action)) ->
       case store.bulk_action_from_string(action) {
         Error(Nil) ->
@@ -413,7 +414,7 @@ pub fn create_rule(
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
     Error(e) ->
-      problem.validation([field_error.general(rule.describe_json_error(e))])
+      problem.validation([field_error.general(json_error.describe(e))])
     Ok(input) -> {
       // an id chosen by the client makes a retry safe: the second request
       // gets 409 instead of creating a second rule
@@ -476,7 +477,7 @@ pub fn replace_rule(
   let deprecated = deprecation.for_fields(ctx.deprecations, "RuleInput", used)
   case json.parse(body, rule.decoder()) {
     Error(e) ->
-      problem.validation([field_error.general(rule.describe_json_error(e))])
+      problem.validation([field_error.general(json_error.describe(e))])
     Ok(input) ->
       store.update_versioned(
         ctx.store,
@@ -502,7 +503,7 @@ pub fn patch_rule(
   case store.get(ctx.store, id), json.parse(body, patch_decoder()) {
     Error(Nil), _ -> rule_not_found(id)
     _, Error(e) ->
-      problem.validation([field_error.general(rule.describe_json_error(e))])
+      problem.validation([field_error.general(json_error.describe(e))])
     Ok(existing), Ok(apply) -> {
       // The patch applies to `existing`: the update must expect that version
       // (also for `If-Match: *`, or without If-Match), else a concurrent

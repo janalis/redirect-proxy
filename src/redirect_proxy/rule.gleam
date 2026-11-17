@@ -13,6 +13,7 @@ import gleam/string
 import gleam/uri
 import redirect_proxy/ffi
 import redirect_proxy/field_error.{type FieldError, FieldError}
+import redirect_proxy/json_error
 import redirect_proxy/rule/template
 
 pub type MatchKind {
@@ -312,27 +313,7 @@ pub fn file_from_string(content: String) -> Result(List(Rule), String) {
     Ok(#(version, rules)) if version == file_format_version -> Ok(rules)
     Ok(#(version, _)) ->
       Error("unsupported file format version " <> int.to_string(version))
-    Error(error) -> Error(describe_json_error(error))
-  }
-}
-
-pub fn describe_json_error(error: json.DecodeError) -> String {
-  case error {
-    json.UnexpectedEndOfInput -> "unexpected end of JSON input"
-    json.UnexpectedByte(byte) -> "unexpected byte " <> byte <> " in JSON input"
-    json.UnexpectedSequence(seq) ->
-      "unexpected sequence " <> seq <> " in JSON input"
-    json.UnableToDecode(errors) ->
-      errors
-      |> list.map(fn(e) {
-        "expected "
-        <> e.expected
-        <> " but found "
-        <> e.found
-        <> " at "
-        <> string.join(e.path, ".")
-      })
-      |> string.join("; ")
+    Error(error) -> Error(json_error.describe(error))
   }
 }
 
