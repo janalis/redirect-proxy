@@ -2171,6 +2171,8 @@ respond(Request0, Version, Close0, Rest,
             end,
             Length = case Status of
                 S when S < 200; S =:= 204; S =:= 304 -> <<>>;
+                %% a redirect's empty body: no size to compute or format
+                _ when Body =:= [] -> <<"content-length: 0\r\n">>;
                 _ -> [<<"content-length: ">>, integer_to_binary(iolist_size(Body)), <<"\r\n">>]
             end,
             Response = [status_line(Status), encode_headers(Headers), Length,
