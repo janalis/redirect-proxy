@@ -497,17 +497,32 @@ pub fn conditional_reads_test() {
   assert get("/api/redirects/export", header(export, "etag")).status == 304
 }
 
-pub fn import_needs_a_json_body_test() {
+/// The media type of an import says its format; with another one, or
+/// none, the content does, as in the admin and the CLI.
+pub fn import_reads_the_format_of_its_body_test() {
   let env = support.boot(config.default())
   let token = access_token(env, [scope.Write])
-  let resp =
+  let send_import = fn(content_type, body) {
     support.send(
       Post,
       env.api <> "/api/redirects/import",
-      [#("authorization", "Bearer " <> token), #("content-type", "text/plain")],
-      "[]",
+      [#("authorization", "Bearer " <> token), ..content_type],
+      body,
     )
-  assert resp.status == 415
+  }
+  let csv = "source,target\r\n/from-csv,/x\r\n"
+  let json = "[{\"source\": \"/from-json\", \"target\": \"/y\"}]"
+  // told apart by the content
+  assert send_import([#("content-type", "text/plain")], csv).status == 200
+  assert send_import([], json).status == 200
+  let other = "[{\"source\": \"/other\", \"target\": \"/z\"}]"
+  assert send_import([#("content-type", "application/octet-stream")], other).status
+    == 200
+  assert support.send(Get, env.redirect <> "/from-csv", [], "").status == 301
+  assert support.send(Get, env.redirect <> "/from-json", [], "").status == 301
+  // a media type says the format, whatever the content looks like
+  assert send_import([#("content-type", "application/json")], csv).status == 422
+  assert send_import([#("content-type", "text/csv")], json).status == 422
 }
 
 pub fn tester_explains_the_resolution_test() {

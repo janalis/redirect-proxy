@@ -316,17 +316,31 @@ pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
   }
 }
 
-/// Reads an import body: JSON, or CSV sent as `text/csv` (`True`).
+/// The formats of an import body.
+type ImportFormat {
+  Csv
+  Json
+  /// Told apart by the content, as the admin and the CLI do.
+  Sniffed
+}
+
+/// Reads an import body: its media type (`text/csv`, `application/json`)
+/// says its format; with another one, or none, the content does.
 fn require_import_body(
   req: Request,
-  next: fn(String, Bool) -> Response,
+  next: fn(String, ImportFormat) -> Response,
 ) -> Response {
+  // media types are case-insensitive (RFC 9110)
   let content_type =
-    request.get_header(req, "content-type") |> result.unwrap("")
-  case string.starts_with(string.lowercase(content_type), "text/csv") {
-    True -> wisp.require_string_body(req, fn(body) { next(body, True) })
-    False -> require_json_body(req, fn(body) { next(body, False) })
+    request.get_header(req, "content-type")
+    |> result.unwrap("")
+    |> string.lowercase
+  let format = case content_type {
+    "text/csv" <> _ -> Csv
+    "application/json" <> _ -> Json
+    _ -> Sniffed
   }
+  wisp.require_string_body(req, fn(body) { next(body, format) })
 }
 
 /// Reads a body sent as JSON (415 otherwise).
@@ -530,10 +544,11 @@ pub fn import_rules(
     Ok(_) -> Error(Nil)
   }
   // a rules file may be an array of rules: not `require_json_object`
-  use body, csv <- require_import_body(req)
-  let incoming = case csv {
-    True -> rule_csv.parse(body)
-    False -> rule.file_from_string(body) |> result.map_error(fn(e) { [e] })
+  use body, format <- require_import_body(req)
+  let incoming = case format {
+    Csv -> rule_csv.parse(body)
+    Json -> rule.file_from_string(body) |> result.map_error(fn(e) { [e] })
+    Sniffed -> rule_csv.parse_import(body)
   }
   case mode, dry_run, incoming {
     Error(Nil), _, _ -> problem.bad_request("mode must be merge or replace.")

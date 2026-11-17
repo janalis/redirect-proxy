@@ -724,6 +724,12 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
               json.object([
                 #("required", json.bool(True)),
                 #(
+                  "description",
+                  json.string(
+                    "JSON or CSV, as its media type says. With another media type, or none, the content tells them apart: JSON starts with { or [.",
+                  ),
+                ),
+                #(
                   "content",
                   json.object([
                     #(
@@ -781,7 +787,8 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   ),
                 ),
                 ..list.append(
-                  body_errors(),
+                  // any media type is read (see the body): never a 415
+                  list.filter(body_errors(), fn(e) { e.0 != "415" }),
                   store_errors([
                     #("400", "mode is not merge or replace."),
                     #("412", "The rules changed since the If-Match version."),
