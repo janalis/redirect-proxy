@@ -6,7 +6,6 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import redirect_proxy/api/clients
@@ -569,22 +568,10 @@ fn rules_import(
     simplifile.create_directory_all(cfg.storage.data_dir)
     |> result.map_error(simplifile.describe_error),
   )
-  use started <- result.try(
-    store.start(app.store_settings(cfg), process.new_name("rp_cli_store"))
-    |> result.map_error(fn(e) {
-      case e {
-        actor.InitFailed(reason) -> busy_or(reason)
-        _ -> string.inspect(e)
-      }
-    }),
+  use count <- result.try(
+    store.import_into_file(app.store_settings(cfg), incoming, mode, by: "cli")
+    |> result.map_error(fn(errors) { busy_or(string.join(errors, "\n")) }),
   )
-  use count <- result.try({
-    use <- store.or_unavailable(fn() {
-      store.import_rules(started.data, incoming, mode, "cli")
-      |> result.map_error(fn(errors) { busy_or(string.join(errors, "\n")) })
-    })
-    Error(store_busy)
-  })
   io.println(
     int.to_string(count)
     <> " rule(s) imported into "

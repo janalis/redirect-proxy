@@ -197,21 +197,53 @@ pub fn rules_import_while_locked_test() {
   let assert Error(_) = simplifile.read(dir <> "/data/redirects.json")
 }
 
-/// `rules import` when the store does not answer in time: the busy error,
-/// not a crash.
-pub fn rules_import_store_timeout_test() {
+/// `rules import` writes the file without a store: it audits the change
+/// (and a refused one) and drops the saved hit counts of removed rules.
+pub fn rules_import_audits_and_keeps_hits_of_kept_rules_test() {
   let #(dir, config_path) = setup()
+  let data = dir <> "/data"
+  let assert Ok(Nil) = simplifile.create_directory_all(data)
+  let assert Ok(Nil) =
+    simplifile.write(
+      data <> "/redirects.json",
+      "[{\"id\": \"keep\", \"source\": \"/k\", \"target\": \"/t\"},
+        {\"id\": \"gone\", \"source\": \"/g\", \"target\": \"/t\"}]",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      data <> "/hits.json",
+      "{\"version\": 1, \"hits\": {\"keep\": {\"count\": 3, \"last\": 1},
+        \"gone\": {\"count\": 5, \"last\": 2}}}",
+    )
   let import_file = dir <> "/import.json"
   let assert Ok(Nil) =
-    simplifile.write(import_file, "[{\"source\": \"/a\", \"target\": \"/b\"}]")
-  ffi.set_tunable("store_call_timeout", 0)
-  let outcome =
-    redirect_proxy.run(["rules", "import", import_file, "--config", config_path])
-  ffi.clear_tunable("store_call_timeout")
-  assert outcome
-    == Error(
-      "the rules are busy (another change holds the lock); nothing was changed, retry",
+    simplifile.write(
+      import_file,
+      "[{\"id\": \"keep\", \"source\": \"/k\", \"target\": \"/t\"}]",
     )
+  let assert Ok(Nil) =
+    redirect_proxy.run([
+      "rules", "import", import_file, "--replace", "--config", config_path,
+    ])
+  let assert Ok(hits) = simplifile.read(data <> "/hits.json")
+  assert string.contains(hits, "\"keep\"")
+  assert !string.contains(hits, "\"gone\"")
+  let assert Ok(audit) = simplifile.read(data <> "/audit.jsonl")
+  assert string.contains(audit, "\"rules.import.replace\"")
+
+  // a loop is refused, and the refusal audited
+  let assert Ok(Nil) =
+    simplifile.write(
+      import_file,
+      "[{\"source\": \"/a\", \"target\": \"/b\"}, {\"source\": \"/b\", \"target\": \"/a\"}]",
+    )
+  let assert Error(_) =
+    redirect_proxy.run(["rules", "import", import_file, "--config", config_path])
+  let assert Ok(audit) = simplifile.read(data <> "/audit.jsonl")
+  assert string.contains(audit, "\"rules.import.merge_failed\"")
+  let assert Ok(content) = simplifile.read(data <> "/redirects.json")
+  let assert Ok([kept]) = rule.file_from_string(content)
+  assert kept.id == "keep"
 }
 
 fn list_length(items: List(a)) -> Int {

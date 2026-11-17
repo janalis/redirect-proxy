@@ -562,6 +562,78 @@ pub fn import_rules(
   |> result.map_error(describe_set_change_error)
 }
 
+/// `import_rules` without a running store, for the `rules import` command:
+/// the same validation and checks, file lock, backup and atomic write,
+/// audit entry and hit counts kept, in the calling process. Nothing is
+/// published: a server serving the file applies the change when it reloads
+/// it. Fails with the reasons, among them the lock held by another process
+/// past the wait.
+pub fn import_into_file(
+  settings: Settings,
+  rules: List(Rule),
+  mode: ImportMode,
+  by actor_name: String,
+) -> Result(Int, List(String)) {
+  use prepared <- result.try(prepare_import(rules, actor_name))
+  let files = files(settings)
+  let locked =
+    ffi.with_file_lock_detailed(
+      settings.rules_path,
+      ffi.tunable("start_lock_timeout", start_lock_timeout),
+      fn() {
+        use #(existing, before) <- result.try(
+          store_file.load_failing(files, store_file.FirstStart)
+          |> result.map_error(fn(failure) { [failure.reason] }),
+        )
+        use #(prepared, rules) <- result.try(imported(existing, prepared, mode))
+        let action = case mode {
+          Replace -> "rules.import.replace"
+          Merge -> "rules.import.merge"
+        }
+        let summary = int.to_string(list.length(prepared)) <> " rule(s)"
+        let outcome = {
+          use _ <- result.try(commit.check_many(
+            target(settings),
+            rules,
+            store_rules.changed_rules(existing, rules),
+            check_conflicts: True,
+          ))
+          commit.persist(target(settings), rules)
+        }
+        case outcome {
+          Ok(fingerprint) -> {
+            audit_rule_set(
+              settings.audit_path,
+              #(existing, before),
+              actor_name,
+              action,
+              summary,
+              rules,
+              fingerprint,
+            )
+            hits.keep_only(settings.hits_path, list.map(rules, fn(r) { r.id }))
+            Ok(list.length(prepared))
+          }
+          Error(errors) -> {
+            audit.record(
+              settings.audit_path,
+              actor_name,
+              action <> "_failed",
+              summary,
+              None,
+              Some(json.object([#("errors", json.array(errors, json.string))])),
+            )
+            Error(errors)
+          }
+        }
+      },
+    )
+  case locked {
+    Ok(outcome) -> outcome
+    Error(ffi.Held(reason)) | Error(ffi.CannotCreate(reason)) -> Error([reason])
+  }
+}
+
 /// Imports only if the rule set is still at version `expected` (when
 /// given): the one a preview was shown for, or read with `versioned`.
 pub fn import_rules_versioned(
@@ -1183,16 +1255,37 @@ fn audit_rules_change(
   rules: List(Rule),
   fingerprint: String,
 ) -> Nil {
-  audit.record(
+  audit_rule_set(
     state.settings.audit_path,
+    #(state.rules, state.fingerprint),
     actor_name,
     action,
     target,
-    Some(json.object([#("fingerprint", json.string(state.fingerprint))])),
+    rules,
+    fingerprint,
+  )
+}
+
+/// `audit_rules_change`, from the rules and fingerprint `before`.
+fn audit_rule_set(
+  audit_path: String,
+  before: #(List(Rule), String),
+  actor_name: String,
+  action: String,
+  target: String,
+  rules: List(Rule),
+  fingerprint: String,
+) -> Nil {
+  audit.record(
+    audit_path,
+    actor_name,
+    action,
+    target,
+    Some(json.object([#("fingerprint", json.string(before.1))])),
     Some(
       json.object([
         #("fingerprint", json.string(fingerprint)),
-        ..store_rules.diff_to_json(store_rules.diff(state.rules, rules))
+        ..store_rules.diff_to_json(store_rules.diff(before.0, rules))
       ]),
     ),
   )

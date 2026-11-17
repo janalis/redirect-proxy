@@ -146,6 +146,20 @@ pub fn many(
   changed changed: List(Rule),
   check_conflicts check: Bool,
 ) -> Result(String, List(String)) {
+  use built <- result.try(check_many(target, rules, changed, check))
+  use fingerprint <- result.try(write(target, rules, built))
+  checker.request(target.files.rules_path, checker.Problems)
+  Ok(fingerprint)
+}
+
+/// The checks of `many`, without writing anything. Returns the matcher of
+/// `rules`.
+pub fn check_many(
+  target: Target,
+  rules: List(Rule),
+  changed: List(Rule),
+  check_conflicts check: Bool,
+) -> Result(matcher.Matcher, List(String)) {
   use Nil <- result.try(case check {
     True -> check_conflicts(rules)
     False -> Ok(Nil)
@@ -157,9 +171,7 @@ pub fn many(
     changed,
     target.ignore_trailing_slash,
   ))
-  use fingerprint <- result.try(write(target, rules, built))
-  checker.request(target.files.rules_path, checker.Problems)
-  Ok(fingerprint)
+  Ok(built)
 }
 
 /// Writes then publishes the rules (`built` is their matcher).
@@ -168,11 +180,19 @@ fn write(
   rules: List(Rule),
   built: matcher.Matcher,
 ) -> Result(String, List(String)) {
+  use fingerprint <- result.try(persist(target, rules))
+  publish(target, built, rules, fingerprint)
+  Ok(fingerprint)
+}
+
+/// Backs up then writes the rules, without publishing them. Returns the
+/// fingerprint of the file.
+pub fn persist(
+  target: Target,
+  rules: List(Rule),
+) -> Result(String, List(String)) {
   case store_file.persist(target.files, rules) {
-    Ok(fingerprint) -> {
-      publish(target, built, rules, fingerprint)
-      Ok(fingerprint)
-    }
+    Ok(fingerprint) -> Ok(fingerprint)
     Error(reason) -> {
       metrics.incr(metrics.StorageWriteFailures)
       log.error("failed to persist redirections: " <> reason)

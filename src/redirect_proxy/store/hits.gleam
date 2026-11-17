@@ -5,6 +5,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/set
 import redirect_proxy/ffi
 import redirect_proxy/log
@@ -58,29 +59,10 @@ pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
     "" -> last
     path -> {
       let ids = set.from_list(rule_ids)
-      let records =
+      let content =
         matcher.hit_records(snapshot.current())
         |> list.filter(fn(h) { set.contains(ids, h.rule_id) })
-      let content =
-        json.object([
-          #("version", json.int(1)),
-          #(
-            "hits",
-            json.object(
-              list.map(records, fn(h) {
-                #(
-                  h.rule_id,
-                  json.object([
-                    #("count", json.int(h.count)),
-                    #("last", json.int(h.last)),
-                  ]),
-                )
-              }),
-            ),
-          ),
-        ])
-        |> json.to_string
-      let content = content <> "\n"
+        |> encode
       // unchanged, and still there (deleted, it is written again: an idle
       // server would otherwise lose every count at its next start)
       case content == last.content && simplifile.is_file(path) == Ok(True) {
@@ -104,6 +86,59 @@ pub fn save(path: String, rule_ids: List(String), last: Written) -> Written {
       }
     }
   }
+}
+
+/// Removes from the file at `path` the counts of rules other than
+/// `rule_ids`, without a running store (the `rules import` command): the
+/// count of a removed rule would otherwise go to a new rule given its id.
+/// A file that cannot be read is left for the server to set aside.
+pub fn keep_only(path: String, rule_ids: List(String)) -> Nil {
+  let records = case path {
+    "" -> Error(Nil)
+    path ->
+      simplifile.read(path)
+      |> result.replace_error(Nil)
+      |> result.try(fn(content) {
+        json.parse(content, decoder()) |> result.replace_error(Nil)
+      })
+  }
+  case records {
+    Error(Nil) -> Nil
+    Ok(records) -> {
+      let ids = set.from_list(rule_ids)
+      let kept = list.filter(records, fn(h) { set.contains(ids, h.rule_id) })
+      case list.length(kept) == list.length(records) {
+        True -> Nil
+        False ->
+          case ffi.atomic_write(path, encode(kept)) {
+            Ok(Nil) -> Nil
+            Error(reason) -> log.warning("hit counts not saved: " <> reason)
+          }
+      }
+    }
+  }
+}
+
+fn encode(records: List(matcher.HitRecord)) -> String {
+  json.object([
+    #("version", json.int(1)),
+    #(
+      "hits",
+      json.object(
+        list.map(records, fn(h) {
+          #(
+            h.rule_id,
+            json.object([
+              #("count", json.int(h.count)),
+              #("last", json.int(h.last)),
+            ]),
+          )
+        }),
+      ),
+    ),
+  ])
+  |> json.to_string
+  <> "\n"
 }
 
 fn decoder() -> decode.Decoder(List(matcher.HitRecord)) {
