@@ -64,9 +64,10 @@ type HostRules {
     /// otherwise the path is not lower-cased to look them up.
     exact_query_ci: Bool,
     /// Exact rules, with their target as a header value (`ffi.header_value`,
-    /// computed once: an exact rule's location is its target).
-    exact: Dict(String, #(Rule, String)),
-    exact_ci: Dict(String, #(Rule, String)),
+    /// computed once: an exact rule's location is its target) and their
+    /// hit slot.
+    exact: Dict(String, #(Rule, String, Int)),
+    exact_ci: Dict(String, #(Rule, String, Int)),
     /// Case-sensitive prefix rules, keyed by their source.
     prefix: Index(PrefixRule),
     /// Case-insensitive prefix rules, keyed by their lower-cased source and
@@ -98,7 +99,12 @@ type Index(a) {
 const leaf_lengths = 4
 
 type QueryRule {
-  QueryRule(rule: Rule, conditions: List(#(String, String)), file_rank: Int)
+  QueryRule(
+    rule: Rule,
+    slot: Int,
+    conditions: List(#(String, String)),
+    file_rank: Int,
+  )
 }
 
 /// The query rules of one path, most conditions first, then priority, then
@@ -117,6 +123,7 @@ type PrefixRule {
   PrefixRule(
     rank: Int,
     rule: Rule,
+    slot: Int,
     template: template.Template,
     guard: template.TargetGuard,
   )
@@ -126,6 +133,7 @@ type RegexRule {
   RegexRule(
     rank: Int,
     rule: Rule,
+    slot: Int,
     regex: ffi.CompiledRegex,
     template: template.Template,
     guard: template.TargetGuard,
@@ -133,8 +141,9 @@ type RegexRule {
 }
 
 pub type Match {
-  /// `location`: a header value already (`ffi.header_value`).
-  Match(rule: Rule, location: String)
+  /// `location`: a header value already (`ffi.header_value`). `slot`: the
+  /// rule's hit slot (`record_match`).
+  Match(rule: Rule, location: String, slot: Int)
 }
 
 pub fn empty() -> Matcher {
@@ -191,13 +200,6 @@ pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
         Exact | Prefix -> rule.Rule(..r, source: ffi.normalise_path(r.source))
       }
     })
-  // like request hosts, rule hosts are matched without port or trailing dot
-  let grouped = list.group(enabled, fn(r) { normalise_request_host(r.host) })
-  let hosts =
-    dict.map_values(grouped, fn(_host, rules) {
-      // list.group prepends, restore the original order for stable sorting
-      build_host(list.reverse(rules))
-    })
   let #(slots, count) =
     list.fold(rules, #(dict.new(), 0), fn(acc, r) {
       let #(slots, count) = acc
@@ -205,6 +207,13 @@ pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
         True -> acc
         False -> #(dict.insert(slots, r.id, count + 1), count + 1)
       }
+    })
+  // like request hosts, rule hosts are matched without port or trailing dot
+  let grouped = list.group(enabled, fn(r) { normalise_request_host(r.host) })
+  let hosts =
+    dict.map_values(grouped, fn(_host, rules) {
+      // list.group prepends, restore the original order for stable sorting
+      build_host(list.reverse(rules), slots)
     })
   Matcher(
     hosts:,
@@ -229,15 +238,31 @@ pub fn build_at(rules: List(Rule), now: Int) -> Matcher {
 /// requests on other schedulers hitting the same rule would contend for.
 pub fn record_hit(matcher: Matcher, rule_id: String) -> Nil {
   case dict.get(matcher.slots, rule_id) {
-    Ok(slot) -> {
-      ffi.counter_add(matcher.hits, count_index(slot), 1)
-      let now = ffi.now_seconds()
-      case ffi.counter_get(matcher.hits, last_index(slot)) == now {
-        True -> Nil
-        False -> ffi.counter_put(matcher.hits, last_index(slot), now)
-      }
-    }
+    Ok(slot) -> record_slot(matcher, slot)
     Error(Nil) -> Nil
+  }
+}
+
+/// `record_hit` for the rule of a match `matcher` found: the slot came
+/// with the match, the rule id is not looked up again.
+pub fn record_match(matcher: Matcher, m: Match) -> Nil {
+  record_slot(matcher, m.slot)
+}
+
+fn record_slot(matcher: Matcher, slot: Int) -> Nil {
+  ffi.counter_add(matcher.hits, count_index(slot), 1)
+  let now = ffi.now_seconds()
+  case ffi.counter_get(matcher.hits, last_index(slot)) == now {
+    True -> Nil
+    False -> ffi.counter_put(matcher.hits, last_index(slot), now)
+  }
+}
+
+/// The slot of a rule of the matcher being built: every rule has one.
+fn slot_of(slots: Dict(String, Int), r: Rule) -> Int {
+  case dict.get(slots, r.id) {
+    Ok(slot) -> slot
+    Error(Nil) -> panic as "every rule has a slot"
   }
 }
 
@@ -310,13 +335,13 @@ pub fn carry_hits(next: Matcher, from previous: Matcher) -> Matcher {
   next
 }
 
-fn build_host(rules: List(Rule)) -> HostRules {
+fn build_host(rules: List(Rule), slots: Dict(String, Int)) -> HostRules {
   let #(with_query, rules) =
     list.partition(rules, fn(r) { r.kind == Exact && r.query != "" })
   let exact_query =
     with_query
     |> list.index_map(fn(r, file_rank) {
-      QueryRule(r, rule.query_conditions(r), file_rank)
+      QueryRule(r, slot_of(slots, r), rule.query_conditions(r), file_rank)
     })
     |> list.sort(compare_query_rules)
     |> list.reverse
@@ -335,7 +360,12 @@ fn build_host(rules: List(Rule)) -> HostRules {
       // first rule wins on duplicates
       case dict.has_key(acc, r.source) {
         True -> acc
-        False -> dict.insert(acc, r.source, #(r, ffi.header_value(r.target)))
+        False ->
+          dict.insert(acc, r.source, #(
+            r,
+            ffi.header_value(r.target),
+            slot_of(slots, r),
+          ))
       }
     })
   let exact_ci =
@@ -345,7 +375,12 @@ fn build_host(rules: List(Rule)) -> HostRules {
       let key = string.lowercase(r.source)
       case dict.has_key(acc, key) {
         True -> acc
-        False -> dict.insert(acc, key, #(r, ffi.header_value(r.target)))
+        False ->
+          dict.insert(acc, key, #(
+            r,
+            ffi.header_value(r.target),
+            slot_of(slots, r),
+          ))
       }
     })
   let prefix =
@@ -355,6 +390,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
       PrefixRule(
         rank:,
         rule: r,
+        slot: slot_of(slots, r),
         template: template.compile_template(r.target),
         guard: template.target_guard(r.target),
       )
@@ -374,6 +410,7 @@ fn build_host(rules: List(Rule)) -> HostRules {
       RegexRule(
         rank:,
         rule: r,
+        slot: slot_of(slots, r),
         regex:,
         template: template.compile_template(r.target),
         guard: template.target_guard(r.target),
@@ -847,7 +884,9 @@ fn match_query(
           }
           found
           |> list.find(fn(q) { rule.query_matches(q.conditions, request) })
-          |> result.map(fn(q) { Match(q.rule, ffi.header_value(q.rule.target)) })
+          |> result.map(fn(q) {
+            Match(q.rule, ffi.header_value(q.rule.target), q.slot)
+          })
         }
       }
     }
@@ -858,13 +897,13 @@ fn match_query(
 /// rules.
 fn match_exact(rules: HostRules, path: String) -> Result(Match, Nil) {
   case dict.get(rules.exact, path) {
-    Ok(#(r, location)) -> Ok(Match(r, location))
+    Ok(#(r, location, slot)) -> Ok(Match(r, location, slot))
     Error(Nil) ->
       case dict.size(rules.exact_ci) {
         0 -> Error(Nil)
         _ ->
           case dict.get(rules.exact_ci, string.lowercase(path)) {
-            Ok(#(r, location)) -> Ok(Match(r, location))
+            Ok(#(r, location, slot)) -> Ok(Match(r, location, slot))
             Error(Nil) -> Error(Nil)
           }
       }
@@ -925,7 +964,9 @@ fn prefix_location(
   let #(p, remainder) = candidate
   template.expand_template(p.template, [path, remainder], vars)
   |> template.guard_location(p.guard, _, vars)
-  |> result.map(fn(location) { Match(p.rule, ffi.header_value(location)) })
+  |> result.map(fn(location) {
+    Match(p.rule, ffi.header_value(location), p.slot)
+  })
 }
 
 /// Whether rule `r`, which matches `path`, would redirect a request for
@@ -1034,7 +1075,8 @@ fn run_regexes(
               vars,
             )
           {
-            Ok(location) -> Found(Match(entry.rule, ffi.header_value(location)))
+            Ok(location) ->
+              Found(Match(entry.rule, ffi.header_value(location), entry.slot))
             // the substitution would leave the target's host: try the next
             Error(Nil) -> run_regexes(a, b, path, vars, exhausted, runs, until)
           }

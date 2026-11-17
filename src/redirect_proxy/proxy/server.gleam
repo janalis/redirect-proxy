@@ -479,7 +479,7 @@ fn route_rules(
       case find(current, config, host, req.path, option.unwrap(req.query, "")) {
         Ok(m) -> {
           metrics.count(counts, metrics.Redirects)
-          matcher.record_hit(current, m.rule.id)
+          matcher.record_match(current, m)
           Answered(
             redirect(
               m.rule.status,

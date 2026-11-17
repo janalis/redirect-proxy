@@ -114,7 +114,7 @@ pub fn main() -> Nil {
       }
       case found {
         Ok(found) -> {
-          matcher.record_hit(m, found.rule.id)
+          matcher.record_match(m, found)
           let _ = matcher.location(found, Ok(query))
           Nil
         }

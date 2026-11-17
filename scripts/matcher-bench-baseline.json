@@ -1,16 +1,16 @@
 {
   "build_ms": 39,
   "reductions_per_request": {
-    "exact_hit": 160,
-    "exact_miss": 396,
-    "host_hit": 101,
-    "miss": 454,
-    "prefix_hit": 327,
+    "exact_hit": 161,
+    "exact_miss": 399,
+    "host_hit": 102,
+    "miss": 456,
+    "prefix_hit": 328,
     "query_hit": 328,
-    "regex_indexed_hit": 286,
-    "regex_unindexed_last": 594,
-    "tolerant_miss": 875,
-    "wildcard_hit": 416
+    "regex_indexed_hit": 288,
+    "regex_unindexed_last": 596,
+    "tolerant_miss": 808,
+    "wildcard_hit": 417
   },
   "rules": 11670
 }
