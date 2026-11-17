@@ -71,7 +71,8 @@ stop_writers(Routes) ->
     lists:foreach(fun redirect_proxy_access_writer:stop/1,
                   lists:usort(maps:values(Routes))).
 
-%% A rendered line of Listener's log: a counter and a message, from the
+%% A rendered line of Listener's log, as iodata (the writer joins the
+%% lines of a batch in one write): a counter and a message, from the
 %% request process.
 emit(Listener, Line) ->
     case persistent_term:get(?WRITERS, #{}) of

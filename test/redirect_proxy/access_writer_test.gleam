@@ -5,6 +5,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/string
+import gleam/string_tree
 import redirect_proxy/ffi
 import redirect_proxy/listener
 import simplifile
@@ -21,7 +22,9 @@ fn emit(from: Int, to: Int) -> Nil {
   int.range(from, to + 1, Nil, fn(_, i) {
     ffi.access_log_emit(
       listener.RedirectListener,
-      "line " <> string.pad_start(int.to_string(i), 3, "0"),
+      string_tree.from_string(
+        "line " <> string.pad_start(int.to_string(i), 3, "0"),
+      ),
     )
   })
 }
@@ -33,7 +36,10 @@ pub fn lines_are_written_in_order_test() {
   // more than a batch: stopping writes them all
   emit(1, 3000)
   // lines of a listener with no writer are dropped quietly
-  ffi.access_log_emit(listener.AdminListener, "elsewhere")
+  ffi.access_log_emit(
+    listener.AdminListener,
+    string_tree.from_string("elsewhere"),
+  )
   ffi.access_log_stop()
   let written = lines(path)
   assert list.length(written) == 3000

@@ -210,7 +210,7 @@ pub fn record(
       time_us:,
       duration_us:,
     )
-  fmt.render(settings.format, settings.log_query, entry)
+  fmt.render_tree(settings.format, settings.log_query, entry)
   |> ffi.access_log_emit(settings.listener, _)
 }
 

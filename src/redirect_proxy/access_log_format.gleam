@@ -6,7 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import gleam/string_tree
+import gleam/string_tree.{type StringTree}
 import redirect_proxy/cidr.{type Cidrs}
 import redirect_proxy/ffi
 
@@ -250,17 +250,37 @@ fn field(name: String) -> Result(Field, String) {
 
 /// Renders one line (without the trailing newline).
 pub fn render(format: Format, log_query: Bool, entry: Entry) -> String {
-  list.fold(format.segments, string_tree.new(), fn(tree, segment) {
-    case segment {
-      Literal(text) -> string_tree.append(tree, text)
-      Var(field) ->
-        string_tree.append(
-          tree,
-          escape(format.escape, value(field, log_query, entry)),
-        )
-    }
-  })
-  |> string_tree.to_string
+  render_tree(format, log_query, entry) |> string_tree.to_string
+}
+
+/// `render`, as the pieces of the line: the writer writes them as they
+/// are, the request process does not join them.
+pub fn render_tree(
+  format: Format,
+  log_query: Bool,
+  entry: Entry,
+) -> StringTree {
+  render_segments(format.segments, format.escape, log_query, entry)
+  |> string_tree.from_strings
+}
+
+fn render_segments(
+  segments: List(Segment),
+  mode: Escape,
+  log_query: Bool,
+  entry: Entry,
+) -> List(String) {
+  case segments {
+    [] -> []
+    [Literal(text), ..rest] -> [
+      text,
+      ..render_segments(rest, mode, log_query, entry)
+    ]
+    [Var(field), ..rest] -> [
+      escape(mode, value(field, log_query, entry)),
+      ..render_segments(rest, mode, log_query, entry)
+    ]
+  }
 }
 
 fn value(field: Field, log_query: Bool, e: Entry) -> String {

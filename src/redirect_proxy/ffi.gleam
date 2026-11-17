@@ -1,6 +1,7 @@
 //// Typed bindings to the Erlang helpers, `redirect_proxy_<area>_ffi.erl`
 //// (snapshot, regex, file, crypto, ets, net, system, text).
 
+import gleam/string_tree.{type StringTree}
 import mist
 import redirect_proxy/listener.{type Listener}
 
@@ -487,8 +488,10 @@ pub fn access_log_stop() -> Nil
 @external(erlang, "redirect_proxy_access_ffi", "sync")
 pub fn access_log_sync() -> Nil
 
+/// Sends a rendered line (without its line break) to the writer of
+/// `listener`'s log, unless it has none.
 @external(erlang, "redirect_proxy_access_ffi", "emit")
-pub fn access_log_emit(listener: Listener, line: String) -> Nil
+pub fn access_log_emit(listener: Listener, line: StringTree) -> Nil
 
 @external(erlang, "redirect_proxy_access_ffi", "escape_default")
 pub fn escape_default(value: String) -> String
