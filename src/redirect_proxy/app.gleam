@@ -20,8 +20,8 @@ import redirect_proxy/admin/router
 import redirect_proxy/admin/web as admin_web
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
-import redirect_proxy/api/token
 import redirect_proxy/api/web as api_web
+import redirect_proxy/api_token as token
 import redirect_proxy/audit
 import redirect_proxy/cidr
 import redirect_proxy/clients

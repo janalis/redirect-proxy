@@ -13,7 +13,7 @@ import redirect_proxy/admin/web.{
   type Context, error_page, features, flash_from_query, form_value, html,
   not_found, require_csrf_form,
 } as _
-import redirect_proxy/api/token
+import redirect_proxy/api_token as token
 import redirect_proxy/clients
 import redirect_proxy/config
 import redirect_proxy/scope

@@ -8,7 +8,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/session
-import redirect_proxy/api/token
+import redirect_proxy/api_token as token
 import redirect_proxy/metrics
 import redirect_proxy/ratelimit
 import redirect_proxy/store/checker

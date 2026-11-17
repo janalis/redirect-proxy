@@ -13,7 +13,7 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/api/token
+import redirect_proxy/api_token as token
 import redirect_proxy/clients
 import redirect_proxy/config.{type ApiOAuthConfig}
 import redirect_proxy/ffi
