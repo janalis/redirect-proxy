@@ -655,7 +655,7 @@ fn paths(registry: List(Deprecation), oauth: ApiOAuthConfig) -> Json {
                   "format",
                   "query",
                   enum_schema(["json", "csv"]),
-                  "json (default): a redirections file. csv: a header row of every column, then one rule per line (cells that a spreadsheet would run as a formula start with ').",
+                  "json (default): a redirections file. csv: a UTF-8 byte order mark (for spreadsheets; imports skip it), a header row of every column, then one rule per line (cells that a spreadsheet would run as a formula start with ').",
                 ),
                 if_none_match_param(),
               ]),

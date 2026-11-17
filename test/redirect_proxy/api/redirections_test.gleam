@@ -769,7 +769,8 @@ pub fn csv_import_and_export_over_the_api_test() {
   let export = api(env, Get, "/api/redirects/export?format=csv", token, "")
   assert export.status == 200
   assert header(export, "content-type") == "text/csv; charset=utf-8"
-  assert string.starts_with(export.body, "id,host,match,source,target")
+  // with a byte order mark, as in the admin: spreadsheets read it as UTF-8
+  assert string.starts_with(export.body, "\u{FEFF}id,host,match,source,target")
   assert string.contains(export.body, ",prefix,/csv/,/to/$1,")
   // the version of the rule set, as the JSON export: usable in If-Match
   let json_tag =

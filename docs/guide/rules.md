@@ -64,10 +64,10 @@ columns are refused, so that a typo does not drop a field. In an export,
 cells that a spreadsheet would run as a formula (starting with `=`, `+`,
 `-`, `@`) start with `'`, which an import removes.
 
-From a spreadsheet: the admin's CSV export starts with a UTF-8 byte order
-mark, so that Excel shows accented text right. Save imports as "CSV UTF-8
-(comma delimited)": a file that is not UTF-8 is refused, and cells separated
-by `;` (some locales) get a hint. Empty columns at the end of the lines and
+From a spreadsheet: the CSV export (admin and API) starts with a UTF-8
+byte order mark, so that Excel shows accented text right. Save imports as
+"CSV UTF-8 (comma delimited)": a file that is not UTF-8 is refused, and
+cells separated by `;` (some locales) get a hint. Empty columns at the end of the lines and
 lines of empty cells, which spreadsheets leave behind, are ignored.
 
 ## Scheduled rules

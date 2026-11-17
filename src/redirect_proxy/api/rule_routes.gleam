@@ -44,9 +44,13 @@ pub fn export(req: Request, ctx: Context) -> Response {
         Ok(#("application/json", store_rules.export(rules), version))
       // the same ETag (the rule set's version), so that it can be sent
       // back in If-Match on an import; caches tell the formats apart by
-      // their URL
+      // their URL. The same CSV as the admin's, with a byte order mark.
       "csv" ->
-        Ok(#("text/csv; charset=utf-8", rule_csv.to_string(rules), version))
+        Ok(#(
+          "text/csv; charset=utf-8",
+          rule_csv.to_spreadsheet_string(rules),
+          version,
+        ))
       _ -> Error(problem.bad_request("format must be json or csv."))
     },
   )
