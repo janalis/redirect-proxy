@@ -62,7 +62,7 @@ process environment (`docker inspect`, `/proc/<pid>/environ`): set
 | `RP_ACCESS_LOG_MAX_BYTES`, `_MAX_FILES`, `_COMPRESS` | `0` (no rotation), `7`, `true` |
 | `RP_ACCESS_LOG_{REDIRECT,ADMIN,API}_ENABLED`, `_FORMAT`, `_OUTPUT` | `true`, inherited, inherited |
 | `RP_BOOTSTRAP_ADMIN_USERNAME` / `_PASSWORD` | creates the first local administrator when none exists |
-| `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`); does not affect the access log |
+| `RP_LOG_LEVEL` | `info` (`debug`, `warning`, `error`, `critical`; `none` logs only critical messages); does not affect the access log |
 | `RP_LOG_FORMAT` | `text` (`json`: one `{time, level, msg, domain}` object per line) |
 | `NO_COLOR` | plain log lines (automatic when output is not a terminal) |
 

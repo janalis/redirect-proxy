@@ -94,7 +94,12 @@ pub fn env_errors(get: fn(String) -> Result(String, Nil)) -> List(String) {
           case parse_bool(value) {
             Ok(_) -> Error(Nil)
             Error(Nil) ->
-              Ok(name <> ": expected true or false, got \"" <> value <> "\"")
+              Ok(
+                name
+                <> ": expected true or false (or yes/no, on/off, 1/0), got \""
+                <> value
+                <> "\"",
+              )
           }
         Error(Nil) -> Error(Nil)
       }

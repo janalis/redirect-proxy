@@ -262,7 +262,7 @@ pub fn invalid_env_values_are_errors_test() {
   assert errors
     == [
       "RP_SERVER_PORT: expected an integer, got \"80a\"",
-      "RP_ADMIN_ENABLED: expected true or false, got \"flase\"",
+      "RP_ADMIN_ENABLED: expected true or false (or yes/no, on/off, 1/0), got \"flase\"",
       "RP_LOG_LEVEL: expected one of debug, info, warning, error, critical, none, got \"verbose\"",
     ]
   // valid values (case and surrounding spaces aside) are applied
@@ -275,7 +275,9 @@ pub fn invalid_env_values_are_errors_test() {
 pub fn invalid_listener_log_switch_is_an_error_test() {
   let env = [#("RP_ACCESS_LOG_ADMIN_ENABLED", "flase")]
   assert config_env.env_errors(fn(name) { list.key_find(env, name) })
-    == ["RP_ACCESS_LOG_ADMIN_ENABLED: expected true or false, got \"flase\""]
+    == [
+      "RP_ACCESS_LOG_ADMIN_ENABLED: expected true or false (or yes/no, on/off, 1/0), got \"flase\"",
+    ]
 }
 
 pub fn every_listed_env_var_is_checked_test() {

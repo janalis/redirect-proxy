@@ -144,8 +144,8 @@ session_ttl = 28800
 session_idle_timeout = 3600
 
 [log]
-# The application log (the access log is configured below). Level: debug,
-# info, warning, error, critical or none. Format: "text", or "json" for one
+# The application log (the access log is configured in [access_log]). Level:
+# debug, info, warning, error, critical or none (critical messages only). Format: "text", or "json" for one
 # JSON object per line ({time, level, msg, domain}).
 level = "info"
 format = "text"
@@ -172,6 +172,7 @@ enabled = true
 # OpenID Connect single sign-on (Keycloak, Entra ID, Google, Okta, Authentik...).
 # Register <public_url>/auth/oidc/callback as redirect URI at the provider.
 enabled = false
+# Examples: both are empty by default and required when enabled.
 issuer = "https://idp.example.com/realms/main"
 client_id = "redirect-proxy"
 client_secret = ""
@@ -250,6 +251,7 @@ require_if_match = false
 # signed with a key of the issuer JWKS and contain iss, exp and an aud that
 # includes `audience`.
 enabled = false
+# An example: empty by default and required when enabled.
 issuer = "https://idp.example.com/realms/main"
 audience = "redirect-proxy"
 # Claim holding the scopes: a space separated string ("scope") or an array
