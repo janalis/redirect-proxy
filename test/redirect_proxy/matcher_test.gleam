@@ -71,6 +71,15 @@ pub fn host_is_normalised_test() {
   // in one pass: a long run of dots costs bytes, not graphemes squared
   let dots = "example.com" <> string.repeat(".", 100_000)
   assert matcher.normalise_request_host(dots) == "example.com"
+  // a host from the listener: ASCII, without a port
+  assert ffi.listener_host("Example.COM..") == #("example.com", True)
+  assert ffi.listener_host("[::1]") == #("[::1]", False)
+  assert ffi.listener_host("..") == #("", False)
+  assert ffi.listener_host("") == #("", False)
+  assert ffi.listener_host("a~B.test") == #("a~b.test", False)
+  let assert Ok(found) =
+    matcher.lookup_listener(m, "EXAMPLE.com.", "/a", "", False)
+  assert found.location == "/b"
 }
 
 pub fn precedence_exact_prefix_regex_test() {

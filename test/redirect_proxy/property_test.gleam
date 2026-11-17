@@ -914,3 +914,37 @@ pub fn next_boundary_agrees_with_crosses_boundary_test() {
       == { rule.next_boundary(rules, after) <= now }
   })
 }
+
+/// A Host the redirect listener accepts (the characters of a URI's
+/// reg-name, without a port) is normalised by `ffi.listener_host` as by
+/// `matcher.normalise_request_host` then `rule.is_host_name`, and looked
+/// up by `matcher.lookup_listener` as by `matcher.lookup_query`.
+pub fn listener_host_agrees_with_normalise_request_host_test() {
+  let char =
+    qcheck.codepoint_from_strings("a", [
+      "Z", "z", "A", "0", "9", "-", "_", ".", "~", "%", "!", "$", "&", "'", "(",
+      ")", "*", "+", ",", ";", "=",
+    ])
+  let m =
+    matcher.build([
+      Rule(..rule.blank(), id: "1", host: "a.test", source: "/x", target: "/1"),
+      Rule(
+        ..rule.blank(),
+        id: "2",
+        host: "*",
+        kind: rule.Prefix,
+        source: "/",
+        target: "https://${host}/$1",
+      ),
+    ])
+  use host <- check_many(500, qcheck.string_from(char))
+  let normalised = matcher.normalise_request_host(host)
+  assert ffi.listener_host(host) == #(normalised, rule.is_host_name(normalised))
+  let found = fn(r: Result(matcher.Match, Nil)) {
+    result.map(r, fn(m) { #(m.rule.id, m.location) })
+  }
+  assert found(matcher.lookup_listener(m, host, "/x", "", False))
+    == found(matcher.lookup_query(m, host, "/x", ""))
+  assert found(matcher.lookup_listener(m, host, "/x/", "", True))
+    == found(matcher.lookup_tolerant_query(m, host, "/x/", ""))
+}

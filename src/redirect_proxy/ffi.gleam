@@ -542,6 +542,12 @@ pub fn same_write(a: FileStamp, b: FileStamp) -> Bool
 pub fn is_host_name(host: String) -> Bool
 
 /// `string.lowercase`, with a fast path for ASCII (request hosts).
+/// A host from the redirect listener (ASCII, without a port), normalised
+/// like `matcher.normalise_request_host`, and whether it is a host name
+/// (`is_host_name`), in one scan.
+@external(erlang, "redirect_proxy_text_ffi", "listener_host")
+pub fn listener_host(host: String) -> #(String, Bool)
+
 @external(erlang, "redirect_proxy_text_ffi", "lowercase_host")
 pub fn lowercase_host(host: String) -> String
 

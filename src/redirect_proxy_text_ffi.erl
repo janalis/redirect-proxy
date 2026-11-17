@@ -4,7 +4,7 @@
 
 -export([
     binary_contains/2, binary_drop/2, binary_replace_all/3, binary_take/2,
-    encode_cached/2, header_value/1, is_ascii/1, is_host_name/1,
+    encode_cached/2, header_value/1, is_ascii/1, is_host_name/1, listener_host/1,
     lowercase_ascii/1, lowercase_host/1, needs_trim/1, no_control_chars/1,
     normalise_path/1, split_lines/1, strip_control/1, strip_port/1,
     strip_url_whitespace/1, url_host/1
@@ -184,6 +184,38 @@ host_bytes(<<C, Rest/binary>>)
        C =:= $-; C =:= $_; C =:= $. -> host_bytes(Rest);
 host_bytes(<<>>) -> true;
 host_bytes(_) -> false.
+
+%% A host as the redirect listener passes it: ASCII, without a port (its
+%% `authority/2` refuses other Host headers). Lower-cased, without trailing
+%% dots, and whether it is a host name: what `lowercase_host/1`,
+%% `strip_port/1`, dropping the dots and `is_host_name/1` give it, in one
+%% scan of the usual (lower-case) host.
+listener_host(Host) ->
+    case listener_scan(Host) of
+        upper ->
+            listener_host(lowercase_ascii(Host));
+        Name ->
+            Dropped = drop_dots(Host),
+            {Dropped, Name andalso Dropped =/= <<>>}
+    end.
+
+listener_scan(<<C, Rest/binary>>)
+  when (C >= $a andalso C =< $z); (C >= $0 andalso C =< $9);
+       C =:= $-; C =:= $_; C =:= $. -> listener_scan(Rest);
+listener_scan(<<>>) -> true;
+%% not a host name: lower-cased still (no upper-case letter before Rest)
+listener_scan(Rest) ->
+    case has_upper(Rest) of
+        true -> upper;
+        false -> false
+    end.
+
+drop_dots(<<>>) -> <<>>;
+drop_dots(Host) ->
+    case binary:last(Host) of
+        $. -> drop_dots(binary:part(Host, 0, byte_size(Host) - 1));
+        _ -> Host
+    end.
 
 %% ASCII is lowered byte by byte; anything else goes through Unicode case
 %% mapping, as string:lowercase/1 does.

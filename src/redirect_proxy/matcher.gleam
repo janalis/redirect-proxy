@@ -699,10 +699,55 @@ pub fn lookup_tolerant_query(
   path: String,
   query: String,
 ) -> Result(Match, Nil) {
+  let #(host, vars) = request_host(host)
+  tolerant_normalised(matcher, host, vars, path, query)
+}
+
+/// `lookup_query`, or `lookup_tolerant_query` when `tolerant`, for a host
+/// as the redirect listener passes it: ASCII, without a port (the listener
+/// refuses other Host headers). The host is normalised in one scan instead
+/// of one per step of `normalise_request_host`.
+pub fn lookup_listener(
+  matcher: Matcher,
+  host: String,
+  path: String,
+  query: String,
+  tolerant: Bool,
+) -> Result(Match, Nil) {
+  let #(host, name) = ffi.listener_host(host)
+  let vars =
+    template.RequestVars(
+      host: case name {
+        True -> host
+        False -> ""
+      },
+      sub: "",
+    )
+  case tolerant {
+    True -> tolerant_normalised(matcher, host, vars, path, query)
+    False ->
+      lookup_normalised(
+        matcher,
+        host,
+        ffi.normalise_path(path),
+        Error(Nil),
+        query,
+        vars,
+      )
+      |> to_result
+  }
+}
+
+fn tolerant_normalised(
+  matcher: Matcher,
+  host: String,
+  vars: template.RequestVars,
+  path: String,
+  query: String,
+) -> Result(Match, Nil) {
   // the host and path are normalised once for both forms (a trailing `/`
   // is kept by the normalisation, so the other form adds or drops it on
   // the normalised path)
-  let #(host, vars) = request_host(host)
   let normalised = ffi.normalise_path(path)
   let other = case normalised {
     "/" | "" -> Error(Nil)

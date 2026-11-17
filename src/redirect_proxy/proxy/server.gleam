@@ -576,8 +576,12 @@ fn find(
     "" -> "/"
     p -> p
   }
-  case config.trailing_slash {
-    "ignore" -> matcher.lookup_tolerant_query(current, host, path, query)
-    _ -> matcher.lookup_query(current, host, path, query)
-  }
+  // the host as the listener passes it: ASCII, without a port
+  matcher.lookup_listener(
+    current,
+    host,
+    path,
+    query,
+    config.trailing_slash == "ignore",
+  )
 }
