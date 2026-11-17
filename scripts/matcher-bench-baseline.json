@@ -2,15 +2,15 @@
   "build_ms": 39,
   "reductions_per_request": {
     "exact_hit": 161,
-    "exact_miss": 399,
+    "exact_miss": 386,
     "host_hit": 102,
-    "miss": 456,
-    "prefix_hit": 328,
+    "miss": 444,
+    "prefix_hit": 320,
     "query_hit": 328,
-    "regex_indexed_hit": 288,
-    "regex_unindexed_last": 596,
-    "tolerant_miss": 808,
-    "wildcard_hit": 417
+    "regex_indexed_hit": 273,
+    "regex_unindexed_last": 583,
+    "tolerant_miss": 784,
+    "wildcard_hit": 412
   },
   "rules": 11670
 }

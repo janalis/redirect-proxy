@@ -498,19 +498,8 @@ fn is_empty(index: Index(a)) -> Bool {
 /// The entries whose key is a prefix of `subject`, in no particular order.
 fn candidates(index: Index(a), subject: String) -> List(a) {
   case index {
-    Leaf(lengths:, entries:) -> {
-      let size = string.byte_size(subject)
-      list.fold(lengths, [], fn(found, length) {
-        case length <= size {
-          False -> found
-          True ->
-            case dict.get(entries, ffi.byte_take(subject, length)) {
-              Ok(entries) -> list.append(entries, found)
-              Error(Nil) -> found
-            }
-        }
-      })
-    }
+    Leaf(lengths:, entries:) ->
+      leaf_candidates(lengths, entries, subject, string.byte_size(subject), [])
     Node(length:, entries:, children:) ->
       case string.byte_size(subject) < length {
         // every key is at least `length` bytes long
@@ -522,11 +511,49 @@ fn candidates(index: Index(a), subject: String) -> List(a) {
             Error(Nil) -> []
           }
           case dict.get(entries, head) {
-            Ok(found) -> list.append(found, deeper)
+            Ok(found) -> add_candidates(found, deeper)
             Error(Nil) -> deeper
           }
         }
       }
+  }
+}
+
+/// The entries of a `Leaf` whose key is a prefix of `subject` (`size`
+/// bytes long), added to `found`. A loop rather than a fold: no closure
+/// call per length, on every request.
+fn leaf_candidates(
+  lengths: List(Int),
+  entries: Dict(String, List(a)),
+  subject: String,
+  size: Int,
+  found: List(a),
+) -> List(a) {
+  case lengths {
+    [] -> found
+    [length, ..rest] if length > size ->
+      leaf_candidates(rest, entries, subject, size, found)
+    [length, ..rest] ->
+      case dict.get(entries, ffi.byte_take(subject, length)) {
+        Ok(group) ->
+          leaf_candidates(
+            rest,
+            entries,
+            subject,
+            size,
+            add_candidates(group, found),
+          )
+        Error(Nil) -> leaf_candidates(rest, entries, subject, size, found)
+      }
+  }
+}
+
+/// `list.append`, without copying `group` when nothing was found yet (the
+/// usual case: one group matches, or none).
+fn add_candidates(group: List(a), found: List(a)) -> List(a) {
+  case found {
+    [] -> group
+    _ -> list.append(group, found)
   }
 }
 
@@ -957,18 +984,21 @@ fn match_prefix(
     False ->
       list.append(candidates(rules.prefix_ci, string.lowercase(path)), found)
   }
-  let found =
-    list.filter_map(found, fn(p) {
-      let remainder = prefix_remainder(p.rule, path)
-      // whole segments: `/blog` matches `/blog` and `/blog/…`, not `/blogger`
-      case
-        !p.rule.whole_segments
-        || rule.on_segment_boundary(p.rule.source, remainder)
-      {
-        True -> Ok(#(p, remainder))
-        False -> Error(Nil)
-      }
-    })
+  let found = case found {
+    [] -> []
+    _ ->
+      list.filter_map(found, fn(p) {
+        let remainder = prefix_remainder(p.rule, path)
+        // whole segments: `/blog` matches `/blog` and `/blog/…`, not `/blogger`
+        case
+          !p.rule.whole_segments
+          || rule.on_segment_boundary(p.rule.source, remainder)
+        {
+          True -> Ok(#(p, remainder))
+          False -> Error(Nil)
+        }
+      })
+  }
   case found {
     [] -> Error(Nil)
     [only] -> prefix_location(only, path, vars)
@@ -1038,9 +1068,12 @@ fn match_regex(
   path: String,
   vars: template.RequestVars,
 ) -> Lookup {
-  let indexed =
-    candidates(rules.regex, path)
-    |> list.sort(fn(a, b) { int.compare(a.rank, b.rank) })
+  let indexed = case candidates(rules.regex, path) {
+    // none or one is in rank order already
+    [_, _, ..] as indexed ->
+      list.sort(indexed, fn(a, b) { int.compare(a.rank, b.rank) })
+    indexed -> indexed
+  }
   run_regexes(indexed, rules.regex_unindexed, path, vars, 0, 0, 0)
 }
 
