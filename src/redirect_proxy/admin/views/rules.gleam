@@ -17,10 +17,10 @@ pub type Filters {
   Filters(
     query: String,
     host: String,
-    /// `match` in the URL, as in the API: exact, prefix, regex or "".
-    kind: String,
-    /// `enabled` in the URL, as in the API: true, false or "".
-    status: String,
+    /// As in the API: exact, prefix, regex or "".
+    match: String,
+    /// As in the API: true, false or "".
+    enabled: String,
     sort: String,
     page: Int,
     /// Rules with this tag ("" for any).
@@ -39,8 +39,8 @@ pub fn filters_query(filters: Filters) -> List(#(String, String)) {
   [
     #("q", filters.query),
     #("host", filters.host),
-    #("match", filters.kind),
-    #("enabled", filters.status),
+    #("match", filters.match),
+    #("enabled", filters.enabled),
     #("tag", filters.tag),
     #("sort", filters.sort),
   ]
@@ -182,18 +182,18 @@ fn filters_form(filters: Filters) -> Element(Nil) {
     h.div([a.class("col-6 md:col-auto")], [
       h.label([a.for("match"), a.class("visually-hidden")], [h.text("Match")]),
       h.select([a.id("match"), a.name("match"), a.class("form-control")], [
-        layout.select_option("", "All match types", filters.kind),
-        layout.select_option("exact", "Exact", filters.kind),
-        layout.select_option("prefix", "Prefix", filters.kind),
-        layout.select_option("regex", "Regex", filters.kind),
+        layout.select_option("", "All match types", filters.match),
+        layout.select_option("exact", "Exact", filters.match),
+        layout.select_option("prefix", "Prefix", filters.match),
+        layout.select_option("regex", "Regex", filters.match),
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [
       h.label([a.for("enabled"), a.class("visually-hidden")], [h.text("State")]),
       h.select([a.id("enabled"), a.name("enabled"), a.class("form-control")], [
-        layout.select_option("", "Enabled and disabled", filters.status),
-        layout.select_option("true", "Enabled only", filters.status),
-        layout.select_option("false", "Disabled only", filters.status),
+        layout.select_option("", "Enabled and disabled", filters.enabled),
+        layout.select_option("true", "Enabled only", filters.enabled),
+        layout.select_option("false", "Disabled only", filters.enabled),
       ]),
     ]),
     h.div([a.class("col-6 md:col-auto")], [

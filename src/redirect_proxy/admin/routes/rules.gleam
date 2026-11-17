@@ -1,5 +1,6 @@
-//// Redirection rules: list, create, edit, delete, toggle, reload, URL
-//// tester, import and export, audit log.
+//// Redirection rules: the list and its bulk actions, create, edit,
+//// delete, toggle, reload, the URL tester and the export. The import is
+//// in `import_export`, the audit log in `audit`.
 
 import gleam/bool
 import gleam/bytes_tree
@@ -43,8 +44,8 @@ fn filters_from(get: fn(String) -> String) -> rules_view.Filters {
   rules_view.Filters(
     query: string.trim(get("q")),
     host: string.trim(get("host")),
-    kind: either("match", "kind"),
-    status: case either("enabled", "status") {
+    match: either("match", "kind"),
+    enabled: case either("enabled", "status") {
       "enabled" -> "true"
       "disabled" -> "false"
       value -> value
@@ -127,8 +128,8 @@ fn matching(rules: List(Rule), f: rules_view.Filters) -> List(Rule) {
     store_rules.Filter(
       text: f.query,
       host: f.host,
-      kind: f.kind,
-      enabled: case f.status {
+      kind: f.match,
+      enabled: case f.enabled {
         "true" -> Some(True)
         "false" -> Some(False)
         _ -> None

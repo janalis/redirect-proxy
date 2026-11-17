@@ -1,4 +1,5 @@
-//// The import page of the admin, with its preview.
+//// The import page of the admin, with its preview. The export is a
+//// download of the rules list (`rules.export`).
 
 import gleam/bit_array
 import gleam/int
