@@ -184,6 +184,16 @@ pub type Filter {
 
 pub const any = Filter(actor: "", action: "", target: "", since: 0, until: 0)
 
+/// A `since` or `until` bound of a filter: an RFC 3339 date-time, in
+/// seconds since the epoch. A `+01:00` offset sent unencoded in a query
+/// arrives as ` 01:00`, and is read as sent.
+pub fn parse_bound(value: String) -> Result(Int, Nil) {
+  ffi.parse_rfc3339(string.replace(value, " ", "+"))
+}
+
+/// What `parse_bound` accepts, for error messages.
+pub const bound_hint = "an RFC 3339 date-time, e.g. 2026-11-06T12:00:00Z"
+
 /// The `limit` most recent entries matching `filter`, newest first, read
 /// from the current file and the rotated ones.
 pub fn search(path: String, filter: Filter, limit: Int) -> List(Entry) {

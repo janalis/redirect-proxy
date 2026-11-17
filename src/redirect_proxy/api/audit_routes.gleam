@@ -11,7 +11,6 @@ import redirect_proxy/api/problem
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/audit
 import redirect_proxy/config
-import redirect_proxy/ffi
 import wisp.{type Request, type Response}
 
 import redirect_proxy/api/params
@@ -30,8 +29,7 @@ pub fn audit_log(req: Request, ctx: Context) -> Response {
     case get(name) {
       "" -> Ok(0)
       value ->
-        // `+01:00` sent unencoded arrives as ` 01:00`
-        ffi.parse_rfc3339(string.replace(value, " ", "+"))
+        audit.parse_bound(value)
         |> result.replace_error(problem.bad_request(
           name <> " must be an RFC 3339 date-time (2026-11-06T12:00:00Z).",
         ))

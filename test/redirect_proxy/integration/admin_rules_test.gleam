@@ -167,6 +167,29 @@ pub fn audit_page_filters_test() {
   assert !string.contains(page("action=rule."), "<code>auth.login</code>")
   assert string.contains(page("action=auth."), "<code>auth.login</code>")
   assert string.contains(page("actor=nobody"), "No audit entry matches.")
+  // dates, as in the API
+  let future = "since=2999-01-01T00:00:00Z"
+  assert string.contains(page(future), "No audit entry matches.")
+  assert string.contains(
+    page("since=2000-01-01T00:00:00%2B01:00&until=2999-01-01T00:00:00Z"),
+    "<code>rule.create</code>",
+  )
+  // an unencoded + arrives as a space
+  assert string.contains(
+    page("since=2000-01-01T00:00:00+01:00"),
+    "<code>rule.create</code>",
+  )
+  assert string.contains(
+    page("until=2000-01-01T00:00:00Z"),
+    "No audit entry matches.",
+  )
+  // a date that cannot be read is ignored, and named
+  let invalid = page("since=yesterday")
+  assert string.contains(
+    invalid,
+    "Ignored invalid filters: since &quot;yesterday&quot; (an RFC 3339 date-time, e.g. 2026-11-06T12:00:00Z).",
+  )
+  assert string.contains(invalid, "<code>rule.create</code>")
 }
 
 pub fn destructive_actions_are_confirmed_test() {

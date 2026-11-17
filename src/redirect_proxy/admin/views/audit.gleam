@@ -2,7 +2,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, Some}
 import gleam/uri
 import lustre/attribute as a
 import lustre/element.{type Element}
@@ -14,12 +14,20 @@ import redirect_proxy/audit
 // --- audit ------------------------------------------------------------------
 
 pub type AuditFilters {
-  AuditFilters(actor: String, action: String, target: String)
+  AuditFilters(
+    actor: String,
+    action: String,
+    target: String,
+    /// RFC 3339 date-times as typed ("" for any).
+    since: String,
+    until: String,
+  )
 }
 
 pub fn audit_log(
   session: Session,
   features: layout.Features,
+  flash: Option(layout.Flash),
   entries: List(audit.Entry),
   filters: AuditFilters,
   page: Int,
@@ -31,6 +39,8 @@ pub fn audit_log(
       #("actor", filters.actor),
       #("action", filters.action),
       #("target", filters.target),
+      #("since", filters.since),
+      #("until", filters.until),
     ]
     |> list.filter(fn(kv) { kv.1 != "" })
     |> list.append([#("page", int.to_string(page))])
@@ -40,7 +50,7 @@ pub fn audit_log(
     title: "Audit log",
     session: Some(session),
     nav: layout.NavAudit,
-    flash: None,
+    flash:,
     features:,
     content: [
       layout.heading("Audit log", []),
@@ -48,6 +58,8 @@ pub fn audit_log(
         audit_filter("actor", "Who", filters.actor, "alice, oauth:client..."),
         audit_filter("action", "Action", filters.action, "rule., auth.login..."),
         audit_filter("target", "Subject", filters.target, "rule id, user..."),
+        audit_filter("since", "From", filters.since, "2026-11-06T00:00:00Z"),
+        audit_filter("until", "Before", filters.until, "2026-11-07T00:00:00Z"),
         h.div([a.class("col-12 md:col-auto")], [
           h.button(
             [a.type_("submit"), a.class("btn btn-outline theme-primary w-100")],
