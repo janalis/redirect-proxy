@@ -680,19 +680,10 @@ fn lookup_normalised(
   }
 }
 
-/// `lookup`, retrying a miss with the trailing slash added or removed
+/// `lookup_query`, retrying a miss with the trailing slash added or removed
 /// (`/docs/` finds the `/docs` rule and the other way round), host by
 /// host: a rule for the path as sent wins within a host, and a rule of the
 /// request host, for either form, wins over `*.parent` and `*` rules.
-pub fn lookup_tolerant(
-  matcher: Matcher,
-  host: String,
-  path: String,
-) -> Result(Match, Nil) {
-  lookup_tolerant_query(matcher, host, path, "")
-}
-
-/// `lookup_tolerant` with the request query string.
 pub fn lookup_tolerant_query(
   matcher: Matcher,
   host: String,

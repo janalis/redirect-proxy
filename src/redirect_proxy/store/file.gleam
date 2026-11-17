@@ -86,17 +86,9 @@ pub fn load_locked_or_busy(
   }
 }
 
-/// Reads, validates and returns the rules with the file fingerprint. Writes
-/// the file when it is created or when ids were assigned, so the caller must
-/// hold the file lock.
-pub fn load(
-  files: Files,
-  mode: LoadMode,
-) -> Result(#(List(Rule), String), String) {
-  load_failing(files, mode) |> result.map_error(fn(failure) { failure.reason })
-}
-
-/// `load`, saying why it failed.
+/// Reads, validates and returns the rules with the file fingerprint, or
+/// why they were refused. Writes the file when it is created or when ids
+/// were assigned, so the caller must hold the file lock.
 pub fn load_failing(
   files: Files,
   mode: LoadMode,

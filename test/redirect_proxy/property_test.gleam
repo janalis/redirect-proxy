@@ -15,6 +15,7 @@ import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/rule/template
 import redirect_proxy/rule_csv
+import redirect_proxy/store/rules as store_rules
 
 fn segment() -> qcheck.Generator(String) {
   qcheck.non_empty_string_from(
@@ -93,22 +94,22 @@ pub fn file_round_trip_test() {
         preserve_query: string.length(r.source) % 2 == 0,
       )
     })
-  assert rule.file_from_string(rule.file_to_string(rules)) == Ok(rules)
+  assert rule.file_from_string(store_rules.export(rules)) == Ok(rules)
 }
 
 /// The store's cached serialisation writes the same text, also after some
 /// rules changed, others were removed and the order moved.
 pub fn cached_file_text_is_the_same_test() {
   use rules <- check(rules())
-  assert rule.file_to_string_cached(rules) == rule.file_to_string(rules)
+  assert rule.file_to_string_cached(rules) == store_rules.export(rules)
   let changed =
     rules
     |> list.drop(1)
     |> list.map(fn(r) { Rule(..r, note: r.note <> "!") })
     |> list.append(list.take(rules, 1))
     |> list.reverse
-  assert rule.file_to_string_cached(changed) == rule.file_to_string(changed)
-  assert rule.file_to_string_cached(rules) == rule.file_to_string(rules)
+  assert rule.file_to_string_cached(changed) == store_rules.export(changed)
+  assert rule.file_to_string_cached(rules) == store_rules.export(rules)
 }
 
 /// The matcher agrees with a naive reference implementation for exact rules:
@@ -384,7 +385,12 @@ pub fn tolerant_lookup_agrees_with_reference_test() {
     })
     |> result.map(fn(r) { r.target })
   let actual =
-    matcher.lookup_tolerant(matcher.build(rules), probe_host, probe_path)
+    matcher.lookup_tolerant_query(
+      matcher.build(rules),
+      probe_host,
+      probe_path,
+      "",
+    )
     |> result.map(fn(m) { m.location })
   assert actual == expected
 }
@@ -622,7 +628,7 @@ pub fn any_rule_file_round_trip_test() {
     elements_from: any_rule(),
     length_from: qcheck.bounded_int(0, 6),
   ))
-  assert rule.file_from_string(rule.file_to_string(rules)) == Ok(rules)
+  assert rule.file_from_string(store_rules.export(rules)) == Ok(rules)
 }
 
 /// `any_rule` with the fields it leaves at their defaults set too: whole
@@ -910,8 +916,21 @@ pub fn next_boundary_agrees_with_crosses_boundary_test() {
     )
   check_many(1000, input, fn(input) {
     let #(rules, after, now) = input
-    assert rule.crosses_boundary(rules, after, now)
+    assert crosses_boundary(rules, after, now)
       == { rule.next_boundary(rules, after) <= now }
+  })
+}
+
+/// Whether a rule starts or expires after `after` and no later than `now`:
+/// the published rules are then out of date.
+fn crosses_boundary(rules: List(rule.Rule), after: Int, now: Int) -> Bool {
+  list.any(rules, fn(r) {
+    r.enabled
+    && { r.starts_at != "" || r.expires_at != "" }
+    && {
+      let #(from, until) = rule.window(r)
+      { from > after && from <= now } || { until > after && until <= now }
+    }
   })
 }
 

@@ -275,18 +275,10 @@ pub fn decoder() -> decode.Decoder(Rule) {
   ))
 }
 
-/// Serialises a full redirections file.
-pub fn file_to_string(rules: List(Rule)) -> String {
-  json.object([
-    #("version", json.int(file_format_version)),
-    #("rules", json.array(rules, to_json)),
-  ])
-  |> json.to_string
-}
-
-/// `file_to_string`, encoding again only the rules that changed since the
-/// calling process last wrote a file this way (the store: it rewrites the
-/// whole file after each change). The same text as `file_to_string`.
+/// Serialises a full redirections file, encoding again only the rules
+/// that changed since the calling process last wrote a file this way (the
+/// store: it rewrites the whole file after each change). The same text as
+/// encoding them all (`store/rules.export`).
 pub fn file_to_string_cached(rules: List(Rule)) -> String {
   "{\"version\":"
   <> int.to_string(file_format_version)
@@ -596,23 +588,10 @@ pub fn is_active(rule: Rule, now: Int) -> Bool {
   }
 }
 
-/// Whether a rule starts or expires after `after` and no later than `now`:
-/// the published rules are then out of date.
-pub fn crosses_boundary(rules: List(Rule), after: Int, now: Int) -> Bool {
-  list.any(rules, fn(r) {
-    r.enabled
-    && { r.starts_at != "" || r.expires_at != "" }
-    && {
-      let #(from, until) = window(r)
-      { from > after && from <= now } || { until > after && until <= now }
-    }
-  })
-}
-
 /// The first `starts_at` or `expires_at` of an enabled rule later than
 /// `after` (a time far in the future when there is none): the rules change
-/// what applies at that time. `crosses_boundary(rules, after, now)` is
-/// `next_boundary(rules, after) <= now`.
+/// what applies at that time, so the rules published at `after` are out of
+/// date at `now` when it is no later than `now`.
 pub fn next_boundary(rules: List(Rule), after: Int) -> Int {
   list.fold(rules, max_time, fn(next, r) {
     case r.enabled && { r.starts_at != "" || r.expires_at != "" } {

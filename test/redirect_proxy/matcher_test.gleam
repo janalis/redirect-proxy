@@ -480,7 +480,7 @@ pub fn trailing_slash_tolerance_test() {
       r("4", "*", rule.Exact, "/c/", "/c-slash"),
     ])
   let tolerant = fn(path) {
-    case matcher.lookup_tolerant(m, "h", path) {
+    case matcher.lookup_tolerant_query(m, "h", path, "") {
       Ok(found) -> Ok(found.location)
       Error(Nil) -> Error(Nil)
     }
@@ -504,7 +504,8 @@ pub fn trailing_slash_retry_is_per_host_test() {
       r("all", "*", rule.Prefix, "/", "/catch-all"),
     ])
   let tolerant = fn(host, path) {
-    matcher.lookup_tolerant(m, host, path) |> result.map(fn(m) { m.location })
+    matcher.lookup_tolerant_query(m, host, path, "")
+    |> result.map(fn(m) { m.location })
   }
   assert tolerant("a.example.test", "/docs/") == Ok("/host")
   assert tolerant("a.example.test", "/docs") == Ok("/host")
@@ -551,10 +552,11 @@ pub fn regex_budget_stops_the_lookup_test() {
     == Error(Nil)
   assert location(matcher.build([catch_all("*.test"), ..rules]), "x.test", path)
     == Error(Nil)
-  assert matcher.lookup_tolerant(
+  assert matcher.lookup_tolerant_query(
       matcher.build([catch_all("*"), ..rules]),
       "x.test",
       path,
+      "",
     )
     == Error(Nil)
   // a path the regexes refuse cheaply still reaches the broader rules

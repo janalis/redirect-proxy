@@ -6,6 +6,7 @@ import redirect_proxy/rule
 import redirect_proxy/snapshot
 import redirect_proxy/store
 import redirect_proxy/store/hits
+import redirect_proxy/store/rules as store_rules
 import simplifile
 import support
 
@@ -71,7 +72,7 @@ pub fn store_starts_with_out_of_range_saved_hits_test() {
   let dir = support.temp_dir()
   let rules = [saved_rule("invalid")]
   let assert Ok(Nil) =
-    simplifile.write(dir <> "/redirects.json", rule.file_to_string(rules))
+    simplifile.write(dir <> "/redirects.json", store_rules.export(rules))
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/hits.json",

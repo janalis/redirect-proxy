@@ -287,7 +287,7 @@ pub fn bulk_action_from_string(action: String) -> Result(BulkAction, Nil) {
   }
 }
 
-pub fn bulk_action_to_string(action: BulkAction) -> String {
+fn bulk_action_to_string(action: BulkAction) -> String {
   case action {
     Enable -> "enable"
     Disable -> "disable"
@@ -334,9 +334,6 @@ type State {
 pub type Store =
   Subject(Message)
 
-/// Starts the store. Fails if the redirections file exists but is invalid, so
-/// that a broken file never silently replaces the configuration.
-/// The state of a store that just loaded `rules`.
 /// The state of a store that loaded `rules`; `before` is the time and the
 /// file stamp taken before the load started. The schedule is checked from
 /// that time: a rule starting or expiring while a large file loads would
@@ -365,6 +362,8 @@ fn initial_state(
   )
 }
 
+/// Starts the store. Fails if the redirections file exists but is invalid, so
+/// that a broken file never silently replaces the configuration.
 pub fn start(
   settings: Settings,
   name: Name(Message),

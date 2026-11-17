@@ -1607,7 +1607,7 @@ pub fn a_lock_held_long_is_not_taken_over_test() {
         process.sleep(3000)
         let cli = Rule(..new_rule("/cli", "/t"), id: "cli")
         let assert Ok(Nil) =
-          simplifile.write(path, rule.file_to_string(list.append(rules, [cli])))
+          simplifile.write(path, store_rules.export(list.append(rules, [cli])))
         Nil
       })
     process.send(held, Nil)
