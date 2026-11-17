@@ -10,13 +10,13 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/api/clients
 import redirect_proxy/api/problem
 import redirect_proxy/api/rule_json as _
 import redirect_proxy/api/scope
 import redirect_proxy/api/token
 import redirect_proxy/api/web.{type Context} as _
 import redirect_proxy/audit
+import redirect_proxy/clients
 import redirect_proxy/config
 import redirect_proxy/ffi
 import redirect_proxy/log

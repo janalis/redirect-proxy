@@ -17,9 +17,8 @@ import gleam/string
 import redirect_proxy/audit
 import redirect_proxy/ffi
 import redirect_proxy/id
+import redirect_proxy/private_file
 import redirect_proxy/role.{type Role}
-import redirect_proxy/rule
-import simplifile
 
 pub type User {
   User(
@@ -56,9 +55,6 @@ pub type Settings {
   Settings(path: String, audit_path: String)
 }
 
-/// How long a change waits for another process to release the file.
-const lock_timeout = 5000
-
 pub fn list(settings: Settings) -> Result(List(User), String) {
   load(settings.path)
 }
@@ -93,7 +89,7 @@ pub fn create_with_role(
 ) -> Result(User, String) {
   let username = normalise(username)
   use Nil <- result.try(validate_username(username))
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use users <- result.try(load(settings.path))
   case list.any(users, fn(u) { u.username == username }) {
     True -> Error("user " <> username <> " already exists")
@@ -191,7 +187,7 @@ fn store_password_if(
   credentials: fn(User) -> String,
 ) -> Result(option.Option(User), String) {
   let username = normalise(username)
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use users <- result.try(load(settings.path))
   case list.find(users, fn(u) { u.username == username }) {
     Error(Nil) -> Error("user " <> username <> " does not exist")
@@ -230,7 +226,7 @@ pub fn set_role(
   by actor: String,
 ) -> Result(Nil, String) {
   let username = normalise(username)
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use users <- result.try(load(settings.path))
   case list.find(users, fn(u) { u.username == username }) {
     Error(Nil) -> Error("user " <> username <> " does not exist")
@@ -276,7 +272,7 @@ pub fn delete(
   by actor: String,
 ) -> Result(Nil, String) {
   let username = normalise(username)
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use users <- result.try(load(settings.path))
   case list.partition(users, fn(u) { u.username == username }) {
     #([], _) -> Error("user " <> username <> " does not exist")
@@ -348,39 +344,20 @@ fn role_decoder() -> decode.Decoder(Role) {
 }
 
 fn load(path: String) -> Result(List(User), String) {
-  case simplifile.is_file(path) {
-    Ok(True) -> {
-      use content <- result.try(
-        simplifile.read(path) |> result.map_error(simplifile.describe_error),
-      )
-      json.parse(content, decode.at(["users"], decode.list(user_decoder())))
-      |> result.map_error(fn(e) { path <> ": " <> rule.describe_json_error(e) })
-    }
-    _ -> Ok([])
-  }
+  private_file.load(path, "users", user_decoder())
 }
 
+/// Password hashes: `private_file` keeps them readable by the service
+/// account only.
 fn save(path: String, users: List(User)) -> Result(Nil, String) {
-  let content =
+  private_file.save(path, "users", users, fn(u) {
     json.object([
-      #("version", json.int(1)),
-      #(
-        "users",
-        json.array(users, fn(u) {
-          json.object([
-            #("username", json.string(u.username)),
-            #("password_hash", json.string(u.password_hash)),
-            #("role", json.string(role.to_string(u.role))),
-            #("created_at", json.string(u.created_at)),
-            #("updated_at", json.string(u.updated_at)),
-            #("credentials", json.string(u.credentials)),
-          ])
-        }),
-      ),
+      #("username", json.string(u.username)),
+      #("password_hash", json.string(u.password_hash)),
+      #("role", json.string(role.to_string(u.role))),
+      #("created_at", json.string(u.created_at)),
+      #("updated_at", json.string(u.updated_at)),
+      #("credentials", json.string(u.credentials)),
     ])
-    |> json.to_string
-  use Nil <- result.try(ffi.atomic_write_private(path, content <> "\n"))
-  // password hashes: readable by the service account only
-  let _ = simplifile.set_permissions_octal(path, 0o600)
-  Ok(Nil)
+  })
 }

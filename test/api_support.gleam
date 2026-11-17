@@ -11,9 +11,9 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleam/uri
-import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/app
+import redirect_proxy/clients
 import redirect_proxy/config
 import support.{type App}
 

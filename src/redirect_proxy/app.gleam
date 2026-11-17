@@ -18,13 +18,13 @@ import redirect_proxy/admin/auth/oidc
 import redirect_proxy/admin/auth/session
 import redirect_proxy/admin/router
 import redirect_proxy/admin/web as admin_web
-import redirect_proxy/api/clients
 import redirect_proxy/api/deprecation
 import redirect_proxy/api/router as api_router
 import redirect_proxy/api/token
 import redirect_proxy/api/web as api_web
 import redirect_proxy/audit
 import redirect_proxy/cidr
+import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/env as config_env
 import redirect_proxy/config/validate as config_validate

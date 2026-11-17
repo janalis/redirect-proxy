@@ -8,10 +8,10 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
-import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/app
 import redirect_proxy/audit
+import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/config/file as config_file
 import redirect_proxy/config/loader as config_loader

@@ -2,9 +2,9 @@ import envoy
 import gleam/list
 import gleam/string
 import redirect_proxy
-import redirect_proxy/api/clients
 import redirect_proxy/api/scope
 import redirect_proxy/app
+import redirect_proxy/clients
 import redirect_proxy/config
 import redirect_proxy/config/loader as config_loader
 import redirect_proxy/ffi

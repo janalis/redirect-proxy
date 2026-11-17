@@ -13,7 +13,7 @@ import redirect_proxy/admin/auth/oidc/provider
 import redirect_proxy/admin/auth/session.{type Session}
 import redirect_proxy/admin/views/layout
 import redirect_proxy/admin/views/pages
-import redirect_proxy/api/clients
+import redirect_proxy/clients
 import redirect_proxy/config.{type Config}
 import redirect_proxy/ffi
 import redirect_proxy/log

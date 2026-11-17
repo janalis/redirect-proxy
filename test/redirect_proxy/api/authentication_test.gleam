@@ -11,10 +11,10 @@ import gleam/json
 import gleam/list
 import gleam/string
 import redirect_proxy/api/auth
-import redirect_proxy/api/clients
 import redirect_proxy/api/routes
 import redirect_proxy/api/scope
 import redirect_proxy/app
+import redirect_proxy/clients
 import redirect_proxy/config
 import redirect_proxy/ffi
 import simplifile

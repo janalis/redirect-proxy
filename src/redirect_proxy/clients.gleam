@@ -15,8 +15,7 @@ import redirect_proxy/api/scope.{type Scope}
 import redirect_proxy/audit
 import redirect_proxy/ffi
 import redirect_proxy/id
-import redirect_proxy/rule
-import simplifile
+import redirect_proxy/private_file
 
 pub type Client {
   Client(
@@ -33,9 +32,6 @@ pub type Client {
 pub type Settings {
   Settings(path: String, audit_path: String)
 }
-
-/// How long a change waits for another process to release the file.
-const lock_timeout = 5000
 
 pub fn list(settings: Settings) -> Result(List(Client), String) {
   load(settings.path)
@@ -57,7 +53,7 @@ pub fn create(
 ) -> Result(#(Client, String), String) {
   let name = string.trim(name)
   use Nil <- result.try(validate(name, scopes))
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use clients <- result.try(load(settings.path))
   let secret = new_secret()
   let client =
@@ -88,7 +84,7 @@ pub fn rotate(
   client_id: String,
   by actor: String,
 ) -> Result(String, String) {
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use clients <- result.try(load(settings.path))
   use <- guard_exists(clients, client_id)
   let secret = new_secret()
@@ -116,7 +112,7 @@ pub fn delete(
   client_id: String,
   by actor: String,
 ) -> Result(Nil, String) {
-  use <- ffi.locked_file(settings.path, lock_timeout)
+  use <- private_file.locked(settings.path)
   use clients <- result.try(load(settings.path))
   use <- guard_exists(clients, client_id)
   use Nil <- result.try(save(
@@ -244,42 +240,22 @@ fn client_decoder() -> decode.Decoder(Client) {
 }
 
 fn load(path: String) -> Result(List(Client), String) {
-  case simplifile.is_file(path) {
-    Ok(True) -> {
-      use content <- result.try(
-        simplifile.read(path) |> result.map_error(simplifile.describe_error),
-      )
-      json.parse(content, decode.at(["clients"], decode.list(client_decoder())))
-      |> result.map_error(fn(e) { path <> ": " <> rule.describe_json_error(e) })
-    }
-    _ -> Ok([])
-  }
+  private_file.load(path, "clients", client_decoder())
 }
 
 fn save(path: String, clients: List(Client)) -> Result(Nil, String) {
-  let content =
+  private_file.save(path, "clients", clients, fn(c) {
     json.object([
-      #("version", json.int(1)),
+      #("client_id", json.string(c.client_id)),
+      #("name", json.string(c.name)),
+      #("secret_hash", json.string(c.secret_hash)),
       #(
-        "clients",
-        json.array(clients, fn(c) {
-          json.object([
-            #("client_id", json.string(c.client_id)),
-            #("name", json.string(c.name)),
-            #("secret_hash", json.string(c.secret_hash)),
-            #(
-              "scopes",
-              json.array(c.scopes, fn(s) { json.string(scope.to_string(s)) }),
-            ),
-            #("created_at", json.string(c.created_at)),
-            #("created_by", json.string(c.created_by)),
-            #("last_used_at", json.string(c.last_used_at)),
-          ])
-        }),
+        "scopes",
+        json.array(c.scopes, fn(s) { json.string(scope.to_string(s)) }),
       ),
+      #("created_at", json.string(c.created_at)),
+      #("created_by", json.string(c.created_by)),
+      #("last_used_at", json.string(c.last_used_at)),
     ])
-    |> json.to_string
-  use Nil <- result.try(ffi.atomic_write_private(path, content <> "\n"))
-  let _ = simplifile.set_permissions_octal(path, 0o600)
-  Ok(Nil)
+  })
 }
