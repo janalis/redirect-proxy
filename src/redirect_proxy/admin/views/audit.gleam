@@ -58,8 +58,8 @@ pub fn audit_log(
         audit_filter("actor", "Who", filters.actor, "alice, oauth:client..."),
         audit_filter("action", "Action", filters.action, "rule., auth.login..."),
         audit_filter("target", "Subject", filters.target, "rule id, user..."),
-        audit_filter("since", "From", filters.since, "2026-11-06T00:00:00Z"),
-        audit_filter("until", "Before", filters.until, "2026-11-07T00:00:00Z"),
+        audit_filter("since", "From", filters.since, "2026-11-06"),
+        audit_filter("until", "Before", filters.until, "2026-11-07"),
         h.div([a.class("col-12 md:col-auto")], [
           h.button(
             [a.type_("submit"), a.class("btn btn-outline theme-primary w-100")],
@@ -149,7 +149,7 @@ fn audit_row(e: audit.Entry) -> Element(Nil) {
   h.tr([], [
     h.td([a.class("small text-nowrap")], [h.text(e.at)]),
     h.td([], [h.text(e.actor)]),
-    h.td([], [h.code([], [h.text(e.action)])]),
+    h.td([a.class("text-nowrap")], [h.code([], [h.text(e.action)])]),
     h.td([a.class("small text-break")], [
       h.details([], [
         h.summary([], [h.text(e.target)]),
