@@ -214,7 +214,7 @@ pub fn audit_page_filters_test() {
   let invalid = page("since=yesterday")
   assert string.contains(
     invalid,
-    "Ignored invalid filters: since &quot;yesterday&quot; (an RFC 3339 date-time, e.g. 2026-11-06T12:00:00Z).",
+    "Ignored invalid filters: since &quot;yesterday&quot; (a date such as 2026-11-06, or an RFC 3339 date-time such as 2026-11-06T12:00:00Z).",
   )
   assert string.contains(invalid, "<code>rule.create</code>")
 }

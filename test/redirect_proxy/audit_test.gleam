@@ -207,3 +207,15 @@ pub fn rotation_preserves_archived_symlink_entries_test() {
   let assert Ok(files) = simplifile.read_directory(dir)
   assert !list.any(files, string.contains(_, ".rotate."))
 }
+
+/// A filter bound is an RFC 3339 date-time, or a date read as its
+/// midnight UTC (the admin's date fields suggest one).
+pub fn bounds_read_dates_as_midnight_utc_test() {
+  let assert Ok(midnight) = audit.parse_bound("2026-11-06T00:00:00Z")
+  assert audit.parse_bound("2026-11-06") == Ok(midnight)
+  // an offset sent unencoded in a query
+  assert audit.parse_bound("2026-11-06T01:00:00 01:00") == Ok(midnight)
+  assert audit.parse_bound("2026-13-40") == Error(Nil)
+  assert audit.parse_bound("not a date") == Error(Nil)
+  assert audit.parse_bound("") == Error(Nil)
+}

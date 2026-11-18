@@ -49,7 +49,7 @@ Local users and their roles, and the API clients of the
 ## Audit log
 
 Who changed what, with filters (who, action, subject, and a time range in
-RFC 3339, as `since` and `until` in the API) and a field by field diff,
+RFC 3339 or as dates, as `since` and `until` in the API) and a field by field diff,
 and sign-ins. See [Operations](operations#audit) for what is recorded and
 how the file rotates.
 
