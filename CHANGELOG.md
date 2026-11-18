@@ -53,7 +53,6 @@ from [Conventional Commits](https://www.conventionalcommits.org/).
 * look up the access log's headers with lists:keyfind ([37aca93](https://github.com/janalis/redirect-proxy/commit/37aca93a4c26bca71b1dd3d0e40c7cf7e357dac1))
 * normalise the listener's request host in one scan ([c1597d8](https://github.com/janalis/redirect-proxy/commit/c1597d81d0d91348690497ebc204102871ac9562))
 * read the metric counters once per redirect request ([035c7a5](https://github.com/janalis/redirect-proxy/commit/035c7a57240cadb7de7fbdd22a89399e9e8dfaf1))
-* send access log lines to their writer without joining them ([3ac1d0b](https://github.com/janalis/redirect-proxy/commit/3ac1d0b9ec435a121aa69b76e590c8305d08bac2))
 * write a literal content length for empty responses ([be7864a](https://github.com/janalis/redirect-proxy/commit/be7864a8638b4644275ca92ac212f80f545db188))
 * write IPv4 client addresses for the access log in one binary ([b5c892d](https://github.com/janalis/redirect-proxy/commit/b5c892d12e984598c716a6f6dd3548a736451e45))
 
