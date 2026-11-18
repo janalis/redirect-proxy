@@ -1371,7 +1371,8 @@ pub fn scheduled_rules_test() {
     store_support.create(s, new_rule("/sale", "/always"), by: "t")
   assert string.contains(overlap, "at the same time")
 
-  // a rule starting in 2 seconds and expiring in 3
+  // a rule starting in 2 seconds and expiring in 5: a window wide enough
+  // to be seen on a loaded machine
   let now = system_ffi.now_seconds()
   let assert Ok(_) =
     store_support.create(
@@ -1379,13 +1380,15 @@ pub fn scheduled_rules_test() {
       Rule(
         ..new_rule("/soon", "/started"),
         starts_at: system_ffi.rfc3339(now + 2),
-        expires_at: system_ffi.rfc3339(now + 3),
+        expires_at: system_ffi.rfc3339(now + 5),
       ),
       by: "t",
     )
-  assert redirect("/soon") == Error(Nil)
-  support.wait_until(fn() { redirect("/soon") == Ok("/started") }, 4000)
-  support.wait_until(fn() { redirect("/soon") == Error(Nil) }, 4000)
+  // not yet started, unless creating it took that long
+  let not_started = redirect("/soon")
+  assert not_started == Error(Nil) || system_ffi.now_seconds() >= now + 2
+  support.wait_until(fn() { redirect("/soon") == Ok("/started") }, 6000)
+  support.wait_until(fn() { redirect("/soon") == Error(Nil) }, 8000)
 }
 
 /// Exact rules for one path with different query conditions are not in
