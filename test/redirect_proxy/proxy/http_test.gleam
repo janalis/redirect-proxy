@@ -598,13 +598,18 @@ pub fn heads_split_across_packets_are_parsed_test() {
 /// A message the connection does not expect wakes it from hibernation,
 /// without restarting its idle timeout.
 pub fn stray_messages_do_not_extend_the_idle_timeout_test() {
-  let socket = open(start())
-  let #(text, _) = get(socket, 100)
+  // idle 2 s, hibernated after 1 s: room for a loaded machine between the
+  // poke and the close, which a restarted timeout would push past the read
+  let socket = open(start_with_idle_timeout(2000))
+  send(socket, <<"GET / HTTP/1.1\r\nhost: a\r\n\r\n":utf8>>)
+  let #(received, _) = read_until(socket, <<"hello":utf8>>, 2000)
+  let assert Ok(text) = bit_array.to_string(received)
   assert string.starts_with(text, "HTTP/1.1 200 OK\r\n")
-  // hibernated after 150 ms
-  process.sleep(100)
+  process.sleep(1100)
   poke(connection_process(socket))
-  let #(text, closed) = read(socket, 1000)
+  // closed about 2 s after the request; about 3.1 s if the poke restarted
+  // the timeout
+  let #(text, closed) = read(socket, 1500)
   close(socket)
   assert text == <<>>
   assert closed
