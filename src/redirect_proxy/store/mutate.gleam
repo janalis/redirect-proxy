@@ -13,7 +13,7 @@ import redirect_proxy/store/state.{
   type State, in_effect, lock_timeout, save_hits_if_removed,
 }
 
-/// What a change that was not made is reported as (`store.ChangeError`).
+/// What a change that was not made is reported as (`rule_change.ChangeError`).
 pub type Errors(e) {
   Errors(
     /// Another process holds the lock of the file past the wait, or the

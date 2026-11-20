@@ -25,6 +25,7 @@ import redirect_proxy/rule
 import redirect_proxy/rule_csv
 import redirect_proxy/scope
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import redirect_proxy/store/rules/imports
 import redirect_proxy/store/rules/listing
 import redirect_proxy/store/rules/validate
@@ -105,10 +106,11 @@ pub fn run(args: List(String)) -> Result(Nil, String) {
     ["rules", "validate"] -> rules_validate(config_path, "")
     ["rules", "validate", file] -> rules_validate(config_path, file)
     ["rules", "export"] -> rules_export(config_path)
-    ["rules", "import", file] -> rules_import(config_path, file, store.Merge)
+    ["rules", "import", file] ->
+      rules_import(config_path, file, rule_change.Merge)
     ["rules", "import", file, "--replace"]
     | ["rules", "import", "--replace", file] ->
-      rules_import(config_path, file, store.Replace)
+      rules_import(config_path, file, rule_change.Replace)
     ["version"] | ["--version"] | ["-v"] -> {
       io.println("redirect-proxy " <> version)
       Ok(Nil)
@@ -547,13 +549,17 @@ const store_busy =
 /// Why an import was refused. The file lock that another process (a
 /// server making a change, another command) holds past the wait says the
 /// command made no change and can be retried.
-fn describe_import_error(error: store.ChangeError) -> String {
+fn describe_import_error(error: rule_change.ChangeError) -> String {
   case error {
-    store.Busy(reason) -> store_busy <> "\n" <> reason
-    store.Storage(reason) -> reason
-    store.Invalid(errors) -> string.join(field_error.to_strings(errors), "\n")
+    rule_change.Busy(reason) -> store_busy <> "\n" <> reason
+    rule_change.Storage(reason) -> reason
+    rule_change.Invalid(errors) ->
+      string.join(field_error.to_strings(errors), "\n")
     // an import names no one rule, and expects no version
-    store.NotFound | store.AlreadyExists | store.Conflict(_) | store.Stale(_) ->
+    rule_change.NotFound
+    | rule_change.AlreadyExists
+    | rule_change.Conflict(_)
+    | rule_change.Stale(_) ->
       "the rules were changed meanwhile; nothing was changed, retry"
   }
 }
@@ -561,7 +567,7 @@ fn describe_import_error(error: store.ChangeError) -> String {
 fn rules_import(
   config_path: String,
   file: String,
-  mode: store.ImportMode,
+  mode: rule_change.ImportMode,
 ) -> Result(Nil, String) {
   use cfg <- result.try(load_for_change(config_path))
   use content <- result.try(

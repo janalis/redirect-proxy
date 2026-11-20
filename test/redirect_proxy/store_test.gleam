@@ -11,6 +11,7 @@ import redirect_proxy/matcher
 import redirect_proxy/rule.{Rule}
 import redirect_proxy/snapshot
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import redirect_proxy/store/rules/diff
 import redirect_proxy/store/rules/imports
 import redirect_proxy/store/rules/listing
@@ -265,7 +266,8 @@ pub fn import_merge_and_replace_test() {
     Rule(..existing, target: "/updated"),
     new_rule("/b", "/2"),
   ]
-  assert store_support.import_rules(s, incoming, store.Merge, by: "t") == Ok(2)
+  assert store_support.import_rules(s, incoming, rule_change.Merge, by: "t")
+    == Ok(2)
   assert redirect("/a") == Ok("/updated")
   assert redirect("/b") == Ok("/2")
   assert list.length(store.all(s)) == 2
@@ -273,7 +275,7 @@ pub fn import_merge_and_replace_test() {
   assert store_support.import_rules(
       s,
       [new_rule("/c", "/3")],
-      store.Replace,
+      rule_change.Replace,
       by: "t",
     )
     == Ok(1)
@@ -285,7 +287,7 @@ pub fn import_merge_and_replace_test() {
     store_support.import_rules(
       s,
       [new_rule("/d", "/4"), new_rule("bad", "/5")],
-      store.Merge,
+      rule_change.Merge,
       by: "t",
     )
   assert errors != []
@@ -299,15 +301,22 @@ pub fn import_keeps_creation_dates_test() {
   let s = start(settings(dir, 0))
   let created = "2020-01-01T00:00:00Z"
   let dated = Rule(..new_rule("/a", "/1"), id: "a", created_at: created)
-  assert store_support.import_rules(s, [dated], store.Merge, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [dated], rule_change.Merge, by: "t")
+    == Ok(1)
   let undated = Rule(..dated, target: "/2", created_at: "")
-  assert store_support.import_rules(s, [undated], store.Merge, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [undated], rule_change.Merge, by: "t")
+    == Ok(1)
   let assert Ok(after) = store.get(s, "a")
   assert after.target == "/2"
   assert after.created_at == created
   let fresh = Rule(..new_rule("/b", "/3"), created_at: "")
   let undated = Rule(..undated, target: "/4")
-  assert store_support.import_rules(s, [undated, fresh], store.Replace, by: "t")
+  assert store_support.import_rules(
+      s,
+      [undated, fresh],
+      rule_change.Replace,
+      by: "t",
+    )
     == Ok(2)
   let assert Ok(after) = store.get(s, "a")
   assert after.created_at == created
@@ -323,29 +332,30 @@ pub fn set_changes_check_the_rules_they_change_test() {
   let b = Rule(..new_rule("/b", "/a"), id: "b")
   // a loop
   let assert Error(errors) =
-    store_support.import_rules(s, [a, b], store.Merge, by: "t")
+    store_support.import_rules(s, [a, b], rule_change.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Error(_) =
-    store_support.preview_import(s, [a, b], store.Merge, by: "t")
+    store_support.preview_import(s, [a, b], rule_change.Merge, by: "t")
   // a target that never redirects
   let unsafe = Rule(..new_rule("/u/", "https://$1x.com/"), kind: rule.Prefix)
   let assert Error([error]) =
-    store_support.import_rules(s, [unsafe], store.Merge, by: "t")
+    store_support.import_rules(s, [unsafe], rule_change.Merge, by: "t")
   assert string.contains(error, "never redirect")
   // enabling the second half of a loop
   let off = Rule(..b, enabled: False)
-  assert store_support.import_rules(s, [a, off], store.Merge, by: "t") == Ok(2)
+  assert store_support.import_rules(s, [a, off], rule_change.Merge, by: "t")
+    == Ok(2)
   let assert Error(errors) =
-    store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
+    store.bulk_versioned(s, ["b"], rule_change.Enable, None, by: "t")
   assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
   // a file that loaded with a problem imports again, unchanged
   let legacy = Rule(..new_rule("/q?x=1", "/t"), id: "legacy")
   let assert Ok(Nil) =
     simplifile.write(dir <> "/redirects.json", listing.export([legacy]))
   let assert Ok(_) = store.reload(s, by: "t")
-  assert store_support.import_rules(s, [legacy], store.Replace, by: "t")
+  assert store_support.import_rules(s, [legacy], rule_change.Replace, by: "t")
     == Ok(1)
-  assert store.bulk_versioned(s, ["legacy"], store.Disable, None, by: "t")
+  assert store.bulk_versioned(s, ["legacy"], rule_change.Disable, None, by: "t")
     == Ok(1)
 }
 
@@ -378,7 +388,7 @@ pub fn unchanged_imported_rules_keep_their_version_test() {
     store_support.import_rules(
       s,
       [a, Rule(..b, target: "/u")],
-      store.Merge,
+      rule_change.Merge,
       by: "bob",
     )
   let assert Ok(a2) = store.get(s, "a")
@@ -398,14 +408,15 @@ pub fn loaded_reserved_ids_import_again_test() {
   let assert Ok(Nil) =
     simplifile.write(dir <> "/redirects.json", listing.export([export]))
   let assert Ok(_) = store.reload(s, by: "t")
-  assert store_support.import_rules(s, [export], store.Replace, by: "t")
+  assert store_support.import_rules(s, [export], rule_change.Replace, by: "t")
     == Ok(1)
-  assert store_support.import_rules(s, [export], store.Merge, by: "t") == Ok(1)
+  assert store_support.import_rules(s, [export], rule_change.Merge, by: "t")
+    == Ok(1)
   let assert Ok(_) =
-    store_support.preview_import(s, [export], store.Merge, by: "t")
+    store_support.preview_import(s, [export], rule_change.Merge, by: "t")
   let bulk = Rule(..new_rule("/b", "/t"), id: "bulk")
   let assert Error([error]) =
-    store_support.import_rules(s, [bulk], store.Merge, by: "t")
+    store_support.import_rules(s, [bulk], rule_change.Merge, by: "t")
   assert string.contains(error, "reserved")
 }
 
@@ -419,7 +430,12 @@ pub fn loaded_ids_with_spaces_import_again_test() {
     simplifile.write(dir <> "/redirects.json", listing.export([spaced]))
   let assert Ok(_) = store.reload(s, by: "t")
   let fresh = Rule(..new_rule("/f", "/t"), id: " b ")
-  assert store_support.import_rules(s, [spaced, fresh], store.Merge, by: "t")
+  assert store_support.import_rules(
+      s,
+      [spaced, fresh],
+      rule_change.Merge,
+      by: "t",
+    )
     == Ok(2)
   assert list.map(store.all(s), fn(r) { r.id }) == [" a", "b"]
   // two ids that are one once trimmed are duplicates
@@ -427,7 +443,7 @@ pub fn loaded_ids_with_spaces_import_again_test() {
     store_support.import_rules(
       s,
       [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
-      store.Merge,
+      rule_change.Merge,
       by: "t",
     )
   assert list.any(errors, string.contains(_, "duplicate"))
@@ -435,7 +451,7 @@ pub fn loaded_ids_with_spaces_import_again_test() {
     store_support.preview_import(
       s,
       [Rule(..fresh, id: "b"), Rule(..fresh, id: " b", source: "/g")],
-      store.Merge,
+      rule_change.Merge,
       by: "t",
     )
 }
@@ -452,17 +468,17 @@ pub fn scheduled_loops_are_refused_test() {
   let assert Error(errors) = store_support.create(s, later, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Error(errors) =
-    store_support.import_rules(s, [later], store.Merge, by: "t")
+    store_support.import_rules(s, [later], rule_change.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Ok(1) =
     store_support.import_rules(
       s,
       [Rule(..later, enabled: False)],
-      store.Merge,
+      rule_change.Merge,
       by: "t",
     )
   let assert Error(errors) =
-    store.bulk_versioned(s, ["b"], store.Enable, None, by: "t")
+    store.bulk_versioned(s, ["b"], rule_change.Enable, None, by: "t")
   assert list.any(errors_of(errors), string.contains(_, "redirect loop"))
   // rules whose windows do not overlap do not loop
   let assert Ok(_) =
@@ -490,7 +506,7 @@ pub fn loops_with_a_rule_that_starts_later_are_refused_test() {
   let assert Error(errors) = store_support.create(s, now, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Error(errors) =
-    store_support.import_rules(s, [now], store.Merge, by: "t")
+    store_support.import_rules(s, [now], rule_change.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   // one that expires before the other starts does not loop
   let assert Ok(_) =
@@ -540,7 +556,7 @@ pub fn loops_through_rules_taking_turns_are_refused_test() {
   let assert Error(errors) = store_support.create(s, x, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
   let assert Error(errors) =
-    store_support.import_rules(s, [x], store.Merge, by: "t")
+    store_support.import_rules(s, [x], rule_change.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
@@ -568,7 +584,7 @@ pub fn each_imported_rule_is_followed_at_its_own_times_test() {
   let b =
     Rule(..new_rule("/b", "/c"), id: "b", starts_at: "2999-01-01T00:00:00Z")
   let assert Error(errors) =
-    store_support.import_rules(s, [a, b], store.Merge, by: "t")
+    store_support.import_rules(s, [a, b], rule_change.Merge, by: "t")
   assert list.any(errors, string.contains(_, "redirect loop"))
 }
 
@@ -598,7 +614,7 @@ pub fn rules_starting_later_are_followed_past_the_kept_matchers_test() {
     store_support.import_rules(
       s,
       list.append(fillers, [b]),
-      store.Merge,
+      rule_change.Merge,
       by: "t",
     )
   assert list.any(errors, string.contains(_, "redirect loop"))
@@ -613,12 +629,12 @@ pub fn disabled_rules_are_checked_too_test() {
   let bad = Rule(..new_rule("/q?x=1", "/t"), id: "bad", enabled: False)
   let assert Error([_]) = store_support.create(s, bad, by: "t")
   let assert Error(_) =
-    store_support.import_rules(s, [bad], store.Merge, by: "t")
+    store_support.import_rules(s, [bad], rule_change.Merge, by: "t")
 }
 
-fn errors_of(error: store.ChangeError) -> List(String) {
+fn errors_of(error: rule_change.ChangeError) -> List(String) {
   case error {
-    store.Invalid(errors) -> field_error.to_strings(errors)
+    rule_change.Invalid(errors) -> field_error.to_strings(errors)
     _ -> []
   }
 }
@@ -685,7 +701,7 @@ pub fn outside_changes_whose_ids_cannot_be_written_are_told_apart_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   let result = store.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  let assert Error(store.Storage(reason)) = result
+  let assert Error(rule_change.Storage(reason)) = result
   assert string.contains(reason, "could not be written")
   assert !string.contains(reason, "is invalid")
 }
@@ -695,7 +711,7 @@ pub fn invalid_outside_changes_are_not_overwritten_test() {
   let s = start(settings(dir, 5))
   let broken = "{\"version\": 1, \"rules\": [ half written"
   let assert Ok(Nil) = simplifile.write(dir <> "/redirects.json", broken)
-  let assert Error(store.Storage(reason)) =
+  let assert Error(rule_change.Storage(reason)) =
     store.create(s, new_rule("/x", "/y"), by: "server")
   assert string.contains(reason, "changed outside the server")
   assert simplifile.read(dir <> "/redirects.json") == Ok(broken)
@@ -713,7 +729,7 @@ pub fn unreadable_outside_changes_are_not_overwritten_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o200)
   let result = store.create(s, new_rule("/x", "/y"), by: "server")
   let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o600)
-  let assert Error(store.Storage(reason)) = result
+  let assert Error(rule_change.Storage(reason)) = result
   assert string.contains(reason, "cannot be read")
   assert simplifile.read(path) == Ok(theirs)
 }
@@ -725,11 +741,12 @@ pub fn unwritable_files_are_storage_failures_test() {
   let s = start(settings(dir, 0))
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o500)
   let created = store.create(s, new_rule("/x", "/y"), by: "t")
-  let imported = store.import_rules(s, [new_rule("/i", "/y")], store.Merge, "t")
+  let imported =
+    store.import_rules(s, [new_rule("/i", "/y")], rule_change.Merge, "t")
   let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
-  let assert Error(store.Storage(reason)) = created
+  let assert Error(rule_change.Storage(reason)) = created
   assert string.contains(reason, "could not be written")
-  let assert Error(store.Storage(_)) = imported
+  let assert Error(rule_change.Storage(_)) = imported
   assert store.all(s) == []
 }
 
@@ -742,7 +759,7 @@ pub fn a_lock_held_past_the_wait_is_busy_test() {
   let assert Ok(Nil) = simplifile.write(lock, "12345 cli@host\n")
   let created = store.create(s, new_rule("/x", "/y"), by: "t")
   let assert Ok(Nil) = simplifile.delete(lock)
-  let assert Error(store.Busy(reason)) = created
+  let assert Error(rule_change.Busy(reason)) = created
   assert string.contains(reason, "is held by another process")
   let assert Ok(_) = store.create(s, new_rule("/x", "/y"), by: "t")
 }
@@ -992,7 +1009,7 @@ pub fn imports_and_reloads_are_audited_with_their_changes_test() {
         Rule(..kept, target: "/k2"),
         Rule(..new_rule("/new", "/n"), id: "new-id"),
       ],
-      store.Merge,
+      rule_change.Merge,
       by: "importer",
     )
   let assert [entry, ..] = audit.tail(dir <> "/audit.jsonl", 1)
@@ -1244,28 +1261,36 @@ pub fn versioned_set_changes_test() {
   assert store.import_rules_versioned(
       s,
       incoming,
-      store.Replace,
+      rule_change.Replace,
       Some(before),
       by: "t",
     )
-    == Error(store.Stale(current))
-  assert store.bulk_versioned(s, [a.id], store.Disable, Some(before), by: "t")
-    == Error(store.Stale(current))
+    == Error(rule_change.Stale(current))
+  assert store.bulk_versioned(
+      s,
+      [a.id],
+      rule_change.Disable,
+      Some(before),
+      by: "t",
+    )
+    == Error(rule_change.Stale(current))
   assert store.all(s) == [a]
   // the preview tells which version it was computed against
   let assert Ok(#(_, previewed)) =
-    store_support.preview_import(s, incoming, store.Replace, by: "t")
+    store_support.preview_import(s, incoming, rule_change.Replace, by: "t")
   assert previewed == current
   assert store.import_rules_versioned(
       s,
       incoming,
-      store.Replace,
+      rule_change.Replace,
       Some(previewed),
       by: "t",
     )
     == Ok(1)
-  assert store.bulk_versioned(s, [], store.Disable, Some("*"), by: "t")
-    == Error(store.Invalid([FieldError("ids", "select at least one rule")]))
+  assert store.bulk_versioned(s, [], rule_change.Disable, Some("*"), by: "t")
+    == Error(
+      rule_change.Invalid([FieldError("ids", "select at least one rule")]),
+    )
 }
 
 /// The preview of an import tells exactly what the import then changes: a
@@ -1284,12 +1309,12 @@ pub fn import_preview_matches_the_import_test() {
     Rule(..new_rule("/c", "/3"), id: "c"),
   ]
   let assert Ok(#(preview, _)) =
-    store_support.preview_import(s, incoming, store.Merge, by: "t")
+    store_support.preview_import(s, incoming, rule_change.Merge, by: "t")
   assert preview.added == ["c"]
   assert preview.changed == [b.id]
   assert preview.removed == []
   let assert Ok(3) =
-    store_support.import_rules(s, incoming, store.Merge, by: "t")
+    store_support.import_rules(s, incoming, rule_change.Merge, by: "t")
   let after = store.all(s)
   let applied = diff.diff(before, after)
   assert applied.added == preview.added

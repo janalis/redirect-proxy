@@ -7,6 +7,7 @@ import gleam/result
 import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import redirect_proxy/store/rules/diff
 
 pub fn create(
@@ -36,7 +37,7 @@ pub fn delete(
 pub fn import_rules(
   s: store.Store,
   rules: List(Rule),
-  mode: store.ImportMode,
+  mode: rule_change.ImportMode,
   by actor: String,
 ) -> Result(Int, List(String)) {
   store.import_rules(s, rules, mode, actor) |> result.map_error(describe)
@@ -45,22 +46,24 @@ pub fn import_rules(
 pub fn preview_import(
   s: store.Store,
   rules: List(Rule),
-  mode: store.ImportMode,
+  mode: rule_change.ImportMode,
   by actor: String,
 ) -> Result(#(diff.Diff, String), List(String)) {
   store.preview_import(s, rules, mode, actor) |> messages
 }
 
 /// A refused change, as text.
-pub fn describe(error: store.ChangeError) -> List(String) {
+pub fn describe(error: rule_change.ChangeError) -> List(String) {
   case error {
-    store.NotFound -> ["id: rule not found"]
-    store.AlreadyExists -> ["id: already exists"]
-    store.Conflict(_) -> ["version: the rule was modified concurrently"]
-    store.Stale(_) -> ["version: the rules were changed since they were read"]
-    store.Invalid(errors) -> field_error.to_strings(errors)
-    store.Busy(reason) -> ["busy: " <> reason]
-    store.Storage(reason) -> ["storage: " <> reason]
+    rule_change.NotFound -> ["id: rule not found"]
+    rule_change.AlreadyExists -> ["id: already exists"]
+    rule_change.Conflict(_) -> ["version: the rule was modified concurrently"]
+    rule_change.Stale(_) -> [
+      "version: the rules were changed since they were read",
+    ]
+    rule_change.Invalid(errors) -> field_error.to_strings(errors)
+    rule_change.Busy(reason) -> ["busy: " <> reason]
+    rule_change.Storage(reason) -> ["storage: " <> reason]
   }
 }
 

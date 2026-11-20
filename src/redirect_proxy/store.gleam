@@ -14,26 +14,23 @@
 //// changed on disk since it was last read or written, reloads it first, so
 //// that outside changes are never silently overwritten.
 ////
-//// This module is the store's interface, and decides what each change
-//// makes of the rules. The actor's work is in `store/*`: how callers wait
-//// (`call`), how a change is applied (`mutate`), reloads (`reload`), the
-//// file watcher (`watch`), the work each second (`periodic`) and the audit
-//// entries (`audit_entries`).
+//// This module is the store's interface and its actor. What a change asks
+//// for and why one is refused are in `store/rule_change`, shared with its
+//// callers. The actor's work is in `store/*`: how callers wait (`call`),
+//// how a change is applied (`mutate`) and what it makes of the rules
+//// (`edit`), reloads (`reload`), the file watcher (`watch`), the work each
+//// second (`periodic`) and the audit entries (`audit_entries`).
 
-import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None}
 import gleam/otp/actor
 import gleam/result
 import gleam/set
-import gleam/string
-import redirect_proxy/audit
 import redirect_proxy/ffi/file as file_ffi
 import redirect_proxy/ffi/system as system_ffi
-import redirect_proxy/field_error.{type FieldError, FieldError}
-import redirect_proxy/id
+import redirect_proxy/field_error.{type FieldError}
 import redirect_proxy/log
 import redirect_proxy/matcher
 import redirect_proxy/metrics
@@ -43,15 +40,18 @@ import redirect_proxy/store/audit_entries
 import redirect_proxy/store/call.{call, read, rescue_store_timeout}
 import redirect_proxy/store/checker
 import redirect_proxy/store/commit
+import redirect_proxy/store/edit
 import redirect_proxy/store/file as store_file
 import redirect_proxy/store/hits
 import redirect_proxy/store/mutate
 import redirect_proxy/store/periodic
 import redirect_proxy/store/reload
+import redirect_proxy/store/rule_change.{
+  type BulkAction, type ChangeError, type ImportMode, Busy, Invalid, Storage,
+}
 import redirect_proxy/store/rules/check
 import redirect_proxy/store/rules/diff
 import redirect_proxy/store/rules/imports
-import redirect_proxy/store/rules/validate
 import redirect_proxy/store/state.{
   type Config, type State, Config, initial as initial_state,
 }
@@ -93,56 +93,6 @@ pub type Settings {
   )
 }
 
-pub type ImportMode {
-  /// Replace every rule with the imported ones.
-  Replace
-  /// Add imported rules; rules with an existing id are updated.
-  Merge
-}
-
-/// `merge` or `replace`, as given to the admin form and the API.
-pub fn import_mode_from_string(mode: String) -> Result(ImportMode, Nil) {
-  case mode {
-    "merge" -> Ok(Merge)
-    "replace" -> Ok(Replace)
-    _ -> Error(Nil)
-  }
-}
-
-/// Why a change was refused: nothing was written.
-pub type ChangeError {
-  /// The rule to change does not exist.
-  NotFound
-  /// A rule already has the id given to a new one (a retried creation).
-  AlreadyExists
-  /// The rule changed since the version the caller based its change on.
-  Conflict(current: Rule)
-  /// The rule set changed since the version (`versioned`) the caller based
-  /// its change of the whole set (an import, a bulk change) on, such as an
-  /// import preview.
-  Stale(current: String)
-  /// The change is invalid.
-  Invalid(List(FieldError))
-  /// Another process holds the lock of the redirections file past the
-  /// wait: retrying soon may succeed.
-  Busy(reason: String)
-  /// The redirections file could not be read or written (permissions, a
-  /// full disk), or was changed outside the server into a file that does
-  /// not load.
-  Storage(reason: String)
-}
-
-/// What an import would make of the rule set, before the checks of the
-/// rules it changes (done by the caller, not to block the store).
-type Preview {
-  Preview(
-    diff: diff.Diff,
-    fingerprint: String,
-    rules: List(Rule),
-    ignore_trailing_slash: Bool,
-  )
-}
-
 pub opaque type Message {
   All(reply: Subject(List(Rule)))
   Versioned(reply: Subject(#(List(Rule), String)))
@@ -172,7 +122,7 @@ pub opaque type Message {
   PreviewImport(
     rules: List(Rule),
     mode: ImportMode,
-    reply: Subject(Result(Preview, List(FieldError))),
+    reply: Subject(Result(edit.Preview, List(FieldError))),
   )
   Bulk(
     ids: List(String),
@@ -193,30 +143,6 @@ pub opaque type Message {
 
   /// Every second: republishes the rules when one starts or expires.
   Schedule(self: Subject(Message))
-}
-
-/// What a bulk change does to the rules it names.
-pub type BulkAction {
-  Enable
-  Disable
-  Remove
-}
-
-pub fn bulk_action_from_string(action: String) -> Result(BulkAction, Nil) {
-  case action {
-    "enable" -> Ok(Enable)
-    "disable" -> Ok(Disable)
-    "delete" -> Ok(Remove)
-    _ -> Error(Nil)
-  }
-}
-
-fn bulk_action_to_string(action: BulkAction) -> String {
-  case action {
-    Enable -> "enable"
-    Disable -> "disable"
-    Remove -> "delete"
-  }
 }
 
 pub type Store =
@@ -440,9 +366,9 @@ pub fn import_into_file(
           |> result.map_error(fn(failure) { Storage(failure.reason) }),
         )
         use #(prepared, rules) <- result.try(
-          imported(existing, prepared, mode) |> result.map_error(Invalid),
+          edit.imported(existing, prepared, mode) |> result.map_error(Invalid),
         )
-        let action = import_action(mode)
+        let action = edit.import_action(mode)
         let summary = int.to_string(list.length(prepared)) <> " rule(s)"
         let outcome = {
           use _ <- result.try(
@@ -479,7 +405,7 @@ pub fn import_into_file(
               summary,
               refusal,
             )
-            Error(refused(refusal))
+            Error(edit.refused(refusal))
           }
         }
       },
@@ -595,13 +521,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
     Create(input, actor_name, reply) ->
-      apply_change(state, reply, create_rule(_, input, actor_name))
+      apply_change(state, reply, edit.create(_, input, actor_name))
     Update(input, expected, actor_name, reply) ->
-      apply_change(state, reply, update_rule(_, input, expected, actor_name))
+      apply_change(state, reply, edit.update(_, input, expected, actor_name))
     Delete(rule_id, expected, actor_name, reply) ->
-      apply_change(state, reply, delete_rule(_, rule_id, expected, actor_name))
+      apply_change(state, reply, edit.delete(_, rule_id, expected, actor_name))
     Import(prepared, mode, expected, actor_name, reply) ->
-      apply_change(state, reply, import_prepared(
+      apply_change(state, reply, edit.import_prepared(
         _,
         prepared,
         mode,
@@ -609,17 +535,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         actor_name,
       ))
     PreviewImport(prepared, mode, reply) -> {
-      process.send(reply, preview(state, prepared, mode))
+      process.send(reply, edit.preview(state, prepared, mode))
       actor.continue(state)
     }
     Bulk(ids, action, expected, actor_name, reply) ->
-      apply_change(state, reply, bulk_change(
-        _,
-        ids,
-        action,
-        expected,
-        actor_name,
-      ))
+      apply_change(state, reply, edit.bulk(_, ids, action, expected, actor_name))
     FlushHits(reply) -> {
       let state = periodic.flush_hits(state)
       process.send(reply, Nil)
@@ -659,295 +579,6 @@ fn apply_change(
   |> actor.continue
 }
 
-fn create_rule(
-  state: State,
-  input: Rule,
-  actor_name: String,
-) -> Result(#(Rule, List(Rule), String), ChangeError) {
-  let now = system_ffi.now_rfc3339()
-  let new_id = case string.trim(input.id) {
-    "" -> id.uuid()
-    given -> given
-  }
-  let candidate =
-    rule.Rule(
-      ..input,
-      id: new_id,
-      created_at: now,
-      updated_at: now,
-      updated_by: actor_name,
-    )
-  use <- bool.guard(
-    list.any(state.rules, fn(r) { r.id == new_id }),
-    Error(AlreadyExists),
-  )
-  use valid <- result.try(rule.validate(candidate) |> result.map_error(Invalid))
-  let rules = list.append(state.rules, [valid])
-  // a new rule only adds matches: a loop it makes goes through it
-  use fingerprint <- result.try(
-    commit.one(state.config.target, valid, None, rules, uncovers: False)
-    |> result.map_error(refused),
-  )
-  audit.record(
-    state.config.audit_path,
-    actor_name,
-    "rule.create",
-    valid.id,
-    None,
-    Some(rule.to_json(valid)),
-  )
-  Ok(#(valid, rules, fingerprint))
-}
-
-fn update_rule(
-  state: State,
-  input: Rule,
-  expected: Option(String),
-  actor_name: String,
-) -> Result(#(Rule, List(Rule), String), ChangeError) {
-  use existing <- result.try(
-    list.find(state.rules, fn(r) { r.id == input.id })
-    |> result.replace_error(NotFound),
-  )
-  use Nil <- result.try(check_version(existing, expected))
-  let candidate =
-    rule.Rule(
-      ..input,
-      created_at: existing.created_at,
-      updated_at: system_ffi.now_rfc3339(),
-      updated_by: actor_name,
-    )
-  use valid <- result.try(rule.validate(candidate) |> result.map_error(Invalid))
-  let rules =
-    list.map(state.rules, fn(r) {
-      case r.id == valid.id {
-        True -> valid
-        False -> r
-      }
-    })
-  // the old version may have shadowed a rule that loops
-  use fingerprint <- result.try(
-    commit.one(
-      state.config.target,
-      valid,
-      Some(existing),
-      rules,
-      uncovers: True,
-    )
-    |> result.map_error(refused),
-  )
-  audit.record(
-    state.config.audit_path,
-    actor_name,
-    "rule.update",
-    valid.id,
-    Some(rule.to_json(existing)),
-    Some(rule.to_json(valid)),
-  )
-  Ok(#(valid, rules, fingerprint))
-}
-
-fn delete_rule(
-  state: State,
-  rule_id: String,
-  expected: Option(String),
-  actor_name: String,
-) -> Result(#(Rule, List(Rule), String), ChangeError) {
-  use existing <- result.try(
-    list.find(state.rules, fn(r) { r.id == rule_id })
-    |> result.replace_error(NotFound),
-  )
-  use Nil <- result.try(check_version(existing, expected))
-  let rules = list.filter(state.rules, fn(r) { r.id != rule_id })
-  // removing a rule adds no conflict (and a file with conflicts can
-  // still lose rules); it may uncover a loop it was shadowing
-  use fingerprint <- result.try(
-    commit.many(state.config.target, rules, changed: [], check_conflicts: False)
-    |> result.map_error(refused),
-  )
-  audit.record(
-    state.config.audit_path,
-    actor_name,
-    "rule.delete",
-    rule_id,
-    Some(rule.to_json(existing)),
-    None,
-  )
-  Ok(#(existing, rules, fingerprint))
-}
-
-fn import_prepared(
-  state: State,
-  prepared: List(Rule),
-  mode: ImportMode,
-  expected: Option(String),
-  actor_name: String,
-) -> Result(#(Int, List(Rule), String), ChangeError) {
-  use Nil <- result.try(check_collection_version(state, expected))
-  use #(prepared, rules) <- result.try(
-    imported(state.rules, prepared, mode) |> result.map_error(Invalid),
-  )
-  let action = import_action(mode)
-  let summary = int.to_string(list.length(prepared)) <> " rule(s)"
-  let outcome =
-    commit.many(
-      state.config.target,
-      rules,
-      changed: diff.changed_rules(state.rules, rules),
-      check_conflicts: True,
-    )
-  case outcome {
-    Ok(fingerprint) -> {
-      audit_entries.rules_change(
-        state,
-        actor_name,
-        action,
-        summary,
-        rules,
-        fingerprint,
-      )
-      Ok(#(list.length(prepared), rules, fingerprint))
-    }
-    Error(refusal) -> {
-      audit_entries.refused(
-        state.config.audit_path,
-        actor_name,
-        action,
-        summary,
-        refusal,
-      )
-      Error(refused(refusal))
-    }
-  }
-}
-
-fn preview(
-  state: State,
-  prepared: List(Rule),
-  mode: ImportMode,
-) -> Result(Preview, List(FieldError)) {
-  use #(_, rules) <- result.try(imported(state.rules, prepared, mode))
-  use Nil <- result.try(validate.check_conflicts(rules))
-  Ok(Preview(
-    diff: diff.diff(state.rules, rules),
-    fingerprint: state.fingerprint,
-    rules:,
-    ignore_trailing_slash: state.config.target.ignore_trailing_slash,
-  ))
-}
-
-fn bulk_change(
-  state: State,
-  ids: List(String),
-  action: BulkAction,
-  expected: Option(String),
-  actor_name: String,
-) -> Result(#(Int, List(Rule), String), ChangeError) {
-  use Nil <- result.try(check_collection_version(state, expected))
-  let known = list.map(state.rules, fn(r) { r.id }) |> set.from_list
-  let wanted = set.from_list(ids)
-  use <- bool.guard(
-    ids == [],
-    Error(Invalid([FieldError("ids", "select at least one rule")])),
-  )
-  use <- bool.guard(
-    !list.all(ids, set.contains(known, _)),
-    Error(
-      Invalid([
-        FieldError(
-          "ids",
-          "unknown rule "
-            <> {
-            list.filter(ids, fn(id) { !set.contains(known, id) })
-            |> string.join(", ")
-          },
-        ),
-      ]),
-    ),
-  )
-  let now = system_ffi.now_rfc3339()
-  let change = fn(r: Rule, enabled: Bool) {
-    case set.contains(wanted, r.id) && r.enabled != enabled {
-      True -> rule.Rule(..r, enabled:, updated_at: now, updated_by: actor_name)
-      False -> r
-    }
-  }
-  let rules = case action {
-    Remove -> list.filter(state.rules, fn(r) { !set.contains(wanted, r.id) })
-    Enable -> list.map(state.rules, change(_, True))
-    Disable -> list.map(state.rules, change(_, False))
-  }
-  // enabling may bring two exact rules for one path back together, or
-  // rules that loop or can never apply
-  use fingerprint <- result.try(
-    commit.many(
-      state.config.target,
-      rules,
-      changed: case action {
-        Enable -> diff.changed_rules(state.rules, rules)
-        Disable | Remove -> []
-      },
-      check_conflicts: True,
-    )
-    |> result.map_error(refused),
-  )
-  let d = diff.diff(state.rules, rules)
-  let count = list.length(d.removed) + list.length(d.changed)
-  audit_entries.rules_change(
-    state,
-    actor_name,
-    "rules.bulk." <> bulk_action_to_string(action),
-    int.to_string(count) <> " rule(s)",
-    rules,
-    fingerprint,
-  )
-  Ok(#(count, rules, fingerprint))
-}
-
-/// `expected` (when given, `*` for any) must be the current version of the
-/// rule set.
-fn check_collection_version(
-  state: State,
-  expected: Option(String),
-) -> Result(Nil, ChangeError) {
-  case expected {
-    Some(v) if v != "*" && v != state.fingerprint ->
-      Error(Stale(state.fingerprint))
-    _ -> Ok(Nil)
-  }
-}
-
-fn check_version(
-  existing: Rule,
-  expected: Option(String),
-) -> Result(Nil, ChangeError) {
-  case expected {
-    Some(v) if v != "*" ->
-      case rule.version(existing) == v {
-        True -> Ok(Nil)
-        False -> Error(Conflict(existing))
-      }
-    _ -> Ok(Nil)
-  }
-}
-
-/// The rules an import of `prepared` leaves, and `prepared` with its ids
-/// resolved (`imports.apply`).
-fn imported(
-  existing: List(Rule),
-  prepared: List(Rule),
-  mode: ImportMode,
-) -> Result(#(List(Rule), List(Rule)), List(FieldError)) {
-  imports.apply(existing, prepared, replace: mode == Replace)
-}
-
-fn import_action(mode: ImportMode) -> String {
-  case mode {
-    Replace -> "rules.import.replace"
-    Merge -> "rules.import.merge"
-  }
-}
-
 /// Reads the file again (`SIGHUP`, the admin, the API): the new state, and
 /// the number of rules or why the file was refused.
 fn reload_file(
@@ -968,14 +599,6 @@ fn reload_file(
       }
     }),
   )
-}
-
-/// A change `commit` refused.
-fn refused(refusal: commit.Refusal) -> ChangeError {
-  case refusal {
-    commit.Refused(errors) -> Invalid(errors)
-    commit.NotWritten(reason) -> Storage(reason)
-  }
 }
 
 fn schedule_watch(config: Config, self: Subject(Message)) -> Nil {

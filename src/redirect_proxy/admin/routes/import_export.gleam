@@ -16,6 +16,7 @@ import redirect_proxy/admin/web.{
 import redirect_proxy/field_error
 import redirect_proxy/rule_csv
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import simplifile
 import wisp.{type Request, type Response}
 
@@ -54,8 +55,8 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   // not a merge the user did not ask for
   use mode <- result_or(
     case form_value(form, "mode") {
-      "" -> Ok(store.Merge)
-      mode -> store.import_mode_from_string(mode)
+      "" -> Ok(rule_change.Merge)
+      mode -> rule_change.import_mode_from_string(mode)
     },
     fn() { fail_with(["Mode must be merge or replace."]) },
   )
@@ -75,15 +76,16 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
   }
   let refused = fn(error) {
     case error {
-      store.Invalid(errors) -> fail(errors)
-      store.Busy(_) -> busy_page(ctx, s, "Not imported")
-      store.Storage(reason) -> storage_page(ctx, s, "Not imported", reason)
+      rule_change.Invalid(errors) -> fail(errors)
+      rule_change.Busy(_) -> busy_page(ctx, s, "Not imported")
+      rule_change.Storage(reason) ->
+        storage_page(ctx, s, "Not imported", reason)
       // an import names no one rule, and is made whatever the version of
       // the rule set without one (`import_rules`)
-      store.NotFound
-      | store.AlreadyExists
-      | store.Conflict(_)
-      | store.Stale(_) ->
+      rule_change.NotFound
+      | rule_change.AlreadyExists
+      | rule_change.Conflict(_)
+      | rule_change.Stale(_) ->
         fail_with(["The redirections were changed meanwhile: retry."])
     }
   }
@@ -131,12 +133,12 @@ pub fn import_rules(req: Request, ctx: Context, s: Session) -> Response {
                 )
               {
                 Ok(count) -> imported(count)
-                Error(store.Stale(_)) -> preview(incoming, True)
+                Error(rule_change.Stale(_)) -> preview(incoming, True)
                 Error(error) -> refused(error)
               }
             }
-            "preview", _ | _, store.Replace -> preview(incoming, False)
-            _, store.Merge ->
+            "preview", _ | _, rule_change.Replace -> preview(incoming, False)
+            _, rule_change.Merge ->
               case store.import_rules(ctx.store, incoming, mode, s.username) {
                 Ok(count) -> imported(count)
                 Error(error) -> refused(error)

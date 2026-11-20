@@ -28,6 +28,7 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import redirect_proxy/store/rules/listing
 import wisp.{type Request, type Response}
 
@@ -226,7 +227,7 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
       change_error_page(
         ctx,
         s,
-        store.Stale(current),
+        rule_change.Stale(current),
         "Not changed",
         "apply the action again",
       )
@@ -251,7 +252,10 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
       |> list.filter(fn(kv) { kv.0 == "ids" })
       |> list.map(fn(kv) { kv.1 })
   }
-  case store.bulk_action_from_string(form_value(form, "action")), selected {
+  case
+    rule_change.bulk_action_from_string(form_value(form, "action")),
+    selected
+  {
     Error(Nil), _ ->
       wisp.redirect(
         return_to(back, [
@@ -260,9 +264,9 @@ pub fn bulk(req: Request, ctx: Context, s: Session) -> Response {
         ]),
       )
     Ok(_), [] -> wisp.redirect(return_to(back, []))
-    Ok(store.Remove), ids ->
+    Ok(rule_change.Remove), ids ->
       case form_value(form, "confirm") {
-        "yes" -> apply_bulk(ctx, s, ids, store.Remove, current, back)
+        "yes" -> apply_bulk(ctx, s, ids, rule_change.Remove, current, back)
         _ -> {
           let wanted = set.from_list(ids)
           let rules = list.filter(rules, fn(r) { set.contains(wanted, r.id) })
@@ -299,7 +303,7 @@ fn apply_bulk(
   ctx: Context,
   s: Session,
   ids: List(String),
-  action: store.BulkAction,
+  action: rule_change.BulkAction,
   version: String,
   back: String,
 ) -> Response {
@@ -338,7 +342,7 @@ pub fn create_rule(req: Request, ctx: Context, s: Session) -> Response {
     Ok(r) ->
       case store.create(ctx.store, rule.Rule(..r, id: ""), s.username) {
         Ok(_) -> wisp.redirect("/rules?flash=created")
-        Error(store.Invalid(errors)) ->
+        Error(rule_change.Invalid(errors)) ->
           html(
             422,
             rule_form_view.form(s, features(ctx), r, errors, True, "", 0),
@@ -399,9 +403,9 @@ pub fn update_rule(
         Ok(r) ->
           case store.update_versioned(ctx.store, r, version, s.username) {
             Ok(_) -> wisp.redirect("/rules?flash=updated")
-            Error(store.NotFound) -> not_found(ctx, s)
+            Error(rule_change.NotFound) -> not_found(ctx, s)
             // Keep the submitted values; saving again overwrites knowingly.
-            Error(store.Conflict(current)) ->
+            Error(rule_change.Conflict(current)) ->
               render(
                 409,
                 r,
@@ -413,7 +417,7 @@ pub fn update_rule(
                 ],
                 rule.version(current),
               )
-            Error(store.Invalid(errors)) ->
+            Error(rule_change.Invalid(errors)) ->
               render(422, r, errors, submitted_version)
             Error(error) ->
               change_error_page(ctx, s, error, "Not saved", "try again")
@@ -501,13 +505,13 @@ pub fn toggle_rule(
 fn change_error_page(
   ctx: Context,
   s: Session,
-  error: store.ChangeError,
+  error: rule_change.ChangeError,
   title: String,
   retry: String,
 ) -> Response {
   case error {
-    store.NotFound -> not_found(ctx, s)
-    store.Conflict(current) ->
+    rule_change.NotFound -> not_found(ctx, s)
+    rule_change.Conflict(current) ->
       error_page(
         ctx,
         s,
@@ -515,7 +519,7 @@ fn change_error_page(
         title,
         conflict_message(current) <> " Review it, then " <> retry <> ".",
       )
-    store.AlreadyExists ->
+    rule_change.AlreadyExists ->
       error_page(
         ctx,
         s,
@@ -523,7 +527,7 @@ fn change_error_page(
         title,
         "A redirection with this id already exists.",
       )
-    store.Stale(_) ->
+    rule_change.Stale(_) ->
       error_page(
         ctx,
         s,
@@ -533,7 +537,7 @@ fn change_error_page(
           <> retry
           <> ".",
       )
-    store.Invalid(errors) ->
+    rule_change.Invalid(errors) ->
       error_page(
         ctx,
         s,
@@ -541,8 +545,8 @@ fn change_error_page(
         title,
         string.join(field_error.to_strings(errors), " "),
       )
-    store.Busy(_) -> busy_page(ctx, s, title)
-    store.Storage(reason) -> storage_page(ctx, s, title, reason)
+    rule_change.Busy(_) -> busy_page(ctx, s, title)
+    rule_change.Storage(reason) -> storage_page(ctx, s, title, reason)
   }
 }
 

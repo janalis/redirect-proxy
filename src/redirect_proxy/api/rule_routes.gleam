@@ -27,6 +27,7 @@ import redirect_proxy/metrics
 import redirect_proxy/rule.{type Rule}
 import redirect_proxy/rule_csv
 import redirect_proxy/store
+import redirect_proxy/store/rule_change
 import redirect_proxy/store/rules/diff
 import redirect_proxy/store/rules/listing
 import wisp.{type Request, type Response}
@@ -265,20 +266,20 @@ fn collection_if_match(req: Request, ctx: Context) -> Option(String) {
 
 /// The problem of a change the store refused: of rule `id`, or of the
 /// whole rule set ("").
-fn change_problem(error: store.ChangeError, id: String) -> Response {
+fn change_problem(error: rule_change.ChangeError, id: String) -> Response {
   case error {
-    store.NotFound -> rule_not_found(id)
-    store.AlreadyExists ->
+    rule_change.NotFound -> rule_not_found(id)
+    rule_change.AlreadyExists ->
       problem.conflict("A redirection with this id already exists.")
       |> wisp.set_header("location", "/api/redirects/" <> id)
-    store.Conflict(current) ->
+    rule_change.Conflict(current) ->
       problem.precondition_failed(rule.version(current))
-    store.Stale(current) -> problem.precondition_failed(current)
-    store.Invalid(errors) -> problem.validation(errors)
+    rule_change.Stale(current) -> problem.precondition_failed(current)
+    rule_change.Invalid(errors) -> problem.validation(errors)
     // another process holds the file lock: as when the store is busy
-    store.Busy(_) -> store_busy()
+    rule_change.Busy(_) -> store_busy()
     // not the request's fault: a 422 would tell the client to change it
-    store.Storage(reason) ->
+    rule_change.Storage(reason) ->
       problem.problem(
         500,
         "Internal Server Error",
@@ -325,7 +326,7 @@ pub fn bulk(req: Request, ctx: Context, principal: Principal) -> Response {
     Error(e) ->
       problem.validation([field_error.general(json_error.describe(e))])
     Ok(#(ids, action)) ->
-      case store.bulk_action_from_string(action) {
+      case rule_change.bulk_action_from_string(action) {
         Error(Nil) ->
           problem.validation([
             FieldError("action", "must be enable, disable or delete"),
@@ -467,7 +468,7 @@ fn if_match_of(req: Request, current: String) -> Option(String) {
   }
 }
 
-fn change_response(result: Result(Rule, store.ChangeError), id: String) {
+fn change_response(result: Result(Rule, rule_change.ChangeError), id: String) {
   case result {
     Ok(r) -> rule_response(200, r)
     Error(error) -> change_problem(error, id)
@@ -562,8 +563,8 @@ pub fn import_rules(
 ) -> Response {
   use <- store_available
   let mode = case list.key_find(wisp.get_query(req), "mode") {
-    Ok(mode) -> store.import_mode_from_string(mode)
-    Error(Nil) -> Ok(store.Merge)
+    Ok(mode) -> rule_change.import_mode_from_string(mode)
+    Error(Nil) -> Ok(rule_change.Merge)
   }
   // anything but true or false is an error: a misspelt dry run (`1`,
   // `True`) would otherwise write the import it meant to preview
