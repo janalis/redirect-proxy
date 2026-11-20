@@ -34,7 +34,7 @@ import simplifile
 
 // x-release-please-start-version
 /// Updated automatically by release-please.
-pub const version = "0.8.0"
+pub const version = "0.8.1"
 
 // x-release-please-end
 
